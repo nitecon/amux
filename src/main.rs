@@ -188,13 +188,11 @@ fn run(cli: Cli) -> Result<u8> {
                     TaskOperation::Claim { id } => gateway.claim(&project, &id.to_string(), &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {
-                        let task = gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await?;
-                        if task["status"] != "in_progress" || task["owner_origin"]["session_id"] != actor.session_id.to_string() || task["owner_origin"]["instance_id"] != actor.instance_id.to_string() {
-                            bail!("only the confirmed owning execution may report start");
-                        }
+                        confirm_owner(&gateway, &project, id, &actor).await?;
                         gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":format!("Agent reports execution started: session={} instance={}; recorded as a comment, not an atomic gateway lifecycle transition", actor.session_id, actor.instance_id)})), Some(&actor)).await
                     },
                     TaskOperation::Done { id } | TaskOperation::Release { id } => {
+                        confirm_owner(&gateway, &project, id, &actor).await?;
                         let status = if matches!(operation, TaskOperation::Done { .. }) { "done" } else { "todo" };
                         gateway.request(Method::PATCH, &project, &[&id.to_string()], Some(json!({"status":status})), Some(&actor)).await
                     },
@@ -205,6 +203,30 @@ fn run(cli: Cli) -> Result<u8> {
         }
     }
     Ok(0)
+}
+
+/// Only the exact owning execution may report start, complete or release a task.
+/// This is a client preflight read, not atomic server authorization: ownership
+/// can still change between this read and the mutation until the gateway binds
+/// mutations to the claiming session itself.
+async fn confirm_owner(
+    gateway: &Gateway,
+    project: &str,
+    id: Uuid,
+    actor: &AgentIdentity,
+) -> Result<()> {
+    let task = gateway
+        .request(Method::GET, project, &[&id.to_string()], None, None)
+        .await?;
+    if task["status"] != "in_progress"
+        || task["owner_origin"]["session_id"] != actor.session_id.to_string()
+        || task["owner_origin"]["instance_id"] != actor.instance_id.to_string()
+    {
+        bail!(
+            "only the confirmed owning execution (this exact session and instance) may change this task; nothing was sent"
+        );
+    }
+    Ok(())
 }
 
 fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Result<u8> {

@@ -45,7 +45,14 @@ start. Task reads and updates also require the requested task and project;
 updates must acknowledge the requested status. Comments require a canonical
 comment UUID attached to the requested task, including explicit start reports
 which are currently ordinary comments. Ambiguous replies leave the operation
-unconfirmed and are not retried. Task cancellation is pending a gateway contract
+unconfirmed and are not retried.
+
+`started`, `done` and `release` first read the task and continue only if it is
+`in_progress` with this exact session and instance as owner. Otherwise nothing
+is sent, including for older claims that lack owner session and instance. This
+read is a client check, not server authorization: ownership can change between
+the read and the update until the gateway binds updates to the claiming session.
+Task cancellation is pending a gateway contract
 that preserves the task and reporting actor; deleting a task is not cancellation.
 
 Desktop reminder input currently requires explicit task selection and consent
