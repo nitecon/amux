@@ -61,3 +61,27 @@ Desktop reminder input currently requires explicit task selection and consent
 with the supported Linux/Codex profile; see
 [reminder validation](reminder-validation.md). Automatic routing and recovery,
 Claude readiness and native Windows reminder input remain incomplete.
+
+## Desktop task submission
+
+The gateway sidebar accepts a task title and multiline handoff context for the
+selected gateway project. It uses the same gateway client and acceptance checks
+as the CLI. This is a desktop user action, not an agent execution: it sends no
+agent session headers and does not claim or start the task.
+
+The form distinguishes an unsent draft, a request awaiting acceptance, a
+confirmed task UUID, and an unknown result. The receipt keeps its original
+project and task UUID even if the user changes projects or workspaces before the
+reply. Refreshing the task list does not overwrite that receipt or retry a POST.
+
+After an unknown result, inspect gateway tasks before choosing **Start different
+request**. That action opens an empty form; it does not retry the previous
+request or delete a gateway task. Drafts and the current receipt are temporary
+and are not restored after exit. Accepted tasks remain in the gateway. Titles
+are limited to 1 KiB of UTF-8 and context to 64 KiB; the gateway may impose further
+validation.
+
+The desktop state tests and a native Linux GUI/local HTTP fixture cover late
+replies across project changes, duplicate clicks, literal multiline context and
+an uncertain response without automatic retry. Native Windows interactive task
+submission acceptance remains pending platform review.

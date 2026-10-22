@@ -6,7 +6,7 @@ use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::submission::{Submission, submit_literal};
 use amux::{gateway::Gateway, identity::Provider};
 use iced::widget::{
-    button, checkbox, column, container, pane_grid, row, scrollable, text, text_input,
+    button, checkbox, column, container, pane_grid, row, scrollable, text, text_editor, text_input,
 };
 use iced::{Element, Length, Subscription, Task, Theme};
 use iced_term::{Terminal, TerminalView};
@@ -29,6 +29,11 @@ enum Message {
     GatewayProject(String),
     RefreshTasks,
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
+    TaskTitle(String),
+    TaskContext(text_editor::Action),
+    SubmitTask,
+    NewTaskRequest,
+    TaskCreated(QueryScope, Uuid, Result<Uuid, String>),
     Consent(u64, bool),
     Remind(QueryScope, Uuid, u64),
     DeliveryTick,
@@ -54,6 +59,23 @@ struct TaskPanel {
     loaded_at: Option<Instant>,
     observed_at_ms: u64,
     queried_at: Option<Instant>,
+    draft_title: String,
+    draft_context: text_editor::Content,
+    draft_status: String,
+    request: Option<TaskRequest>,
+}
+
+struct TaskRequest {
+    id: Uuid,
+    project: String,
+    title: String,
+    state: TaskRequestState,
+}
+
+enum TaskRequestState {
+    Sending,
+    Accepted(Uuid),
+    Unconfirmed(String),
 }
 
 #[derive(Default)]
@@ -577,6 +599,73 @@ impl Desktop {
                 panel.status = "Project changed; consent withdrawn. Refresh current tasks.".into();
             }
             Message::RefreshTasks => return self.query(self.active),
+            Message::TaskTitle(title) => {
+                let panel = &mut self.workspaces[self.active].gateway;
+                if panel.request.is_none() {
+                    if title.len() <= 1024 {
+                        panel.draft_title = title;
+                        panel.draft_status.clear();
+                    } else {
+                        panel.draft_status = "Task title is too long".into();
+                    }
+                }
+            }
+            Message::TaskContext(action) => {
+                let panel = &mut self.workspaces[self.active].gateway;
+                if panel.request.is_none() {
+                    let previous = panel.draft_context.text();
+                    panel.draft_context.perform(action);
+                    if panel.draft_context.text().len() > 64 * 1024 {
+                        panel.draft_context = text_editor::Content::with_text(&previous);
+                        panel.draft_status = "Task context is too long".into();
+                    } else {
+                        panel.draft_status.clear();
+                    }
+                }
+            }
+            Message::SubmitTask => return self.create_task(),
+            Message::NewTaskRequest => {
+                let panel = &mut self.workspaces[self.active].gateway;
+                if panel
+                    .request
+                    .as_ref()
+                    .is_some_and(|request| !matches!(request.state, TaskRequestState::Sending))
+                {
+                    // Explicitly start a different request, never retry an uncertain POST.
+                    panel.request = None;
+                    panel.draft_title.clear();
+                    panel.draft_context = text_editor::Content::default();
+                    panel.draft_status.clear();
+                }
+            }
+            Message::TaskCreated(scope, request_id, result) => {
+                let Some(workspace) = self.workspaces.get_mut(scope.workspace) else {
+                    return Task::none();
+                };
+                if workspace.directory != scope.directory {
+                    return Task::none();
+                }
+                let panel = &mut workspace.gateway;
+                let Some(request) = &mut panel.request else {
+                    return Task::none();
+                };
+                if request.id != request_id
+                    || request.project != scope.project
+                    || !matches!(request.state, TaskRequestState::Sending)
+                {
+                    return Task::none();
+                }
+                let accepted = result.is_ok();
+                request.state = match result {
+                    Ok(task) => TaskRequestState::Accepted(task),
+                    Err(error) => TaskRequestState::Unconfirmed(error),
+                };
+                // A project rebind must not discard the original request's receipt.
+                // Refresh only if this workspace still shows the submitted project.
+                if accepted && panel.project.trim() == scope.project {
+                    return self.query(scope.workspace);
+                }
+            }
             Message::TasksLoaded(scope, result) => {
                 if !self.scope_current(&scope) {
                     return Task::none();
@@ -682,6 +771,66 @@ impl Desktop {
                 Task::none()
             }
         }
+    }
+
+    fn create_task(&mut self) -> Task<Message> {
+        let scope = self.scope(self.active);
+        let panel = &mut self.workspaces[self.active].gateway;
+        if panel.request.is_some() {
+            return Task::none();
+        }
+        if scope.project.is_empty() || panel.draft_title.trim().is_empty() {
+            panel.draft_status = "Not submitted: enter a gateway project and task title".into();
+            return Task::none();
+        }
+        if panel.draft_title.len() > 1024 || panel.draft_context.text().len() > 64 * 1024 {
+            panel.draft_status = "Not submitted: task title or context is too long".into();
+            return Task::none();
+        }
+        let gateway = std::env::var("AMUX_GATEWAY_URL")
+            .ok()
+            .zip(std::env::var("AMUX_GATEWAY_KEY").ok())
+            .ok_or_else(|| anyhow::anyhow!("Set AMUX_GATEWAY_URL and AMUX_GATEWAY_KEY"))
+            .and_then(|(url, key)| Gateway::new(&url, key));
+        let gateway = match gateway {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                panel.draft_status = format!("Not submitted: {error}");
+                return Task::none();
+            }
+        };
+        let request_id = Uuid::new_v4();
+        let title = panel.draft_title.clone();
+        let context = panel.draft_context.text();
+        panel.request = Some(TaskRequest {
+            id: request_id,
+            project: scope.project.clone(),
+            title: title.clone(),
+            state: TaskRequestState::Sending,
+        });
+        panel.draft_status.clear();
+        Task::perform(
+            async move {
+                // A desktop user's request is not attributed to any agent execution.
+                // The shared client validates the accepted task UUID/project/status.
+                let result = async {
+                    let task = gateway
+                        .request(
+                            reqwest::Method::POST,
+                            &scope.project,
+                            &[],
+                            Some(serde_json::json!({"title": title, "specification": context})),
+                            None,
+                        )
+                        .await?;
+                    serde_json::from_value::<Uuid>(task["id"].clone()).map_err(anyhow::Error::from)
+                }
+                .await
+                .map_err(|error| error.to_string());
+                (scope, request_id, result)
+            },
+            |(scope, request_id, result)| Message::TaskCreated(scope, request_id, result),
+        )
     }
 
     fn withdraw(&mut self, id: u64) {
@@ -865,6 +1014,51 @@ impl Desktop {
         Task::batch(queries.into_iter().map(|index| self.query(index)))
     }
 
+    fn task_form(&self) -> Element<'_, Message> {
+        let panel = &self.workspaces[self.active].gateway;
+        if let Some(request) = &panel.request {
+            let mut receipt = column![text(&request.title).size(14)].spacing(6);
+            match &request.state {
+                TaskRequestState::Sending => {
+                    receipt = receipt.push(
+                        text(format!(
+                            "Awaiting gateway acceptance in {}…",
+                            request.project
+                        ))
+                        .size(12),
+                    );
+                }
+                TaskRequestState::Accepted(task) => {
+                    receipt = receipt.push(
+                        text(format!("Accepted by gateway: {} / {task}", request.project)).size(12),
+                    );
+                }
+                TaskRequestState::Unconfirmed(error) => {
+                    receipt = receipt.push(text(format!(
+                        "Acceptance unknown in {}: {error}. Check gateway tasks before starting a different request. This request is not retried automatically.", request.project
+                    )).size(12));
+                }
+            }
+            if !matches!(request.state, TaskRequestState::Sending) {
+                receipt = receipt
+                    .push(button("Start different request").on_press(Message::NewTaskRequest));
+            }
+            return receipt.into();
+        }
+        column![
+            text("New task · not submitted").size(14),
+            text_input("Task title", &panel.draft_title).on_input(Message::TaskTitle),
+            text_editor(&panel.draft_context)
+                .placeholder("Context / handoff text (optional)")
+                .on_action(Message::TaskContext)
+                .height(100),
+            button("Create task").on_press(Message::SubmitTask),
+            text(&panel.draft_status).size(12),
+        ]
+        .spacing(6)
+        .into()
+    }
+
     fn task_list(&self) -> Element<'_, Message> {
         let workspace = &self.workspaces[self.active];
         let panel = &workspace.gateway;
@@ -990,7 +1184,7 @@ impl Desktop {
                 "Refresh"
             })
             .on_press(Message::RefreshTasks),
-            scrollable(self.task_list())
+            scrollable(column![self.task_form(), self.task_list()].spacing(16))
         ]
         .spacing(10)
         .width(280);
@@ -1090,6 +1284,128 @@ mod tests {
             snapshot_path: None,
             dirty: false,
         }
+    }
+
+    #[test]
+    fn task_acceptance_receipt_survives_project_and_workspace_changes() {
+        let mut app = desktop();
+        let scope = app.scope(0);
+        let request_id = Uuid::new_v4();
+        let accepted = Uuid::new_v4();
+        app.workspaces[0].gateway.draft_title = "Original request".into();
+        app.workspaces[0].gateway.draft_context = text_editor::Content::with_text("line 1\nline 2");
+        app.workspaces[0].gateway.request = Some(TaskRequest {
+            id: request_id,
+            project: scope.project.clone(),
+            title: "Original request".into(),
+            state: TaskRequestState::Sending,
+        });
+        let _ = app.update(Message::SubmitTask);
+        let _ = app.update(Message::NewTaskRequest);
+        assert_eq!(
+            app.workspaces[0].gateway.request.as_ref().unwrap().id,
+            request_id,
+            "a pending request cannot be resubmitted or discarded"
+        );
+        let _ = app.update(Message::GatewayProject("replacement".into()));
+        let _ = app.update(Message::SelectWorkspace(1));
+        let _ = app.update(Message::TaskCreated(
+            scope.clone(),
+            request_id,
+            Ok(accepted),
+        ));
+        let panel = &app.workspaces[0].gateway;
+        assert_eq!(panel.project, "replacement");
+        let receipt = panel.request.as_ref().unwrap();
+        assert_eq!(receipt.project, "project-0");
+        assert!(matches!(receipt.state, TaskRequestState::Accepted(id) if id == accepted));
+        assert_eq!(panel.draft_context.text(), "line 1\nline 2");
+        assert!(app.workspaces[1].gateway.request.is_none());
+        let _ = app.update(Message::TaskCreated(
+            scope.clone(),
+            request_id,
+            Err("late failure".into()),
+        ));
+        assert!(
+            matches!(app.workspaces[0].gateway.request.as_ref().unwrap().state,
+            TaskRequestState::Accepted(id) if id == accepted)
+        );
+
+        let _ = app.update(Message::SelectWorkspace(0));
+        let _ = app.update(Message::NewTaskRequest);
+        assert!(app.workspaces[0].gateway.draft_title.is_empty());
+        assert!(app.workspaces[0].gateway.draft_context.text().is_empty());
+        let newer = Uuid::new_v4();
+        app.workspaces[0].gateway.request = Some(TaskRequest {
+            id: newer,
+            project: "replacement".into(),
+            title: "A different request".into(),
+            state: TaskRequestState::Sending,
+        });
+        let _ = app.update(Message::TaskCreated(scope, request_id, Ok(accepted)));
+        assert!(
+            matches!(
+                app.workspaces[0].gateway.request.as_ref().unwrap().state,
+                TaskRequestState::Sending
+            ),
+            "old replies cannot acknowledge a different request"
+        );
+    }
+
+    #[test]
+    fn unconfirmed_task_submission_is_not_retried_or_hidden_by_refresh() {
+        let mut app = desktop();
+        let scope = app.scope(0);
+        let request_id = Uuid::new_v4();
+        app.workspaces[0].gateway.draft_title = "Preserve handoff".into();
+        app.workspaces[0].gateway.request = Some(TaskRequest {
+            id: request_id,
+            project: scope.project.clone(),
+            title: "Preserve handoff".into(),
+            state: TaskRequestState::Sending,
+        });
+        let _ = app.update(Message::TaskCreated(
+            scope.clone(),
+            request_id,
+            Err("connection lost".into()),
+        ));
+        let _ = app.update(Message::TasksLoaded(scope, Ok(json!([]))));
+        let _ = app.update(Message::SubmitTask);
+        let panel = &app.workspaces[0].gateway;
+        assert_eq!(panel.draft_title, "Preserve handoff");
+        let receipt = panel.request.as_ref().unwrap();
+        assert_eq!(receipt.id, request_id);
+        assert!(
+            matches!(&receipt.state, TaskRequestState::Unconfirmed(error) if error == "connection lost")
+        );
+        let _ = app.update(Message::NewTaskRequest);
+        let _ = app.update(Message::SubmitTask);
+        assert!(app.workspaces[0].gateway.request.is_none());
+        assert!(
+            app.workspaces[0]
+                .gateway
+                .draft_status
+                .starts_with("Not submitted:")
+        );
+    }
+
+    #[test]
+    fn task_drafts_are_bounded_before_any_gateway_request() {
+        let mut app = desktop();
+        let _ = app.update(Message::TaskTitle(" x ".into()));
+        assert_eq!(app.workspaces[0].gateway.draft_title, " x ");
+        let _ = app.update(Message::TaskTitle("x".repeat(1025)));
+        assert_eq!(app.workspaces[0].gateway.draft_title, " x ");
+        app.workspaces[0].gateway.draft_context =
+            text_editor::Content::with_text(&"x".repeat(64 * 1024 + 1));
+        let _ = app.update(Message::SubmitTask);
+        assert!(app.workspaces[0].gateway.request.is_none());
+        assert!(
+            app.workspaces[0]
+                .gateway
+                .draft_status
+                .starts_with("Not submitted:")
+        );
     }
 
     #[test]
