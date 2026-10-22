@@ -93,6 +93,15 @@ enum TaskOperation {
         #[arg(long)]
         specification: Option<String>,
     },
+    /// Create linked tasks in different projects, not an exact-session assignment.
+    /// A lost reply is uncertain: inspect both projects before manually retrying.
+    Delegate {
+        title: String,
+        #[arg(long)]
+        target_project: String,
+        #[arg(long)]
+        specification: Option<String>,
+    },
     Claim {
         id: Uuid,
     },
@@ -185,6 +194,7 @@ fn run(cli: Cli) -> Result<u8> {
                 if actor.project_directory != cli.project_dir.canonicalize()? { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
                     TaskOperation::Create { title, specification } => gateway.request(Method::POST, &project, &[], Some(json!({"title": title, "specification": specification})), Some(&actor)).await,
+                    TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
                     TaskOperation::Claim { id } => gateway.claim(&project, &id.to_string(), &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {

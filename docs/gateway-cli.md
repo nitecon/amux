@@ -39,6 +39,22 @@ with a known task status. Empty, malformed or mismatched replies leave acceptanc
 uncertain: fetch tasks before retrying. The client does not retry creation or
 establish server request deduplication.
 
+`amux tasks delegate 'Review implementation' --target-project other-project
+--specification 'Inline handoff context'` uses the existing cross-project
+delegation route. Run it from an amux-launched agent in its original project,
+with `AMUX_GATEWAY_PROJECT` identifying the source project. The result must
+identify canonical source and destination task UUIDs and a delegation record
+linking those exact tasks and projects. Titles are limited to 1 KiB without
+control characters; context is limited to 64 KiB of UTF-8 and stays literal.
+
+This creates shared tasks, not a claim, execution start, destination receipt or
+exact-session assignment. The endpoint requires different projects and has no
+machine, platform or session target. Same-project and exact-session delegation
+remain pending the gateway contract. An error or lost reply can leave accepted
+tasks behind: inspect both projects before manually retrying. The client makes
+one request and does not establish server deduplication. The gateway may notify
+the destination project's configured channel.
+
 A claim must acknowledge the requested task UUID and project as well as the exact
 session and instance as owner. Claim acknowledgment does not report execution
 start. Task reads and updates also require the requested task and project;

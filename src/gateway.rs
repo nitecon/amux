@@ -107,15 +107,7 @@ impl Gateway {
         actor: Option<&AgentIdentity>,
         query: &[(&str, String)],
     ) -> Result<Value> {
-        if project.is_empty()
-            || project == "."
-            || project == ".."
-            || !project
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
-        {
-            bail!("gateway project must be a project identifier, not a URL or path");
-        }
+        validate_project(project)?;
         let mut url = self.base.clone();
         {
             let mut path = url
@@ -238,6 +230,74 @@ impl Gateway {
         }
         Ok(result)
     }
+    /// Existing cross-project delegation only; no machine or exact-session routing.
+    pub async fn delegate(
+        &self,
+        project: &str,
+        target_project: &str,
+        title: String,
+        specification: Option<String>,
+        actor: &AgentIdentity,
+    ) -> Result<Value> {
+        validate_project(project)?;
+        validate_project(target_project)?;
+        if project.eq_ignore_ascii_case(target_project) {
+            bail!(
+                "delegation requires a different target project; exact-session assignment is not supported by this endpoint"
+            );
+        }
+        let title = title.trim();
+        if title.is_empty() || title.len() > 1024 || title.chars().any(char::is_control) {
+            bail!(
+                "delegation title must be non-empty, at most 1 KiB and contain no control characters"
+            );
+        }
+        if specification
+            .as_ref()
+            .is_some_and(|text| text.len() > 64 * 1024)
+        {
+            bail!("delegation context exceeds 64 KiB; use a smaller inline handoff");
+        }
+        let result = self.project_request(
+            Method::POST, project, &["tasks", "delegate"],
+            Some(json!({"target_project_ident":target_project,"title":title,"specification":specification})),
+            Some(actor), &[],
+        ).await.context("delegation not confirmed; inspect tasks in both projects before retrying")?;
+        let source = &result["source_task"];
+        let target = &result["target_task"];
+        let link = &result["delegation"];
+        let source_id = canonical_id(&source["id"]);
+        let target_id = canonical_id(&target["id"]);
+        if source_id.is_none()
+            || target_id.is_none()
+            || source_id == target_id
+            || canonical_id(&link["id"]).is_none()
+            || source["project_ident"] != project
+            || target["project_ident"] != target_project
+            || !matches!(
+                source["status"].as_str(),
+                Some("todo" | "in_progress" | "done")
+            )
+            || !matches!(
+                target["status"].as_str(),
+                Some("todo" | "in_progress" | "done")
+            )
+            || source["kind"] != "delegated"
+            || source["delegated_to_project_ident"] != target_project
+            || canonical_id(&source["delegated_to_task_id"]) != target_id
+            || link["source_project_ident"] != project
+            || link["target_project_ident"] != target_project
+            || canonical_id(&link["source_task_id"]) != source_id
+            || canonical_id(&link["target_task_id"]) != target_id
+            || result["message_id"].as_i64().is_none_or(|id| id <= 0)
+        {
+            bail!(
+                "gateway did not acknowledge canonical linked tasks in both requested projects; delegation is uncertain, inspect both projects before retrying"
+            );
+        }
+        Ok(result)
+    }
+
     pub async fn claim(&self, project: &str, task: &str, actor: &AgentIdentity) -> Result<Value> {
         let task_id = uuid::Uuid::parse_str(task).context("task ID must be a complete UUID")?;
         if task_id.is_nil() {
@@ -263,6 +323,19 @@ impl Gateway {
         }
         Ok(result)
     }
+}
+
+fn validate_project(project: &str) -> Result<()> {
+    if project.is_empty()
+        || project == "."
+        || project == ".."
+        || !project
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    {
+        bail!("gateway project must be a project identifier, not a URL or path");
+    }
+    Ok(())
 }
 
 fn canonical_id(value: &Value) -> Option<uuid::Uuid> {
