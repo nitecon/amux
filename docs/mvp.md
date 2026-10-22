@@ -63,10 +63,14 @@ distinct identities for agents it launches.
 - A restored layout launches nothing.
 
 **Status:** candidate builds published. The Linux review requested changes. L1
-and L2 are fixed. L3 (teardown) is fixed for owned Linux terminal sessions, but
-late forks, abrupt desktop death and Windows teardown are unproven. The Windows
-review covered the CLI, provider launches and a responding window. Its
-interactive checks did not run because screen-control approval timed out.
+and L2 are fixed. Native CI covers bounded Linux terminal-session cleanup and
+Windows Job Object cleanup after enrollment. Late forks, abrupt desktop death,
+Windows children created before enrollment and complete native teardown
+acceptance remain open. A Linux probe launched two installed Codex agents and
+one Claude agent with distinct identities and isolated input; it does not prove
+GUI routing or gateway ownership. The Windows review covered the CLI, provider
+launches and a responding window. Its interactive checks did not run because
+screen-control approval timed out.
 
 ### M2: gateway handoff and exact-agent ownership
 
@@ -106,8 +110,11 @@ and cross-machine handoff are not done. See
   map is [parity-status.md](parity-status.md).
 - macOS stack feasibility has a recorded result, even if macOS ships later.
 
-**Status:** not started. Of the 29 parity rows, 1 is implemented, 7 are
-partial and 21 are missing. macOS feasibility is recorded in [parity-status.md](parity-status.md).
+**Status:** packaging and review are in progress. Separate CLI and GUI entry
+points are built on Linux and Windows; native CI and bundle hashes are verified.
+Interactive platform acceptance and M1/M2 approval remain open. The recorded
+parity inventory has 29 rows: 1 implemented, 7 partial and 21 missing. macOS
+feasibility is recorded in [parity-status.md](parity-status.md).
 
 ## Evidence required from CMUX reviewers
 
