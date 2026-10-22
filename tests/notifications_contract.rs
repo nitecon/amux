@@ -128,3 +128,35 @@ fn failures_and_panics_are_reported_once_without_retry() {
     );
     assert_eq!(*calls.lock().unwrap(), 3, "each attempt runs exactly once");
 }
+
+#[test]
+fn a_hung_service_times_out_and_later_attempts_fail_fast_until_it_returns() {
+    struct Hung(mpsc::Receiver<()>);
+    impl Backend for Hung {
+        fn show(&mut self, title: &str, _: &str) -> Result<(), String> {
+            if title == "hang" {
+                let _ = self.0.recv();
+            }
+            Ok(())
+        }
+    }
+    let (release, wait) = mpsc::channel();
+    let mut notifier = Notifier::with_timeout(Hung(wait), Duration::from_millis(100));
+    let hung = notifier.notify("hang", "").unwrap();
+    assert_eq!(wait_for(&notifier, 1), vec![Outcome::TimedOut { id: hung }]);
+    // While the OS call is still outstanding, no second call is started.
+    let skipped = notifier.notify("next", "").unwrap();
+    match wait_for(&notifier, 1).as_slice() {
+        [Outcome::Failed { id, reason }] if *id == skipped => {
+            assert!(reason.contains("unresponsive"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+    release.send(()).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let recovered = notifier.notify("after", "").unwrap();
+    assert_eq!(
+        wait_for(&notifier, 1),
+        vec![Outcome::Shown { id: recovered }]
+    );
+}
