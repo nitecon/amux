@@ -102,10 +102,12 @@ and cross-machine handoff are not done. See
 - M1 and M2 are accepted, and all CMUX review findings are resolved or
   explicitly deferred by the owner.
 - Packaging works on both platforms, including a GUI entry point.
-- Unimplemented parity items from features.md are listed explicitly.
+- Unimplemented parity items from features.md are listed explicitly. The current
+  map is [parity-status.md](parity-status.md).
 - macOS stack feasibility has a recorded result, even if macOS ships later.
 
-**Status:** not started.
+**Status:** not started. Of the 29 parity rows, 1 is implemented, 7 are
+partial and 21 are missing. macOS feasibility is recorded in [parity-status.md](parity-status.md).
 
 ## Evidence required from CMUX reviewers
 
