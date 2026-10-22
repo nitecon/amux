@@ -133,6 +133,8 @@ impl From<TerminalSize> for WindowSize {
 
 pub struct Backend {
     child_pid: Option<u32>,
+    #[cfg(target_os = "linux")]
+    native_terminal: std::fs::File,
     term: Arc<FairMutex<Term<EventProxy>>>,
     size: TerminalSize,
     notifier: Notifier,
@@ -163,6 +165,8 @@ impl Backend {
         terminal_size.layout_height =
             terminal_size.num_lines as f32 * terminal_size.cell_height as f32;
         let pty = tty::new(&pty_config, terminal_size.into(), id)?;
+        #[cfg(target_os = "linux")]
+        let native_terminal = pty.file().try_clone()?;
         #[cfg(unix)]
         let child_pid = Some(pty.child().id());
         #[cfg(windows)]
@@ -194,6 +198,8 @@ impl Backend {
 
         Ok(Self {
             child_pid,
+            #[cfg(target_os = "linux")]
+            native_terminal,
             term: term.clone(),
             size: terminal_size,
             notifier,
@@ -535,6 +541,12 @@ impl Backend {
         self.child_pid
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn native_terminal_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.native_terminal.as_fd()
+    }
+
     pub fn observation(
         &self,
         max_cells: usize,
@@ -564,10 +576,25 @@ impl Backend {
             }
             lines.push(line);
         }
+        let cursor_row = grid.cursor.point.line.0;
+        if cursor_row < 0 || cursor_row as usize >= rows {
+            return None;
+        }
+        let cursor_line_styles = (0..columns)
+            .map(|column| {
+                let cell = &grid[Line(cursor_row)][Column(column)];
+                crate::TerminalCellStyle {
+                    foreground: cell.fg,
+                    background: cell.bg,
+                    flags: cell.flags,
+                }
+            })
+            .collect();
         Some(crate::TerminalObservation {
             lines,
-            cursor_row: grid.cursor.point.line.0,
+            cursor_row,
             cursor_column: grid.cursor.point.column.0,
+            cursor_line_styles,
             display_offset: grid.display_offset(),
             mode: *term.mode(),
         })

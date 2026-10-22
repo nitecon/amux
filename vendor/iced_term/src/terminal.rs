@@ -74,6 +74,12 @@ impl Terminal {
         self.backend.child_pid()
     }
 
+    /// Borrowed native PTY master for foreground input verification. Never a PID lookup.
+    #[cfg(target_os = "linux")]
+    pub fn native_terminal_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.backend.native_terminal_fd()
+    }
+
     /// A bounded live screen observation, never an acknowledgment or readiness proof.
     pub fn observation(
         &self,

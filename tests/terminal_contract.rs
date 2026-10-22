@@ -1,6 +1,7 @@
 #![cfg(all(feature = "desktop", target_os = "linux"))]
 
-use iced_term::{BackendCommand, Command, Terminal, settings};
+use iced_term::{BackendCommand, Command, Terminal, TerminalCellFlags, settings};
+use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -12,7 +13,7 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
                 program: "/bin/sh".into(),
                 args: vec![
                     "-c".into(),
-                    "printf 'AMUX_PID=%s\\r\\n' \"$$\"; read line; printf 'REPLY=%s\\r\\n' \"$line\"; read next; printf '\\033[2J\\033[He\\314\\201'; exec sleep 30".into(),
+                    "printf 'AMUX_PID=%s\\r\\n' \"$$\"; read line; printf 'REPLY=%s\\r\\n\\033[2mDIM\\033[0m normal' \"$line\"; read next; printf '\\033[2J\\033[He\\314\\201'; exec sleep 30".into(),
                 ],
                 ..Default::default()
             },
@@ -37,6 +38,20 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
         }
     };
     let observation = wait_for(&terminal, &format!("AMUX_PID={pid}"));
+    let mut foreground: libc::pid_t = 0;
+    // SAFETY: borrowed live master descriptor and initialized output storage.
+    assert_eq!(
+        unsafe {
+            libc::ioctl(
+                terminal.native_terminal_fd().as_raw_fd(),
+                libc::TIOCGPGRP,
+                &mut foreground,
+            )
+        },
+        0
+    );
+    // SAFETY: read-only group query for the known live native child.
+    assert_eq!(foreground, unsafe { libc::getpgid(pid as libc::pid_t) });
     assert_eq!(observation.lines.len(), 50);
     assert_eq!(observation.lines[0].chars().count(), 80);
     assert_eq!(observation.display_offset, 0);
@@ -54,6 +69,18 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
         observation.lines[0].chars().count(),
         80,
         "font sync must preserve columns"
+    );
+    let styled = wait_for(&terminal, "DIM normal");
+    assert_eq!(styled.cursor_line_styles.len(), 80);
+    assert!(
+        styled.cursor_line_styles[..3]
+            .iter()
+            .all(|style| style.flags == TerminalCellFlags::DIM)
+    );
+    assert!(
+        styled.cursor_line_styles[4..10]
+            .iter()
+            .all(|style| style.flags.is_empty())
     );
     terminal.handle(Command::ProxyToBackend(BackendCommand::Write(
         b"next\r".to_vec(),

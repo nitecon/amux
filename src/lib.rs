@@ -1,5 +1,7 @@
 pub mod delivery;
 pub mod gateway;
 pub mod identity;
+#[cfg(feature = "desktop")]
+pub mod readiness;
 pub mod recipient;
 pub mod session;

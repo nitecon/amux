@@ -26,6 +26,13 @@ combining characters also returns no observation. A PID may be stale or identify
 does not prove readiness, recipient identity or agent acknowledgment. amux must
 check process generation, exact recipient, human input and consent separately.
 
+Observations also include parser styling for the cursor's row, with one entry
+per terminal column. This lets callers distinguish a dim placeholder from typed
+text with the same characters and cursor position. The existing cell budget
+bounds this row too. On Linux the adapter retains a duplicate of the owned PTY
+master and exposes a borrowed descriptor for foreground-group verification.
+It closes with the terminal; callers do not discover a PTY by searching PIDs.
+
 This remains a provisional terminal candidate. No reminder path is enabled by
 these accessors alone.
 
@@ -37,3 +44,6 @@ establish provider readiness. The optional ignored root test
 `installed_provider_contract` requires installed, authenticated Codex and checks
 unsubmitted input and clearing through the native event stream; it never sends
 Enter or submits a model turn.
+It also verifies that typing the placeholder and moving to Home cannot pass the
+provisional native prompt profile. The profile is not connected to automatic
+reminder submission and still needs busy/continuation acceptance evidence.

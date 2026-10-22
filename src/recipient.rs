@@ -97,6 +97,14 @@ pub struct RecipientCheckpoint {
     consent_epoch: u64,
 }
 
+/// Native executable image identity observed with the registered agent owning input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "desktop")]
+pub(crate) struct NativeInputEvidence {
+    image_device: u64,
+    image_inode: u64,
+}
+
 impl TerminalRecipient {
     pub fn new(launcher_pid: u32, provider: Provider, project: &Path) -> Result<Self> {
         Ok(Self {
@@ -177,6 +185,70 @@ impl TerminalRecipient {
 
     pub fn matches_address(&self, address: &RecipientAddress) -> bool {
         self.address(address.terminal_id).as_ref() == Some(address)
+    }
+
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    pub(crate) fn native_input_evidence(
+        &self,
+        terminal: &iced_term::Terminal,
+    ) -> Option<NativeInputEvidence> {
+        use std::os::{
+            fd::AsRawFd,
+            unix::fs::{MetadataExt, OpenOptionsExt},
+        };
+        if !self.verify() {
+            return None;
+        }
+        let agent = self.agent.as_ref()?;
+        let executable = PathBuf::from(format!("/proc/{}/exe", agent.pid));
+        let image_path = std::fs::read_link(&executable).ok()?;
+        if image_path.file_name()? != std::ffi::OsStr::new(self.provider.command()) {
+            return None;
+        }
+        let image = std::fs::metadata(&executable).ok()?;
+        let open_input = |pid| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+                .open(format!("/proc/{pid}/fd/0"))
+                .ok()
+        };
+        let launcher_input = open_input(self.launcher.pid)?;
+        let agent_input = open_input(agent.pid)?;
+        let launcher_device = launcher_input.metadata().ok()?.rdev();
+        if launcher_device == 0 || agent_input.metadata().ok()?.rdev() != launcher_device {
+            return None;
+        }
+        // SAFETY: valid open descriptors and an initialized integer output buffer.
+        let mut foreground: libc::pid_t = 0;
+        if unsafe {
+            libc::ioctl(
+                terminal.native_terminal_fd().as_raw_fd(),
+                libc::TIOCGPGRP,
+                &mut foreground,
+            )
+        } != 0
+        {
+            return None;
+        }
+        // SAFETY: read-only queries for a live registered process and its group.
+        let group = unsafe { libc::getpgid(agent.pid as libc::pid_t) };
+        if group <= 0 || foreground != group || !self.verify() {
+            return None;
+        }
+        Some(NativeInputEvidence {
+            image_device: image.dev(),
+            image_inode: image.ino(),
+        })
+    }
+
+    #[cfg(all(feature = "desktop", not(target_os = "linux")))]
+    pub(crate) fn native_input_evidence(
+        &self,
+        _terminal: &iced_term::Terminal,
+    ) -> Option<NativeInputEvidence> {
+        // Native ConPTY/macOS evidence is still required; do not infer it from a PID.
+        None
     }
 
     pub fn note_human_input(&mut self) {
