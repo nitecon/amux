@@ -524,7 +524,10 @@ impl Backend {
         self.child_pid
     }
 
-    pub fn observation(&self, max_cells: usize) -> Option<crate::TerminalObservation> {
+    pub fn observation(
+        &self,
+        max_cells: usize,
+    ) -> Option<crate::TerminalObservation> {
         // Read the live grid under its parser lock, independently of redraws.
         // Never copy scrollback or silently truncate an observation used for readiness.
         const MAX_CELLS: usize = 32_768;

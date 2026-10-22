@@ -72,7 +72,10 @@ impl Terminal {
     }
 
     /// A bounded live screen observation, never an acknowledgment or readiness proof.
-    pub fn observation(&self, max_cells: usize) -> Option<crate::TerminalObservation> {
+    pub fn observation(
+        &self,
+        max_cells: usize,
+    ) -> Option<crate::TerminalObservation> {
         self.backend.observation(max_cells)
     }
 

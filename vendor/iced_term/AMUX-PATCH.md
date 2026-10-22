@@ -3,7 +3,8 @@
 Source: crates.io `iced_term` 0.8.0, upstream
 <https://github.com/Harzu/iced_term>, revision
 `e0e90be2c160bd68f1bf544a51bf772d75b98ffc` from the crate's VCS metadata.
-The original MIT license is in LICENSE.
+The original MIT license is in LICENSE. The upstream rustfmt.toml is retained
+so `cargo fmt --all` checks the vendored source with its original formatting.
 
 The source is vendored so amux can use two small additions without modifying
 the Cargo registry: the initial native PTY child PID and a bounded live screen
