@@ -48,10 +48,12 @@ which are currently ordinary comments. Ambiguous replies leave the operation
 unconfirmed and are not retried.
 
 `started`, `done` and `release` first read the task and continue only if it is
-`in_progress` with this exact session and instance as owner. Otherwise nothing
-is sent, including for older claims that lack owner session and instance. This
-read is a client check, not server authorization: ownership can change between
-the read and the update until the gateway binds updates to the claiming session.
+`in_progress` with this exact session and instance as owner. Otherwise no status
+update or start report is sent, including for older claims that lack owner
+session and instance. This read is a client check, not server authorization. The
+gateway already guards claims with a bound owner origin, but until it enforces
+the exact owner atomically for every claim type, ownership can change between
+the read and the update.
 Task cancellation is pending a gateway contract
 that preserves the task and reporting actor; deleting a task is not cancellation.
 

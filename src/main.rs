@@ -206,9 +206,10 @@ fn run(cli: Cli) -> Result<u8> {
 }
 
 /// Only the exact owning execution may report start, complete or release a task.
-/// This is a client preflight read, not atomic server authorization: ownership
-/// can still change between this read and the mutation until the gateway binds
-/// mutations to the claiming session itself.
+/// This is a client preflight read, not atomic server authorization. The gateway
+/// already guards bound owner_origin claims, but until it enforces the exact
+/// owner atomically for every claim type, ownership can change between this read
+/// and the mutation.
 async fn confirm_owner(
     gateway: &Gateway,
     project: &str,
@@ -223,7 +224,7 @@ async fn confirm_owner(
         || task["owner_origin"]["instance_id"] != actor.instance_id.to_string()
     {
         bail!(
-            "only the confirmed owning execution (this exact session and instance) may change this task; nothing was sent"
+            "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
         );
     }
     Ok(())
