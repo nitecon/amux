@@ -59,3 +59,10 @@ the durable checked-input coordinator; it is ignored in normal tests and CI.
 result, unlike the widget's fire-and-forget input path. An error can follow
 channel acceptance, and success does not prove a PTY write or agent
 acknowledgment. Callers retain uncertainty across failures and crashes.
+
+`EventProxy` coalesces redraw-only events per terminal. While one `Wakeup` is
+queued and not yet handled, further `Wakeup` and `MouseCursorDirty` events are
+dropped; `Backend::handle` clears the flag before the caller syncs, so later
+output queues a fresh `Wakeup`. Every other event keeps its order. Upstream
+queued two events per echoed character into the 100-slot channel, so a slow
+renderer throttled PTY reading to one batch per frame and left output undrawn.

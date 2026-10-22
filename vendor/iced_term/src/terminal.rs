@@ -377,4 +377,93 @@ time.sleep(30)
             }
         }
     }
+
+    /// Many separate PTY reads, each of which would otherwise queue a Wakeup.
+    /// The child writes `done` after its last output; waiting on that file never
+    /// takes the parser lock a blocked event loop may hold.
+    fn burst(id: u64, marker: &str, done: &std::path::Path) -> Terminal {
+        Terminal::new(
+            id,
+            Settings {
+                backend: BackendSettings {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        format!(
+                            "i=0; while [ $i -lt 150 ]; do printf 'line %s\\r\\n' $i; sleep 0.005; i=$((i+1)); done; printf '{marker}\\r\\n'; : > '{}'; sleep 30",
+                            done.display()
+                        ),
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn stalled_redraws_coalesce_per_terminal_and_show_latest_output() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let markers = ["BURST_A_DONE", "BURST_B_DONE"];
+        let done: Vec<_> = markers
+            .iter()
+            .map(|m| fixtures.join(format!("{m}-{}", std::process::id())))
+            .collect();
+        for path in &done {
+            let _ = std::fs::remove_file(path);
+        }
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut terminals = [
+            burst(930_101, markers[0], &done[0]),
+            burst(930_102, markers[1], &done[1]),
+        ];
+        let mut streams: Vec<_> = terminals.iter().map(events_for).collect();
+        // Nobody consumes events while both bursts run, like a slow renderer.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !done.iter().all(|path| path.exists()) {
+            if std::time::Instant::now() > deadline {
+                // A blocked event loop could also block Terminal's drop.
+                std::mem::forget(terminals);
+                std::mem::forget(streams);
+                panic!(
+                    "bursts did not finish while redraw events were unconsumed"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for path in &done {
+            let _ = std::fs::remove_file(path);
+        }
+        for ((terminal, events), marker) in
+            terminals.iter_mut().zip(streams.iter_mut()).zip(markers)
+        {
+            let mut redraws = 0;
+            while let Ok(Some(Event::BackendCall(id, command))) = runtime
+                .block_on(async {
+                    tokio::time::timeout(
+                        Duration::from_millis(300),
+                        events.next(),
+                    )
+                    .await
+                })
+            {
+                assert_eq!(id, terminal.id, "events stay with their terminal");
+                if matches!(
+                    command,
+                    backend::Command::ProcessAlacrittyEvent(
+                        AlacrittyEvent::Wakeup
+                            | AlacrittyEvent::MouseCursorDirty
+                    )
+                ) {
+                    redraws += 1;
+                }
+                terminal.handle(Command::ProxyToBackend(command));
+            }
+            assert!(redraws <= 2, "{marker}: {redraws} queued redraws");
+            assert!(rendered(terminal).contains(marker), "{marker} not drawn");
+        }
+    }
 }

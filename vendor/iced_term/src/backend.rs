@@ -19,6 +19,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::io::Result;
 use std::ops::{Index, RangeInclusive};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -139,6 +140,7 @@ pub struct Backend {
     size: TerminalSize,
     notifier: Notifier,
     last_content: RenderableContent,
+    redraw_pending: Arc<AtomicBool>,
     pub(crate) url_regex: RegexSearch,
 }
 
@@ -172,7 +174,11 @@ impl Backend {
         #[cfg(windows)]
         let child_pid = pty.child_watcher().pid().map(|pid| pid.get());
 
-        let event_proxy = EventProxy(pty_event_proxy_sender);
+        let redraw_pending = Arc::new(AtomicBool::new(false));
+        let event_proxy = EventProxy {
+            sender: pty_event_proxy_sender,
+            redraw_pending: redraw_pending.clone(),
+        };
 
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
 
@@ -204,6 +210,7 @@ impl Backend {
             size: terminal_size,
             notifier,
             last_content: initial_content,
+            redraw_pending,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
         })
     }
@@ -215,6 +222,11 @@ impl Backend {
         match cmd {
             Command::ProcessAlacrittyEvent(event) => {
                 match event {
+                    // Cleared before the caller syncs, so output that arrives
+                    // after this sync queues a fresh Wakeup.
+                    Event::Wakeup | Event::MouseCursorDirty => {
+                        self.redraw_pending.store(false, Ordering::Release);
+                    },
                     Event::Exit => {
                         action = Action::Shutdown;
                     },
@@ -668,11 +680,28 @@ impl Drop for Backend {
     }
 }
 
+/// Forwards terminal events in order. Redraw-only events are coalesced: while
+/// one Wakeup is queued and not yet handled, further Wakeup and MouseCursorDirty
+/// events are dropped, because handling that Wakeup syncs the latest screen.
+/// Without this, every echoed character queues two events and a slow renderer
+/// throttles the PTY reader to one bounded batch per frame.
 #[derive(Clone)]
-pub struct EventProxy(mpsc::Sender<Event>);
+pub struct EventProxy {
+    sender: mpsc::Sender<Event>,
+    redraw_pending: Arc<AtomicBool>,
+}
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
-        let _ = self.0.blocking_send(event);
+        let event = match event {
+            Event::Wakeup | Event::MouseCursorDirty => {
+                if self.redraw_pending.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+                Event::Wakeup
+            },
+            event => event,
+        };
+        let _ = self.sender.blocking_send(event);
     }
 }
