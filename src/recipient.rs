@@ -1,6 +1,7 @@
 //! Local recipient fences. These preconditions never establish prompt readiness.
 use crate::identity::{self, AgentIdentity, AgentRecord, Provider};
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 fn processes(pids: &[u32]) -> sysinfo::System {
@@ -14,10 +15,45 @@ fn processes(pids: &[u32]) -> sysinfo::System {
     system
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ProcessFence {
     pid: u32,
     generation: String,
+}
+
+/// Persisted address, never permission to write. Only a live recipient can verify it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientAddress {
+    terminal_id: u64,
+    identity: AgentIdentity,
+    launcher: ProcessFence,
+    agent: ProcessFence,
+}
+
+impl RecipientAddress {
+    pub fn terminal_id(&self) -> u64 {
+        self.terminal_id
+    }
+
+    pub fn identity(&self) -> &AgentIdentity {
+        &self.identity
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.terminal_id == u64::MAX
+            || self.identity.session_id.is_nil()
+            || self.identity.instance_id.is_nil()
+            || !self.identity.project_directory.is_absolute()
+            || self.identity.os.is_empty()
+            || self.identity.os.len() > 32
+            || [&self.launcher, &self.agent].iter().any(|process| {
+                process.pid == 0 || process.generation.is_empty() || process.generation.len() > 256
+            })
+        {
+            bail!("invalid terminal recipient address");
+        }
+        Ok(())
+    }
 }
 
 impl ProcessFence {
@@ -119,6 +155,28 @@ impl TerminalRecipient {
                 .and_then(|p| p.parent())
                 .is_some_and(|pid| pid.as_u32() == self.launcher.pid)
             && self.launcher.is_live(&processes(&[self.launcher.pid]))
+    }
+
+    pub fn address(&self, terminal_id: u64) -> Option<RecipientAddress> {
+        if !self.verify() {
+            return None;
+        }
+        let agent = self.agent.as_ref()?;
+        let address = RecipientAddress {
+            terminal_id,
+            identity: agent.identity.clone(),
+            launcher: self.launcher.clone(),
+            agent: ProcessFence {
+                pid: agent.pid,
+                generation: agent.process_generation.clone(),
+            },
+        };
+        address.validate().ok()?;
+        Some(address)
+    }
+
+    pub fn matches_address(&self, address: &RecipientAddress) -> bool {
+        self.address(address.terminal_id).as_ref() == Some(address)
     }
 
     pub fn note_human_input(&mut self) {
