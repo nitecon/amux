@@ -7,3 +7,6 @@ pub mod recipient;
 pub mod session;
 #[cfg(feature = "desktop")]
 pub mod submission;
+
+#[cfg(target_os = "linux")]
+pub mod terminal_lifetime;

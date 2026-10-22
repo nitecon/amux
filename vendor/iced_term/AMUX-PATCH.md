@@ -16,6 +16,10 @@ instead of the printable character Q (0x51).
 Terminal color queries now receive the configured palette color, and text-area
 size queries receive the current native pixel dimensions. These replies use the
 existing PTY response path without scrolling or accessing the clipboard.
+The native event loop enables Alacritty's bounded final PTY read on child exit.
+Without it, exit notification can win the event ordering and discard the child's
+final reply before the parser sees it. The existing checked-input/closed-channel
+test exercises this ordering; no sleep or longer timeout substitutes for draining.
 The normalized Cargo manifest omits the upstream README field because that
 file is not bundled here. All other source files are unchanged.
 
@@ -45,8 +49,9 @@ establish provider readiness. The optional ignored root test
 unsubmitted input and clearing through the native event stream; it never sends
 Enter or submits a model turn.
 It also verifies that typing the placeholder and moving to Home cannot pass the
-provisional native prompt profile. The profile is not connected to automatic
-desktop reminder submission. The separate opt-in `provider_turn_contract` test
+provisional native prompt profile. The desktop uses this profile for explicitly
+selected, consenting-agent task reminders; automatic assignment/recovery remains
+incomplete. The separate opt-in `provider_turn_contract` test
 submits one real no-tools/no-files reply request to check busy/continuation and
 the durable checked-input coordinator; it is ignored in normal tests and CI.
 

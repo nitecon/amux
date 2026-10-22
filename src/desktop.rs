@@ -66,6 +66,9 @@ struct Reminders {
 struct Tab {
     id: u64,
     title: String,
+    // Fields drop in declaration order: request owned-job retirement before the PTY drops.
+    #[cfg(target_os = "linux")]
+    lifetime: Option<amux::terminal_lifetime::TerminalLifetime>,
     terminal: Option<Terminal>,
     provider: Option<Provider>,
     recipient: Option<TerminalRecipient>,
@@ -184,6 +187,8 @@ impl Desktop {
                             id: tab.id,
                             title: tab.title,
                             provider: tab.provider,
+                            #[cfg(target_os = "linux")]
+                            lifetime: None,
                             terminal: None,
                             recipient: None,
                             reminders: Reminders::default(),
@@ -296,6 +301,8 @@ impl Desktop {
                     return Tab {
                         id,
                         title: format!("Launch failed: {e}"),
+                        #[cfg(target_os = "linux")]
+                        lifetime: None,
                         terminal: None,
                         provider: Some(provider),
                         recipient: None,
@@ -335,12 +342,25 @@ impl Desktop {
             },
         ) {
             Ok(terminal) => {
+                #[cfg(target_os = "linux")]
+                let lifetime = terminal.child_pid().and_then(|pid| {
+                    match amux::terminal_lifetime::TerminalLifetime::capture(pid) {
+                        Ok(lifetime) => Some(lifetime),
+                        Err(error) => {
+                            self.status =
+                                format!("Terminal cleanup ownership unavailable: {error}");
+                            None
+                        }
+                    }
+                });
                 let recipient = provider.and_then(|provider| {
                     TerminalRecipient::new(terminal.child_pid()?, provider, directory).ok()
                 });
                 Tab {
                     id,
                     title,
+                    #[cfg(target_os = "linux")]
+                    lifetime,
                     terminal: Some(terminal),
                     provider,
                     recipient,
@@ -352,6 +372,8 @@ impl Desktop {
                 Tab {
                     id,
                     title: format!("{title} — launch failed"),
+                    #[cfg(target_os = "linux")]
+                    lifetime: None,
                     terminal: None,
                     provider,
                     recipient: None,
@@ -510,6 +532,10 @@ impl Desktop {
                                         tab.title = title
                                     }
                                     iced_term::actions::Action::Shutdown => {
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            tab.lifetime.take();
+                                        }
                                         tab.terminal = None;
                                         tab.recipient = None;
                                         tab.reminders.consent = false;
@@ -1034,6 +1060,8 @@ mod tests {
                 tabs: vec![Tab {
                     id,
                     title: "stopped".into(),
+                    #[cfg(target_os = "linux")]
+                    lifetime: None,
                     terminal: None,
                     provider: Some(Provider::Codex),
                     recipient: None,

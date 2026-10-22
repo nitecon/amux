@@ -34,6 +34,9 @@ fn server(replies: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Request
                     Err(e) => panic!("accept: {e}"),
                 }
             };
+            // Windows accepted sockets can inherit the listener's nonblocking mode.
+            // Only accept is polled; request reads use the bounded blocking timeout.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
