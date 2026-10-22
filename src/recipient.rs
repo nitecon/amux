@@ -1,0 +1,163 @@
+//! Local recipient fences. These preconditions never establish prompt readiness.
+use crate::identity::{self, AgentIdentity, AgentRecord, Provider};
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
+
+fn processes(pids: &[u32]) -> sysinfo::System {
+    let pids: Vec<_> = pids.iter().copied().map(sysinfo::Pid::from_u32).collect();
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&pids),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    system
+}
+
+#[derive(Debug, Clone)]
+struct ProcessFence {
+    pid: u32,
+    generation: String,
+}
+
+impl ProcessFence {
+    fn capture(pid: u32) -> Result<Self> {
+        Ok(Self {
+            pid,
+            generation: identity::process_generation(pid)?,
+        })
+    }
+
+    fn is_live(&self, system: &sysinfo::System) -> bool {
+        system
+            .process(sysinfo::Pid::from_u32(self.pid))
+            .is_some_and(|process| {
+                !matches!(
+                    process.status(),
+                    sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead
+                )
+            })
+            && identity::process_generation(self.pid)
+                .is_ok_and(|generation| generation == self.generation)
+    }
+}
+
+/// Ephemeral, exact terminal launch binding. A bound recipient never changes.
+pub struct TerminalRecipient {
+    launcher: ProcessFence,
+    provider: Provider,
+    project: PathBuf,
+    agent: Option<AgentRecord>,
+    input_epoch: u64,
+    consent_epoch: u64,
+    consent: bool,
+}
+
+/// Invalidated by human input, consent changes, process exit or generation change.
+/// This is not a readiness proof or a terminal-write permission by itself.
+pub struct RecipientCheckpoint {
+    identity: AgentIdentity,
+    input_epoch: u64,
+    consent_epoch: u64,
+}
+
+impl TerminalRecipient {
+    pub fn new(launcher_pid: u32, provider: Provider, project: &Path) -> Result<Self> {
+        Ok(Self {
+            launcher: ProcessFence::capture(launcher_pid)?,
+            provider,
+            project: project.canonicalize()?,
+            agent: None,
+            input_epoch: 0,
+            consent_epoch: 0,
+            consent: false,
+        })
+    }
+
+    /// Bind only a live registered agent directly owned by this terminal's launcher.
+    /// Failed/stale bindings are never retargeted to a later registration.
+    pub fn resolve(&mut self, registry: &Path) -> Result<&AgentIdentity> {
+        if self.agent.is_none() {
+            let records = identity::live_agents(registry)?;
+            let mut pids: Vec<_> = records.iter().map(|r| r.pid).collect();
+            pids.push(self.launcher.pid);
+            let system = processes(&pids);
+            if !self.launcher.is_live(&system) {
+                bail!("terminal launcher is no longer live");
+            }
+            let mut candidates = records.into_iter().filter(|record| {
+                record.identity.provider == self.provider
+                    && record.identity.project_directory == self.project
+                    && system
+                        .process(sysinfo::Pid::from_u32(record.pid))
+                        .and_then(|p| p.parent())
+                        .is_some_and(|pid| pid.as_u32() == self.launcher.pid)
+            });
+            let record = candidates
+                .next()
+                .context("agent registration is not ready")?;
+            if candidates.next().is_some() {
+                bail!("terminal has an ambiguous agent registration");
+            }
+            self.agent = Some(record);
+        }
+        if !self.verify() {
+            bail!("bound terminal recipient is no longer live");
+        }
+        Ok(&self.agent.as_ref().unwrap().identity)
+    }
+
+    fn verify(&self) -> bool {
+        let Some(agent) = &self.agent else {
+            return false;
+        };
+        let system = processes(&[self.launcher.pid, agent.pid]);
+        self.launcher.is_live(&system)
+            && agent.is_live(&system)
+            && system
+                .process(sysinfo::Pid::from_u32(agent.pid))
+                .and_then(|p| p.parent())
+                .is_some_and(|pid| pid.as_u32() == self.launcher.pid)
+            && self.launcher.is_live(&processes(&[self.launcher.pid]))
+    }
+
+    pub fn note_human_input(&mut self) {
+        if let Some(next) = self.input_epoch.checked_add(1) {
+            self.input_epoch = next;
+        } else {
+            // Saturation cannot let an ancient checkpoint become current again.
+            self.consent = false;
+        }
+    }
+
+    pub fn set_consent(&mut self, enabled: bool) {
+        if let Some(next) = self.consent_epoch.checked_add(1) {
+            self.consent_epoch = next;
+            self.consent = enabled;
+        } else {
+            self.consent = false;
+        }
+    }
+
+    pub fn checkpoint(&self) -> Option<RecipientCheckpoint> {
+        if !self.consent || !self.verify() {
+            return None;
+        }
+        Some(RecipientCheckpoint {
+            identity: self.agent.as_ref()?.identity.clone(),
+            input_epoch: self.input_epoch,
+            consent_epoch: self.consent_epoch,
+        })
+    }
+
+    pub fn is_current(&self, checkpoint: &RecipientCheckpoint) -> bool {
+        self.consent
+            && self.input_epoch == checkpoint.input_epoch
+            && self.consent_epoch == checkpoint.consent_epoch
+            && self
+                .agent
+                .as_ref()
+                .is_some_and(|agent| agent.identity == checkpoint.identity)
+            && self.verify()
+    }
+}

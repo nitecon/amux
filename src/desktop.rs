@@ -1,4 +1,5 @@
 //! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
+use amux::recipient::TerminalRecipient;
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::{gateway::Gateway, identity::Provider};
 use iced::widget::{button, column, container, pane_grid, row, scrollable, text, text_input};
@@ -30,6 +31,7 @@ struct Tab {
     title: String,
     terminal: Option<Terminal>,
     provider: Option<Provider>,
+    recipient: Option<TerminalRecipient>,
 }
 struct Pane {
     tabs: Vec<Tab>,
@@ -122,6 +124,7 @@ impl Desktop {
                             title: tab.title,
                             provider: tab.provider,
                             terminal: None,
+                            recipient: None,
                         }
                     })
                     .collect(),
@@ -229,6 +232,7 @@ impl Desktop {
                         title: format!("Launch failed: {e}"),
                         terminal: None,
                         provider: Some(provider),
+                        recipient: None,
                     };
                 }
             }
@@ -263,12 +267,18 @@ impl Desktop {
                 ..Default::default()
             },
         ) {
-            Ok(terminal) => Tab {
-                id,
-                title,
-                terminal: Some(terminal),
-                provider,
-            },
+            Ok(terminal) => {
+                let recipient = provider.and_then(|provider| {
+                    TerminalRecipient::new(terminal.child_pid()?, provider, directory).ok()
+                });
+                Tab {
+                    id,
+                    title,
+                    terminal: Some(terminal),
+                    provider,
+                    recipient,
+                }
+            }
             Err(error) => {
                 self.status = format!("Terminal launch failed: {error}");
                 Tab {
@@ -276,6 +286,7 @@ impl Desktop {
                     title: format!("{title} — launch failed"),
                     terminal: None,
                     provider,
+                    recipient: None,
                 }
             }
         }
@@ -408,6 +419,14 @@ impl Desktop {
                 for workspace in &mut self.workspaces {
                     for (_, pane) in workspace.panes.iter_mut() {
                         if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id) {
+                            if matches!(
+                                &command,
+                                iced_term::BackendCommand::Write(_)
+                                    | iced_term::BackendCommand::MouseReport(..)
+                            ) && let Some(recipient) = &mut tab.recipient
+                            {
+                                recipient.note_human_input();
+                            }
                             if let Some(terminal) = &mut tab.terminal {
                                 match terminal.handle(iced_term::Command::ProxyToBackend(command)) {
                                     iced_term::actions::Action::ChangeTitle(title) => {
@@ -415,6 +434,7 @@ impl Desktop {
                                     }
                                     iced_term::actions::Action::Shutdown => {
                                         tab.terminal = None;
+                                        tab.recipient = None;
                                         tab.title.push_str(" · exited");
                                     }
                                     _ => {}

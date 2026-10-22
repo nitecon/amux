@@ -36,7 +36,7 @@ jobs:
       - name: Check desktop and CLI
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Native terminal adapter tests
-        run: cargo test --locked --test terminal_contract
+        run: cargo test --locked --test terminal_contract --test recipient_contract
       - name: Native release build
         run: cargo build --locked --release --target ${{ matrix.target }} --bin amux
       - name: Prepare review bundle
