@@ -87,11 +87,16 @@ fn a_stalled_service_never_blocks_the_caller() {
         "accepted {accepted}"
     );
     assert_eq!(accepted + dropped, QUEUE * 3);
+    // Release one attempt at a time: releasing all at once can finish more
+    // attempts than the bounded outcome buffer keeps unread.
     for _ in 0..accepted {
         release.send(()).unwrap();
+        let outcomes = wait_for(&notifier, 1);
+        assert!(
+            matches!(outcomes.as_slice(), [Outcome::Shown { .. }]),
+            "{outcomes:?}"
+        );
     }
-    let outcomes = wait_for(&notifier, accepted);
-    assert!(outcomes.iter().all(|o| matches!(o, Outcome::Shown { .. })));
 }
 
 #[test]
