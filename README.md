@@ -19,11 +19,16 @@ complete CMUX parity or a final stack selection. See the [MVP plan](docs/mvp.md)
 With Rust 1.96.1 installed:
 
 ```sh
-cargo run -- --project-dir /path/to/project desktop
+cargo build --bins                                   # amux (CLI) and amux-desktop (GUI)
+target/debug/amux-desktop --project-dir /path/to/project
 cargo run -- agent codex
 cargo run -- whoami
 cargo test --no-default-features --tests
 ```
+
+`amux-desktop` opens the desktop without a console window on Windows. Agent tabs
+always run the `amux` CLI next to it, so keep both binaries together;
+`amux --project-dir ... desktop` opens the same desktop from a console.
 
 `whoami` runs inside an amux-launched agent and prints that execution's inherited
 identity. `cargo run -- agents` lists live launches. Provider commands must already

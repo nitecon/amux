@@ -12,9 +12,11 @@ Passing CI is not desktop, provider or graphics acceptance.
 The artifact target is x86_64-pc-windows-msvc, built on Windows Server 2025 CI.
 The requested desktop review target is native Windows 11 x64. Windows 10,
 ARM64, hardware graphics and provider runtime compatibility are not yet verified.
-Extract the complete artifact to a writable directory. Verify the executable
-hash with `Get-FileHash .\amux.exe -Algorithm SHA256` against SHA256SUMS and
-BUILD.json. A missing Microsoft C/C++ runtime is a packaging finding; do not
+Extract the complete artifact to a writable directory. It contains two
+executables: `amux.exe`, the console CLI, and `amux-desktop.exe`, the desktop
+without a console window. Verify both with `Get-FileHash .\amux.exe,
+.\amux-desktop.exe -Algorithm SHA256` against SHA256SUMS. BUILD.json records
+them as `binary_sha256` and `gui_binary_sha256`. A missing Microsoft C/C++ runtime is a packaging finding; do not
 report a successful native run if only compilation passed.
 
 From PowerShell in the extracted directory:
@@ -22,8 +24,14 @@ From PowerShell in the extracted directory:
 ```powershell
 .\amux.exe --version
 .\amux.exe --help
-.\amux.exe --project-dir C:\path\to\project desktop
+.\amux-desktop.exe --project-dir C:\path\to\project
 ```
+
+`amux-desktop.exe` can also be started from Explorer; it then opens the current
+directory. Keep both executables in the same directory. Agent tabs always run
+`amux.exe agent ...` beside it, so agents keep a console CLI; if `amux.exe` is
+missing, the tab shows a launch error instead. `.\amux.exe ... desktop` still
+opens the same desktop from a console.
 
 Shell defaults to native COMSPEC/cmd.exe, with ConPTY. WSL is not required.
 Codex and Claude buttons require their official native commands on PATH;
@@ -33,15 +41,18 @@ or `agent claude`. Flags after `--` are forwarded as literal arguments.
 
 If the graphics backend fails, record that failure, then separately try the
 software path with `$env:ICED_BACKEND = 'tiny-skia'`. A software-path pass does
-not establish hardware graphics acceptance. The executable also exposes a CLI,
-so launch it from a terminal for this candidate; GUI-only entry-point packaging
-has not been completed.
+not establish hardware graphics acceptance. `amux-desktop.exe` has no console,
+so its startup errors are not visible; if it fails to open, run
+`.\amux.exe --project-dir C:\path\to\project desktop` from PowerShell to see
+the error. There is no installer, Start menu entry or icon yet.
 
 ## Linux bundle
 
 The x86_64-unknown-linux-gnu artifact is built on Ubuntu 24.04. It is an initial
-review artifact, not a Debian 12 portability promise. Run `chmod +x ./amux`,
-then `./amux --project-dir /path/to/project desktop`. A native X11/Wayland display
+review artifact, not a Debian 12 portability promise. Run
+`chmod +x ./amux ./amux-desktop`, then `./amux-desktop --project-dir
+/path/to/project` (or `./amux --project-dir /path/to/project desktop`). Keep both
+binaries in one directory; agent tabs run the sibling `amux`. A native X11/Wayland display
 and system graphics/font libraries are required. The Linux owning session also
 ran an isolated Xvfb/software-renderer smoke; that is not equivalent to IME,
 accessibility or hardware acceptance on a user's desktop.

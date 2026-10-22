@@ -1,3 +1,4 @@
+pub mod cli_path;
 pub mod delivery;
 pub mod gateway;
 pub mod identity;

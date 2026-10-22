@@ -287,7 +287,7 @@ impl Desktop {
         // A shell is not registered as an agent. Explicit launches go through the
         // same wrapper as the CLI, which allocates a distinct execution identity.
         if let Some(provider) = provider {
-            match std::env::current_exe() {
+            match std::env::current_exe().and_then(|exe| amux::cli_path::cli_beside(&exe)) {
                 Ok(exe) => {
                     backend.program = exe.display().to_string();
                     backend.args = vec![

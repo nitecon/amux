@@ -18,9 +18,11 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             binary: amux
+            gui: amux-desktop
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             binary: amux.exe
+            gui: amux-desktop.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -39,25 +41,31 @@ jobs:
         run: cargo test --locked --bin amux --test terminal_contract --test recipient_contract --test terminal_lifecycle_contract --test windows_terminal_lifecycle_contract
       - name: Native terminal protocol tests
         run: cargo test --locked -p iced_term amux_tests
+      - name: CLI and GUI entry tests
+        run: cargo test --locked --test entry_contract
       - name: Native release build
-        run: cargo build --locked --release --target ${{ matrix.target }} --bin amux
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin amux --bin amux-desktop
       - name: Prepare review bundle
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force bundle | Out-Null
           Copy-Item 'target/${{ matrix.target }}/release/${{ matrix.binary }}' bundle/
+          Copy-Item 'target/${{ matrix.target }}/release/${{ matrix.gui }}' bundle/
           Copy-Item docs/windows-review.md bundle/REVIEW.md
           Copy-Item LICENSE bundle/
           Copy-Item vendor/iced_term/LICENSE bundle/ICED_TERM_LICENSE
-          $binary = 'bundle/${{ matrix.binary }}'
-          $hash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.binary }}" | Set-Content bundle/SHA256SUMS -Encoding utf8
+          # binary_sha256 stays the CLI hash for existing reviewers.
+          $hash = (Get-FileHash 'bundle/${{ matrix.binary }}' -Algorithm SHA256).Hash.ToLower()
+          $gui = (Get-FileHash 'bundle/${{ matrix.gui }}' -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.binary }}", "$gui  ${{ matrix.gui }}" | Set-Content bundle/SHA256SUMS -Encoding utf8
           $metadata = @{
             revision = '${{ github.sha }}'
             target = '${{ matrix.target }}'
             runner = '${{ matrix.os }}'
             rustc = (rustc --version)
             binary_sha256 = $hash
+            gui_binary = '${{ matrix.gui }}'
+            gui_binary_sha256 = $gui
             candidate_only = $true
             native_runtime_acceptance = 'pending CMUX platform review'
           }

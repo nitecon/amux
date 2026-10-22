@@ -10,6 +10,13 @@ description = "Local agent terminals and gateway task coordination"
 default = ["desktop"]
 desktop = ["dep:iced", "dep:iced_term"]
 
+# GUI entry point: no Windows console. Desktop tests already run in the CLI binary.
+[[bin]]
+name = "amux-desktop"
+path = "src/bin/amux-desktop.rs"
+required-features = ["desktop"]
+test = false
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
