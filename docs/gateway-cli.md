@@ -33,6 +33,22 @@ publication uncertain: inspect the thread list before manually retrying. The
 client does not retry publication or promise request deduplication. Encoded
 inline messages are limited to 1 MiB and responses to 4 MiB.
 
-Use `amux tasks --help` for the existing task operations. Task cancellation is
-pending a gateway contract that preserves the task and reporting actor; deleting
-a task is not cancellation. Terminal reminder injection remains disabled.
+Use `amux tasks --help` for the existing task operations. Creation succeeds only
+when the reply identifies a canonical, non-nil task UUID in the requested project
+with a known task status. Empty, malformed or mismatched replies leave acceptance
+uncertain: fetch tasks before retrying. The client does not retry creation or
+establish server request deduplication.
+
+A claim must acknowledge the requested task UUID and project as well as the exact
+session and instance as owner. Claim acknowledgment does not report execution
+start. Task reads and updates also require the requested task and project;
+updates must acknowledge the requested status. Comments require a canonical
+comment UUID attached to the requested task, including explicit start reports
+which are currently ordinary comments. Ambiguous replies leave the operation
+unconfirmed and are not retried. Task cancellation is pending a gateway contract
+that preserves the task and reporting actor; deleting a task is not cancellation.
+
+Desktop reminder input currently requires explicit task selection and consent
+with the supported Linux/Codex profile; see
+[reminder validation](reminder-validation.md). Automatic routing and recovery,
+Claude readiness and native Windows reminder input remain incomplete.

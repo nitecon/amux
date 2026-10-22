@@ -93,6 +93,7 @@ fn reply(status: u16, body: &Value) -> Vec<u8> {
 fn owned_by(actor: &AgentIdentity) -> Value {
     json!({
         "id": TASK,
+        "project_ident": "demo",
         "status": "in_progress",
         "owner_origin": {
             "session_id": actor.session_id.to_string(),
@@ -176,7 +177,175 @@ fn claim_succeeds_only_when_the_gateway_acknowledges_this_exact_execution() {
             .block_on(gateway.claim("demo", "01a164c4", &actor))
             .is_err()
     );
+    assert!(
+        runtime
+            .block_on(gateway.claim("demo", &uuid::Uuid::nil().to_string(), &actor))
+            .is_err()
+    );
     assert_eq!(server.join().unwrap().len(), refusals.len(), "no retries");
+}
+
+#[test]
+fn task_creation_requires_a_canonical_task_in_the_requested_project() {
+    let actor = agent(Provider::Codex);
+    let accepted = json!({"id":TASK,"project_ident":"demo","status":"todo"});
+    let mut wrong_project = accepted.clone();
+    wrong_project["project_ident"] = json!("peer-project");
+    let mut nil_id = accepted.clone();
+    nil_id["id"] = json!(uuid::Uuid::nil().to_string());
+    let mut invalid_id = accepted.clone();
+    invalid_id["id"] = json!("not-a-task-UUID");
+    let mut missing_id = accepted.clone();
+    missing_id.as_object_mut().unwrap().remove("id");
+    let mut missing_project = accepted.clone();
+    missing_project
+        .as_object_mut()
+        .unwrap()
+        .remove("project_ident");
+    let mut unknown_status = accepted.clone();
+    unknown_status["status"] = json!("accepted-somewhere");
+    let refusals = [
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        reply(200, &Value::Null),
+        reply(200, &wrong_project),
+        reply(200, &nil_id),
+        reply(200, &invalid_id),
+        reply(200, &missing_id),
+        reply(200, &missing_project),
+        reply(200, &unknown_status),
+    ];
+    let mut replies = refusals.to_vec();
+    replies.push(reply(201, &accepted));
+    let (url, server) = server(replies);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let body = json!({"title":"handoff title","specification":"literal\nreview context"});
+    for _ in 0..refusals.len() {
+        let result = runtime.block_on(gateway.request(
+            Method::POST,
+            "demo",
+            &[],
+            Some(body.clone()),
+            Some(&actor),
+        ));
+        assert!(
+            result.is_err(),
+            "creation acceptance is unproven: {result:?}"
+        );
+    }
+    assert_eq!(
+        runtime
+            .block_on(gateway.request(Method::POST, "demo", &[], Some(body.clone()), Some(&actor),))
+            .unwrap(),
+        accepted
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(
+        requests.len(),
+        refusals.len() + 1,
+        "never retry uncertain creation"
+    );
+    assert!(requests.iter().all(|request| request.body == body));
+}
+
+#[test]
+fn a_matching_owner_cannot_acknowledge_a_different_task_or_project() {
+    let actor = agent(Provider::Codex);
+    let mut wrong_task = owned_by(&actor);
+    wrong_task["id"] = json!(uuid::Uuid::new_v4().to_string());
+    let mut missing_task = owned_by(&actor);
+    missing_task.as_object_mut().unwrap().remove("id");
+    let mut wrong_project = owned_by(&actor);
+    wrong_project["project_ident"] = json!("peer-project");
+    let mut missing_project = owned_by(&actor);
+    missing_project
+        .as_object_mut()
+        .unwrap()
+        .remove("project_ident");
+    let replies: Vec<_> = [wrong_task, missing_task, wrong_project, missing_project]
+        .iter()
+        .map(|body| reply(200, body))
+        .collect();
+    let count = replies.len();
+    let (url, server) = server(replies);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for _ in 0..count {
+        let result = runtime.block_on(gateway.claim("demo", TASK, &actor));
+        assert!(
+            result.is_err(),
+            "owner alone does not identify the task: {result:?}"
+        );
+    }
+    assert_eq!(server.join().unwrap().len(), count, "no blind claim retry");
+}
+
+#[test]
+fn task_reads_updates_and_comments_require_the_requested_resource() {
+    let actor = agent(Provider::Codex);
+    let task = json!({"id":TASK,"project_ident":"demo","status":"done"});
+    let mut wrong_task = task.clone();
+    wrong_task["id"] = json!(uuid::Uuid::new_v4().to_string());
+    let mut wrong_project = task.clone();
+    wrong_project["project_ident"] = json!("peer-project");
+    let mut wrong_status = task.clone();
+    wrong_status["status"] = json!("in_progress");
+    let comment = json!({"id":uuid::Uuid::new_v4().to_string(),"task_id":TASK,"content":"context"});
+    let mut wrong_parent = comment.clone();
+    wrong_parent["task_id"] = json!(uuid::Uuid::new_v4().to_string());
+    let mut missing_comment = comment.clone();
+    missing_comment.as_object_mut().unwrap().remove("id");
+    let replies = vec![
+        reply(200, &wrong_task),
+        reply(200, &wrong_project),
+        reply(200, &task),
+        reply(200, &wrong_task),
+        reply(200, &wrong_status),
+        reply(200, &task),
+        reply(200, &wrong_parent),
+        reply(200, &missing_comment),
+        reply(200, &comment),
+    ];
+    let (url, server) = server(replies);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for method in [Method::GET, Method::PATCH, Method::POST] {
+        let (suffix, body) = if method == Method::POST {
+            (vec![TASK, "comments"], Some(json!({"content":"context"})))
+        } else if method == Method::PATCH {
+            (vec![TASK], Some(json!({"status":"done"})))
+        } else {
+            (vec![TASK], None)
+        };
+        for _ in 0..2 {
+            let result = runtime.block_on(gateway.request(
+                method.clone(),
+                "demo",
+                &suffix,
+                body.clone(),
+                Some(&actor),
+            ));
+            assert!(
+                result.is_err(),
+                "reply did not identify the requested resource/state: {result:?}"
+            );
+        }
+        assert_eq!(
+            runtime
+                .block_on(gateway.request(method.clone(), "demo", &suffix, body, Some(&actor)))
+                .unwrap(),
+            if method == Method::POST {
+                comment.clone()
+            } else {
+                task.clone()
+            }
+        );
+    }
+    assert_eq!(
+        server.join().unwrap().len(),
+        9,
+        "no retry on ambiguous responses"
+    );
 }
 
 #[test]

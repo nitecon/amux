@@ -45,11 +45,57 @@ impl Gateway {
         body: Option<Value>,
         actor: Option<&AgentIdentity>,
     ) -> Result<Value> {
+        let creating_task = method == Method::POST && suffix.is_empty();
+        let task_resource = suffix.len() == 1 && (method == Method::GET || method == Method::PATCH);
+        let posting_comment =
+            method == Method::POST && suffix.len() == 2 && suffix[1] == "comments";
+        let requested_status = if method == Method::PATCH {
+            body.as_ref().and_then(|body| body.get("status")).cloned()
+        } else {
+            None
+        };
         let path: Vec<_> = std::iter::once("tasks")
             .chain(suffix.iter().copied())
             .collect();
-        self.project_request(method, project, &path, body, actor, &[])
-            .await
+        let result = self
+            .project_request(method, project, &path, body, actor, &[])
+            .await?;
+        if creating_task {
+            if canonical_id(&result["id"]).is_none()
+                || result["project_ident"] != project
+                || !matches!(
+                    result["status"].as_str(),
+                    Some("todo" | "in_progress" | "done")
+                )
+            {
+                bail!(
+                    "gateway did not acknowledge a canonical task in this project; acceptance is uncertain, fetch tasks before retrying"
+                );
+            }
+        } else if task_resource || posting_comment {
+            let expected = uuid::Uuid::parse_str(suffix[0])
+                .ok()
+                .filter(|id| !id.is_nil());
+            if posting_comment {
+                if expected.is_none()
+                    || canonical_id(&result["id"]).is_none()
+                    || canonical_id(&result["task_id"]) != expected
+                {
+                    bail!(
+                        "gateway did not acknowledge a canonical comment on the requested task; publication is uncertain, fetch the task before retrying"
+                    );
+                }
+            } else if expected.is_none()
+                || canonical_id(&result["id"]) != expected
+                || result["project_ident"] != project
+                || requested_status.is_some_and(|status| result["status"] != status)
+            {
+                bail!(
+                    "gateway did not identify the requested task/project/state; operation is unconfirmed, fetch the task before continuing"
+                );
+            }
+        }
+        Ok(result)
     }
 
     async fn project_request(
@@ -193,7 +239,10 @@ impl Gateway {
         Ok(result)
     }
     pub async fn claim(&self, project: &str, task: &str, actor: &AgentIdentity) -> Result<Value> {
-        uuid::Uuid::parse_str(task).context("task ID must be a complete UUID")?;
+        let task_id = uuid::Uuid::parse_str(task).context("task ID must be a complete UUID")?;
+        if task_id.is_nil() {
+            bail!("task ID must not be nil");
+        }
         let result = self
             .request(
                 Method::PATCH,
@@ -203,14 +252,21 @@ impl Gateway {
                 Some(actor),
             )
             .await?;
+        // request() already bound the reply to this task, project and status.
         if result["status"] != "in_progress"
             || result["owner_origin"]["session_id"] != actor.session_id.to_string()
             || result["owner_origin"]["instance_id"] != actor.instance_id.to_string()
         {
             bail!(
-                "gateway did not acknowledge this exact session/instance as owner; fetch the task before continuing"
+                "gateway did not acknowledge this exact session/instance as owner of the requested task/project; fetch the task before continuing"
             );
         }
         Ok(result)
     }
+}
+
+fn canonical_id(value: &Value) -> Option<uuid::Uuid> {
+    let text = value.as_str()?;
+    let id = uuid::Uuid::parse_str(text).ok()?;
+    (!id.is_nil() && id.to_string() == text).then_some(id)
 }
