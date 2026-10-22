@@ -213,6 +213,10 @@ impl Desktop {
             working_directory: Some(directory.into()),
             ..Default::default()
         };
+        // Describe this terminal, independently of the process that launched amux.
+        backend.env.insert("TERM".into(), "xterm-256color".into());
+        backend.env.insert("COLORTERM".into(), "truecolor".into());
+        backend.env.insert("TERM_PROGRAM".into(), "amux".into());
         // A shell is not registered as an agent. Explicit launches go through the
         // same wrapper as the CLI, which allocates a distinct execution identity.
         if let Some(provider) = provider {
@@ -551,7 +555,12 @@ impl Desktop {
             let mut tabs = row![].spacing(4);
             for (i, tab) in pane.tabs.iter().enumerate() { tabs = tabs.push(button(text(format!("{} {}", if pane.active == i { "●" } else { "" }, tab.title))).on_press(Message::SelectTab(id, i))); }
             let body: Element<'_, Message> = match pane.tabs.get(pane.active).and_then(|t| t.terminal.as_ref()) {
-                Some(terminal) => TerminalView::show(terminal).map(Message::Terminal),
+                Some(terminal) => {
+                    let id = terminal.id;
+                    let resize = move |size| Message::Terminal(iced_term::Event::BackendCall(id, iced_term::BackendCommand::Resize(Some(size), None)));
+                    iced::widget::Sensor::new(TerminalView::show(terminal).map(Message::Terminal))
+                        .key(id).on_show(resize).on_resize(resize).into()
+                },
                 None => container(text("Process stopped. Launch Shell, Codex or Claude explicitly; previous work is not restarted.")).padding(20).into(),
             };
             pane_grid::Content::new(body).title_bar(pane_grid::TitleBar::new(tabs).padding(4))

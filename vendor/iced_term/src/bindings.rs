@@ -228,7 +228,7 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         "r",        Modifiers::CTRL; BindingAction::Char('\x12');
         "s",        Modifiers::CTRL; BindingAction::Char('\x13');
         "t",        Modifiers::CTRL; BindingAction::Char('\x14');
-        "u",        Modifiers::CTRL; BindingAction::Char('\x51');
+        "u",        Modifiers::CTRL; BindingAction::Char('\x15');
         "v",        Modifiers::CTRL; BindingAction::Char('\x16');
         "w",        Modifiers::CTRL; BindingAction::Char('\x17');
         "x",        Modifiers::CTRL; BindingAction::Char('\x18');
@@ -296,7 +296,7 @@ fn default_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         "r",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x12');
         "s",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x13');
         "t",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x14');
-        "u",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x51');
+        "u",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x15');
         "v",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x16');
         "w",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x17');
         "x",        Modifiers::SHIFT | Modifiers::CTRL; BindingAction::Char('\x18');

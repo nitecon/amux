@@ -9,6 +9,10 @@ so `cargo fmt --all` checks the vendored source with its original formatting.
 The source is vendored so amux can use two small additions without modifying
 the Cargo registry: the initial native PTY child PID and a bounded live screen
 observation. Changes are in src/backend.rs, src/terminal.rs and src/lib.rs.
+The initial native PTY geometry also uses the font's cell size, preserving the
+default 80 by 50 grid during font synchronization before a widget resize arrives.
+src/bindings.rs corrects Ctrl+U and Ctrl+Shift+U to send the control byte 0x15
+instead of the printable character Q (0x51).
 The normalized Cargo manifest omits the upstream README field because that
 file is not bundled here. All other source files are unchanged.
 

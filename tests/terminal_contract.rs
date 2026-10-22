@@ -20,10 +20,6 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
         },
     )
     .unwrap();
-    terminal.handle(Command::ProxyToBackend(BackendCommand::Resize(
-        Some(iced::Size::new(800.0, 600.0)),
-        None,
-    )));
     let pid = terminal.child_pid().expect("native PTY child PID");
     let wait_for = |terminal: &Terminal, marker: &str| {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -41,6 +37,8 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
         }
     };
     let observation = wait_for(&terminal, &format!("AMUX_PID={pid}"));
+    assert_eq!(observation.lines.len(), 50);
+    assert_eq!(observation.lines[0].chars().count(), 80);
     assert_eq!(observation.display_offset, 0);
     assert!(observation.cursor_row >= 0);
     assert!(
@@ -50,7 +48,13 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
     terminal.handle(Command::ProxyToBackend(BackendCommand::Write(
         b"typed-marker\r".to_vec(),
     )));
-    wait_for(&terminal, "REPLY=typed-marker");
+    let observation = wait_for(&terminal, "REPLY=typed-marker");
+    assert_eq!(observation.lines.len(), 50, "font sync must preserve rows");
+    assert_eq!(
+        observation.lines[0].chars().count(),
+        80,
+        "font sync must preserve columns"
+    );
     terminal.handle(Command::ProxyToBackend(BackendCommand::Write(
         b"next\r".to_vec(),
     )));

@@ -44,6 +44,7 @@ impl Terminal {
         let (backend_event_tx, backend_event_rx) = mpsc::channel(100);
         let theme = Theme::new(settings.theme);
         let font = TermFont::new(settings.font);
+        let font_measure = font.measure;
 
         Ok(Self {
             id,
@@ -56,6 +57,7 @@ impl Terminal {
                 id,
                 backend_event_tx,
                 settings.backend,
+                font_measure,
             )?,
             backend_event_rx: Arc::new(Mutex::new(backend_event_rx)),
         })

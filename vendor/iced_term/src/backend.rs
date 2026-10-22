@@ -145,6 +145,7 @@ impl Backend {
         id: u64,
         pty_event_proxy_sender: mpsc::Sender<Event>,
         settings: BackendSettings,
+        font_measure: Size<f32>,
     ) -> Result<Self> {
         let pty_config = tty::Options {
             shell: Some(tty::Shell::new(settings.program, settings.args)),
@@ -154,7 +155,13 @@ impl Backend {
         };
 
         let config = term::Config::default();
-        let terminal_size = TerminalSize::default();
+        let mut terminal_size = TerminalSize::default();
+        terminal_size.cell_width = (font_measure.width as u16).max(1);
+        terminal_size.cell_height = (font_measure.height as u16).max(1);
+        terminal_size.layout_width =
+            terminal_size.num_cols as f32 * terminal_size.cell_width as f32;
+        terminal_size.layout_height =
+            terminal_size.num_lines as f32 * terminal_size.cell_height as f32;
         let pty = tty::new(&pty_config, terminal_size.into(), id)?;
         #[cfg(unix)]
         let child_pid = Some(pty.child().id());

@@ -234,12 +234,6 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
         let _ = child.wait();
         return Err(error);
     }
-    eprintln!(
-        "amux session={} instance={} provider={}",
-        actor.session_id,
-        actor.instance_id,
-        provider.command()
-    );
     let status = child.wait();
     let _ = std::fs::remove_file(path);
     let status = status?;
