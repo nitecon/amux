@@ -2,6 +2,7 @@ pub mod cli_path;
 pub mod delivery;
 pub mod gateway;
 pub mod identity;
+pub mod notifications;
 #[cfg(feature = "desktop")]
 pub mod readiness;
 pub mod recipient;
