@@ -68,3 +68,18 @@ text, cursor and styles as an empty prompt; the footer changes. This evidence
 does not establish a safe Claude readiness profile or busy/continuation behavior.
 Claude reminder input remains disabled. The compact local result is
 `artifacts/claude-native-input-evidence.json`.
+
+A separate opt-in Linux check launches two native Codex 0.163.0 sessions and one
+Claude 2.1.308 session concurrently in the same project:
+
+```sh
+cargo test --locked --test installed_three_agents_contract -- --ignored --nocapture
+```
+
+It checks distinct registered sessions, instances and agent processes, rejects
+peer recipient addresses, observes unsubmitted input only in its selected pane,
+then closes that pane while preserving both peers. It sends no Enter, model
+request or gateway mutation. Its compact local summary is
+`artifacts/three-installed-agents-evidence.json`. This is native PTY evidence;
+it does not establish GUI focus behavior, gateway claim/delegation acceptance,
+or Windows acceptance.
