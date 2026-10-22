@@ -8,12 +8,13 @@ capabilities, and uses agent-gateway as the authoritative
 task store and router between machines. Agents can hand work to agents on other
 machines, and that work survives the destination being offline or rebooting.
 
-Status: first native implementation candidate; the full MVP remains in progress.
+Status: native implementation candidate; the MVP is not complete.
 The provisional Rust/Iced terminal has local workspaces, tabs/splits, explicit
 Codex/Claude launches with separate session identities, layout recovery without
-automatic reruns, and a gateway task CLI/viewer. Safe automatic reminders,
-complete lifecycle/ownership acceptance and native Windows validation are pending.
-This is not complete CMUX parity or a final stack selection.
+automatic reruns, gateway task and message CLIs, and reminders to an explicitly
+selected task (Linux, Codex only). Automatic task routing, full lifecycle and
+ownership acceptance, and native Windows validation are pending. This is not
+complete CMUX parity or a final stack selection. See the [MVP plan](docs/mvp.md).
 
 With Rust 1.96.1 installed:
 
@@ -37,3 +38,10 @@ gateway configuration, platform limitations and feedback requirements.
   and acceptance scenarios.
 - [Tooling](docs/tooling.md): language, terminal engine, and UI candidates, and
   how they are evaluated.
+- [MVP plan](docs/mvp.md): milestones, closing criteria, reviewer evidence, and
+  remaining gates.
+- [Gateway CLI](docs/gateway-cli.md): task and inline message commands.
+- [Reminder validation](docs/reminder-validation.md): how terminal reminders are
+  gated and tested.
+- [Native review](docs/windows-review.md): bundle checks for Linux and Windows
+  reviewers.
