@@ -149,6 +149,32 @@ impl AgentIdentity {
     }
 }
 
+/// Known native executable layouts. A numeric filename alone is not a provider.
+pub(crate) fn native_provider(path: &Path) -> Option<Provider> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    match name {
+        "codex" => return Some(Provider::Codex),
+        "claude" => return Some(Provider::Claude),
+        _ => {}
+    }
+    // The native Claude installer resolves its public `claude` symlink to
+    // .../claude/versions/2.1.308. Inspect the real image, not argv[0], which
+    // ordinary subprocesses can choose independently of their executable.
+    let versions = path.parent()?;
+    let parts: Vec<_> = name.split('.').collect();
+    (versions.file_name()?.eq_ignore_ascii_case("versions")
+        && versions
+            .parent()?
+            .file_name()?
+            .eq_ignore_ascii_case("claude")
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+    .then_some(Provider::Claude)
+}
+
 fn executor_provider(process: &sysinfo::Process) -> Option<Provider> {
     let basename = |s: &std::ffi::OsStr| {
         Path::new(s)
@@ -157,13 +183,12 @@ fn executor_provider(process: &sysinfo::Process) -> Option<Provider> {
             .to_string_lossy()
             .to_ascii_lowercase()
     };
-    let executable = process
-        .exe()
-        .map(|p| basename(p.as_os_str()))
-        .unwrap_or_else(|| basename(process.name()));
+    let image = process.exe().unwrap_or_else(|| Path::new(process.name()));
+    if let Some(provider) = native_provider(image) {
+        return Some(provider);
+    }
+    let executable = basename(image.as_os_str());
     match executable.trim_end_matches(".exe") {
-        "codex" => Some(Provider::Codex),
-        "claude" => Some(Provider::Claude),
         "node" | "nodejs" => {
             // Codex's npm program is a launch shim; the Rust child is the executor.
             // Claude's Node CLI itself is the executor. Inspect known module paths,

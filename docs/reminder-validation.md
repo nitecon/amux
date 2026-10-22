@@ -53,3 +53,18 @@ busy deferral, continuation readiness, checked enqueueing and duplicate
 suppression. Its local summary is `artifacts/native-turn-evidence.json`.
 Neither check establishes cross-machine gateway handoff or platform acceptance.
 Normal tests and CI do not submit provider turns.
+
+The separate Claude input-only check requires installed, authenticated native
+Claude Code 2.1.308:
+
+```sh
+cargo test --locked --test claude_provider_contract -- --ignored --nocapture
+```
+
+It binds the real native installer image (`claude/versions/2.1.308`), types and
+clears input without Enter, and checks that partial text and whitespace defer.
+With `NO_COLOR=1`, typed placeholder text moved to Home has the same composer
+text, cursor and styles as an empty prompt; the footer changes. This evidence
+does not establish a safe Claude readiness profile or busy/continuation behavior.
+Claude reminder input remains disabled. The compact local result is
+`artifacts/claude-native-input-evidence.json`.

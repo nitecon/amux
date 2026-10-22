@@ -214,7 +214,7 @@ impl TerminalRecipient {
         }
         let executable = PathBuf::from(format!("/proc/{}/exe", agent.pid));
         let image_path = std::fs::read_link(&executable).ok()?;
-        if image_path.file_name()? != std::ffi::OsStr::new(self.provider.command()) {
+        if identity::native_provider(&image_path) != Some(self.provider) {
             return None;
         }
         let image = std::fs::metadata(&executable).ok()?;
