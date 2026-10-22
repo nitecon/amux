@@ -66,9 +66,12 @@ distinct identities for agents it launches.
 and L2 are fixed. Native CI covers bounded Linux terminal-session cleanup and
 Windows Job Object cleanup after enrollment. Late forks, abrupt desktop death,
 Windows children created before enrollment and complete native teardown
-acceptance remain open. A Linux probe launched two installed Codex agents and
-one Claude agent with distinct identities and isolated input; it does not prove
-GUI routing or gateway ownership. The Windows review covered the CLI, provider
+acceptance remain open. An optimized native Linux GUI probe launched two
+installed Codex agents and one Claude agent with three distinct identities.
+Unsubmitted input appeared only in the selected Codex tab; closing it preserved
+both peer process generations, and normal window close retired the remaining
+agents. This is local evidence, not gateway ownership or independent platform
+acceptance. The Windows review covered the CLI, provider
 launches and a responding window. Its interactive checks did not run because
 screen-control approval timed out.
 

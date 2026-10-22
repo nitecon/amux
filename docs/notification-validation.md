@@ -59,18 +59,24 @@ The native test points D-Bus at a nonexistent bus, so no notification appears
 on the developer's desktop. It shows the real Linux backend reports a missing
 service as `Failed` without blocking or panicking.
 
-At source `fc5bf4c`, an implementer ran the native Linux GUI on a private Xvfb
-display and private D-Bus session with Dunst. Opting in and exiting one shell
+At source `bcf2881`, an implementer ran the optimized native Linux GUI on a
+private Xvfb display and private D-Bus session with Dunst. Opting in and exiting one shell
 displayed a popup with literal `<b>literal</b> & safe` in its body; the footer
 reported service acceptance. The other shell retained its native process
 generation and executed a marker command, verified by a file in the repository.
+Its output and next prompt were visible without another keystroke.
 A separate native GUI run with no notification service showed the failure footer
 while preserving the peer shell. These checks used no gateway configuration or
 model turns. Probe scripts, screenshots and JSON evidence are under ignored
-`artifacts/notification-visible-gui/` and `artifacts/notification-gui/`.
-The same probe exposed a surviving terminal redraw issue after the other tab
-exits: output appears on the next keystroke. That remains a tracked GUI finding
-(`01a165c7-99fa`), so the notification result does not establish terminal acceptance.
+`artifacts/gui-regression-root/release-notify/` and `artifacts/notification-gui/`.
+
+Long echoed commands in debug software rendering can take several slow frames
+to become visible, including when no peer exits. Per-terminal redraw coalescing
+reduces the queued events; the native two-PTY burst test checks that unconsumed
+redraws stay bounded and the next handled event draws each terminal's own final
+marker (`cargo test --locked -p iced_term amux_tests`). Both the optimized
+baseline and current candidate rendered the original shell sequence within the
+probe's two-second observation. This does not establish a general latency bound.
 
 This is implementer evidence on Linux. Visible Windows notification behavior and
 independent CMUX platform acceptance remain open; unit tests and service

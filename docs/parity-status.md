@@ -1,6 +1,6 @@
 # Parity status
 
-Revision: amux `fc5bf4c` on `mvp/native-terminal`, October 22, 2026.
+Revision: amux `bcf2881` on `mvp/native-terminal`, October 22, 2026.
 
 This maps every row of the parity baseline in [features.md](features.md) to the
 current amux source. It records what exists, not acceptance. The pinned CMUX
