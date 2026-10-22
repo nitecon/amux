@@ -5,6 +5,7 @@ use crate::font::TermFont;
 use crate::settings::{FontSettings, Settings, ThemeSettings};
 use crate::theme::{ColorPalette, Theme};
 use crate::AlacrittyEvent;
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb};
 use iced::futures::stream::BoxStream;
 use iced::futures::{SinkExt, StreamExt};
 use iced::widget::canvas::Cache;
@@ -103,6 +104,30 @@ impl Terminal {
             Command::AddBindings(bindings) => {
                 self.bindings.add_bindings(bindings);
             },
+            Command::ProxyToBackend(
+                backend::Command::ProcessAlacrittyEvent(
+                    AlacrittyEvent::ColorRequest(index, formatter),
+                ),
+            ) => {
+                let color = match index {
+                    0..=255 => Some(AnsiColor::Indexed(index as u8)),
+                    256 | 258 => Some(AnsiColor::Named(NamedColor::Foreground)),
+                    257 => Some(AnsiColor::Named(NamedColor::Background)),
+                    _ => None,
+                };
+                if let Some(color) = color {
+                    let [r, g, b, _] = self.theme.get_color(color).into_rgba8();
+                    self.backend.handle(
+                        backend::Command::ProcessAlacrittyEvent(
+                            AlacrittyEvent::PtyWrite(formatter(Rgb {
+                                r,
+                                g,
+                                b,
+                            })),
+                        ),
+                    );
+                }
+            },
             Command::ProxyToBackend(cmd) => {
                 action = self.backend.handle(cmd);
             },
@@ -172,4 +197,131 @@ fn terminal_subscription_stream(
         }
     })
     .boxed()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod amux_tests {
+    use super::*;
+    use crate::settings::BackendSettings;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use std::time::Duration;
+
+    fn rendered(terminal: &Terminal) -> String {
+        let grid = &terminal.backend.renderable_content().grid;
+        let mut text = String::new();
+        for row in 0..grid.screen_lines() {
+            for column in 0..grid.columns() {
+                text.push(grid[Line(row as i32)][Column(column)].c);
+            }
+        }
+        text
+    }
+
+    fn events_for(terminal: &Terminal) -> BoxStream<'static, Event> {
+        iced::advanced::subscription::into_recipes(terminal.subscription())
+            .pop()
+            .unwrap()
+            .stream(iced::futures::stream::empty().boxed())
+    }
+
+    fn drive_until_rendered(
+        terminal: &mut Terminal,
+        events: &mut BoxStream<'static, Event>,
+        runtime: &tokio::runtime::Runtime,
+        marker: &str,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while !rendered(terminal).contains(marker) {
+            let timeout =
+                deadline.saturating_duration_since(std::time::Instant::now());
+            // Desktop handles commands on the GUI thread, outside Tokio.
+            let event = runtime
+                .block_on(async {
+                    tokio::time::timeout(timeout, events.next()).await
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "missing render event for {marker}; live={:?}",
+                        terminal.observation(32_768)
+                    )
+                })
+                .expect("terminal event stream closed");
+            let Event::BackendCall(id, command) = event;
+            assert_eq!(id, terminal.id);
+            terminal.handle(Command::ProxyToBackend(command));
+        }
+    }
+
+    #[test]
+    fn native_terminal_queries_receive_configured_color_and_real_pixel_size() {
+        let script = r#"
+import fcntl, os, select, struct, termios, time, tty
+tty.setraw(0)
+rows, cols, width, height = struct.unpack('HHHH', fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8)))
+color = b'\x1b]11;rgb:1212/3434/5656\x07'
+size = f'\x1b[4;{height};{width}t'.encode()
+os.write(1, b'\x1b]11;?\x07\x1b[14t')
+reply = b''
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline and (color not in reply or size not in reply):
+    if select.select([0], [], [], 0.05)[0]:
+        reply += os.read(0, 4096)
+os.write(1, b'\r\nPROTOCOL_OK\r\n' if color in reply and size in reply else b'\r\nPROTOCOL_FAIL ' + repr(reply).encode())
+time.sleep(30)
+"#;
+        let mut terminal = Terminal::new(
+            930_002,
+            Settings {
+                backend: BackendSettings {
+                    program: "/usr/bin/python3".into(),
+                    args: vec!["-c".into(), script.into()],
+                    ..Default::default()
+                },
+                theme: ThemeSettings::new(Box::new(ColorPalette {
+                    background: "#123456".into(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut events = events_for(&terminal);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        drive_until_rendered(
+            &mut terminal,
+            &mut events,
+            &runtime,
+            "PROTOCOL_OK",
+        );
+    }
+
+    #[test]
+    fn native_synchronized_output_reaches_the_render_snapshot() {
+        let mut terminal = Terminal::new(
+            930_001,
+            Settings {
+                backend: BackendSettings {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        "printf 'RENDER_READY\\r\\n'; read line; printf '\\033[?2026hRENDER_REPLY=%s\\033[?2026l' \"$line\"; exec sleep 30".into(),
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut events = events_for(&terminal);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for marker in ["RENDER_READY", "RENDER_REPLY=marker"] {
+            drive_until_rendered(&mut terminal, &mut events, &runtime, marker);
+            if marker == "RENDER_READY" {
+                terminal.handle(Command::ProxyToBackend(
+                    backend::Command::Write(b"marker\r".to_vec()),
+                ));
+            }
+        }
+    }
 }

@@ -13,6 +13,9 @@ The initial native PTY geometry also uses the font's cell size, preserving the
 default 80 by 50 grid during font synchronization before a widget resize arrives.
 src/bindings.rs corrects Ctrl+U and Ctrl+Shift+U to send the control byte 0x15
 instead of the printable character Q (0x51).
+Terminal color queries now receive the configured palette color, and text-area
+size queries receive the current native pixel dimensions. These replies use the
+existing PTY response path without scrolling or accessing the clipboard.
 The normalized Cargo manifest omits the upstream README field because that
 file is not bundled here. All other source files are unchanged.
 
@@ -25,3 +28,12 @@ check process generation, exact recipient, human input and consent separately.
 
 This remains a provisional terminal candidate. No reminder path is enabled by
 these accessors alone.
+
+Linux native PTY tests in `terminal.rs` verify synchronized output reaches the
+cached render snapshot and query responses match the configured background and
+the PTY's actual `TIOCGWINSZ` dimensions. Run them with
+`cargo test --locked -p iced_term amux_tests`. They do not measure GUI latency or
+establish provider readiness. The optional ignored root test
+`installed_provider_contract` requires installed, authenticated Codex and checks
+unsubmitted input and clearing through the native event stream; it never sends
+Enter or submits a model turn.

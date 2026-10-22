@@ -218,6 +218,10 @@ impl Backend {
                     Event::PtyWrite(pty) => {
                         self.notifier.notify(pty.into_bytes())
                     },
+                    Event::TextAreaSizeRequest(formatter) => {
+                        self.notifier
+                            .notify(formatter(self.size.into()).into_bytes());
+                    },
                     _ => {},
                 };
             },
