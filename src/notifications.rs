@@ -200,6 +200,32 @@ fn clean(text: &str, max: usize, lines: bool) -> String {
     cut
 }
 
+/// Copies whole characters into a NUL-terminated UTF-16 buffer that starts
+/// zeroed, never splitting a surrogate pair.
+#[cfg_attr(not(all(feature = "desktop", windows)), allow(dead_code))]
+fn utf16_into(text: &str, into: &mut [u16]) {
+    let room = into.len().saturating_sub(1);
+    let mut used = 0;
+    for c in text.chars() {
+        let mut units = [0; 2];
+        let units = c.encode_utf16(&mut units);
+        if used + units.len() > room {
+            break;
+        }
+        into[used..used + units.len()].copy_from_slice(units);
+        used += units.len();
+    }
+}
+
+/// Notification services that support body markup would otherwise interpret
+/// these characters; line breaks pass through unchanged.
+#[cfg_attr(not(all(feature = "desktop", not(windows))), allow(dead_code))]
+fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Linux: the freedesktop D-Bus notification service.
 #[cfg(all(feature = "desktop", not(windows)))]
 struct Native;
@@ -210,7 +236,7 @@ impl Backend for Native {
         notify_rust::Notification::new()
             .appname("amux")
             .summary(title)
-            .body(body)
+            .body(&escape_markup(body))
             .show()
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -237,13 +263,6 @@ impl Backend for Native {
             },
             WindowsAndMessaging::{CreateWindowExW, HWND_MESSAGE, IDI_APPLICATION, LoadIconW},
         };
-        fn copy(text: &str, into: &mut [u16]) {
-            // Leave room for the terminating NUL; the arrays start zeroed.
-            let room = into.len() - 1;
-            for (slot, unit) in into.iter_mut().zip(text.encode_utf16().take(room)) {
-                *slot = unit;
-            }
-        }
         // SAFETY: plain Win32 calls with owned, zero-initialized buffers. The
         // window and icon belong to this thread and are released in Drop.
         unsafe {
@@ -279,10 +298,12 @@ impl Backend for Native {
             data.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
             data.hIcon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
             data.dwInfoFlags = NIIF_INFO;
-            copy("amux", &mut data.szTip);
-            copy(title, &mut data.szInfoTitle);
-            copy(body, &mut data.szInfo);
+            utf16_into("amux", &mut data.szTip);
+            utf16_into(title, &mut data.szInfoTitle);
+            utf16_into(body, &mut data.szInfo);
             if Shell_NotifyIconW(if adding { NIM_ADD } else { NIM_MODIFY }, &data) == 0 {
+                // Start the next attempt from a fresh window and icon.
+                self.release();
                 return Err("the Windows notification area refused the notification".into());
             }
         }
@@ -291,8 +312,9 @@ impl Backend for Native {
 }
 
 #[cfg(all(feature = "desktop", windows))]
-impl Drop for Native {
-    fn drop(&mut self) {
+impl Native {
+    /// Removes the icon and window created by `show` on this thread, if any.
+    fn release(&mut self) {
         use windows_sys::Win32::UI::{
             Shell::{NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW},
             WindowsAndMessaging::DestroyWindow,
@@ -300,7 +322,8 @@ impl Drop for Native {
         if self.window == 0 {
             return;
         }
-        // SAFETY: removes the icon and window created by `show` on this thread.
+        // SAFETY: the window was created by this thread; deleting an icon that
+        // was never added is a harmless failure.
         unsafe {
             let mut data: NOTIFYICONDATAW = std::mem::zeroed();
             data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -309,5 +332,41 @@ impl Drop for Native {
             Shell_NotifyIconW(NIM_DELETE, &data);
             DestroyWindow(self.window as _);
         }
+        self.window = 0;
+    }
+}
+
+#[cfg(all(feature = "desktop", windows))]
+impl Drop for Native {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utf16_truncation_keeps_whole_characters() {
+        // "a😀" is 3 UTF-16 units; a 3-unit buffer holds 2 plus the NUL.
+        let mut buffer = [0u16; 3];
+        utf16_into("a😀", &mut buffer);
+        assert_eq!(buffer, [u16::from(b'a'), 0, 0], "no half surrogate pair");
+        let mut buffer = [0u16; 4];
+        utf16_into("a😀b", &mut buffer);
+        assert_eq!(String::from_utf16(&buffer[..3]).unwrap(), "a😀");
+        assert_eq!(buffer[3], 0);
+        let mut buffer = [7u16; 1];
+        utf16_into("text", &mut buffer);
+        assert_eq!(buffer, [7], "no room beyond the NUL");
+    }
+
+    #[test]
+    fn markup_characters_are_escaped_and_line_breaks_kept() {
+        assert_eq!(
+            escape_markup("a <b> & c\n</b>"),
+            "a &lt;b&gt; &amp; c\n&lt;/b&gt;"
+        );
     }
 }

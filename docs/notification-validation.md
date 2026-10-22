@@ -36,8 +36,8 @@ for outcome in notifier.outcomes() { /* Shown, Failed or TimedOut, each with its
 
 | Platform | Backend | Known limits |
 | --- | --- | --- |
-| Linux | freedesktop notification service over the D-Bus session bus (`notify-rust`, pure Rust) | Needs a running notification daemon; without one, attempts report `Failed` |
-| Windows | Notification-area balloon (`Shell_NotifyIconW`) from a hidden message-only window, shown as the amux executable | Adds an amux icon to the notification area while the notifier is alive. Windows limits balloon titles to 63 and bodies to 255 UTF-16 units. Needs no AppUserModelID, Start menu entry or installer. Type-checked for the Windows target only; not yet run on native Windows. |
+| Linux | freedesktop notification service over the D-Bus session bus (`notify-rust`, pure Rust) | Needs a running notification daemon; without one, attempts report `Failed`. `&`, `<` and `>` in the body are escaped so they show literally |
+| Windows | Notification-area balloon (`Shell_NotifyIconW`) from a hidden message-only window, shown as the amux executable | Adds an amux icon to the notification area while the notifier is alive. Windows limits balloon titles to 63 and bodies to 255 UTF-16 units; text is cut between whole characters. If Windows refuses a notification, the icon and window are released so the next notification starts fresh. Needs no AppUserModelID, Start menu entry or installer. Type-checked for the Windows target only; not yet run on native Windows. |
 | macOS | Compiles through `notify-rust` | Not a current target; untested |
 
 ## Other limits
