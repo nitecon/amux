@@ -43,6 +43,8 @@ jobs:
         run: cargo test --locked -p iced_term amux_tests
       - name: CLI and GUI entry tests
         run: cargo test --locked --test entry_contract
+      - name: Desktop notification contracts
+        run: cargo test --locked --test notifications_contract --test native_notification_contract
       - name: Native release build
         run: cargo build --locked --release --target ${{ matrix.target }} --bin amux --bin amux-desktop
       - name: Prepare review bundle
@@ -52,6 +54,7 @@ jobs:
           Copy-Item 'target/${{ matrix.target }}/release/${{ matrix.binary }}' bundle/
           Copy-Item 'target/${{ matrix.target }}/release/${{ matrix.gui }}' bundle/
           Copy-Item docs/windows-review.md bundle/REVIEW.md
+          Copy-Item docs/notification-validation.md bundle/notification-validation.md
           Copy-Item LICENSE bundle/
           Copy-Item vendor/iced_term/LICENSE bundle/ICED_TERM_LICENSE
           # binary_sha256 stays the CLI hash for existing reviewers.

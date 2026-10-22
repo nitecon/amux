@@ -104,6 +104,17 @@ server request-id deduplication remains unverified. Never include keys in report
   usable without a gateway. Report missing capabilities and regressions with
   file/line or runtime evidence. Keep M2 unapproved until safe readiness, exact
   recipient, consent, deduplication and actual gateway handoff are proven.
+- With a controlled gateway fixture, check the desktop task form: multiline
+  context, one POST after a double click, an original-project receipt after
+  switching projects, and an unknown result without automatic retry. Desktop
+  user submissions must not be attributed to a running agent.
+- Enable **Notify on process exit** and test a local terminal with no gateway.
+  The setting starts off on every launch and applies to future process exits.
+  A missing or unresponsive notification service must leave other terminals and
+  accepted task receipts usable. Windows uses a notification-area balloon and
+  an amux tray icon while the notifier lives; OS settings may suppress display.
+  Service acceptance does not prove the notification was visible. See
+  [notification validation](notification-validation.md).
 
 Linux review: CMUX task `01a164c9-f932-7b51-98ef-f4757d4202c9`.
 Windows review: CMUX task `01a164c9-fac2-7ec1-8c8c-b62a62b0d016`.

@@ -1,5 +1,6 @@
 //! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
 use amux::delivery::{DeliveryCause, DeliveryLedger, DeliveryState};
+use amux::notifications::{Notifier, Outcome};
 use amux::readiness::ReadinessGate;
 use amux::recipient::TerminalRecipient;
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
@@ -34,6 +35,7 @@ enum Message {
     SubmitTask,
     NewTaskRequest,
     TaskCreated(QueryScope, Uuid, Result<Uuid, String>),
+    LocalNotifications(bool),
     Consent(u64, bool),
     Remind(QueryScope, Uuid, u64),
     DeliveryTick,
@@ -116,6 +118,9 @@ struct Desktop {
     registry: Option<PathBuf>,
     snapshot_path: Option<PathBuf>,
     dirty: bool,
+    notify_exits: bool,
+    notifier: Option<Notifier>,
+    notification_status: String,
 }
 
 pub fn run(directory: PathBuf) -> anyhow::Result<()> {
@@ -153,6 +158,7 @@ impl Desktop {
             ledger: ledger.ok().flatten(),
             registry: state.ok(),
             snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false,
+            notify_exits: false, notifier: None, notification_status: String::new(),
         };
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
             Ok(Some(Some(saved))) => {
@@ -454,6 +460,17 @@ impl Desktop {
                 }
             }
             Message::Directory(value) => self.directory = value,
+            Message::LocalNotifications(enabled) => {
+                self.notify_exits = enabled;
+                if enabled && self.notifier.is_none() {
+                    self.notifier = Some(Notifier::native());
+                }
+                self.notification_status = if enabled {
+                    "Desktop notifications enabled for future process exits".into()
+                } else {
+                    "Desktop notifications disabled for future process exits".into()
+                };
+            }
             Message::NewWorkspace => match PathBuf::from(&self.directory).canonicalize() {
                 Ok(directory) if directory.is_dir() => {
                     self.add_workspace(directory);
@@ -554,6 +571,19 @@ impl Desktop {
                                         tab.title = title
                                     }
                                     iced_term::actions::Action::Shutdown => {
+                                        if self.notify_exits
+                                            && let Some(notifier) = &mut self.notifier
+                                        {
+                                            self.notification_status = match notifier.notify(
+                                                "amux · terminal process exited",
+                                                &format!("{} · terminal #{id}", tab.title),
+                                            ) {
+                                                Ok(_) => "Desktop notification queued".into(),
+                                                Err(error) => format!(
+                                                    "Desktop notification not queued: {error:?}"
+                                                ),
+                                            };
+                                        }
                                         #[cfg(any(target_os = "linux", windows))]
                                         {
                                             tab.lifetime.take();
@@ -716,7 +746,22 @@ impl Desktop {
                 }
             }
             Message::Remind(scope, task, terminal) => self.queue_reminder(&scope, task, terminal),
-            Message::DeliveryTick => return self.delivery_tick(),
+            Message::DeliveryTick => {
+                if let Some(notifier) = &self.notifier {
+                    for outcome in notifier.outcomes() {
+                        self.notification_status = match outcome {
+                            Outcome::Shown { .. } => {
+                                "Desktop notification submitted to the notification service".into()
+                            }
+                            Outcome::Failed { reason, .. } => {
+                                format!("Desktop notification: {reason}")
+                            }
+                            Outcome::TimedOut { .. } => "Desktop notification timed out; delivery outcome unknown. This attempt will not be retried.".into(),
+                        };
+                    }
+                }
+                return self.delivery_tick();
+            }
         }
         Task::none()
     }
@@ -1140,7 +1185,12 @@ impl Desktop {
         }
         sidebar = sidebar
             .push(text_input("Project directory", &self.directory).on_input(Message::Directory))
-            .push(button("New workspace").on_press(Message::NewWorkspace));
+            .push(button("New workspace").on_press(Message::NewWorkspace))
+            .push(
+                checkbox(self.notify_exits)
+                    .label("Notify on process exit")
+                    .on_toggle(Message::LocalNotifications),
+            );
         let toolbar = row![
             button("Shell").on_press(Message::NewTab(None)),
             button("Codex").on_press(Message::NewTab(Some(Provider::Codex))),
@@ -1203,7 +1253,8 @@ impl Desktop {
                     container(tasks).padding(12)
                 ]
                 .height(Length::Fill),
-                text(&self.status).size(12)
+                text(&self.status).size(12),
+                text(&self.notification_status).size(12),
             ]
             .spacing(8),
         )
@@ -1283,7 +1334,57 @@ mod tests {
             registry: None,
             snapshot_path: None,
             dirty: false,
+            notify_exits: false,
+            notifier: None,
+            notification_status: String::new(),
         }
+    }
+
+    #[test]
+    fn notification_failure_does_not_replace_gateway_acceptance_or_terminal_status() {
+        struct Unavailable;
+        impl amux::notifications::Backend for Unavailable {
+            fn show(&mut self, _: &str, _: &str) -> Result<(), String> {
+                Err("fixture notification service unavailable".into())
+            }
+        }
+        let mut app = desktop();
+        assert!(!app.notify_exits);
+        assert!(app.notifier.is_none());
+        let task = Uuid::new_v4();
+        app.workspaces[0].gateway.request = Some(TaskRequest {
+            id: Uuid::new_v4(),
+            project: "project-0".into(),
+            title: "Accepted independently".into(),
+            state: TaskRequestState::Accepted(task),
+        });
+        app.status = "terminal status preserved".into();
+        let mut notifier = Notifier::new(Unavailable);
+        notifier.notify("local process exited", "fixture").unwrap();
+        app.notifier = Some(notifier);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let _ = app.update(Message::DeliveryTick);
+            if app
+                .notification_status
+                .contains("fixture notification service unavailable")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "notification result not observed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.status, "terminal status preserved");
+        assert!(
+            matches!(app.workspaces[0].gateway.request.as_ref().unwrap().state,
+            TaskRequestState::Accepted(id) if id == task)
+        );
+        let _ = app.update(Message::LocalNotifications(false));
+        assert!(!app.notify_exits);
+        assert!(app.workspaces[1].gateway.request.is_none());
     }
 
     #[test]
