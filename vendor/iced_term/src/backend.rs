@@ -477,6 +477,13 @@ impl Backend {
         self.notifier.notify(input);
     }
 
+    pub fn try_enqueue_input(&self, input: Vec<u8>) -> Result<()> {
+        self.notifier
+            .0
+            .send(Msg::Input(Cow::Owned(input)))
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    }
+
     fn scroll(&mut self, terminal: &mut Term<EventProxy>, delta_value: i32) {
         if delta_value != 0 {
             let scroll = Scroll::Delta(delta_value);

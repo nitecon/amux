@@ -1,6 +1,6 @@
 //! Provisional Linux/Codex 0.163.0 prompt profile. No input or acknowledgment occurs here.
-//! Idle and partial-input checks are exercised locally; busy/continuation acceptance
-//! remains required before connecting this profile to automatic reminder submission.
+//! Idle, partial-input and one real busy/continuation turn are exercised locally.
+//! Desktop integration and cross-platform/provider acceptance remain incomplete.
 use crate::{
     identity::Provider,
     recipient::{NativeInputEvidence, RecipientAddress, RecipientCheckpoint, TerminalRecipient},
@@ -27,6 +27,7 @@ pub struct ReadinessGate {
     known_executor: Option<(RecipientAddress, NativeInputEvidence)>,
     candidate: Option<Candidate>,
     invalidated: bool,
+    awaiting_echo: Option<uuid::Uuid>,
 }
 
 /// Ephemeral native checks, not a delivery or an acknowledgment. Recheck immediately
@@ -40,6 +41,13 @@ pub struct ReadyPrompt {
 }
 
 impl ReadinessGate {
+    /// Prevent a second submission while the first input may still be buffered.
+    /// Visible echo is input-path evidence only, never semantic acknowledgment.
+    pub fn note_input_attempt(&mut self, id: uuid::Uuid) {
+        self.candidate = None;
+        self.awaiting_echo = Some(id);
+    }
+
     pub fn observe(
         &mut self,
         terminal: &Terminal,
@@ -69,6 +77,19 @@ impl ReadinessGate {
             return None;
         }
         let screen = terminal.observation(32_768)?;
+        if let Some(id) = self.awaiting_echo {
+            // Native wrapping can split the marker and indent continuation rows.
+            let compact: String = screen
+                .lines
+                .iter()
+                .flat_map(|line| line.chars())
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            if !compact.contains(&id.to_string()) {
+                return None;
+            }
+            self.awaiting_echo = None;
+        }
         let headers: Vec<_> = screen
             .lines
             .iter()

@@ -200,6 +200,18 @@ impl TerminalRecipient {
             return None;
         }
         let agent = self.agent.as_ref()?;
+        let system = processes(&[agent.pid]);
+        if !system
+            .process(sysinfo::Pid::from_u32(agent.pid))
+            .is_some_and(|process| {
+                matches!(
+                    process.status(),
+                    sysinfo::ProcessStatus::Run | sysinfo::ProcessStatus::Sleep
+                )
+            })
+        {
+            return None;
+        }
         let executable = PathBuf::from(format!("/proc/{}/exe", agent.pid));
         let image_path = std::fs::read_link(&executable).ok()?;
         if image_path.file_name()? != std::ffi::OsStr::new(self.provider.command()) {
@@ -217,6 +229,15 @@ impl TerminalRecipient {
         let agent_input = open_input(agent.pid)?;
         let launcher_device = launcher_input.metadata().ok()?.rdev();
         if launcher_device == 0 || agent_input.metadata().ok()?.rdev() != launcher_device {
+            return None;
+        }
+        // Bytes already queued for the application are not an empty input state,
+        // even if the last rendered composer still displays its placeholder.
+        let mut unread_input: libc::c_int = 0;
+        // SAFETY: valid slave descriptor and initialized integer output storage.
+        if unsafe { libc::ioctl(agent_input.as_raw_fd(), libc::FIONREAD, &mut unread_input) } != 0
+            || unread_input != 0
+        {
             return None;
         }
         // SAFETY: valid open descriptors and an initialized integer output buffer.
@@ -252,6 +273,11 @@ impl TerminalRecipient {
     }
 
     pub fn note_human_input(&mut self) {
+        self.note_input();
+    }
+
+    /// Every explicit input invalidates prior checkpoints, including application input.
+    pub fn note_input(&mut self) {
         if let Some(next) = self.input_epoch.checked_add(1) {
             self.input_epoch = next;
         } else {

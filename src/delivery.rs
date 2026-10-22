@@ -296,6 +296,26 @@ impl DeliveryLedger {
         record.state = DeliveryState::Enqueued;
         self.persist()
     }
+
+    /// Only the submission coordinator calls this, before touching the input channel.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn cancel_before_write(&mut self, attempt: DeliveryAttempt) -> Result<()> {
+        self.healthy()?;
+        if attempt.invocation != self.invocation {
+            bail!("attempt belongs to a different ledger invocation");
+        }
+        let record = self
+            .snapshot
+            .records
+            .iter_mut()
+            .find(|record| record.id == attempt.id)
+            .context("unknown reminder attempt")?;
+        if record.state != DeliveryState::Uncertain {
+            bail!("reminder is not an uncertain attempt");
+        }
+        record.state = DeliveryState::Pending;
+        self.persist()
+    }
 }
 
 fn fresh(observed: u64, now: u64) -> bool {

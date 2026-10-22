@@ -46,4 +46,11 @@ unsubmitted input and clearing through the native event stream; it never sends
 Enter or submits a model turn.
 It also verifies that typing the placeholder and moving to Home cannot pass the
 provisional native prompt profile. The profile is not connected to automatic
-reminder submission and still needs busy/continuation acceptance evidence.
+desktop reminder submission. The separate opt-in `provider_turn_contract` test
+submits one real no-tools/no-files reply request to check busy/continuation and
+the durable checked-input coordinator; it is ignored in normal tests and CI.
+
+`Terminal::try_enqueue_input` reports the existing native input channel's send
+result, unlike the widget's fire-and-forget input path. An error can follow
+channel acceptance, and success does not prove a PTY write or agent
+acknowledgment. Callers retain uncertainty across failures and crashes.

@@ -80,6 +80,12 @@ impl Terminal {
         self.backend.native_terminal_fd()
     }
 
+    /// A successful enqueue is not proof of a PTY write or agent acknowledgment.
+    /// An error may follow channel acceptance; callers must retain uncertainty.
+    pub fn try_enqueue_input(&self, input: Vec<u8>) -> std::io::Result<()> {
+        self.backend.try_enqueue_input(input)
+    }
+
     /// A bounded live screen observation, never an acknowledgment or readiness proof.
     pub fn observation(
         &self,
@@ -257,6 +263,47 @@ mod amux_tests {
             assert_eq!(id, terminal.id);
             terminal.handle(Command::ProxyToBackend(command));
         }
+    }
+
+    #[test]
+    fn native_checked_input_reports_a_closed_transport() {
+        let mut terminal = Terminal::new(
+            930_003,
+            Settings {
+                backend: BackendSettings {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "printf 'CHECKED_READY\\r\\n'; read line; printf 'CHECKED_REPLY=%s\\r\\n' \"$line\"".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ).unwrap();
+        let mut events = events_for(&terminal);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        drive_until_rendered(
+            &mut terminal,
+            &mut events,
+            &runtime,
+            "CHECKED_READY",
+        );
+        terminal.try_enqueue_input(b"checked\r".to_vec()).unwrap();
+        drive_until_rendered(
+            &mut terminal,
+            &mut events,
+            &runtime,
+            "CHECKED_REPLY=checked",
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while terminal.try_enqueue_input(Vec::new()).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "exited PTY input channel stayed open"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(terminal
+            .try_enqueue_input(b"must not succeed".to_vec())
+            .is_err());
     }
 
     #[test]

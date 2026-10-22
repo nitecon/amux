@@ -102,6 +102,43 @@ fn installed_codex_echoes_and_clears_unsubmitted_input() {
         .observe(&terminal, &recipient, Instant::now())
         .expect("installed native Codex should match its supported empty prompt profile");
     assert!(proof.is_current(&terminal, &recipient, Instant::now()));
+    // The old screen can still look empty while native input is buffered.
+    // Resume before asserting results so failures do not leave a stopped provider.
+    assert_eq!(
+        unsafe { libc::kill(records[0].pid as libc::pid_t, libc::SIGSTOP) },
+        0
+    );
+    recipient.note_human_input();
+    let queued = terminal.try_enqueue_input(b"buffered-human-input".to_vec());
+    std::thread::sleep(Duration::from_millis(550));
+    let unchanged =
+        terminal.observation(32_768).unwrap().cursor_line_styles == empty.cursor_line_styles;
+    let blocked = gate
+        .observe(&terminal, &recipient, Instant::now())
+        .is_none();
+    assert_eq!(
+        unsafe { libc::kill(records[0].pid as libc::pid_t, libc::SIGCONT) },
+        0
+    );
+    queued.unwrap();
+    assert!(
+        unchanged,
+        "stopped provider retained its old empty composer"
+    );
+    assert!(
+        blocked,
+        "buffered human input must not be mistaken for an empty prompt"
+    );
+    wait_for(&mut terminal, &mut events, &|s| {
+        s.lines
+            .iter()
+            .any(|line| line.contains("buffered-human-input"))
+    });
+    recipient.note_human_input();
+    terminal.handle(Command::ProxyToBackend(BackendCommand::Write(vec![0x15])));
+    wait_for(&mut terminal, &mut events, &|s| {
+        s.cursor_line_styles == empty.cursor_line_styles
+    });
     // Literal input only: no Enter, task claim or model request is sent.
     recipient.note_human_input();
     terminal.handle(Command::ProxyToBackend(BackendCommand::Write(

@@ -5,3 +5,5 @@ pub mod identity;
 pub mod readiness;
 pub mod recipient;
 pub mod session;
+#[cfg(feature = "desktop")]
+pub mod submission;
