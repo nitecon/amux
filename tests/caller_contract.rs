@@ -80,9 +80,17 @@ fn task_mutation_accepts_agent_tool_ancestry_but_rejects_nested_or_unrelated_cal
             .output()
             .unwrap();
         assert!(!unrelated.status.success());
+        // Run beneath a real Claude session (e.g. Claude Code), the caller's
+        // ancestry meets that executor first and is refused as a nested provider
+        // before the unrelated-ancestry check. Either way it is an authorization
+        // refusal; a transport error must never count as rejection.
+        let stderr = String::from_utf8_lossy(&unrelated.stderr);
+        assert!(!stderr.contains("gateway unavailable"), "{stderr}");
         assert!(
-            String::from_utf8_lossy(&unrelated.stderr).contains("unrelated")
-                || String::from_utf8_lossy(&unrelated.stderr).contains("does not resolve")
+            stderr.contains("unrelated")
+                || stderr.contains("does not resolve")
+                || stderr.contains("nested provider must be launched with its own amux identity"),
+            "{stderr}"
         );
         child.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
         let output = child.wait_with_output().unwrap();
