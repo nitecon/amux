@@ -1,8 +1,28 @@
 # Native reminder validation
 
 The provisional readiness profile supports Linux with native Codex 0.163.0.
-Other providers/platforms and unknown prompt versions defer. The desktop does
-not yet expose consent or schedule automatic submissions.
+Other providers/platforms and unknown prompt versions defer.
+
+In a running Codex pane, enable **Allow reminder input + Enter**, refresh the workspace's
+gateway project, then select **Remind agent #…** beside an unclaimed task.
+The selection binds to that exact terminal/session/instance, even if focus later
+changes. It queues literal input and Enter for the supported empty prompt. Consent
+defaults off and is never saved. Changing the gateway project withdraws consent
+and retires pending input; closing or exiting the recipient also retires it.
+
+Gateway projects and query results belong to individual workspaces. A delayed
+response cannot populate another workspace or a changed project binding. Queued
+selections refresh task status every ten seconds; snapshots older than fifteen
+seconds and failed queries pause submission. A task that leaves `todo` retires
+its pending reminder. The reminder contains only canonical task/project identity
+and asks the agent to fetch the current record and check eligibility before
+deciding whether to claim. Task titles and notification bodies are not pasted.
+
+Automatic assignment discovery, session-start recovery and previously claimed
+task reminders remain incomplete. Claimed recovery needs authoritative prior
+claimant/machine provenance from the gateway; the UI does not infer that from a
+task's originating hostname. Explicit task selection is the current routing
+boundary. Unsupported profiles keep the selection deferred.
 
 The submission coordinator checks native identity, foreground ownership,
 unread terminal input, exact styled empty prompt, settling and consent/input

@@ -1,11 +1,18 @@
 //! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
+use amux::delivery::{DeliveryCause, DeliveryLedger, DeliveryState};
+use amux::readiness::ReadinessGate;
 use amux::recipient::TerminalRecipient;
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
+use amux::submission::{Submission, submit_literal};
 use amux::{gateway::Gateway, identity::Provider};
-use iced::widget::{button, column, container, pane_grid, row, scrollable, text, text_input};
+use iced::widget::{
+    button, checkbox, column, container, pane_grid, row, scrollable, text, text_input,
+};
 use iced::{Element, Length, Subscription, Task, Theme};
 use iced_term::{Terminal, TerminalView};
 use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -21,9 +28,39 @@ enum Message {
     Terminal(iced_term::Event),
     GatewayProject(String),
     RefreshTasks,
-    TasksLoaded(Result<serde_json::Value, String>),
+    TasksLoaded(QueryScope, Result<serde_json::Value, String>),
+    Consent(u64, bool),
+    Remind(QueryScope, Uuid, u64),
+    DeliveryTick,
     Save,
     Close(iced::window::Id),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueryScope {
+    workspace: usize,
+    directory: PathBuf,
+    project: String,
+    revision: u64,
+}
+
+#[derive(Default)]
+struct TaskPanel {
+    project: String,
+    revision: u64,
+    loading: bool,
+    tasks: Vec<serde_json::Value>,
+    status: String,
+    loaded_at: Option<Instant>,
+    observed_at_ms: u64,
+    queried_at: Option<Instant>,
+}
+
+#[derive(Default)]
+struct Reminders {
+    consent: bool,
+    gate: ReadinessGate,
+    status: String,
 }
 
 struct Tab {
@@ -32,6 +69,7 @@ struct Tab {
     terminal: Option<Terminal>,
     provider: Option<Provider>,
     recipient: Option<TerminalRecipient>,
+    reminders: Reminders,
 }
 struct Pane {
     tabs: Vec<Tab>,
@@ -41,6 +79,7 @@ struct Workspace {
     directory: PathBuf,
     panes: pane_grid::State<Pane>,
     focused: pane_grid::Pane,
+    gateway: TaskPanel,
 }
 struct Desktop {
     workspaces: Vec<Workspace>,
@@ -48,9 +87,8 @@ struct Desktop {
     directory: String,
     next_id: u64,
     status: String,
-    gateway_project: String,
-    tasks: String,
-    loading: bool,
+    ledger: Option<DeliveryLedger>,
+    registry: Option<PathBuf>,
     snapshot_path: Option<PathBuf>,
     dirty: bool,
 }
@@ -73,11 +111,22 @@ pub fn run(directory: PathBuf) -> anyhow::Result<()> {
 
 impl Desktop {
     fn new(directory: PathBuf) -> (Self, Task<Message>) {
+        let state = amux::identity::state_directory();
+        let ledger = state
+            .as_ref()
+            .ok()
+            .map(|path| DeliveryLedger::open(&path.join("deliveries.json")))
+            .transpose();
+        let delivery_error = state
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .or_else(|| ledger.as_ref().err().map(ToString::to_string));
         let mut app = Self {
             workspaces: Vec::new(), active: 0, directory: directory.display().to_string(), next_id: 0,
-            status: "Local terminals · gateway optional · automatic reminders not enabled in this candidate".into(),
-            gateway_project: std::env::var("AMUX_GATEWAY_PROJECT").unwrap_or_default(),
-            tasks: "Set AMUX_GATEWAY_URL and AMUX_GATEWAY_KEY, enter project, then Refresh. Task claims belong to individual agents using `amux tasks`.".into(), loading: false,
+            status: "Reminders require per-agent consent and a task selection. Only Linux/Codex0.163 prompts are supported; other profiles defer.".into(),
+            ledger: ledger.ok().flatten(),
+            registry: state.ok(),
             snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false,
         };
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
@@ -91,6 +140,7 @@ impl Desktop {
                         directory: workspace.directory,
                         panes,
                         focused,
+                        gateway: TaskPanel::default(),
                     });
                 }
                 app.status =
@@ -106,7 +156,18 @@ impl Desktop {
             _ => {}
         }
         if app.workspaces.is_empty() {
-            app.add_workspace(directory);
+            app.add_workspace(directory.clone());
+        }
+        // An environment project binding applies only to the launch directory.
+        for workspace in &mut app.workspaces {
+            if workspace.directory == directory {
+                workspace.gateway.project =
+                    std::env::var("AMUX_GATEWAY_PROJECT").unwrap_or_default();
+            }
+        }
+        if let Some(error) = delivery_error {
+            app.status =
+                format!("Reminder storage unavailable: {error}. Local terminals remain available.");
         }
         let focus = app.focus();
         (app, focus)
@@ -125,6 +186,7 @@ impl Desktop {
                             provider: tab.provider,
                             terminal: None,
                             recipient: None,
+                            reminders: Reminders::default(),
                         }
                     })
                     .collect(),
@@ -237,6 +299,7 @@ impl Desktop {
                         terminal: None,
                         provider: Some(provider),
                         recipient: None,
+                        reminders: Reminders::default(),
                     };
                 }
             }
@@ -281,6 +344,7 @@ impl Desktop {
                     terminal: Some(terminal),
                     provider,
                     recipient,
+                    reminders: Reminders::default(),
                 }
             }
             Err(error) => {
@@ -291,6 +355,7 @@ impl Desktop {
                     terminal: None,
                     provider,
                     recipient: None,
+                    reminders: Reminders::default(),
                 }
             }
         }
@@ -306,6 +371,7 @@ impl Desktop {
             directory,
             panes,
             focused,
+            gateway: TaskPanel::default(),
         });
         self.active = self.workspaces.len() - 1;
     }
@@ -398,6 +464,13 @@ impl Desktop {
                 return self.focus();
             }
             Message::CloseTab => {
+                let workspace = &self.workspaces[self.active];
+                if let Some(pane) = workspace.panes.get(workspace.focused)
+                    && (pane.tabs.len() > 1 || workspace.panes.len() > 1)
+                    && let Some(tab) = pane.tabs.get(pane.active)
+                {
+                    self.withdraw(tab.id);
+                }
                 let workspace = &mut self.workspaces[self.active];
                 let focused = workspace.focused;
                 if let Some(pane) = workspace.panes.get_mut(focused) {
@@ -439,69 +512,374 @@ impl Desktop {
                                     iced_term::actions::Action::Shutdown => {
                                         tab.terminal = None;
                                         tab.recipient = None;
+                                        tab.reminders.consent = false;
+                                        if let Some(ledger) = &mut self.ledger
+                                            && let Err(error) = ledger.retire_terminal(id)
+                                        {
+                                            self.status =
+                                                format!("Reminder retirement failed: {error}");
+                                        }
                                         tab.title.push_str(" · exited");
                                     }
                                     _ => {}
                                 }
+                            }
+                            if let Some(terminal) = &tab.terminal {
+                                tab.reminders.gate.note_terminal_output(terminal);
                             }
                             return Task::none();
                         }
                     }
                 }
             }
-            Message::GatewayProject(project) => self.gateway_project = project,
-            Message::RefreshTasks if !self.loading => {
-                let project = self.gateway_project.trim().to_owned();
-                if project.is_empty() {
-                    self.tasks = "Enter the gateway project identifier".into();
+            Message::GatewayProject(project) => {
+                let ids: Vec<_> = self.workspaces[self.active]
+                    .panes
+                    .iter()
+                    .flat_map(|(_, pane)| &pane.tabs)
+                    .map(|tab| tab.id)
+                    .collect();
+                for id in ids {
+                    self.withdraw(id);
+                }
+                let panel = &mut self.workspaces[self.active].gateway;
+                panel.project = project;
+                panel.revision += 1;
+                panel.loading = false;
+                panel.loaded_at = None;
+                panel.tasks.clear();
+                panel.status = "Project changed; consent withdrawn. Refresh current tasks.".into();
+            }
+            Message::RefreshTasks => return self.query(self.active),
+            Message::TasksLoaded(scope, result) => {
+                if !self.scope_current(&scope) {
                     return Task::none();
                 }
-                let gateway = std::env::var("AMUX_GATEWAY_URL")
-                    .ok()
-                    .zip(std::env::var("AMUX_GATEWAY_KEY").ok())
-                    .ok_or_else(|| anyhow::anyhow!("Set AMUX_GATEWAY_URL and AMUX_GATEWAY_KEY"))
-                    .and_then(|(url, key)| Gateway::new(&url, key));
-                match gateway {
-                    Ok(gateway) => {
-                        self.loading = true;
-                        return Task::perform(
-                            async move { gateway.list(&project).await.map_err(|e| e.to_string()) },
-                            Message::TasksLoaded,
-                        );
+                let panel = &mut self.workspaces[scope.workspace].gateway;
+                panel.loading = false;
+                panel.loaded_at = None;
+                match result {
+                    Ok(serde_json::Value::Array(tasks)) => {
+                        panel.tasks = tasks;
+                        panel.loaded_at = Some(Instant::now());
+                        panel.observed_at_ms = unix_ms();
+                        panel.status = "Select a pending task to remind one consenting agent. Claims remain agent decisions.".into();
                     }
-                    Err(error) => self.tasks = error.to_string(),
+                    Ok(_) => {
+                        panel.tasks.clear();
+                        panel.status = "Unexpected gateway task-list shape".into();
+                    }
+                    Err(error) => {
+                        panel.tasks.clear();
+                        panel.status =
+                            format!("Gateway unavailable: {error}. Queued delivery paused.");
+                    }
                 }
             }
-            Message::TasksLoaded(result) => {
-                self.loading = false;
-                self.tasks = match result {
-                    Ok(value) => match value.as_array() {
-                        Some(tasks) => tasks
-                            .iter()
-                            .map(|task| {
-                                format!(
-                                    "{}\n{} · {}\nOwner: {}\n",
-                                    task["title"].as_str().unwrap_or("Untitled"),
-                                    task["id"].as_str().unwrap_or("?"),
-                                    task["status"].as_str().unwrap_or("unknown"),
-                                    task["owner_origin"]["session_id"]
-                                        .as_str()
-                                        .or(task["owner_agent_id"].as_str())
-                                        .unwrap_or("unclaimed")
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        None => "Unexpected gateway task-list shape".into(),
-                    },
-                    Err(error) => {
-                        format!("Gateway unavailable: {error}\nLocal terminals remain available.")
+            Message::Consent(id, enabled) => {
+                if !enabled {
+                    self.withdraw(id);
+                } else if self.ledger.is_some() {
+                    let mut query_workspace = None;
+                    for (index, workspace) in self.workspaces.iter_mut().enumerate() {
+                        for (_, pane) in workspace.panes.iter_mut() {
+                            if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id)
+                                && let Some(recipient) = &mut tab.recipient
+                            {
+                                tab.reminders.consent = true;
+                                recipient.set_consent(true);
+                                query_workspace = Some(index);
+                                tab.reminders.status =
+                                    "Waiting for supported empty prompt; select a task to queue."
+                                        .into();
+                            }
+                        }
                     }
-                };
+                    return query_workspace
+                        .map(|index| self.query(index))
+                        .unwrap_or_else(Task::none);
+                }
             }
-            Message::RefreshTasks => {}
+            Message::Remind(scope, task, terminal) => self.queue_reminder(&scope, task, terminal),
+            Message::DeliveryTick => return self.delivery_tick(),
         }
         Task::none()
+    }
+
+    fn scope(&self, workspace: usize) -> QueryScope {
+        let current = &self.workspaces[workspace];
+        QueryScope {
+            workspace,
+            directory: current.directory.clone(),
+            project: current.gateway.project.trim().to_owned(),
+            revision: current.gateway.revision,
+        }
+    }
+
+    fn scope_current(&self, scope: &QueryScope) -> bool {
+        self.workspaces.get(scope.workspace).is_some() && self.scope(scope.workspace) == *scope
+    }
+
+    fn query(&mut self, workspace: usize) -> Task<Message> {
+        let scope = self.scope(workspace);
+        let panel = &mut self.workspaces[workspace].gateway;
+        if panel.loading {
+            return Task::none();
+        }
+        panel.queried_at = Some(Instant::now());
+        if scope.project.is_empty() {
+            panel.status = "Enter this workspace's gateway project identifier".into();
+            return Task::none();
+        }
+        let gateway = std::env::var("AMUX_GATEWAY_URL")
+            .ok()
+            .zip(std::env::var("AMUX_GATEWAY_KEY").ok())
+            .ok_or_else(|| anyhow::anyhow!("Set AMUX_GATEWAY_URL and AMUX_GATEWAY_KEY"))
+            .and_then(|(url, key)| Gateway::new(&url, key));
+        match gateway {
+            Ok(gateway) => {
+                panel.loading = true;
+                Task::perform(
+                    async move {
+                        let result = gateway
+                            .list(&scope.project)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (scope, result)
+                    },
+                    |(scope, result)| Message::TasksLoaded(scope, result),
+                )
+            }
+            Err(error) => {
+                panel.loaded_at = None;
+                panel.status = error.to_string();
+                Task::none()
+            }
+        }
+    }
+
+    fn withdraw(&mut self, id: u64) {
+        for workspace in &mut self.workspaces {
+            for (_, pane) in workspace.panes.iter_mut() {
+                if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id) {
+                    tab.reminders.consent = false;
+                    tab.reminders.status = "Reminders off; pending input retired.".into();
+                    if let Some(recipient) = &mut tab.recipient {
+                        recipient.set_consent(false);
+                    }
+                }
+            }
+        }
+        if let Some(ledger) = &mut self.ledger
+            && let Err(error) = ledger.retire_terminal(id)
+        {
+            self.status = format!("Reminder retirement failed: {error}. Delivery disabled.");
+        }
+    }
+
+    fn queue_reminder(&mut self, scope: &QueryScope, task: Uuid, id: u64) {
+        if !self.scope_current(scope) {
+            return;
+        }
+        let workspace = &mut self.workspaces[scope.workspace];
+        if !workspace.gateway.pending_task(task) {
+            workspace.gateway.status = "Refresh before selecting a currently pending task.".into();
+            return;
+        }
+        let Some(tab) = workspace
+            .panes
+            .iter_mut()
+            .flat_map(|(_, pane)| &mut pane.tabs)
+            .find(|tab| tab.id == id && tab.reminders.consent)
+        else {
+            return;
+        };
+        let result = (|| -> anyhow::Result<DeliveryState> {
+            let recipient = tab
+                .recipient
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("Agent stopped"))?;
+            recipient.resolve(
+                self.registry
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("Agent registry unavailable"))?,
+            )?;
+            let address = recipient
+                .address(id)
+                .ok_or_else(|| anyhow::anyhow!("Agent recipient is no longer live"))?;
+            let ledger = self
+                .ledger
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("Reminder storage unavailable"))?;
+            let now = unix_ms();
+            let delivery = ledger.queue(
+                task,
+                address,
+                DeliveryCause::RecoveryQuery,
+                workspace.gateway.observed_at_ms,
+                now,
+            )?;
+            Ok(ledger
+                .records()
+                .iter()
+                .find(|r| r.id == delivery)
+                .unwrap()
+                .state)
+        })();
+        tab.reminders.status = match result {
+            Ok(DeliveryState::Pending) => {
+                "Task queued for this agent; waiting for a supported empty prompt.".into()
+            }
+            Ok(state) => format!("Existing reminder {state:?}; no replay."),
+            Err(error) => format!("Reminder not queued: {error}"),
+        };
+    }
+
+    fn delivery_tick(&mut self) -> Task<Message> {
+        let Some(ledger) = &mut self.ledger else {
+            return Task::none();
+        };
+        let mut queries = Vec::new();
+        for (index, workspace) in self.workspaces.iter_mut().enumerate() {
+            let mut pending = false;
+            for (_, pane) in workspace.panes.iter_mut() {
+                for tab in &mut pane.tabs {
+                    if !tab.reminders.consent {
+                        continue;
+                    }
+                    let record = ledger
+                        .records()
+                        .iter()
+                        .find(|record| {
+                            record.recipient.terminal_id() == tab.id
+                                && record.state == DeliveryState::Pending
+                        })
+                        .cloned();
+                    pending |= record.is_some();
+                    let (Some(terminal), Some(recipient), Some(registry)) =
+                        (&tab.terminal, &mut tab.recipient, &self.registry)
+                    else {
+                        continue;
+                    };
+                    if recipient.resolve(registry).is_err() {
+                        continue;
+                    }
+                    if let Some(record) = record {
+                        // Only a new authoritative successful query can retire changed work.
+                        // Missing/error/expired snapshots pause all submission.
+                        if !workspace.gateway.fresh() {
+                            continue;
+                        }
+                        if !workspace.gateway.pending_task(record.task_id) {
+                            if let Err(error) = ledger.retire_pending(record.id) {
+                                tab.reminders.status =
+                                    format!("Reminder retirement failed: {error}");
+                            } else {
+                                tab.reminders.status =
+                                    "Task is no longer pending; reminder retired.".into();
+                            }
+                            continue;
+                        }
+                        let now = unix_ms();
+                        // A refresh preserves this reminder's stable identity.
+                        if let Err(error) = ledger.queue(
+                            record.task_id,
+                            record.recipient.clone(),
+                            DeliveryCause::RecoveryQuery,
+                            workspace.gateway.observed_at_ms,
+                            now,
+                        ) {
+                            tab.reminders.status = format!("Reminder storage failed: {error}");
+                            continue;
+                        }
+                        let text = format!(
+                            "Pending task {} in project {}. Fetch its current record and check eligibility before deciding to claim.",
+                            record.task_id,
+                            workspace.gateway.project.trim()
+                        );
+                        match submit_literal(
+                            ledger,
+                            &mut tab.reminders.gate,
+                            terminal,
+                            recipient,
+                            record.id,
+                            &text,
+                            now,
+                        ) {
+                            Ok(Submission::Deferred) => {}
+                            Ok(Submission::Enqueued) => {
+                                tab.reminders.status =
+                                    "Reminder enqueued; agent acknowledgment and execution unknown."
+                                        .into()
+                            }
+                            Err(error) => {
+                                tab.reminders.status = format!(
+                                    "Reminder paused: {error}; no automatic retry after an input attempt."
+                                )
+                            }
+                        }
+                    } else {
+                        // Learn the installed profile before any task is selected.
+                        tab.reminders
+                            .gate
+                            .observe(terminal, recipient, Instant::now());
+                    }
+                }
+            }
+            if pending
+                && !workspace.gateway.loading
+                && workspace
+                    .gateway
+                    .queried_at
+                    .is_none_or(|time| time.elapsed() >= Duration::from_secs(10))
+            {
+                queries.push(index);
+            }
+        }
+        Task::batch(queries.into_iter().map(|index| self.query(index)))
+    }
+
+    fn task_list(&self) -> Element<'_, Message> {
+        let workspace = &self.workspaces[self.active];
+        let panel = &workspace.gateway;
+        let recipient = workspace
+            .panes
+            .get(workspace.focused)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .filter(|tab| tab.reminders.consent && tab.terminal.is_some());
+        let mut list = column![text(&panel.status).size(12)].spacing(12);
+        for task in &panel.tasks {
+            let id = task["id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let mut item = column![
+                text(task["title"].as_str().unwrap_or("Untitled")).size(14),
+                text(format!(
+                    "{} · {}",
+                    task["id"].as_str().unwrap_or("?"),
+                    task["status"].as_str().unwrap_or("unknown")
+                ))
+                .size(12),
+                text(format!(
+                    "Owner: {}",
+                    task["owner_origin"]["session_id"]
+                        .as_str()
+                        .or(task["owner_agent_id"].as_str())
+                        .unwrap_or("unclaimed")
+                ))
+                .size(12)
+            ]
+            .spacing(4);
+            if let (Some(task), Some(tab)) = (id, recipient)
+                && panel.pending_task(task)
+            {
+                item =
+                    item.push(
+                        button(text(format!("Remind agent #{}", tab.id)))
+                            .on_press(Message::Remind(self.scope(self.active), task, tab.id)),
+                    );
+            }
+            list = list.push(item);
+        }
+        list.into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -517,6 +895,7 @@ impl Desktop {
             terminals,
             iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Save),
             iced::window::close_requests().map(Message::Close),
+            iced::time::every(Duration::from_millis(250)).map(|_| Message::DeliveryTick),
         ])
     }
 
@@ -553,7 +932,13 @@ impl Desktop {
         .spacing(8);
         let grid = pane_grid::PaneGrid::new(&workspace.panes, |id, pane, _| {
             let mut tabs = row![].spacing(4);
-            for (i, tab) in pane.tabs.iter().enumerate() { tabs = tabs.push(button(text(format!("{} {}", if pane.active == i { "●" } else { "" }, tab.title))).on_press(Message::SelectTab(id, i))); }
+            for (i, tab) in pane.tabs.iter().enumerate() { tabs = tabs.push(button(text(format!("{} {} · #{}", if pane.active == i { "●" } else { "" }, tab.title, tab.id))).on_press(Message::SelectTab(id, i))); }
+            if let Some(tab) = pane.tabs.get(pane.active)
+                && cfg!(target_os = "linux") && tab.provider == Some(Provider::Codex) && tab.recipient.is_some() && self.ledger.is_some() {
+                    let terminal_id = tab.id;
+                    tabs = tabs.push(checkbox(tab.reminders.consent).label("Allow reminder input + Enter")
+                        .on_toggle(move |enabled| Message::Consent(terminal_id, enabled)));
+            }
             let body: Element<'_, Message> = match pane.tabs.get(pane.active).and_then(|t| t.terminal.as_ref()) {
                 Some(terminal) => {
                     let id = terminal.id;
@@ -563,18 +948,23 @@ impl Desktop {
                 },
                 None => container(text("Process stopped. Launch Shell, Codex or Claude explicitly; previous work is not restarted.")).padding(20).into(),
             };
-            pane_grid::Content::new(body).title_bar(pane_grid::TitleBar::new(tabs).padding(4))
+            let mut header = column![tabs].spacing(4);
+            if let Some(tab) = pane.tabs.get(pane.active) && !tab.reminders.status.is_empty() {
+                header = header.push(text(&tab.reminders.status).size(11));
+            }
+            pane_grid::Content::new(body).title_bar(pane_grid::TitleBar::new(header).padding(4))
         }).spacing(5).on_click(Message::Focus).on_resize(8, Message::Resize).width(Length::Fill).height(Length::Fill);
         let tasks = column![
             text("GATEWAY TASKS").size(16),
-            text_input("Gateway project", &self.gateway_project).on_input(Message::GatewayProject),
-            button(if self.loading {
+            text_input("Gateway project", &workspace.gateway.project)
+                .on_input(Message::GatewayProject),
+            button(if workspace.gateway.loading {
                 "Loading…"
             } else {
                 "Refresh"
             })
             .on_press(Message::RefreshTasks),
-            scrollable(text(&self.tasks).size(13))
+            scrollable(self.task_list())
         ]
         .spacing(10)
         .width(280);
@@ -599,5 +989,199 @@ impl Desktop {
         )
         .padding(10)
         .into()
+    }
+}
+
+impl TaskPanel {
+    fn fresh(&self) -> bool {
+        self.loaded_at
+            .is_some_and(|time| time.elapsed() <= Duration::from_secs(15))
+    }
+
+    fn pending_task(&self, id: Uuid) -> bool {
+        self.fresh()
+            && self.tasks.iter().any(|task| {
+                task["id"]
+                    .as_str()
+                    .and_then(|value| Uuid::parse_str(value).ok())
+                    == Some(id)
+                    && task["status"] == "todo"
+                    && task["owner_origin"].is_null()
+                    && task["owner_agent_id"].as_str().is_none_or(str::is_empty)
+            })
+    }
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // No display, provider process, network, or environment mutation is involved.
+    fn desktop() -> Desktop {
+        let mut workspaces = Vec::new();
+        for id in 0..2 {
+            let (panes, focused) = pane_grid::State::new(Pane {
+                tabs: vec![Tab {
+                    id,
+                    title: "stopped".into(),
+                    terminal: None,
+                    provider: Some(Provider::Codex),
+                    recipient: None,
+                    reminders: Reminders::default(),
+                }],
+                active: 0,
+            });
+            workspaces.push(Workspace {
+                directory: PathBuf::from(format!("/fixture/{id}")),
+                panes,
+                focused,
+                gateway: TaskPanel {
+                    project: format!("project-{id}"),
+                    ..Default::default()
+                },
+            });
+        }
+        Desktop {
+            workspaces,
+            active: 0,
+            directory: String::new(),
+            next_id: 2,
+            status: String::new(),
+            ledger: None,
+            registry: None,
+            snapshot_path: None,
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn delayed_query_keeps_its_workspace_and_rejects_rebound_project() {
+        let mut app = desktop();
+        let first = app.scope(0);
+        let task = Uuid::new_v4();
+        let _ = app.update(Message::SelectWorkspace(1));
+        let _ = app.update(Message::TasksLoaded(
+            first.clone(),
+            Ok(json!([
+                {"id": task, "status": "todo", "title": "first workspace"}
+            ])),
+        ));
+        assert!(app.workspaces[0].gateway.pending_task(task));
+        assert!(app.workspaces[1].gateway.tasks.is_empty());
+        let _ = app.update(Message::SelectWorkspace(0));
+        let _ = app.update(Message::GatewayProject("replacement".into()));
+        app.workspaces[0].gateway.loading = true;
+        let _ = app.update(Message::TasksLoaded(
+            first,
+            Ok(json!([
+                {"id": task, "status": "todo"}
+            ])),
+        ));
+        assert!(
+            app.workspaces[0].gateway.loading,
+            "stale result must not finish a newer query"
+        );
+        assert!(app.workspaces[0].gateway.tasks.is_empty());
+        assert!(app.workspaces[0].gateway.loaded_at.is_none());
+        let mut wrong_directory = app.scope(0);
+        wrong_directory.directory = PathBuf::from("/different-project");
+        assert!(!app.scope_current(&wrong_directory));
+    }
+
+    #[test]
+    fn failed_expired_and_changed_task_queries_cannot_supply_pending_work() {
+        let mut app = desktop();
+        let task = Uuid::new_v4();
+        let scope = app.scope(0);
+        let _ = app.update(Message::TasksLoaded(
+            scope.clone(),
+            Ok(json!([
+                {"id": task, "status": "todo"}
+            ])),
+        ));
+        assert!(app.workspaces[0].gateway.pending_task(task));
+        app.workspaces[0].gateway.loaded_at = Some(Instant::now() - Duration::from_secs(16));
+        assert!(!app.workspaces[0].gateway.pending_task(task));
+        let _ = app.update(Message::TasksLoaded(
+            scope.clone(),
+            Ok(json!([
+                {"id": task, "status": "in_progress"}
+            ])),
+        ));
+        assert!(
+            !app.workspaces[0].gateway.pending_task(task),
+            "claimed recovery needs separate provenance"
+        );
+        let _ = app.update(Message::TasksLoaded(
+            scope.clone(),
+            Ok(json!([
+                {"id": task, "status": "todo", "owner_origin": {"session_id": Uuid::new_v4()}}
+            ])),
+        ));
+        assert!(
+            !app.workspaces[0].gateway.pending_task(task),
+            "inconsistent ownership must defer"
+        );
+        let _ = app.update(Message::TasksLoaded(scope.clone(), Err("offline".into())));
+        assert!(!app.workspaces[0].gateway.fresh());
+        assert!(app.workspaces[0].gateway.tasks.is_empty());
+        let _ = app.update(Message::TasksLoaded(scope, Ok(json!({"tasks": []}))));
+        assert!(!app.workspaces[0].gateway.fresh());
+    }
+
+    #[test]
+    fn consent_is_ephemeral_and_project_rebinding_withdraws_only_that_workspace() {
+        let mut app = desktop();
+        for workspace in &app.workspaces {
+            assert!(
+                !workspace.panes.get(workspace.focused).unwrap().tabs[0]
+                    .reminders
+                    .consent
+            );
+        }
+        for workspace in &mut app.workspaces {
+            workspace.panes.get_mut(workspace.focused).unwrap().tabs[0]
+                .reminders
+                .consent = true;
+        }
+        let _ = app.update(Message::GatewayProject("replacement".into()));
+        assert!(
+            !app.workspaces[0]
+                .panes
+                .get(app.workspaces[0].focused)
+                .unwrap()
+                .tabs[0]
+                .reminders
+                .consent
+        );
+        assert!(
+            app.workspaces[1]
+                .panes
+                .get(app.workspaces[1].focused)
+                .unwrap()
+                .tabs[0]
+                .reminders
+                .consent
+        );
+        let _ = app.update(Message::Consent(1, false));
+        assert!(
+            !app.workspaces[1]
+                .panes
+                .get(app.workspaces[1].focused)
+                .unwrap()
+                .tabs[0]
+                .reminders
+                .consent
+        );
     }
 }

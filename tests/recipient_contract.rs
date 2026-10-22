@@ -297,6 +297,76 @@ fn three_native_agent_terminals_bind_exactly_and_invalidate_stale_checkpoints() 
             400_000,
         )
         .unwrap();
+    let withdrawn = ledger
+        .queue(
+            uuid::Uuid::new_v4(),
+            addresses[0].clone(),
+            DeliveryCause::RecoveryQuery,
+            400_000,
+            400_000,
+        )
+        .unwrap();
+    ledger.retire_terminal(terminals[0].id).unwrap();
+    assert_eq!(
+        ledger
+            .records()
+            .iter()
+            .find(|r| r.id == withdrawn)
+            .unwrap()
+            .state,
+        DeliveryState::Retired
+    );
+    assert_eq!(
+        ledger
+            .records()
+            .iter()
+            .find(|r| r.id == cold_pending)
+            .unwrap()
+            .state,
+        DeliveryState::Pending,
+        "withdrawing one terminal must preserve a peer's queue"
+    );
+    ledger.retire_pending(refresh).unwrap();
+    ledger.retire_pending(delivery).unwrap();
+    assert_eq!(
+        ledger
+            .records()
+            .iter()
+            .find(|r| r.id == refresh)
+            .unwrap()
+            .state,
+        DeliveryState::Enqueued,
+        "task changes must preserve accepted input history"
+    );
+    assert_eq!(
+        ledger
+            .records()
+            .iter()
+            .find(|r| r.id == delivery)
+            .unwrap()
+            .state,
+        DeliveryState::Uncertain,
+        "withdrawal must preserve uncertain input history"
+    );
+    let changed = ledger
+        .queue(
+            uuid::Uuid::new_v4(),
+            addresses[1].clone(),
+            DeliveryCause::RecoveryQuery,
+            400_000,
+            400_000,
+        )
+        .unwrap();
+    ledger.retire_pending(changed).unwrap();
+    assert_eq!(
+        ledger
+            .records()
+            .iter()
+            .find(|r| r.id == changed)
+            .unwrap()
+            .state,
+        DeliveryState::Retired
+    );
     drop(ledger);
     let mut ledger = DeliveryLedger::open(&ledger_path).unwrap();
     for (id, state) in [

@@ -1,6 +1,6 @@
 //! Provisional Linux/Codex 0.163.0 prompt profile. No input or acknowledgment occurs here.
 //! Idle, partial-input and one real busy/continuation turn are exercised locally.
-//! Desktop integration and cross-platform/provider acceptance remain incomplete.
+//! Automatic recovery and cross-platform/provider acceptance remain incomplete.
 use crate::{
     identity::Provider,
     recipient::{NativeInputEvidence, RecipientAddress, RecipientCheckpoint, TerminalRecipient},
@@ -41,6 +41,30 @@ pub struct ReadyPrompt {
 }
 
 impl ReadinessGate {
+    /// Inspect every native update, including between readiness polls. A marker
+    /// may scroll away before the next poll; a changed screen must restart settling.
+    pub fn note_terminal_output(&mut self, terminal: &Terminal) {
+        let screen = terminal.observation(32_768);
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|candidate| screen.as_ref() != Some(&candidate.screen))
+        {
+            self.candidate = None;
+        }
+        if let (Some(id), Some(screen)) = (self.awaiting_echo, screen) {
+            let compact: String = screen
+                .lines
+                .iter()
+                .flat_map(|line| line.chars())
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            if compact.contains(&id.to_string()) {
+                self.awaiting_echo = None;
+            }
+        }
+    }
+
     /// Prevent a second submission while the first input may still be buffered.
     /// Visible echo is input-path evidence only, never semantic acknowledgment.
     pub fn note_input_attempt(&mut self, id: uuid::Uuid) {
@@ -56,6 +80,7 @@ impl ReadinessGate {
     ) -> Option<ReadyPrompt> {
         // Any failed observation discards the settling interval, including a
         // temporary foreground change with an otherwise unchanged screen.
+        self.note_terminal_output(terminal);
         let previous = self.candidate.take();
         if self.invalidated {
             return None;
@@ -77,18 +102,8 @@ impl ReadinessGate {
             return None;
         }
         let screen = terminal.observation(32_768)?;
-        if let Some(id) = self.awaiting_echo {
-            // Native wrapping can split the marker and indent continuation rows.
-            let compact: String = screen
-                .lines
-                .iter()
-                .flat_map(|line| line.chars())
-                .filter(|character| !character.is_whitespace())
-                .collect();
-            if !compact.contains(&id.to_string()) {
-                return None;
-            }
-            self.awaiting_echo = None;
+        if self.awaiting_echo.is_some() {
+            return None;
         }
         let headers: Vec<_> = screen
             .lines

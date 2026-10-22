@@ -244,6 +244,39 @@ impl DeliveryLedger {
         Ok(())
     }
 
+    /// Terminal IDs are unique within a desktop invocation. Cold open already
+    /// retires pending records from older invocations; never alter attempt history.
+    pub fn retire_terminal(&mut self, terminal_id: u64) -> Result<()> {
+        self.healthy()?;
+        let mut changed = false;
+        for record in &mut self.snapshot.records {
+            if record.recipient.terminal_id() == terminal_id
+                && record.state == DeliveryState::Pending
+            {
+                record.state = DeliveryState::Retired;
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    pub fn retire_pending(&mut self, id: Uuid) -> Result<()> {
+        self.healthy()?;
+        if let Some(record) = self
+            .snapshot
+            .records
+            .iter_mut()
+            .find(|record| record.id == id && record.state == DeliveryState::Pending)
+        {
+            record.state = DeliveryState::Retired;
+            self.persist()?;
+        }
+        Ok(())
+    }
+
     /// Call only after a separate native readiness check. No terminal input occurs here.
     pub fn begin_attempt(
         &mut self,
