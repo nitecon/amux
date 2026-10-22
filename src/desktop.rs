@@ -67,7 +67,7 @@ struct Tab {
     id: u64,
     title: String,
     // Fields drop in declaration order: request owned-job retirement before the PTY drops.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     lifetime: Option<amux::terminal_lifetime::TerminalLifetime>,
     terminal: Option<Terminal>,
     provider: Option<Provider>,
@@ -187,7 +187,7 @@ impl Desktop {
                             id: tab.id,
                             title: tab.title,
                             provider: tab.provider,
-                            #[cfg(target_os = "linux")]
+                            #[cfg(any(target_os = "linux", windows))]
                             lifetime: None,
                             terminal: None,
                             recipient: None,
@@ -301,7 +301,7 @@ impl Desktop {
                     return Tab {
                         id,
                         title: format!("Launch failed: {e}"),
-                        #[cfg(target_os = "linux")]
+                        #[cfg(any(target_os = "linux", windows))]
                         lifetime: None,
                         terminal: None,
                         provider: Some(provider),
@@ -342,7 +342,7 @@ impl Desktop {
             },
         ) {
             Ok(terminal) => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", windows))]
                 let lifetime = terminal.child_pid().and_then(|pid| {
                     match amux::terminal_lifetime::TerminalLifetime::capture(pid) {
                         Ok(lifetime) => Some(lifetime),
@@ -359,7 +359,7 @@ impl Desktop {
                 Tab {
                     id,
                     title,
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", windows))]
                     lifetime,
                     terminal: Some(terminal),
                     provider,
@@ -372,7 +372,7 @@ impl Desktop {
                 Tab {
                     id,
                     title: format!("{title} — launch failed"),
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", windows))]
                     lifetime: None,
                     terminal: None,
                     provider,
@@ -532,7 +532,7 @@ impl Desktop {
                                         tab.title = title
                                     }
                                     iced_term::actions::Action::Shutdown => {
-                                        #[cfg(target_os = "linux")]
+                                        #[cfg(any(target_os = "linux", windows))]
                                         {
                                             tab.lifetime.take();
                                         }
@@ -1060,7 +1060,7 @@ mod tests {
                 tabs: vec![Tab {
                     id,
                     title: "stopped".into(),
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", windows))]
                     lifetime: None,
                     terminal: None,
                     provider: Some(Provider::Codex),

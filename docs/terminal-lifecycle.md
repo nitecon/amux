@@ -47,3 +47,31 @@ The native event loop also drains a bounded final PTY read on child exit. Withou
 that option, exit can arrive before the read event and lose final output. The
 checked-input/closed-channel protocol test verifies the final reply before
 checking transport closure. This does not establish durable history retention.
+
+The Windows candidate uses a private, anonymous Job Object. It opens the initial
+ConPTY child through a retained native handle, checks its exact creation FILETIME,
+live state and direct parent, then enrolls it in a job with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The job handle is not inherited. The guard
+runs before the PTY drops; explicit retirement requests kernel termination, and
+closing the last job handle also requests termination. A peer terminal is not
+enrolled. Incompatible enclosing jobs or unavailable permissions report cleanup
+ownership as unavailable and leave the terminal usable.
+
+Children created after enrollment inherit the job, including background work
+with a new process group or no console. The job retains ownership after the
+initial child exits. Enrollment currently happens **after** process creation:
+descendants created before enrollment may escape. This gap remains open; neither
+project identity nor a later PID scan is treated as authority to adopt them.
+The [Windows job documentation](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+describes the underlying inheritance and handle-close behavior.
+
+```powershell
+cargo test --locked --test windows_terminal_lifecycle_contract
+```
+
+This native ConPTY regression deliberately gates background-child creation until
+after enrollment, then checks both a live and an already-exited initial child,
+idempotent retirement, and a surviving peer terminal. Retained native fixture
+handles provide cleanup after assertion failure. Native Windows CI and desktop
+review evidence are required; a Linux cross-check cannot establish Windows
+runtime or complete launch/teardown acceptance.
