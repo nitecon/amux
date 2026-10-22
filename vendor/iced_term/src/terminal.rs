@@ -390,9 +390,11 @@ time.sleep(30)
                     args: vec![
                         "-c".into(),
                         format!(
-                            "i=0; while [ $i -lt 150 ]; do printf 'line %s\\r\\n' $i; sleep 0.005; i=$((i+1)); done; printf '{marker}\\r\\n'; : > '{}'; sleep 30",
-                            done.display()
+                            "i=0; while [ $i -lt 150 ]; do printf 'line %s\\r\\n' $i; sleep 0.005; i=$((i+1)); done; printf '{marker}\\r\\n'; : > \"$1\"; sleep 30"
                         ),
+                        // The path is an argument, so quotes or spaces in it are safe.
+                        "sh".into(),
+                        done.display().to_string(),
                     ],
                     ..Default::default()
                 },
