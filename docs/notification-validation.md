@@ -57,5 +57,21 @@ cargo test --locked --test native_notification_contract    # Linux: real backend
 
 The native test points D-Bus at a nonexistent bus, so no notification appears
 on the developer's desktop. It shows the real Linux backend reports a missing
-service as `Failed` without blocking or panicking. No test shows a real
-notification; that needs a native desktop check on each platform.
+service as `Failed` without blocking or panicking.
+
+At source `fc5bf4c`, an implementer ran the native Linux GUI on a private Xvfb
+display and private D-Bus session with Dunst. Opting in and exiting one shell
+displayed a popup with literal `<b>literal</b> & safe` in its body; the footer
+reported service acceptance. The other shell retained its native process
+generation and executed a marker command, verified by a file in the repository.
+A separate native GUI run with no notification service showed the failure footer
+while preserving the peer shell. These checks used no gateway configuration or
+model turns. Probe scripts, screenshots and JSON evidence are under ignored
+`artifacts/notification-visible-gui/` and `artifacts/notification-gui/`.
+The same probe exposed a surviving terminal redraw issue after the other tab
+exits: output appears on the next keystroke. That remains a tracked GUI finding
+(`01a165c7-99fa`), so the notification result does not establish terminal acceptance.
+
+This is implementer evidence on Linux. Visible Windows notification behavior and
+independent CMUX platform acceptance remain open; unit tests and service
+acceptance alone do not prove a visible popup on either platform.

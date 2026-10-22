@@ -113,7 +113,7 @@ and cross-machine handoff are not done. See
 **Status:** packaging and review are in progress. Separate CLI and GUI entry
 points are built on Linux and Windows; native CI and bundle hashes are verified.
 Interactive platform acceptance and M1/M2 approval remain open. The recorded
-parity inventory has 29 rows: 1 implemented, 7 partial and 21 missing. macOS
+parity inventory has 29 rows: 1 implemented, 9 partial and 19 missing. macOS
 feasibility is recorded in [parity-status.md](parity-status.md).
 
 ## Evidence required from CMUX reviewers

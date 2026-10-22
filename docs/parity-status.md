@@ -1,6 +1,6 @@
 # Parity status
 
-Revision: amux `92db540` on `mvp/native-terminal`, October 22, 2026.
+Revision: amux `fc5bf4c` on `mvp/native-terminal`, October 22, 2026.
 
 This maps every row of the parity baseline in [features.md](features.md) to the
 current amux source. It records what exists, not acceptance. The pinned CMUX
@@ -38,8 +38,8 @@ checks did not run.
 | 9 | Durable repository review comments | None | Missing | None | None |
 | 10 | Sidebar branch/PR, status, notes, Git polling | Sidebar shows gateway tasks only (`task_list` in `src/desktop.rs`) | Missing | None | None |
 | 11 | Per-surface notification inbox (OSC 9/99/777, CLI notify, unread) | None | Missing | None | None |
-| 12 | Desktop notification actions, bells, workspace attention | None; amux has no desktop notifications yet | Missing | None | None |
-| 13 | Agent lifecycle/status notifications, native resume IDs, provider hooks | Process exit routed to the exact tab; no status, resume IDs or hooks. Hooks are not used for reminders (D6) | Missing | None | None |
+| 12 | Desktop notification actions, bells, workspace attention | Opt-in native process-exit notifications (`src/notifications.rs`, `src/desktop.rs`), bounded asynchronous delivery and separate outcome footer | Partial: no notification actions, bells or workspace attention | Local (visible private-display popup and missing-service check) | None (native module type-checked; popup review pending) |
+| 13 | Agent lifecycle/status notifications, native resume IDs, provider hooks | Process exit routed to the exact tab with an optional OS notification; no richer lifecycle status, resume IDs or hooks. Hooks are not used for reminders (D6) | Partial: process exit only | Local (native GUI process exit) | None |
 | 14 | Fixed Codex/Claude launch commands, per-tab Resume last | Provider tabs and `amux agent codex\|claude` with per-launch identity (`src/main.rs`, `src/identity.rs`) | Partial: no Resume last | Local; Review (launch) | Review (CLI launch only) |
 | 15 | Reviewed exact/prefix resume approval | None | Missing | None | None |
 | 16 | Session geometry, order, topology, selection, history replay | Workspaces, split topology, tabs and active workspace saved atomically (`src/session.rs`); restored processes stay stopped | Partial: no window geometry, no scrollback replay, no browser locations | Local (`tests/session_contract.rs`, GUI restore smoke) | None |
@@ -54,10 +54,10 @@ checks did not run.
 | 25 | Named persistent browser profiles | None | Missing | None | None |
 | 26 | Native Claude teams pane translation | None | Missing | None | None |
 | 27 | Diagnostics, request correlation, resource snapshots, benchmarks | None beyond test evidence files | Missing | None | None |
-| 28 | Platform paths, private storage, atomic replacement, process identity, native input | Per-user state dir (`directories`), `0600` agent registration, atomic layout save, process generation on Linux and Windows, owned terminal-session cleanup on Linux (`src/terminal_lifetime.rs`) | Partial: Windows terminal cleanup not in this revision; no macOS process identity | Local; Review (L3 cleanup partly fixed) | None |
-| 29 | Updates and distribution | CI review bundles with binary, `SHA256SUMS` and `BUILD.json`; manual review releases | Partial: no packages, installer, launcher or updater | Local (CI build) | Local (CI build) |
+| 28 | Platform paths, private storage, atomic replacement, process identity, native input | Per-user state dir (`directories`), `0600` agent registration, atomic layout save, process generation on Linux and Windows, Linux terminal-session guard (`src/terminal_lifetime.rs`) and Windows Job Object guard (`src/terminal_lifetime_windows.rs`) | Partial: Windows guard starts after enrollment; late forks, abrupt death and reaping remain acceptance gaps; no macOS process identity or native non-Linux input evidence | Local; Review (L3 cleanup partly fixed) | Local (native ConPTY cleanup tests); interactive review pending |
+| 29 | Updates and distribution | CI review bundles with separate CLI and GUI entry binaries, both hashes in `SHA256SUMS` and `BUILD.json`; immutable manual review releases | Partial: no packages, installer or updater | Local (native build, bundle verification and GUI launch) | Local (native build and bundle verification); Review (earlier launch artifact) |
 
-Totals: 1 Implemented, 7 Partial, 21 Missing.
+Totals: 1 Implemented, 9 Partial, 19 Missing.
 
 ## Evidence
 
@@ -66,11 +66,15 @@ Reproduce the local evidence from the repository root:
 ```sh
 cargo test --locked --no-default-features --tests   # core identity, gateway, session tests
 cargo test --locked --bin amux --test terminal_contract --test recipient_contract --test terminal_lifecycle_contract
+cargo test --locked --test notifications_contract --test native_notification_contract
 ```
 
 Opt-in provider checks are in [reminder-validation.md](reminder-validation.md).
 Review bundle checks are in [windows-review.md](windows-review.md). The Linux and
 Windows review findings are on CMUX tasks `01a164c9-f932` and `01a164c9-fac2`.
+The Linux follow-up is CMUX task `01a165a5-eba1`. These reviews remain separate
+from implementer evidence. Notification behavior and limits are recorded in
+[notification-validation.md](notification-validation.md).
 
 ## macOS feasibility
 
@@ -91,8 +95,8 @@ which ships on macOS; the vendored widget already has macOS key bindings
 - **Process generation:** `process_generation` returns an error on macOS
   (`src/identity.rs`), so every task mutation and message send fails there.
 - **Agent teardown:** the launcher's parent-death fence uses Linux `prctl`
-  (`src/main.rs`), and owned terminal-session cleanup is Linux-only, with Windows
-  in progress. macOS has neither.
+  (`src/main.rs`); terminal cleanup has Linux session and Windows Job Object
+  guards. macOS has neither native implementation.
 - **Input readiness:** native input evidence returns none outside Linux
   (`src/recipient.rs`), and the readiness profile covers Linux with Codex only.
   Reminders would always defer.
