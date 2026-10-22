@@ -48,6 +48,38 @@ enum Operation {
         #[command(subcommand)]
         operation: TaskOperation,
     },
+    /// Publish and retrieve inline gateway handoff text (not binary attachments).
+    Messages {
+        #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
+        project: String,
+        #[arg(long, env = "AMUX_GATEWAY_URL")]
+        gateway_url: String,
+        #[command(subcommand)]
+        operation: MessageOperation,
+    },
+}
+
+#[derive(Subcommand)]
+enum MessageOperation {
+    /// Include resolved threads; use offset to retrieve subsequent pages.
+    List {
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=500))]
+        limit: u16,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Retrieve a complete thread by its gateway-local numeric message ID.
+    Get {
+        #[arg(value_parser = clap::value_parser!(u64).range(1..=i64::MAX as u64))]
+        id: u64,
+    },
+    /// Publish inline text; may notify the project's configured external channel.
+    /// A lost reply is uncertain: check messages before manually retrying.
+    Send {
+        body: String,
+        #[arg(long)]
+        subject: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -111,6 +143,32 @@ fn run(cli: Cli) -> Result<u8> {
             "{}",
             serde_json::to_string_pretty(&identity::live_agents(&identity::state_directory()?)?)?
         ),
+        Operation::Messages {
+            project,
+            gateway_url,
+            operation,
+        } => {
+            let token = std::env::var("AMUX_GATEWAY_KEY")
+                .context("set AMUX_GATEWAY_KEY for gateway access")?;
+            let gateway = Gateway::new(&gateway_url, token)?;
+            let runtime = tokio::runtime::Runtime::new()?;
+            let value = runtime.block_on(async {
+                match operation {
+                    MessageOperation::List { limit, offset } => {
+                        gateway.messages(&project, limit, offset).await
+                    }
+                    MessageOperation::Get { id } => gateway.message(&project, id).await,
+                    MessageOperation::Send { body, subject } => {
+                        let actor = AgentIdentity::verified_from_environment()?;
+                        if actor.project_directory != cli.project_dir.canonicalize()? {
+                            bail!("message publication project directory differs from this agent's launch; switch to its project directory");
+                        }
+                        gateway.send_message(&project, body, subject, &actor).await
+                    }
+                }
+            })?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
         Operation::Tasks {
             project,
             gateway_url,

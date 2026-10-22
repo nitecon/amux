@@ -45,6 +45,22 @@ impl Gateway {
         body: Option<Value>,
         actor: Option<&AgentIdentity>,
     ) -> Result<Value> {
+        let path: Vec<_> = std::iter::once("tasks")
+            .chain(suffix.iter().copied())
+            .collect();
+        self.project_request(method, project, &path, body, actor, &[])
+            .await
+    }
+
+    async fn project_request(
+        &self,
+        method: Method,
+        project: &str,
+        suffix: &[&str],
+        body: Option<Value>,
+        actor: Option<&AgentIdentity>,
+        query: &[(&str, String)],
+    ) -> Result<Value> {
         if project.is_empty()
             || project == "."
             || project == ".."
@@ -59,10 +75,14 @@ impl Gateway {
             let mut path = url
                 .path_segments_mut()
                 .map_err(|_| anyhow::anyhow!("invalid gateway origin"))?;
-            path.extend(["v1", "projects", project, "tasks"]);
+            path.extend(["v1", "projects", project]);
             path.extend(suffix);
         }
-        let mut request = self.client.request(method, url).bearer_auth(&self.token);
+        let mut request = self
+            .client
+            .request(method, url)
+            .query(query)
+            .bearer_auth(&self.token);
         if let Some(actor) = actor {
             request = request
                 .header("X-Agent-Id", actor.session_id.to_string())
@@ -102,6 +122,75 @@ impl Gateway {
 
     pub async fn list(&self, project: &str) -> Result<Value> {
         self.request(Method::GET, project, &[], None, None).await
+    }
+
+    /// Inline scratch text uses the existing message threads, including resolved ones.
+    pub async fn messages(&self, project: &str, limit: u16, offset: usize) -> Result<Value> {
+        if !(1..=500).contains(&limit) {
+            bail!("message limit must be between 1 and 500");
+        }
+        self.project_request(
+            Method::GET,
+            project,
+            &["messages"],
+            None,
+            None,
+            &[
+                ("state", "all".into()),
+                ("limit", limit.to_string()),
+                ("offset", offset.to_string()),
+            ],
+        )
+        .await
+    }
+
+    pub async fn message(&self, project: &str, id: u64) -> Result<Value> {
+        if id == 0 || id > i64::MAX as u64 {
+            bail!("message ID must be a positive signed 64-bit integer");
+        }
+        self.project_request(
+            Method::GET,
+            project,
+            &["messages", &id.to_string(), "thread"],
+            None,
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// No automatic retry: a lost response can follow a committed publication.
+    pub async fn send_message(
+        &self,
+        project: &str,
+        body: String,
+        subject: Option<String>,
+        actor: &AgentIdentity,
+    ) -> Result<Value> {
+        if body.trim().is_empty() {
+            bail!("message body must not be empty");
+        }
+        // Axum's default JSON request limit is 2 MiB. Leave room for JSON escaping.
+        let value = json!({"body":body,"subject":subject});
+        if serde_json::to_vec(&value)?.len() > 1024 * 1024 {
+            bail!("encoded message exceeds 1 MiB; use a smaller inline handoff");
+        }
+        let result = self
+            .project_request(
+                Method::POST,
+                project,
+                &["messages"],
+                Some(value),
+                Some(actor),
+                &[],
+            )
+            .await?;
+        if result["message_id"].as_i64().is_none_or(|id| id <= 0) {
+            bail!(
+                "gateway did not return a canonical message ID; publication is uncertain, check messages before retrying"
+            );
+        }
+        Ok(result)
     }
     pub async fn claim(&self, project: &str, task: &str, actor: &AgentIdentity) -> Result<Value> {
         uuid::Uuid::parse_str(task).context("task ID must be a complete UUID")?;

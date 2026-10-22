@@ -1,0 +1,38 @@
+# Gateway handoff text
+
+The shipped `amux` CLI accesses the gateway directly; agent-tools is not required.
+Scratch text and Markdown documents travel inline in existing task specifications
+and message bodies. There is no separate document store or binary attachment API
+in this candidate.
+
+Set `AMUX_GATEWAY_URL`, `AMUX_GATEWAY_PROJECT`, and `AMUX_GATEWAY_KEY` in the
+environment. Keep the key out of command arguments. The URL must be an HTTP(S)
+origin without a path prefix. The project value is the gateway project identifier.
+
+```sh
+amux messages list --limit 50 --offset 0
+amux messages get 81
+amux messages send 'Review context and findings, inline.' --subject 'Review handoff'
+```
+
+Listing includes resolved threads and supports pages of 1–500 entries. `get`
+retrieves a complete thread using its positive numeric, gateway-local message ID.
+Message IDs are not task UUIDs and must not be transferred between deployments.
+
+Publishing requires an actual session launched by `amux agent codex` or
+`amux agent claude`, in its original project directory. The same applies to agent
+tabs launched by the desktop. The CLI checks the live registered process and
+calling ancestry before sending its session/instance headers. Reads do not
+require an agent launch. The gateway currently stores the sending agent ID on
+messages; these headers alone do not establish authenticated machine binding or
+full session provenance on the server.
+
+`send` may notify the project's configured external channel. A successful reply
+must contain a positive canonical message ID. A failed or lost reply leaves
+publication uncertain: inspect the thread list before manually retrying. The
+client does not retry publication or promise request deduplication. Encoded
+inline messages are limited to 1 MiB and responses to 4 MiB.
+
+Use `amux tasks --help` for the existing task operations. Task cancellation is
+pending a gateway contract that preserves the task and reporting actor; deleting
+a task is not cancellation. Terminal reminder injection remains disabled.
