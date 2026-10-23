@@ -500,3 +500,62 @@ fn shipped_cli_refuses_dispatch_outside_an_amux_launched_agent() {
         "no secret is created for an unverified caller"
     );
 }
+
+#[test]
+fn cancellation_acknowledgments_follow_the_final_cancelled_task_status() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let me = agent.target(&machine);
+    let task = Uuid::new_v4();
+    let with_status = |dispatch: Value, status: &str| {
+        let mut reply = ack(&me, task, dispatch);
+        reply["task"]["status"] = json!(status);
+        reply
+    };
+    let replies = vec![
+        // Pre-f060414 semantics (cancel finished the task as done) are refused.
+        Some((200, with_status(json!({"state": "cancelled"}), "done"))),
+        Some((200, with_status(json!({"state": "cancelled"}), "cancelled"))),
+        // A cancellation request records intent; the task stays in progress.
+        Some((
+            200,
+            with_status(
+                json!({"state": "claimed", "claim_id": "c1", "cancel_requested_at": 7}),
+                "done",
+            ),
+        )),
+        Some((
+            200,
+            with_status(
+                json!({"state": "claimed", "claim_id": "c1", "cancel_requested_at": 7}),
+                "in_progress",
+            ),
+        )),
+    ];
+    let (url, server) = server(replies);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let reason = |claim: Option<&str>| ActionArgs {
+        claim_id: claim.map(String::from),
+        result: Some("no longer needed".into()),
+        ..Default::default()
+    };
+    assert!(
+        runtime
+            .block_on(dispatcher.act(&agent, task, "cancel", reason(None)))
+            .is_err()
+    );
+    runtime
+        .block_on(dispatcher.act(&agent, task, "cancel", reason(None)))
+        .unwrap();
+    assert!(
+        runtime
+            .block_on(dispatcher.act(&agent, task, "request_cancel", reason(Some("c1"))))
+            .is_err()
+    );
+    runtime
+        .block_on(dispatcher.act(&agent, task, "request_cancel", reason(Some("c1"))))
+        .unwrap();
+    assert_eq!(finish(server).len(), 4);
+}

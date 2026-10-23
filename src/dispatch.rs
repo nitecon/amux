@@ -554,6 +554,9 @@ impl Dispatcher {
                 let party = destination || dispatch["requester"] == me;
                 let claim = || dispatch["claim_id"] == body["claim_id"];
                 let execution = || dispatch["execution_id"] == body["execution_id"];
+                // Task status as of agent-gateway f060414: outcomes finish the
+                // task as done, cancellation as cancelled, a request leaves it open.
+                let task = reply["task"]["status"].as_str();
                 same_task
                     && match operation {
                         "receive" => destination && state == "received",
@@ -565,10 +568,18 @@ impl Dispatcher {
                         }
                         "start" => destination && state == "running" && claim() && execution(),
                         "succeeded" | "failed" => {
-                            destination && state == operation && claim() && execution()
+                            destination
+                                && state == operation
+                                && claim()
+                                && execution()
+                                && task == Some("done")
                         }
-                        "request_cancel" => party && dispatch["cancel_requested_at"].is_i64(),
-                        "cancel" => party && state == "cancelled",
+                        "request_cancel" => {
+                            party
+                                && dispatch["cancel_requested_at"].is_i64()
+                                && task == Some("in_progress")
+                        }
+                        "cancel" => party && state == "cancelled" && task == Some("cancelled"),
                         "handoff" => state == "pending" && dispatch["target"] == body["target"],
                         _ => false,
                     }

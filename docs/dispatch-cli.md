@@ -86,8 +86,10 @@ uncertain and the command fails:
   destination and the state is the one that operation produces; a claim returns
   a claim ID and no start time; `start` and outcomes echo the claim and
   execution IDs;
-- `request_cancel` records a cancellation request; `cancel` reaches `cancelled`;
-  `handoff` returns the dispatch to `pending` for the requested new target.
+- outcomes leave the task `done`; `request_cancel` records a cancellation
+  request and leaves the task `in_progress`; `cancel` reaches `cancelled` with
+  the task `cancelled` (agent-gateway `f060414`); `handoff` returns the dispatch
+  to `pending` for the requested new target.
 
 Responses are limited to 4 MiB and the session list to 1,000 entries. Recovery
 is refused if its pending or requested work names another generation.
@@ -96,9 +98,9 @@ is refused if its pending or requested work names another generation.
 
 - Not run against a deployed gateway or real provisioned credentials; evidence is
   local HTTP fixtures (`tests/dispatch_contract.rs`).
-- Since agent-gateway `f060414`, dispatch `cancel` marks the task `cancelled`
-  rather than `done`. amux checks the dispatch state, not the task status, so it
-  works with either revision.
+- Requires agent-gateway `f060414` or later: earlier revisions marked a
+  cancelled dispatch's task `done`, which amux now refuses as a mismatched
+  acknowledgment.
 - No background heartbeat, desktop UI or automatic receipt. Recovery is read
   only, and a dead owner's lost generation credentials leave its work fenced, as
   the gateway contract intends.
