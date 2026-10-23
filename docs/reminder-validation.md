@@ -3,7 +3,7 @@
 The provisional readiness profile supports Linux with native Codex 0.163.0.
 Other providers/platforms and unknown prompt versions defer.
 
-In a running Codex pane, enable **Allow reminder input + Enter**, refresh the workspace's
+In a running Codex pane, enable **Allow gateway reminders + Enter**, refresh the workspace's
 gateway project, then select **Remind agent #…** beside an unclaimed task.
 The selection binds to that exact terminal/session/instance, even if focus later
 changes. It queues literal input and Enter for the supported empty prompt. Consent
@@ -18,11 +18,27 @@ its pending reminder. The reminder contains only canonical task/project identity
 and asks the agent to fetch the current record and check eligibility before
 deciding whether to claim. Task titles and notification bodies are not pasted.
 
-Automatic assignment discovery, session-start recovery and previously claimed
-task reminders remain incomplete. Claimed recovery needs authoritative prior
-claimant/machine provenance from the gateway; the UI does not infer that from a
-task's originating hostname. Explicit task selection is the current routing
-boundary. Unsupported profiles keep the selection deferred.
+With provisioned `AMUX_GATEWAY_MACHINE_ID` and `AMUX_GATEWAY_MACHINE_KEY`, a
+consenting supported pane also registers its exact native executor and queries
+recovery every ten seconds. This requires the complete-history contract from
+agent-gateway `017ff5c` or later, including `history_complete: true`; missing or
+invalid history pauses automatic reminders. Consent off performs no background
+registration or recovery. Machine credentials identify the machine separately
+from the executor's unique session and process generation.
+
+A supported empty prompt permits an explicit transport receipt for eligible
+pending work. Receipt alone never queues input: a subsequent fresh recovery
+query must confirm it. Receipt does not claim or start work. A lost or rejected
+receipt response blocks a new receipt intent; inspect `amux dispatch requests`
+and the canonical gateway record before using explicit stable-ID replay.
+
+Recovery reminders use canonical task/project identities and authenticated
+prior claimant, machine and execution context when present. They ask the agent
+to check existing progress, with the outcome unknown; they never authorize
+restarting work. Work held by a current live peer is excluded. Delayed replies
+are bound to the workspace, project revision, consent epoch, terminal and exact
+native actor. Withdrawal aborts pending requests and retires pending input;
+accepted gateway tasks remain on the gateway. Unsupported profiles defer.
 
 The submission coordinator checks native identity, foreground ownership,
 unread terminal input, exact styled empty prompt, settling and consent/input
@@ -83,3 +99,16 @@ request or gateway mutation. Its compact local summary is
 `artifacts/three-installed-agents-evidence.json`. This is native PTY evidence;
 it does not establish GUI focus behavior, gateway claim/delegation acceptance,
 or Windows acceptance.
+
+The local optimized Linux GUI check in
+`artifacts/desktop-recovery-native/evidence.json` uses controlled Codex-profile
+native processes and a real private gateway at `017ff5c`. Its build manifest
+records the exact source base, desktop patch hash and immutable binary hashes.
+Three same-project sessions have distinct IDs and generations. Consent off
+registers none; human partial input prevents receipt and input. Clearing the
+prompt then hiding the recipient permits one bracketed reminder and Enter only
+in that recipient. Both peers remain untouched, the task stays TODO/unowned and
+unstarted, and repeated queries do not duplicate input. Source tests additionally
+reject late consent/project/actor callbacks and expired recovery snapshots.
+These checks submit no model turns and establish neither installed-provider
+understanding, native Windows readiness nor deployed cross-machine acceptance.

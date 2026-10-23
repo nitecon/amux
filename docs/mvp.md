@@ -100,21 +100,30 @@ with no dependency on provider or agent-tools hooks (D6).
 - Gateway gaps that block these are fixed by agent-gateway, not worked around
   in amux.
 
-**Status:** reminders to a task the user explicitly selects work on Linux with
-Codex 0.163. That covers per-pane consent (off by default), exact recipient
-binding, readiness checks and a persistent reminder record. Automatic
-assignment, recovery of previously claimed work, Claude and Windows readiness,
-and cross-machine handoff are not done. See
-[reminder-validation.md](reminder-validation.md).
+**Status:** Linux/Codex 0.163 supports explicit task reminders and a consented
+recovery bridge. Consent defaults off and is not saved. Provisioned machine
+credentials enable exact native executor registration, fresh bounded recovery,
+readiness-gated transport receipt and deduplicated reminders. Receipt, input,
+agent understanding, claim and execution remain separate. Claude and Windows
+readiness, deployed cross-machine handoff and independent acceptance remain
+open. See [reminder-validation.md](reminder-validation.md).
 
-The native CLI now consumes credential-bound exact-session registration,
-delegation, receipt, claim, start, outcome and recovery operations. A private
-real gateway at `f060414` and amux at `b4454c5` passed three native fixture
-executors, wrong-peer rejection, stable-ID recovery after a lost reply, explicit
-handoff and prior-generation claim inspection without adoption. These fixtures
-are separate from installed-provider and deployed cross-machine acceptance.
-Gateway offline machine delivery is implemented separately at `1b3f4b4`;
-amux client integration, desktop reminders and platform acceptance remain open.
+The native CLI consumes credential-bound exact-session and offline machine
+delegation, receipt, claim, start, outcome and recovery operations. Private real
+gateway checks at `f060414` and `1b3f4b4` passed independent native executor
+fixtures, wrong-peer rejection, stable-ID recovery after a lost reply, concurrent
+receipt, explicit handoff and prior-generation ownership fences. The latter
+exposed missing history for a new destination machine; gateway `017ff5c` adds
+complete authenticated history and its explicit completeness marker. That
+source is in draft agent-gateway PR #4 with green source CI; it is not deployed.
+
+The optimized local desktop bridge check against private `017ff5c` passed three
+same-project native fixtures, consent off, partial-input deferral, hidden exact
+recipient delivery, peer isolation, receipt without claim/start and repeated
+query deduplication. Its source/patch and binary hashes are recorded with the
+local evidence. Source tests cover late callbacks, withdrawal, project changes
+and expiry. These fixtures are separate from installed-provider, Windows and
+deployed cross-machine acceptance.
 
 ### M3: cross-platform MVP acceptance
 
@@ -163,4 +172,7 @@ amux does not edit other repositories. These gaps are delegated to their owners:
 - **agent-tools:** resolving the identity of a Claude session started by another
   agent, so nested sessions can claim work.
 
-Until these land, amux fails clearly instead of assuming server guarantees.
+Both owners have source fixes. Gateway PR #4 remains draft and undeployed;
+the agent-tools resolver fix has been verified through its repository-local
+binary and has not been installed globally. amux requires the documented server
+guarantees and defers when they are absent.
