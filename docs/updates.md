@@ -8,18 +8,16 @@ check shows an error and preserves any update already reported.
 ## Direct downloads
 
 Keep the CLI, desktop and `BUILD.json` from the downloaded bundle together.
-The update panel shows the available release and a command you can copy:
+Open the top-right bell, or **Preferences → Updates**, and click **Update now**.
+The app downloads the release, verifies archive checksums, build metadata and both
+executables, then installs the pair. It stays open and keeps your terminals
+running. Click **Restart amux** when ready to use the installed version.
 
-```sh
-amux --update
-```
-
-In PowerShell, use `.\amux.exe --update` from the extracted directory if amux
-is not on PATH. The command verifies release checksums, build metadata and both
-executables before replacing the installed pair. It does not stop running
-terminals or agents. On Windows, files still in use can remain as backup images
-until a later update can remove them. Failures report whether restoration was
-complete; retain any reported backup files if manual recovery is necessary.
+There is no command-copy step. The CLI `amux --update` remains available for
+scripts and for upgrading older versions that predate the button. On Windows,
+files still in use can remain as backup images until a later update can remove
+them. Failures report whether restoration was complete; retain any reported
+backup files if manual recovery is necessary.
 
 Existing review candidates can update to the first later published stable release,
 `v0.0.1`. Its installed bundle switches to the stable channel, which follows
@@ -61,7 +59,7 @@ Then use the desktop bell to restart when ready. On Windows, run
 `.\amux.exe --update` in PowerShell from the extracted directory.
 
 To publish the next release, bump the package version in `Cargo.toml` and
-`Cargo.lock`, commit, then push the matching `vMAJOR.MINOR.PATCH` tag. The native
+`Cargo.lock`, commit and push to `main`, then push the matching `vMAJOR.MINOR.PATCH` tag. The native
 workflow checks that tag against Cargo, tests and builds both platforms, verifies
 the bundles, and publishes both archives and their `SHA256SUMS` only after both
 jobs pass. Tagged bundles have `candidate_only: false` in `BUILD.json`.

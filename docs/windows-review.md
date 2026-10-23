@@ -48,9 +48,14 @@ the error. There is no installer, Start menu entry or icon yet.
 
 ## Desktop gateway configuration and tabs
 
-Open **Gateway preferences** from the left sidebar or **GATEWAY TASKS** panel.
-Enter the HTTP(S) gateway origin (without a path), API key and project identifier,
-then **Save preferences** and **Refresh**. These desktop settings persist in
+Open **Preferences** from the left sidebar, or **Gateway preferences** in the task
+panel. A separate native window has **Gateway** and **Updates** tabs. Enter the
+HTTP(S) gateway origin (without a path) and API key, then **Save preferences**.
+Each workspace resolves its project automatically by matching its Git origin
+against gateway canonical repository metadata. Missing mappings are registered
+using the same repository-registration API as CMUX and verified by rereading the
+project list. Ambiguous mappings are refused; folder names are never guessed.
+There is no editable project identifier. These desktop settings persist in
 `gateway-preferences.json` in the application data directory (or `AMUX_STATE_DIR`).
 Keys are masked in the form and the file is private to the current user on Unix;
 on Windows it inherits the application's data-directory access permissions.
@@ -64,6 +69,10 @@ Changing the connection clears old task lists and withdraws reminder consent.
 Pending or unconfirmed task submissions must be resolved before changing it.
 
 Check saving and reopening preferences, authentication failures and task refresh.
+Closing preferences must leave the main window and terminals usable; closing
+the main window must also close preferences. In **Updates**, direct-download
+installs offer **Update now** and then an explicit restart, without a command-copy
+step. Package-manager installs retain their manager-specific instructions.
 Tabs use simple Terminal/Codex/Claude names, a directory subtitle, and an **×**
 within each tab header. Hover the subtitle for full path and terminal title.
 Verify that closing a hidden tab or a tab in another split leaves peers intact.

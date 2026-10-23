@@ -11,7 +11,6 @@ use std::{
 pub struct GatewayPreferences {
     pub url: String,
     pub api_key: String,
-    pub project: String,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -22,7 +21,6 @@ impl GatewayPreferences {
         Self {
             url: value("AMUX_GATEWAY_URL"),
             api_key: value("AMUX_GATEWAY_KEY"),
-            project: value("AMUX_GATEWAY_PROJECT"),
             machine_id: value("AMUX_GATEWAY_MACHINE_ID"),
             machine_key: value("AMUX_GATEWAY_MACHINE_KEY"),
         }
@@ -40,17 +38,6 @@ impl GatewayPreferences {
 
     pub fn validate(&self) -> Result<()> {
         self.gateway()?;
-        if matches!(self.project.as_str(), "" | "." | "..")
-            || self.project.len() > 128
-            || !self
-                .project
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
-        {
-            bail!(
-                "Project must contain letters, numbers, dots, hyphens or underscores (up to 128 characters)"
-            );
-        }
         if !self.machine_id.is_empty() || !self.machine_key.is_empty() {
             let id = uuid::Uuid::parse_str(&self.machine_id)
                 .ok()

@@ -7,6 +7,35 @@ fn directory() -> tempfile::TempDir {
     tempfile::tempdir_in(base).unwrap()
 }
 
+#[test]
+fn gateway_origin_and_api_key_save_without_a_manual_project() {
+    let dir = directory();
+    let path = dir.path().join("gateway.json");
+    let settings = GatewayPreferences {
+        url: "https://gateway.nitecon.org".into(),
+        api_key: "fixture-key-not-a-live-credential".into(),
+        ..Default::default()
+    };
+    settings.save(&path).unwrap();
+    assert_eq!(
+        GatewayPreferences::load(&path).unwrap().unwrap().url,
+        settings.url
+    );
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(legacy.get("project").is_none());
+    legacy["project"] = serde_json::json!("old-manual-identifier");
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let loaded = GatewayPreferences::load(&path).unwrap().unwrap();
+    assert_eq!(loaded.api_key, settings.api_key);
+    assert!(
+        serde_json::to_value(loaded)
+            .unwrap()
+            .get("project")
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn saved_preferences_connect_without_environment_configuration() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -15,7 +44,6 @@ async fn saved_preferences_connect_without_environment_configuration() {
     let settings = GatewayPreferences {
         url: format!("http://{}", listener.local_addr().unwrap()),
         api_key: "private-fixture-key".into(),
-        project: "amux-fixture".into(),
         ..Default::default()
     };
     settings.save(&path).unwrap();
@@ -54,7 +82,7 @@ async fn saved_preferences_connect_without_environment_configuration() {
         restored
             .gateway()
             .unwrap()
-            .list(&restored.project)
+            .list("amux-fixture")
             .await
             .unwrap(),
         serde_json::json!([])
@@ -69,7 +97,6 @@ fn invalid_settings_preserve_saved_credentials_and_hide_secret_errors() {
     let mut settings = GatewayPreferences {
         url: "https://gateway.example.test".into(),
         api_key: "fixture-key".into(),
-        project: "amux".into(),
         ..Default::default()
     };
     settings.save(&path).unwrap();

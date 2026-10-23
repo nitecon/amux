@@ -3,6 +3,7 @@ pub mod delivery;
 pub mod dispatch;
 pub mod gateway;
 pub mod gateway_preferences;
+pub mod gateway_project;
 pub mod identity;
 pub mod notifications;
 #[cfg(feature = "desktop")]

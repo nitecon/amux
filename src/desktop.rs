@@ -31,16 +31,21 @@ enum Message {
     Focus(pane_grid::Pane),
     CloseTab(pane_grid::Pane, u64),
     Preferences(bool),
+    PreferencesTab(PreferencesTab),
+    WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
     Updates(bool),
     CheckUpdates,
     UpdatesChecked(Result<amux::updates::UpdateCheck, String>),
-    CopyUpdateCommand(String),
+    InstallUpdate,
+    UpdateInstalled(Result<String, String>),
     RestartUpdated,
     Resize(pane_grid::ResizeEvent),
     Terminal(iced_term::Event),
+    #[cfg(test)]
     GatewayProject(String),
+    ProjectResolved(QueryScope, Result<String, String>),
     RefreshTasks,
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
     RecoveryLoaded(RecoveryScope, Result<desktop_recovery::Recovery, String>),
@@ -62,7 +67,6 @@ enum Message {
 enum PreferenceField {
     Url,
     ApiKey,
-    Project,
     MachineId,
     MachineKey,
 }
@@ -77,13 +81,21 @@ struct Preferences {
     current: GatewayPreferences,
     draft: GatewayPreferences,
     path: Option<PathBuf>,
-    open: bool,
+    window: Option<iced::window::Id>,
+    tab: PreferencesTab,
     status: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreferencesTab {
+    Gateway,
+    Updates,
 }
 
 struct Updates {
     running: Option<std::sync::Arc<amux::updates::Running>>,
-    open: bool,
+    installing: bool,
+    install_status: String,
     checking: bool,
     checked_at: Option<Instant>,
     restart_checked_at: Option<Instant>,
@@ -101,7 +113,8 @@ impl Updates {
                 .map(ToString::to_string)
                 .unwrap_or_default(),
             running: running.ok().map(std::sync::Arc::new),
-            open: false,
+            installing: false,
+            install_status: String::new(),
             checking: false,
             checked_at: None,
             restart_checked_at: None,
@@ -238,6 +251,7 @@ struct Workspace {
     gateway: TaskPanel,
 }
 struct Desktop {
+    main_window: iced::window::Id,
     preferences: Preferences,
     updates: Updates,
     workspaces: Vec<Workspace>,
@@ -257,15 +271,13 @@ struct Desktop {
 
 pub fn run(directory: PathBuf) -> anyhow::Result<()> {
     let directory = directory.canonicalize()?;
-    iced::application(
+    iced::daemon(
         move || Desktop::new(directory.clone()),
         Desktop::update,
-        Desktop::view,
+        Desktop::window_view,
     )
-    .title("amux · agent workspaces")
-    .theme(Theme::TokyoNight)
-    .window_size((1380.0, 840.0))
-    .exit_on_close_request(false)
+    .title(Desktop::window_title)
+    .theme(|_: &Desktop, _| Theme::TokyoNight)
     .subscription(Desktop::subscription)
     .run()?;
     Ok(())
@@ -273,6 +285,11 @@ pub fn run(directory: PathBuf) -> anyhow::Result<()> {
 
 impl Desktop {
     fn new(directory: PathBuf) -> (Self, Task<Message>) {
+        let (main_window, open) = iced::window::open(iced::window::Settings {
+            size: iced::Size::new(1380.0, 840.0),
+            exit_on_close_request: false,
+            ..Default::default()
+        });
         let state = amux::identity::state_directory();
         let ledger = state
             .as_ref()
@@ -305,8 +322,9 @@ impl Desktop {
             ),
         };
         let mut app = Self {
+            main_window,
             updates: Updates::new(),
-            preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, status: preferences_error },
+            preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, window: None, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, directory: directory.display().to_string(), next_id: 0,
             status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
             ledger: ledger.ok().flatten(),
@@ -343,19 +361,25 @@ impl Desktop {
         if app.workspaces.is_empty() {
             app.add_workspace(directory.clone());
         }
-        // An environment project binding applies only to the launch directory.
-        for workspace in &mut app.workspaces {
-            if workspace.directory == directory {
-                workspace.gateway.project = app.preferences.current.project.clone();
-            }
-        }
         if let Some(error) = delivery_error {
             app.status =
                 format!("Reminder storage unavailable: {error}. Local terminals remain available.");
         }
         let focus = app.focus();
         let updates = app.check_updates();
-        (app, Task::batch([focus, updates]))
+        let gateways = if !app.preferences.current.url.is_empty() {
+            Task::batch(
+                (0..app.workspaces.len())
+                    .map(|i| app.query(i))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            Task::none()
+        };
+        (
+            app,
+            Task::batch([open.map(|_| Message::WindowReady), focus, updates, gateways]),
+        )
     }
 
     fn restore_layout(&mut self, layout: Layout) -> pane_grid::Configuration<Pane> {
@@ -612,13 +636,12 @@ impl Desktop {
             self.dirty = true;
         }
         match message {
+            Message::WindowReady => {}
             Message::Save => {
                 self.save();
             }
             Message::Close(window) => {
-                if self.save() {
-                    return iced::window::close(window);
-                }
+                return self.close_window(window);
             }
             Message::Directory(value) => self.directory = value,
             Message::LocalNotifications(enabled) => {
@@ -635,7 +658,7 @@ impl Desktop {
             Message::NewWorkspace => match PathBuf::from(&self.directory).canonicalize() {
                 Ok(directory) if directory.is_dir() => {
                     self.add_workspace(directory);
-                    return self.focus();
+                    return Task::batch([self.focus(), self.query(self.active)]);
                 }
                 _ => self.status = "Choose an existing project directory".into(),
             },
@@ -714,23 +737,32 @@ impl Desktop {
                 return self.focus();
             }
             Message::Preferences(open) => {
-                self.preferences.open = open;
-                self.preferences.draft = self.preferences.current.clone();
+                return if open {
+                    self.open_preferences(PreferencesTab::Gateway)
+                } else {
+                    self.close_preferences()
+                };
             }
+            Message::PreferencesTab(tab) => self.preferences.tab = tab,
             Message::Preference(field, Secret(value)) => {
                 if value.len() <= 16 * 1024 {
                     let draft = &mut self.preferences.draft;
                     *match field {
                         PreferenceField::Url => &mut draft.url,
                         PreferenceField::ApiKey => &mut draft.api_key,
-                        PreferenceField::Project => &mut draft.project,
                         PreferenceField::MachineId => &mut draft.machine_id,
                         PreferenceField::MachineKey => &mut draft.machine_key,
                     } = value;
                 }
             }
             Message::SavePreferences => return self.save_preferences(),
-            Message::Updates(open) => self.updates.open = open,
+            Message::Updates(open) => {
+                return if open {
+                    self.open_preferences(PreferencesTab::Updates)
+                } else {
+                    self.close_preferences()
+                };
+            }
             Message::CheckUpdates => return self.check_updates(),
             Message::UpdatesChecked(result) => {
                 self.updates.checking = false;
@@ -747,7 +779,18 @@ impl Desktop {
                 }
                 self.updates.refresh_restart();
             }
-            Message::CopyUpdateCommand(command) => return iced::clipboard::write(command),
+            Message::InstallUpdate => return self.install_update(),
+            Message::UpdateInstalled(result) => {
+                self.updates.installing = false;
+                self.updates.refresh_restart();
+                match result {
+                    Ok(summary) => {
+                        self.updates.install_status = summary;
+                        return self.check_updates();
+                    }
+                    Err(error) => self.updates.install_status = format!("Update failed: {error}"),
+                }
+            }
             Message::RestartUpdated => return self.restart_updated(),
             Message::Resize(event) => self.workspaces[self.active]
                 .panes
@@ -815,23 +858,23 @@ impl Desktop {
                     }
                 }
             }
-            Message::GatewayProject(project) => {
-                let ids: Vec<_> = self.workspaces[self.active]
-                    .panes
-                    .iter()
-                    .flat_map(|(_, pane)| &pane.tabs)
-                    .map(|tab| tab.id)
-                    .collect();
-                for id in ids {
-                    self.withdraw(id);
+            #[cfg(test)]
+            Message::GatewayProject(project) => self.bind_project(self.active, project),
+            Message::ProjectResolved(scope, result) => {
+                if !self.scope_current(&scope) {
+                    return Task::none();
                 }
-                let panel = &mut self.workspaces[self.active].gateway;
-                panel.project = project;
-                panel.revision += 1;
-                panel.loading = false;
-                panel.loaded_at = None;
-                panel.tasks.clear();
-                panel.status = "Project changed; consent withdrawn. Refresh current tasks.".into();
+                self.workspaces[scope.workspace].gateway.loading = false;
+                match result {
+                    Ok(project) => {
+                        self.bind_project(scope.workspace, project);
+                        return self.query(scope.workspace);
+                    }
+                    Err(error) => {
+                        self.workspaces[scope.workspace].gateway.status =
+                            format!("Could not connect this repository: {error}");
+                    }
+                }
             }
             Message::RefreshTasks => return self.query(self.active),
             Message::TaskTitle(title) => {
@@ -1103,7 +1146,7 @@ impl Desktop {
     }
 
     fn check_updates(&mut self) -> Task<Message> {
-        if self.updates.checking {
+        if self.updates.checking || self.updates.installing {
             return Task::none();
         }
         self.updates.checked_at = Some(Instant::now());
@@ -1119,6 +1162,34 @@ impl Desktop {
                     .map_err(|error| error.to_string())
             },
             Message::UpdatesChecked,
+        )
+    }
+
+    fn install_update(&mut self) -> Task<Message> {
+        if self.updates.installing
+            || self.updates.checking
+            || self.updates.restart.required
+            || !self.updates.report.as_ref().is_some_and(|report| {
+                report.available.is_some()
+                    && matches!(report.method, amux::updates::InstallMethod::Direct { .. })
+                    && matches!(report.guidance, amux::updates::Guidance::CliUpdate { .. })
+            })
+        {
+            return Task::none();
+        }
+        let Some(running) = self.updates.running.clone() else {
+            return Task::none();
+        };
+        self.updates.installing = true;
+        self.updates.install_status.clear();
+        self.updates.error.clear();
+        Task::perform(
+            async move {
+                amux::updates::update(&running, &amux::updates::ReleaseSource::github())
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            Message::UpdateInstalled,
         )
     }
 
@@ -1139,6 +1210,9 @@ impl Desktop {
         &mut self,
         start: impl FnOnce(&std::path::Path, &std::path::Path) -> anyhow::Result<()>,
     ) -> Task<Message> {
+        if self.updates.installing {
+            return Task::none();
+        }
         let restart = self
             .updates
             .running
@@ -1194,8 +1268,14 @@ impl Desktop {
     }
 
     fn updates_view(&self) -> Element<'_, Message> {
-        let mut content = column![text("App updates").size(26)].spacing(14);
-        if self.updates.restart.required {
+        let mut content = column![text("App updates").size(24)].spacing(14);
+        if self.updates.installing {
+            content = content
+                .push(text("Downloading and installing update…").size(20))
+                .push(text(
+                    "You can keep using your terminals. Restart when the update is ready.",
+                ));
+        } else if self.updates.restart.required {
             content =
                 content.push(text("An installed update is ready. Restart to use it.").size(20));
             if self.updates.restart.path.is_some() {
@@ -1220,66 +1300,144 @@ impl Desktop {
                     .unwrap_or(env!("CARGO_PKG_VERSION"))
             )));
             if let Some(release) = &report.available {
-                content = content
-                    .push(text(format!("Update available: {}", release.tag)).size(20))
-                    .push(text(&release.html_url).size(12));
+                content = content.push(text(format!("Update available: {}", release.tag)).size(20));
             } else if report.note.is_some() {
                 content = content.push(text("Update status needs attention."));
             } else {
-                content =
-                    content.push(text("No newer release is available for this installation."));
+                content = content.push(text("You are up to date."));
             }
-            let command = match &report.guidance {
+            match &report.guidance {
                 amux::updates::Guidance::CliUpdate { .. } => {
-                    content = content.push(text(
-                        "Open a terminal in the amux download folder, then run:",
-                    ));
-                    Some(if cfg!(windows) {
-                        ".\\amux.exe --update"
-                    } else {
-                        "./amux --update"
-                    })
+                    if report.available.is_some() {
+                        content = content.push(button("Update now").on_press_maybe(
+                            (!self.updates.checking).then_some(Message::InstallUpdate)))
+                            .push(text("Download and install without closing terminals. Restart when ready.").size(13));
+                    }
                 }
-                amux::updates::Guidance::Homebrew { command } => Some(command.as_str()),
+                amux::updates::Guidance::Homebrew { command } => {
+                    content = content.push(text(format!(
+                        "Managed by Homebrew. Update with {command}, then restart here."
+                    )));
+                }
                 amux::updates::Guidance::Manual { url } => {
                     content = content.push(text(format!(
                         "Update using your installation method: {url}"
                     )));
-                    None
                 }
-            };
-            if let Some(command) = command {
-                content = content
-                    .push(text(command).font(iced::Font::MONOSPACE))
-                    .push(
-                        button("Copy update command")
-                            .on_press(Message::CopyUpdateCommand(command.to_owned())),
-                    );
             }
             if let Some(note) = &report.note {
                 content = content.push(text(note).size(13));
             }
         }
+        if !self.updates.install_status.is_empty() {
+            content = content.push(text(&self.updates.install_status).size(13));
+        }
         if !self.updates.error.is_empty() {
             content = content.push(text(&self.updates.error));
         }
         content = content.push(
-            row![
-                button(if self.updates.checking {
-                    "Checking…"
-                } else {
-                    "Check for updates"
-                })
-                .on_press_maybe((!self.updates.checking).then_some(Message::CheckUpdates)),
-                button("Back").on_press(Message::Updates(false))
-            ]
-            .spacing(8),
+            button(if self.updates.checking {
+                "Checking…"
+            } else {
+                "Check for updates"
+            })
+            .on_press_maybe(
+                (!self.updates.checking && !self.updates.installing)
+                    .then_some(Message::CheckUpdates),
+            ),
         );
-        container(scrollable(content.max_width(650)))
-            .padding(24)
+        scrollable(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+
+    fn open_preferences(&mut self, tab: PreferencesTab) -> Task<Message> {
+        self.preferences.tab = tab;
+        if let Some(window) = self.preferences.window {
+            return iced::window::gain_focus(window);
+        }
+        self.preferences.draft = self.preferences.current.clone();
+        let (window, open) = iced::window::open(iced::window::Settings {
+            size: iced::Size::new(720.0, 720.0),
+            min_size: Some(iced::Size::new(520.0, 420.0)),
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+        self.preferences.window = Some(window);
+        open.map(|_| Message::WindowReady)
+    }
+
+    fn close_preferences(&mut self) -> Task<Message> {
+        self.preferences.draft = self.preferences.current.clone();
+        match self.preferences.window.take() {
+            Some(window) => Task::batch([
+                iced::window::close(window),
+                iced::window::gain_focus(self.main_window),
+                self.focus(),
+            ]),
+            None => Task::none(),
+        }
+    }
+
+    fn close_window(&mut self, window: iced::window::Id) -> Task<Message> {
+        if self.preferences.window == Some(window) {
+            return self.close_preferences();
+        }
+        if window == self.main_window {
+            if self.updates.installing {
+                self.status =
+                    "An update is installing. Wait for it to finish before closing amux.".into();
+            } else if self.save() {
+                return iced::exit();
+            }
+        }
+        Task::none()
+    }
+
+    fn window_title(&self, window: iced::window::Id) -> String {
+        if self.preferences.window == Some(window) {
+            "amux · Preferences"
+        } else {
+            "amux · agent workspaces"
+        }
+        .into()
+    }
+
+    fn window_view(&self, window: iced::window::Id) -> Element<'_, Message> {
+        if self.preferences.window != Some(window) {
+            return self.view();
+        }
+        let tab = |label, kind| {
+            button(label)
+                .on_press(Message::PreferencesTab(kind))
+                .style(move |theme, status| {
+                    if self.preferences.tab == kind {
+                        button::primary(theme, status)
+                    } else {
+                        button::secondary(theme, status)
+                    }
+                })
+        };
+        let body = match self.preferences.tab {
+            PreferencesTab::Gateway => self.preferences_view(),
+            PreferencesTab::Updates => self.updates_view(),
+        };
+        container(
+            column![
+                row![
+                    tab("Gateway", PreferencesTab::Gateway),
+                    tab("Updates", PreferencesTab::Updates)
+                ]
+                .spacing(8),
+                body
+            ]
+            .spacing(20),
+        )
+        .padding(24)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     fn save_preferences(&mut self) -> Task<Message> {
@@ -1296,7 +1454,6 @@ impl Desktop {
         }
         let mut draft = self.preferences.draft.clone();
         draft.url = draft.url.trim().to_owned();
-        draft.project = draft.project.trim().to_owned();
         draft.api_key = draft.api_key.trim().to_owned();
         draft.machine_key = draft.machine_key.trim().to_owned();
         draft.machine_id = draft.machine_id.trim().to_owned();
@@ -1322,6 +1479,7 @@ impl Desktop {
         for workspace in &mut self.workspaces {
             let panel = &mut workspace.gateway;
             panel.revision += 1;
+            panel.project.clear();
             panel.loading = false;
             panel.loaded_at = None;
             panel.queried_at = None;
@@ -1330,12 +1488,14 @@ impl Desktop {
                 "Gateway preferences changed. Refresh to connect; reminder consent withdrawn."
                     .into();
         }
-        self.workspaces[self.active].gateway.project = draft.project.clone();
         self.preferences.current = draft;
-        self.preferences.open = false;
         self.preferences.status = "Gateway preferences saved".into();
-        self.status = "Gateway preferences saved. Refresh tasks to connect.".into();
-        Task::none()
+        self.status = "Gateway preferences saved. Connecting repositories…".into();
+        Task::batch(
+            (0..self.workspaces.len())
+                .map(|i| self.query(i))
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn preferences_view(&self) -> Element<'_, Message> {
@@ -1351,18 +1511,18 @@ impl Desktop {
         };
         container(scrollable(column![
             text("Gateway preferences").size(26),
-            text("Connect this desktop to your task gateway."),
+            text("Connect with your gateway URL and API key. Projects are resolved automatically from each workspace’s Git remote."),
             field("Gateway URL", &draft.url, PreferenceField::Url, false),
             field("API key", &draft.api_key, PreferenceField::ApiKey, true),
-            field("Project identifier", &draft.project, PreferenceField::Project, false),
             text("Optional machine credentials").size(18),
             text("Needed for automatic recovery on supported agents. Get these from your gateway administrator.").size(12),
             field("Machine UUID", &draft.machine_id, PreferenceField::MachineId, false),
             field("Machine key", &draft.machine_key, PreferenceField::MachineKey, true),
-            text("Saved on this device in the application data directory. Saved preferences take precedence over launch environment variables.").size(12),
+            text("Settings are saved on this device.").size(12),
             text(&self.preferences.status).size(13),
+            text(&self.workspaces[self.active].gateway.status).size(13),
             row![button("Save preferences").on_press(Message::SavePreferences), button("Cancel").on_press(Message::Preferences(false))].spacing(8),
-        ].spacing(14).max_width(600))).padding(24).width(Length::Fill).height(Length::Fill).into()
+        ].spacing(14))).width(Length::Fill).height(Length::Fill).into()
     }
 
     fn scope(&self, workspace: usize) -> QueryScope {
@@ -1373,6 +1533,25 @@ impl Desktop {
             project: current.gateway.project.trim().to_owned(),
             revision: current.gateway.revision,
         }
+    }
+
+    fn bind_project(&mut self, workspace: usize, project: String) {
+        let ids: Vec<_> = self.workspaces[workspace]
+            .panes
+            .iter()
+            .flat_map(|(_, pane)| &pane.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        for id in ids {
+            self.withdraw(id);
+        }
+        let panel = &mut self.workspaces[workspace].gateway;
+        panel.project = project;
+        panel.revision += 1;
+        panel.loading = false;
+        panel.loaded_at = None;
+        panel.tasks.clear();
+        panel.status = "Repository project resolved; reminder consent remains off.".into();
     }
 
     fn scope_current(&self, scope: &QueryScope) -> bool {
@@ -1386,14 +1565,23 @@ impl Desktop {
             return Task::none();
         }
         panel.queried_at = Some(Instant::now());
-        if scope.project.is_empty() {
-            panel.status = "Enter this workspace's gateway project identifier".into();
-            return Task::none();
-        }
         let gateway = self.preferences.current.gateway();
         match gateway {
             Ok(gateway) => {
                 panel.loading = true;
+                if scope.project.is_empty() {
+                    panel.status = "Resolving project from repository…".into();
+                    return Task::perform(
+                        async move {
+                            let result = gateway
+                                .resolve_project(scope.directory.clone())
+                                .await
+                                .map_err(|e| e.to_string());
+                            (scope, result)
+                        },
+                        |(scope, result)| Message::ProjectResolved(scope, result),
+                    );
+                }
                 Task::perform(
                     async move {
                         let result = gateway
@@ -1420,7 +1608,8 @@ impl Desktop {
             return Task::none();
         }
         if scope.project.is_empty() || panel.draft_title.trim().is_empty() {
-            panel.draft_status = "Not submitted: enter a gateway project and task title".into();
+            panel.draft_status =
+                "Not submitted: wait for the repository connection and enter a task title".into();
             return Task::none();
         }
         if panel.draft_title.len() > 1024 || panel.draft_context.text().len() > 64 * 1024 {
@@ -1962,12 +2151,6 @@ impl Desktop {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        if self.updates.open {
-            return self.updates_view();
-        }
-        if self.preferences.open {
-            return self.preferences_view();
-        }
         let workspace = &self.workspaces[self.active];
         let mut sidebar = column![text("amux").size(30), text("WORKSPACES").size(12)].spacing(12);
         for (i, w) in self.workspaces.iter().enumerate() {
@@ -1989,7 +2172,7 @@ impl Desktop {
         sidebar = sidebar
             .push(text_input("Project directory", &self.directory).on_input(Message::Directory))
             .push(button("New workspace").on_press(Message::NewWorkspace))
-            .push(button("Gateway preferences").on_press(Message::Preferences(true)))
+            .push(button("Preferences").on_press(Message::Preferences(true)))
             .push(
                 checkbox(self.notify_exits)
                     .label("Notify on process exit")
@@ -2048,8 +2231,12 @@ impl Desktop {
         let tasks = column![
             text("GATEWAY TASKS").size(16),
             button("Gateway preferences").on_press(Message::Preferences(true)),
-            text_input("Gateway project", &workspace.gateway.project)
-                .on_input(Message::GatewayProject),
+            text(if workspace.gateway.project.is_empty() {
+                "Project: resolving from repository…".to_owned()
+            } else {
+                format!("Project: {}", workspace.gateway.project)
+            })
+            .size(13),
             button(if workspace.gateway.loading {
                 "Loading…"
             } else {
@@ -2191,9 +2378,11 @@ mod tests {
             });
         }
         Desktop {
+            main_window: iced::window::Id::unique(),
             updates: Updates {
                 running: None,
-                open: false,
+                installing: false,
+                install_status: String::new(),
                 checking: false,
                 checked_at: Some(Instant::now()),
                 restart_checked_at: Some(Instant::now()),
@@ -2208,7 +2397,8 @@ mod tests {
                 current: GatewayPreferences::default(),
                 draft: GatewayPreferences::default(),
                 path: None,
-                open: false,
+                window: None,
+                tab: PreferencesTab::Gateway,
                 status: String::new(),
             },
             workspaces,
@@ -2225,6 +2415,90 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
         }
+    }
+
+    #[test]
+    fn preferences_use_one_separate_window_and_closing_it_preserves_workspaces() {
+        let mut app = desktop();
+        let workspace_count = app.workspaces.len();
+        let _ = app.update(Message::Preferences(true));
+        let window = app.preferences.window.unwrap();
+        assert_ne!(window, app.main_window);
+        app.preferences.draft.url = "https://gateway.nitecon.org".into();
+        let _ = app.update(Message::Updates(true));
+        assert_eq!(app.preferences.window, Some(window));
+        assert_eq!(app.preferences.tab, PreferencesTab::Updates);
+        assert_eq!(app.preferences.draft.url, "https://gateway.nitecon.org");
+        let _ = app.update(Message::Close(window));
+        assert!(app.preferences.window.is_none());
+        assert_eq!(app.workspaces.len(), workspace_count);
+        assert!(!app.restarting);
+        let _ = app.update(Message::Preferences(true));
+        assert_ne!(app.preferences.window, Some(window));
+        assert!(app.preferences.draft.url.is_empty());
+    }
+
+    #[test]
+    fn project_resolution_is_fenced_and_binds_its_own_background_workspace() {
+        let mut app = desktop();
+        app.workspaces[0].gateway.project.clear();
+        let old = app.scope(0);
+        app.workspaces[0].gateway.revision += 1;
+        let _ = app.update(Message::ProjectResolved(
+            old,
+            Ok("wrong-old-project".into()),
+        ));
+        assert!(app.workspaces[0].gateway.project.is_empty());
+        let fresh = app.scope(0);
+        app.active = 1;
+        let peer = app.workspaces[1].gateway.project.clone();
+        let _ = app.update(Message::ProjectResolved(
+            fresh.clone(),
+            Ok("canonical-alias".into()),
+        ));
+        assert_eq!(app.workspaces[0].gateway.project, "canonical-alias");
+        assert_eq!(app.workspaces[1].gateway.project, peer);
+        let _ = app.update(Message::ProjectResolved(fresh, Err("late failure".into())));
+        assert!(!app.workspaces[0].gateway.status.contains("late failure"));
+    }
+
+    #[test]
+    fn ui_update_refuses_managed_installs_and_prevents_duplicate_install_or_restart() {
+        let mut app = desktop();
+        app.updates.report = Some(update_report());
+        app.updates.report.as_mut().unwrap().guidance = amux::updates::Guidance::Homebrew {
+            command: "brew upgrade amux".into(),
+        };
+        let _ = app.update(Message::InstallUpdate);
+        assert!(!app.updates.installing);
+        app.updates.report = Some(update_report());
+        let report = app.updates.report.as_mut().unwrap();
+        report.method = amux::updates::InstallMethod::Direct {
+            dir: PathBuf::from("fixture-not-executed"),
+            revision: "a".repeat(40),
+        };
+        report.guidance = amux::updates::Guidance::CliUpdate {
+            command: "amux --update".into(),
+        };
+        app.updates.running = Some(std::sync::Arc::new(amux::updates::Running::at(
+            PathBuf::from("fixture-not-executed"),
+        )));
+        assert!(app.update(Message::InstallUpdate).units() > 0);
+        assert!(app.updates.installing);
+        assert_eq!(app.update(Message::InstallUpdate).units(), 0);
+        let _ = app.update(Message::RestartUpdated);
+        assert!(!app.restarting);
+        let _ = app.update(Message::Close(app.main_window));
+        assert!(app.status.contains("installing"));
+        let _ = app.update(Message::UpdateInstalled(Err(
+            "private fixture failure".into()
+        )));
+        assert!(!app.updates.installing);
+        assert!(
+            app.updates
+                .install_status
+                .contains("private fixture failure")
+        );
     }
 
     fn update_report() -> amux::updates::UpdateCheck {
@@ -2266,7 +2540,8 @@ mod tests {
         assert!(app.updates.attention());
         assert!(app.updates.error.contains("offline"));
         let _ = app.update(Message::Updates(true));
-        assert!(app.updates.open);
+        assert!(app.preferences.window.is_some());
+        assert_eq!(app.preferences.tab, PreferencesTab::Updates);
         assert!(
             app.workspaces[0]
                 .panes
@@ -2350,7 +2625,8 @@ mod tests {
         assert!(DeliveryLedger::open(&ledger_path).is_err());
         assert!(app.updates.error.contains("fixture launch failed"));
         let _ = app.update(Message::Updates(true));
-        assert!(app.updates.open);
+        assert!(app.preferences.window.is_some());
+        assert_eq!(app.preferences.tab, PreferencesTab::Updates);
     }
 
     fn preferences_fixture() -> (tempfile::TempDir, Desktop) {
@@ -2362,7 +2638,6 @@ mod tests {
         app.preferences.draft = GatewayPreferences {
             url: "http://127.0.0.1:9".into(),
             api_key: "fixture-key".into(),
-            project: "fixture".into(),
             ..Default::default()
         };
         (dir, app)
@@ -2380,9 +2655,9 @@ mod tests {
                 .consent = true;
         }
         let _ = app.update(Message::SavePreferences);
-        assert_eq!(app.preferences.current.project, "fixture");
+        assert!(app.workspaces.iter().all(|w| w.gateway.project.is_empty()));
         for workspace in &app.workspaces {
-            assert!(!workspace.gateway.loading);
+            assert!(workspace.gateway.loading);
             assert!(workspace.gateway.tasks.is_empty());
             assert!(
                 !workspace.panes.get(workspace.focused).unwrap().tabs[0]
@@ -2412,8 +2687,8 @@ mod tests {
         app.preferences.draft.url = "https://example.test".into();
         app.workspaces[0].gateway.request = Some(TaskRequest {
             id: Uuid::new_v4(),
-            project: "fixture".into(),
             title: "pending".into(),
+            project: "fixture".into(),
             state: TaskRequestState::Sending,
         });
         let _ = app.update(Message::SavePreferences);

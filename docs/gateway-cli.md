@@ -107,7 +107,10 @@ Claude readiness and native Windows reminder input remain incomplete.
 ## Desktop task submission
 
 The gateway sidebar accepts a task title and multiline handoff context for the
-selected gateway project. It uses the same gateway client and acceptance checks
+automatically resolved workspace project. The desktop matches the workspace’s
+Git origin to the gateway’s canonical repository mapping, including aliases;
+URL and API key are configured in the separate **Preferences → Gateway** window.
+It uses the same gateway client and acceptance checks
 as the CLI. This is a desktop user action, not an agent execution: it sends no
 agent session headers and does not claim or start the task.
 

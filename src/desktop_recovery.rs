@@ -1254,7 +1254,6 @@ mod tests {
             let preferences = amux::gateway_preferences::GatewayPreferences {
                 url: entered.into(),
                 api_key: previous.token.clone(),
-                project: previous.project.clone(),
                 machine_id: previous.machine_id.to_string(),
                 machine_key: previous.machine_key.clone(),
             };

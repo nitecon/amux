@@ -31,15 +31,17 @@ cargo test --no-default-features --tests
 always run the `amux` CLI next to it, so keep both binaries together;
 `amux --project-dir ... desktop` opens the same desktop from a console.
 
-Open **Gateway preferences** in the desktop sidebar or task panel to enter the
-gateway URL, API key and project identifier. Save, then **Refresh** the task
-list. Preferences persist on this device; no environment setup is required for
-the desktop. Optional machine credentials are needed only for supported recovery.
+Open **Preferences** for a separate window with **Gateway** and **Updates** tabs.
+Enter the gateway URL and API key, then save. Each workspace resolves its project
+automatically from its Git remote and the gateway’s canonical repository mapping.
+Preferences persist on this device; no project identifier or environment setup
+is required for the desktop. Optional machine credentials are needed only for supported recovery.
 Each Terminal, Codex and Claude tab has its own **×** close button and a directory
 subtitle; hover the subtitle for the full path and terminal title.
 
 The top-right bell shows app updates. Direct-download installs use
-`amux --update`; package-managed installs show their own upgrade instructions.
+**Update now** in the Updates tab to download and replace both executables;
+package-managed installs show their own upgrade instructions.
 Restart is explicit and restores tabs stopped. See [app updates](docs/updates.md).
 
 `whoami` runs inside an amux-launched agent and prints that execution's inherited

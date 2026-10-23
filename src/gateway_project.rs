@@ -78,6 +78,11 @@ pub fn origin(directory: &Path) -> Result<String> {
         }
     }
     command.env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
     let mut child = command
         .spawn()
         .context("cannot run git to read the workspace origin")?;
