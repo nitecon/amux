@@ -29,34 +29,19 @@ pub struct Credentials {
 }
 
 impl Credentials {
-    pub fn from_environment(project: &str) -> Result<Self> {
+    pub fn from_preferences(
+        project: &str,
+        settings: &amux::gateway_preferences::GatewayPreferences,
+    ) -> Result<Self> {
         if !is_project(project) {
             bail!("recovery requires a canonical project identifier");
         }
-        let endpoint = std::env::var("AMUX_GATEWAY_URL")
-            .ok()
-            .and_then(|s| reqwest::Url::parse(&s).ok())
-            .filter(|u| {
-                matches!(u.scheme(), "http" | "https")
-                    && u.host_str().is_some()
-                    && u.username().is_empty()
-                    && u.password().is_none()
-                    && u.path() == "/"
-                    && u.query().is_none()
-                    && u.fragment().is_none()
-            })
-            .context("set AMUX_GATEWAY_URL to an HTTP(S) origin")?
-            .to_string();
-        let token = std::env::var("AMUX_GATEWAY_KEY")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .context("set AMUX_GATEWAY_KEY for recovery")?;
-        let machine_id = std::env::var("AMUX_GATEWAY_MACHINE_ID")
-            .ok()
-            .and_then(|s| canonical_uuid(&s).ok())
-            .context("set AMUX_GATEWAY_MACHINE_ID to the provisioned machine UUID")?;
-        let machine_key = std::env::var("AMUX_GATEWAY_MACHINE_KEY")
-            .context("set AMUX_GATEWAY_MACHINE_KEY for recovery")?;
+        settings.gateway()?;
+        let endpoint = settings.url.trim().to_owned();
+        let token = settings.api_key.clone();
+        let machine_id = canonical_uuid(&settings.machine_id)
+            .context("Set provisioned machine credentials in Gateway preferences for recovery")?;
+        let machine_key = settings.machine_key.clone();
         Machine::new(machine_id, machine_key.clone())
             .map_err(|_| anyhow::anyhow!("invalid recovery machine credential"))?;
         Ok(Self {

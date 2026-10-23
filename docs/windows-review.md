@@ -46,6 +46,28 @@ so its startup errors are not visible; if it fails to open, run
 `.\amux.exe --project-dir C:\path\to\project desktop` from PowerShell to see
 the error. There is no installer, Start menu entry or icon yet.
 
+## Desktop gateway configuration and tabs
+
+Open **Gateway preferences** from the left sidebar or **GATEWAY TASKS** panel.
+Enter the HTTP(S) gateway origin (without a path), API key and project identifier,
+then **Save preferences** and **Refresh**. These desktop settings persist in
+`gateway-preferences.json` in the application data directory (or `AMUX_STATE_DIR`).
+Keys are masked in the form and the file is private to the current user on Unix;
+on Windows it inherits the application's data-directory access permissions.
+Saved settings take precedence over environment values for the desktop.
+The CLI continues to use its documented flags and environment variables.
+
+Machine UUID and machine key are optional for listing/creating tasks. Obtain
+provisioned values from the gateway administrator for supported recovery; saving
+these fields does not enable Windows or Claude automatic reminder input.
+Changing the connection clears old task lists and withdraws reminder consent.
+Pending or unconfirmed task submissions must be resolved before changing it.
+
+Check saving and reopening preferences, authentication failures and task refresh.
+Tabs use simple Terminal/Codex/Claude names, a directory subtitle, and an **×**
+within each tab header. Hover the subtitle for full path and terminal title.
+Verify that closing a hidden tab or a tab in another split leaves peers intact.
+
 ## Linux bundle
 
 The x86_64-unknown-linux-gnu artifact is built on Ubuntu 24.04. It is an initial

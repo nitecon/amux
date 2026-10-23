@@ -30,6 +30,13 @@ cargo test --no-default-features --tests
 always run the `amux` CLI next to it, so keep both binaries together;
 `amux --project-dir ... desktop` opens the same desktop from a console.
 
+Open **Gateway preferences** in the desktop sidebar or task panel to enter the
+gateway URL, API key and project identifier. Save, then **Refresh** the task
+list. Preferences persist on this device; no environment setup is required for
+the desktop. Optional machine credentials are needed only for supported recovery.
+Each Terminal, Codex and Claude tab has its own **×** close button and a directory
+subtitle; hover the subtitle for the full path and terminal title.
+
 `whoami` runs inside an amux-launched agent and prints that execution's inherited
 identity. `cargo run -- agents` lists live launches. Provider commands must already
 be on PATH. See [native review instructions](docs/windows-review.md) for bundles,

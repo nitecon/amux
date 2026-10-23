@@ -1,15 +1,17 @@
 //! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
 use amux::delivery::{DeliveryCause, DeliveryLedger, DeliveryState};
+use amux::gateway_preferences::GatewayPreferences;
+use amux::identity::Provider;
 use amux::notifications::{Notifier, Outcome};
 use amux::readiness::ReadinessGate;
 use amux::recipient::TerminalRecipient;
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::submission::{Submission, submit_literal};
-use amux::{gateway::Gateway, identity::Provider};
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
 use iced::widget::{
     button, checkbox, column, container, pane_grid, row, scrollable, text, text_editor, text_input,
+    tooltip,
 };
 use iced::{Element, Length, Subscription, Task, Theme};
 use iced_term::{Terminal, TerminalView};
@@ -27,7 +29,10 @@ enum Message {
     SelectTab(pane_grid::Pane, usize),
     Split(pane_grid::Axis),
     Focus(pane_grid::Pane),
-    CloseTab,
+    CloseTab(pane_grid::Pane, u64),
+    Preferences(bool),
+    Preference(PreferenceField, Secret),
+    SavePreferences,
     Resize(pane_grid::ResizeEvent),
     Terminal(iced_term::Event),
     GatewayProject(String),
@@ -46,6 +51,29 @@ enum Message {
     DeliveryTick,
     Save,
     Close(iced::window::Id),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PreferenceField {
+    Url,
+    ApiKey,
+    Project,
+    MachineId,
+    MachineKey,
+}
+#[derive(Clone)]
+struct Secret(String);
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+struct Preferences {
+    current: GatewayPreferences,
+    draft: GatewayPreferences,
+    path: Option<PathBuf>,
+    open: bool,
+    status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +187,7 @@ struct Workspace {
     gateway: TaskPanel,
 }
 struct Desktop {
+    preferences: Preferences,
     workspaces: Vec<Workspace>,
     active: usize,
     directory: String,
@@ -202,7 +231,28 @@ impl Desktop {
             .err()
             .map(ToString::to_string)
             .or_else(|| ledger.as_ref().err().map(ToString::to_string));
+        let preferences_path = state
+            .as_ref()
+            .ok()
+            .map(|p| p.join("gateway-preferences.json"));
+        let loaded = preferences_path
+            .as_deref()
+            .map(GatewayPreferences::load)
+            .transpose();
+        let (preferences, preferences_error) = match loaded {
+            Ok(saved) => (
+                saved
+                    .flatten()
+                    .unwrap_or_else(GatewayPreferences::from_environment),
+                String::new(),
+            ),
+            Err(error) => (
+                GatewayPreferences::default(),
+                format!("{error}. Save corrected preferences to replace them."),
+            ),
+        };
         let mut app = Self {
+            preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, status: preferences_error },
             workspaces: Vec::new(), active: 0, directory: directory.display().to_string(), next_id: 0,
             status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
             ledger: ledger.ok().flatten(),
@@ -242,8 +292,7 @@ impl Desktop {
         // An environment project binding applies only to the launch directory.
         for workspace in &mut app.workspaces {
             if workspace.directory == directory {
-                workspace.gateway.project =
-                    std::env::var("AMUX_GATEWAY_PROJECT").unwrap_or_default();
+                workspace.gateway.project = app.preferences.current.project.clone();
             }
         }
         if let Some(error) = delivery_error {
@@ -499,7 +548,7 @@ impl Desktop {
                 | Message::NewTab(_)
                 | Message::SelectTab(..)
                 | Message::Split(_)
-                | Message::CloseTab
+                | Message::CloseTab(..)
                 | Message::Resize(_)
         ) {
             self.dirty = true;
@@ -578,30 +627,51 @@ impl Desktop {
                 }
                 return self.focus();
             }
-            Message::CloseTab => {
+            Message::CloseTab(pane_id, terminal_id) => {
                 let workspace = &self.workspaces[self.active];
-                if let Some(pane) = workspace.panes.get(workspace.focused)
-                    && (pane.tabs.len() > 1 || workspace.panes.len() > 1)
-                    && let Some(tab) = pane.tabs.get(pane.active)
-                {
-                    self.withdraw(tab.id);
+                let Some(pane) = workspace.panes.get(pane_id) else {
+                    return Task::none();
+                };
+                let Some(index) = pane.tabs.iter().position(|t| t.id == terminal_id) else {
+                    return Task::none();
+                };
+                if pane.tabs.len() == 1 && workspace.panes.len() == 1 {
+                    self.status = "Keep one terminal per workspace; exit the application to close all sessions".into();
+                    return Task::none();
                 }
+                self.withdraw(terminal_id);
                 let workspace = &mut self.workspaces[self.active];
-                let focused = workspace.focused;
-                if let Some(pane) = workspace.panes.get_mut(focused) {
-                    if pane.tabs.len() > 1 {
-                        pane.tabs.remove(pane.active);
-                        pane.active = pane.active.min(pane.tabs.len() - 1);
-                    } else if workspace.panes.len() > 1 {
-                        if let Some((_, sibling)) = workspace.panes.close(focused) {
-                            workspace.focused = sibling;
-                        }
-                    } else {
-                        self.status = "Keep one terminal per workspace; exit the application to close all sessions".into();
+                let pane = workspace.panes.get_mut(pane_id).expect("pane exists");
+                if pane.tabs.len() > 1 {
+                    pane.tabs.remove(index);
+                    if index < pane.active {
+                        pane.active -= 1;
                     }
+                    pane.active = pane.active.min(pane.tabs.len() - 1);
+                } else if let Some((_, sibling)) = workspace.panes.close(pane_id)
+                    && workspace.focused == pane_id
+                {
+                    workspace.focused = sibling;
                 }
                 return self.focus();
             }
+            Message::Preferences(open) => {
+                self.preferences.open = open;
+                self.preferences.draft = self.preferences.current.clone();
+            }
+            Message::Preference(field, Secret(value)) => {
+                if value.len() <= 16 * 1024 {
+                    let draft = &mut self.preferences.draft;
+                    *match field {
+                        PreferenceField::Url => &mut draft.url,
+                        PreferenceField::ApiKey => &mut draft.api_key,
+                        PreferenceField::Project => &mut draft.project,
+                        PreferenceField::MachineId => &mut draft.machine_id,
+                        PreferenceField::MachineKey => &mut draft.machine_key,
+                    } = value;
+                }
+            }
+            Message::SavePreferences => return self.save_preferences(),
             Message::Resize(event) => self.workspaces[self.active]
                 .panes
                 .resize(event.split, event.ratio.clamp(0.05, 0.95)),
@@ -727,6 +797,7 @@ impl Desktop {
                 }
             }
             Message::TaskCreated(scope, request_id, result) => {
+                let current = self.scope_current(&scope);
                 let Some(workspace) = self.workspaces.get_mut(scope.workspace) else {
                     return Task::none();
                 };
@@ -750,7 +821,7 @@ impl Desktop {
                 };
                 // A project rebind must not discard the original request's receipt.
                 // Refresh only if this workspace still shows the submitted project.
-                if accepted && panel.project.trim() == scope.project {
+                if accepted && current && panel.project.trim() == scope.project {
                     return self.query(scope.workspace);
                 }
             }
@@ -938,6 +1009,89 @@ impl Desktop {
         Task::none()
     }
 
+    fn save_preferences(&mut self) -> Task<Message> {
+        if self.workspaces.iter().any(|w| {
+            w.gateway.request.as_ref().is_some_and(|r| {
+                matches!(
+                    r.state,
+                    TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                )
+            })
+        }) {
+            self.preferences.status = "A task submission is pending or unconfirmed. Inspect its result before changing connections; use New task only after resolving it.".into();
+            return Task::none();
+        }
+        let mut draft = self.preferences.draft.clone();
+        draft.url = draft.url.trim().to_owned();
+        draft.project = draft.project.trim().to_owned();
+        draft.api_key = draft.api_key.trim().to_owned();
+        draft.machine_key = draft.machine_key.trim().to_owned();
+        draft.machine_id = draft.machine_id.trim().to_owned();
+        let result = self
+            .preferences
+            .path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Application settings directory unavailable"))
+            .and_then(|path| draft.save(path));
+        if let Err(error) = result {
+            self.preferences.status = format!("Not saved: {error}");
+            return Task::none();
+        }
+        let ids: Vec<_> = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            self.withdraw(id);
+        }
+        for workspace in &mut self.workspaces {
+            let panel = &mut workspace.gateway;
+            panel.revision += 1;
+            panel.loading = false;
+            panel.loaded_at = None;
+            panel.queried_at = None;
+            panel.tasks.clear();
+            panel.status =
+                "Gateway preferences changed. Refresh to connect; reminder consent withdrawn."
+                    .into();
+        }
+        self.workspaces[self.active].gateway.project = draft.project.clone();
+        self.preferences.current = draft;
+        self.preferences.open = false;
+        self.preferences.status = "Gateway preferences saved".into();
+        self.status = "Gateway preferences saved. Refresh tasks to connect.".into();
+        Task::none()
+    }
+
+    fn preferences_view(&self) -> Element<'_, Message> {
+        let draft = &self.preferences.draft;
+        let field = |label, value, kind, secure| {
+            column![
+                text(label).size(13),
+                text_input("", value)
+                    .secure(secure)
+                    .on_input(move |value| Message::Preference(kind, Secret(value)))
+            ]
+            .spacing(4)
+        };
+        container(scrollable(column![
+            text("Gateway preferences").size(26),
+            text("Connect this desktop to your task gateway."),
+            field("Gateway URL", &draft.url, PreferenceField::Url, false),
+            field("API key", &draft.api_key, PreferenceField::ApiKey, true),
+            field("Project identifier", &draft.project, PreferenceField::Project, false),
+            text("Optional machine credentials").size(18),
+            text("Needed for automatic recovery on supported agents. Get these from your gateway administrator.").size(12),
+            field("Machine UUID", &draft.machine_id, PreferenceField::MachineId, false),
+            field("Machine key", &draft.machine_key, PreferenceField::MachineKey, true),
+            text("Saved on this device in the application data directory. Saved preferences take precedence over launch environment variables.").size(12),
+            text(&self.preferences.status).size(13),
+            row![button("Save preferences").on_press(Message::SavePreferences), button("Cancel").on_press(Message::Preferences(false))].spacing(8),
+        ].spacing(14).max_width(600))).padding(24).width(Length::Fill).height(Length::Fill).into()
+    }
+
     fn scope(&self, workspace: usize) -> QueryScope {
         let current = &self.workspaces[workspace];
         QueryScope {
@@ -963,11 +1117,7 @@ impl Desktop {
             panel.status = "Enter this workspace's gateway project identifier".into();
             return Task::none();
         }
-        let gateway = std::env::var("AMUX_GATEWAY_URL")
-            .ok()
-            .zip(std::env::var("AMUX_GATEWAY_KEY").ok())
-            .ok_or_else(|| anyhow::anyhow!("Set AMUX_GATEWAY_URL and AMUX_GATEWAY_KEY"))
-            .and_then(|(url, key)| Gateway::new(&url, key));
+        let gateway = self.preferences.current.gateway();
         match gateway {
             Ok(gateway) => {
                 panel.loading = true;
@@ -1004,11 +1154,7 @@ impl Desktop {
             panel.draft_status = "Not submitted: task title or context is too long".into();
             return Task::none();
         }
-        let gateway = std::env::var("AMUX_GATEWAY_URL")
-            .ok()
-            .zip(std::env::var("AMUX_GATEWAY_KEY").ok())
-            .ok_or_else(|| anyhow::anyhow!("Set AMUX_GATEWAY_URL and AMUX_GATEWAY_KEY"))
-            .and_then(|(url, key)| Gateway::new(&url, key));
+        let gateway = self.preferences.current.gateway();
         let gateway = match gateway {
             Ok(gateway) => gateway,
             Err(error) => {
@@ -1092,16 +1238,18 @@ impl Desktop {
         {
             return Task::none();
         }
-        let credentials =
-            match desktop_recovery::Credentials::from_environment(query.project.trim()) {
-                Ok(credentials) => credentials,
-                Err(error) => {
-                    tab.reminders.recovery.queried_at = Some(Instant::now());
-                    tab.reminders.recovery.snapshot = None;
-                    tab.reminders.status = format!("Gateway recovery unavailable: {error}");
-                    return Task::none();
-                }
-            };
+        let credentials = match desktop_recovery::Credentials::from_preferences(
+            query.project.trim(),
+            &self.preferences.current,
+        ) {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                tab.reminders.recovery.queried_at = Some(Instant::now());
+                tab.reminders.recovery.snapshot = None;
+                tab.reminders.status = format!("Gateway recovery unavailable: {error}");
+                return Task::none();
+            }
+        };
         tab.reminders.recovery.actor = Some(actor.clone());
         let scope = RecoveryScope {
             query,
@@ -1541,6 +1689,9 @@ impl Desktop {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if self.preferences.open {
+            return self.preferences_view();
+        }
         let workspace = &self.workspaces[self.active];
         let mut sidebar = column![text("amux").size(30), text("WORKSPACES").size(12)].spacing(12);
         for (i, w) in self.workspaces.iter().enumerate() {
@@ -1562,23 +1713,35 @@ impl Desktop {
         sidebar = sidebar
             .push(text_input("Project directory", &self.directory).on_input(Message::Directory))
             .push(button("New workspace").on_press(Message::NewWorkspace))
+            .push(button("Gateway preferences").on_press(Message::Preferences(true)))
             .push(
                 checkbox(self.notify_exits)
                     .label("Notify on process exit")
                     .on_toggle(Message::LocalNotifications),
             );
         let toolbar = row![
-            button("Shell").on_press(Message::NewTab(None)),
+            button("Terminal").on_press(Message::NewTab(None)),
             button("Codex").on_press(Message::NewTab(Some(Provider::Codex))),
             button("Claude").on_press(Message::NewTab(Some(Provider::Claude))),
             button("Split right").on_press(Message::Split(pane_grid::Axis::Vertical)),
-            button("Split down").on_press(Message::Split(pane_grid::Axis::Horizontal)),
-            button("Close tab").on_press(Message::CloseTab)
+            button("Split down").on_press(Message::Split(pane_grid::Axis::Horizontal))
         ]
         .spacing(8);
         let grid = pane_grid::PaneGrid::new(&workspace.panes, |id, pane, _| {
             let mut tabs = row![].spacing(4);
-            for (i, tab) in pane.tabs.iter().enumerate() { tabs = tabs.push(button(text(format!("{} {} · #{}", if pane.active == i { "●" } else { "" }, short_title(&tab.title), tab.id)).wrapping(iced::widget::text::Wrapping::None)).on_press(Message::SelectTab(id, i))); }
+            for (i, tab) in pane.tabs.iter().enumerate() {
+                let label = match tab.provider { Some(Provider::Codex) => "Codex", Some(Provider::Claude) => "Claude", None => "Terminal" };
+                // Two sibling controls in one tab container: closing never selects a peer.
+                let select = button(text(label)).style(if pane.active == i { button::primary } else { button::secondary })
+                    .on_press(Message::SelectTab(id, i));
+                let close = button(text("×").size(14)).style(button::text).padding([4, 6])
+                    .on_press(Message::CloseTab(id, tab.id));
+                let subtitle = format!("{}{}", workspace.directory.file_name().unwrap_or(workspace.directory.as_os_str()).to_string_lossy(), if tab.terminal.is_none() { " · stopped" } else { "" });
+                tabs = tabs.push(container(column![
+                    container(row![select, close].align_y(iced::Alignment::Center)).style(container::rounded_box),
+                    tooltip(text(short_title(&subtitle)).size(11).wrapping(iced::widget::text::Wrapping::None), container(text(format!("{} · {}", workspace.directory.display(), short_title(&tab.title)))).padding(6), tooltip::Position::Bottom),
+                ].spacing(3)));
+            }
             if let Some(tab) = pane.tabs.get(pane.active)
                 && cfg!(target_os = "linux") && tab.provider == Some(Provider::Codex) && tab.recipient.is_some() && self.ledger.is_some() {
                     let terminal_id = tab.id;
@@ -1600,7 +1763,7 @@ impl Desktop {
                     container(stopped).padding(20).into()
                 },
             };
-            let mut header = column![scrollable(tabs).horizontal().width(Length::Fill).height(40)].spacing(4);
+            let mut header = column![scrollable(tabs).horizontal().width(Length::Fill).height(64)].spacing(4);
             if let Some(tab) = pane.tabs.get(pane.active) && !tab.reminders.status.is_empty() {
                 header = header.push(text(&tab.reminders.status).size(11));
             }
@@ -1608,6 +1771,7 @@ impl Desktop {
         }).spacing(5).on_click(Message::Focus).on_resize(8, Message::Resize).width(Length::Fill).height(Length::Fill);
         let tasks = column![
             text("GATEWAY TASKS").size(16),
+            button("Gateway preferences").on_press(Message::Preferences(true)),
             text_input("Gateway project", &workspace.gateway.project)
                 .on_input(Message::GatewayProject),
             button(if workspace.gateway.loading {
@@ -1721,6 +1885,13 @@ mod tests {
             });
         }
         Desktop {
+            preferences: Preferences {
+                current: GatewayPreferences::default(),
+                draft: GatewayPreferences::default(),
+                path: None,
+                open: false,
+                status: String::new(),
+            },
             workspaces,
             active: 0,
             directory: String::new(),
@@ -1734,6 +1905,101 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
         }
+    }
+
+    fn preferences_fixture() -> (tempfile::TempDir, Desktop) {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&base).unwrap();
+        let dir = tempfile::tempdir_in(base).unwrap();
+        let mut app = desktop();
+        app.preferences.path = Some(dir.path().join("preferences.json"));
+        app.preferences.draft = GatewayPreferences {
+            url: "http://127.0.0.1:9".into(),
+            api_key: "fixture-key".into(),
+            project: "fixture".into(),
+            ..Default::default()
+        };
+        (dir, app)
+    }
+
+    #[test]
+    fn gateway_rebind_rejects_late_lists_and_withdraws_all_consent() {
+        let (_dir, mut app) = preferences_fixture();
+        let old_scope = app.scope(0);
+        for workspace in &mut app.workspaces {
+            workspace.gateway.loading = true;
+            workspace.gateway.tasks.push(json!({"id": Uuid::new_v4()}));
+            workspace.panes.get_mut(workspace.focused).unwrap().tabs[0]
+                .reminders
+                .consent = true;
+        }
+        let _ = app.update(Message::SavePreferences);
+        assert_eq!(app.preferences.current.project, "fixture");
+        for workspace in &app.workspaces {
+            assert!(!workspace.gateway.loading);
+            assert!(workspace.gateway.tasks.is_empty());
+            assert!(
+                !workspace.panes.get(workspace.focused).unwrap().tabs[0]
+                    .reminders
+                    .consent
+            );
+        }
+        let _ = app.update(Message::TasksLoaded(
+            old_scope,
+            Ok(json!([{"id": Uuid::new_v4()}])),
+        ));
+        assert!(app.workspaces[0].gateway.tasks.is_empty());
+        assert!(
+            GatewayPreferences::load(app.preferences.path.as_deref().unwrap())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn invalid_preferences_and_pending_posts_do_not_replace_the_connection() {
+        let (_dir, mut app) = preferences_fixture();
+        app.preferences.draft.url = "https://user:secret@example.test".into();
+        let _ = app.update(Message::SavePreferences);
+        assert!(app.preferences.current.url.is_empty());
+        assert!(!app.preferences.status.contains("secret"));
+        app.preferences.draft.url = "https://example.test".into();
+        app.workspaces[0].gateway.request = Some(TaskRequest {
+            id: Uuid::new_v4(),
+            project: "fixture".into(),
+            title: "pending".into(),
+            state: TaskRequestState::Sending,
+        });
+        let _ = app.update(Message::SavePreferences);
+        assert!(app.preferences.current.url.is_empty());
+        assert!(!app.preferences.path.as_ref().unwrap().exists());
+    }
+
+    #[test]
+    fn close_button_targets_its_own_unfocused_pane_and_preserves_selected_tab() {
+        let mut app = desktop();
+        let mut other = app.workspaces.pop().unwrap();
+        let tab = other.panes.get_mut(other.focused).unwrap().tabs.remove(0);
+        let w = &mut app.workspaces[0];
+        let original = w.focused;
+        let (other_pane, _) = w
+            .panes
+            .split(
+                pane_grid::Axis::Vertical,
+                original,
+                Pane {
+                    tabs: vec![tab],
+                    active: 0,
+                },
+            )
+            .unwrap();
+        let _ = app.update(Message::CloseTab(other_pane, 1));
+        assert!(app.workspaces[0].panes.get(other_pane).is_none());
+        assert_eq!(app.workspaces[0].focused, original);
+        assert_eq!(app.workspaces[0].panes.get(original).unwrap().tabs[0].id, 0);
+        // Replaying a stale close must not close the remaining terminal.
+        let _ = app.update(Message::CloseTab(other_pane, 1));
+        assert_eq!(app.workspaces[0].panes.len(), 1);
     }
 
     #[test]
