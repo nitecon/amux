@@ -44,7 +44,8 @@ for outcome in notifier.outcomes() { /* Shown, Failed or TimedOut, each with its
 
 - An OS call that never returns cannot be cancelled. It keeps one attempt
   thread busy, and later attempts report `Failed` until it returns.
-- Up to 16 unread outcomes are kept; older unread outcomes are discarded.
+- Up to 16 unread outcomes are kept; newly completed outcomes are dropped while
+  that buffer is full. Draining it permits later outcomes to be retained.
 - Attempt IDs are local to one `Notifier`. There is no deduplication across
   restarts; callers decide what to notify.
 

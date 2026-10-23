@@ -5,6 +5,8 @@ use crate::font::TermFont;
 use crate::settings::{FontSettings, Settings, ThemeSettings};
 use crate::theme::{ColorPalette, Theme};
 use crate::AlacrittyEvent;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb};
 use iced::futures::stream::BoxStream;
 use iced::futures::{SinkExt, StreamExt};
@@ -92,6 +94,35 @@ impl Terminal {
         max_cells: usize,
     ) -> Option<crate::TerminalObservation> {
         self.backend.observation(max_cells)
+    }
+
+    /// Plain text from the current rendered viewport, capped at 32,768 characters.
+    /// Includes combining marks; excludes scrollback and any readiness semantics.
+    pub fn screen_text(&self) -> String {
+        let grid = &self.backend.renderable_content().grid;
+        let mut text = String::new();
+        let mut remaining = 32_768;
+        for row in 0..grid.screen_lines() {
+            for column in 0..grid.columns() {
+                let cell = &grid[Line(row as i32)][Column(column)];
+                for character in std::iter::once(cell.c)
+                    .chain(cell.zerowidth().into_iter().flatten().copied())
+                    .take(remaining)
+                {
+                    text.push(character);
+                    remaining -= 1;
+                }
+                if remaining == 0 {
+                    return text;
+                }
+            }
+            text.push('\n');
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+        text.trim_end().to_owned()
     }
 
     pub fn subscription(&self) -> Subscription<Event> {

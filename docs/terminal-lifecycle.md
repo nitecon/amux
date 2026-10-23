@@ -6,6 +6,11 @@ as a new terminal session leader. Closing its tab, pane or desktop requests
 termination of processes still in that owned session, including background jobs
 in separate process groups. The guard runs before the PTY is dropped.
 
+After a process exits, its tab retains up to 32,768 characters from the final
+visible viewport as plain text, including failure diagnostics. The PTY and input
+binding are released. This temporary text excludes scrollback and is not saved
+in the layout; restoring a layout never restarts the process.
+
 Cleanup checks the original leader before and after enumeration, captures each
 member's native handle with generation checks, then rechecks session membership
 before signaling. It uses SIGKILL to retire captured jobs and the leader. The

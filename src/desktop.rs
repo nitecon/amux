@@ -94,6 +94,7 @@ struct Tab {
     #[cfg(any(target_os = "linux", windows))]
     lifetime: Option<amux::terminal_lifetime::TerminalLifetime>,
     terminal: Option<Terminal>,
+    stopped_output: Option<String>,
     provider: Option<Provider>,
     recipient: Option<TerminalRecipient>,
     reminders: Reminders,
@@ -218,6 +219,7 @@ impl Desktop {
                             #[cfg(any(target_os = "linux", windows))]
                             lifetime: None,
                             terminal: None,
+                            stopped_output: None,
                             recipient: None,
                             reminders: Reminders::default(),
                         }
@@ -332,6 +334,7 @@ impl Desktop {
                         #[cfg(any(target_os = "linux", windows))]
                         lifetime: None,
                         terminal: None,
+                        stopped_output: None,
                         provider: Some(provider),
                         recipient: None,
                         reminders: Reminders::default(),
@@ -390,6 +393,7 @@ impl Desktop {
                     #[cfg(any(target_os = "linux", windows))]
                     lifetime,
                     terminal: Some(terminal),
+                    stopped_output: None,
                     provider,
                     recipient,
                     reminders: Reminders::default(),
@@ -403,6 +407,7 @@ impl Desktop {
                     #[cfg(any(target_os = "linux", windows))]
                     lifetime: None,
                     terminal: None,
+                    stopped_output: None,
                     provider,
                     recipient: None,
                     reminders: Reminders::default(),
@@ -571,6 +576,9 @@ impl Desktop {
                                         tab.title = title
                                     }
                                     iced_term::actions::Action::Shutdown => {
+                                        // Preserve only the bounded visible text, then release
+                                        // the PTY and its subscription. This is never input-ready.
+                                        tab.stopped_output = Some(terminal.screen_text());
                                         if self.notify_exits
                                             && let Some(notifier) = &mut self.notifier
                                         {
@@ -1202,7 +1210,7 @@ impl Desktop {
         .spacing(8);
         let grid = pane_grid::PaneGrid::new(&workspace.panes, |id, pane, _| {
             let mut tabs = row![].spacing(4);
-            for (i, tab) in pane.tabs.iter().enumerate() { tabs = tabs.push(button(text(format!("{} {} · #{}", if pane.active == i { "●" } else { "" }, tab.title, tab.id))).on_press(Message::SelectTab(id, i))); }
+            for (i, tab) in pane.tabs.iter().enumerate() { tabs = tabs.push(button(text(format!("{} {} · #{}", if pane.active == i { "●" } else { "" }, short_title(&tab.title), tab.id)).wrapping(iced::widget::text::Wrapping::None)).on_press(Message::SelectTab(id, i))); }
             if let Some(tab) = pane.tabs.get(pane.active)
                 && cfg!(target_os = "linux") && tab.provider == Some(Provider::Codex) && tab.recipient.is_some() && self.ledger.is_some() {
                     let terminal_id = tab.id;
@@ -1216,9 +1224,15 @@ impl Desktop {
                     iced::widget::Sensor::new(TerminalView::show(terminal).map(Message::Terminal))
                         .key(id).on_show(resize).on_resize(resize).into()
                 },
-                None => container(text("Process stopped. Launch Shell, Codex or Claude explicitly; previous work is not restarted.")).padding(20).into(),
+                None => {
+                    let mut stopped = column![text("Process stopped. Launch Shell, Codex or Claude explicitly; previous work is not restarted.")].spacing(12);
+                    if let Some(output) = pane.tabs.get(pane.active).and_then(|tab| tab.stopped_output.as_ref()) {
+                        stopped = stopped.push(scrollable(text(output).font(iced::Font::MONOSPACE)).height(Length::Fill));
+                    }
+                    container(stopped).padding(20).into()
+                },
             };
-            let mut header = column![tabs].spacing(4);
+            let mut header = column![scrollable(tabs).horizontal().width(Length::Fill).height(40)].spacing(4);
             if let Some(tab) = pane.tabs.get(pane.active) && !tab.reminders.status.is_empty() {
                 header = header.push(text(&tab.reminders.status).size(11));
             }
@@ -1292,6 +1306,19 @@ fn unix_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+fn short_title(title: &str) -> String {
+    let mut characters = title.chars();
+    let mut short: String = characters
+        .by_ref()
+        .take(32)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if characters.next().is_some() {
+        short.push('…');
+    }
+    short
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1308,6 +1335,7 @@ mod tests {
                     #[cfg(any(target_os = "linux", windows))]
                     lifetime: None,
                     terminal: None,
+                    stopped_output: None,
                     provider: Some(Provider::Codex),
                     recipient: None,
                     reminders: Reminders::default(),
@@ -1338,6 +1366,82 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
         }
+    }
+
+    #[test]
+    fn titles_are_short_single_line_unicode_labels() {
+        assert_eq!(short_title("cwd"), "cwd");
+        assert_eq!(short_title("a\nb\tc"), "a b c");
+        assert_eq!(
+            short_title(&"界".repeat(80)),
+            format!("{}…", "界".repeat(32))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exited_terminal_retains_diagnostic_text_and_releases_input() {
+        use iced::futures::StreamExt;
+        let mut app = desktop();
+        let id = 0;
+        let mut terminal = Terminal::new(
+            id,
+            iced_term::settings::Settings {
+                backend: iced_term::settings::BackendSettings {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        "printf 'FINAL_EXIT_DIAGNOSTIC e\\314\\201\\r\\n' >&2; exit 17".into(),
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        terminal.handle(iced_term::Command::ProxyToBackend(
+            iced_term::BackendCommand::Resize(Some(iced::Size::new(800.0, 400.0)), None),
+        ));
+        let mut events = iced::advanced::subscription::into_recipes(terminal.subscription())
+            .pop()
+            .unwrap()
+            .stream(iced::futures::stream::empty().boxed());
+        let focused = app.workspaces[0].focused;
+        let tab = &mut app.workspaces[0].panes.get_mut(focused).unwrap().tabs[0];
+        tab.terminal = Some(terminal);
+        tab.reminders.consent = true;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while app.workspaces[0].panes.get(focused).unwrap().tabs[0]
+            .terminal
+            .is_some()
+        {
+            let event = runtime
+                .block_on(async { tokio::time::timeout_at(deadline.into(), events.next()).await });
+            let event = event
+                .expect("terminal did not exit")
+                .expect("terminal stream ended before exit");
+            let _ = app.update(Message::Terminal(event));
+        }
+        let tab = &app.workspaces[0].panes.get(focused).unwrap().tabs[0];
+        let output = tab
+            .stopped_output
+            .as_ref()
+            .expect("exit diagnostic was discarded");
+        assert!(
+            output.contains("FINAL_EXIT_DIAGNOSTIC e\u{301}"),
+            "{output:?}"
+        );
+        assert!(output.chars().count() <= 32_768);
+        assert!(tab.recipient.is_none());
+        assert!(!tab.reminders.consent);
+        assert!(tab.title.ends_with(" · exited"));
+        assert!(
+            app.workspaces[1]
+                .panes
+                .iter()
+                .all(|(_, pane)| pane.tabs[0].stopped_output.is_none())
+        );
     }
 
     #[test]
