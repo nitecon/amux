@@ -22,6 +22,7 @@ test = false
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
+getrandom = "0.3"
 iced = { version = "0.14", features = ["tokio", "advanced", "lazy"], optional = true }
 iced_term = { version = "=0.8.0", path = "vendor/iced_term", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

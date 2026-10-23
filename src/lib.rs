@@ -1,5 +1,6 @@
 pub mod cli_path;
 pub mod delivery;
+pub mod dispatch;
 pub mod gateway;
 pub mod identity;
 pub mod notifications;

@@ -127,3 +127,6 @@ The desktop state tests and a native Linux GUI/local HTTP fixture cover late
 replies across project changes, duplicate clicks, literal multiline context and
 an uncertain response without automatic retry. Native Windows interactive task
 submission acceptance remains pending platform review.
+
+For routing work to one exact running agent with credential-bound sessions, see
+[exact-session dispatch](dispatch-cli.md).

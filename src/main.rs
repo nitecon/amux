@@ -57,6 +57,17 @@ enum Operation {
         #[command(subcommand)]
         operation: MessageOperation,
     },
+    /// Exact-session task dispatch through the gateway's credential-bound API.
+    /// Needs AMUX_GATEWAY_KEY plus the operator-issued AMUX_GATEWAY_MACHINE_ID
+    /// and AMUX_GATEWAY_MACHINE_KEY; amux never provisions or stores them.
+    Dispatch {
+        #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
+        project: String,
+        #[arg(long, env = "AMUX_GATEWAY_URL")]
+        gateway_url: String,
+        #[command(subcommand)]
+        operation: amux::dispatch::Command,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,6 +197,35 @@ fn run(cli: Cli) -> Result<u8> {
                     }
                 }
             })?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Operation::Dispatch {
+            project,
+            gateway_url,
+            operation,
+        } => {
+            use amux::dispatch::{Dispatcher, Executor, Machine};
+            let actor = AgentIdentity::verified_from_environment()?;
+            if actor.project_directory != cli.project_dir.canonicalize()? {
+                bail!(
+                    "dispatch project directory differs from this agent's launch; switch to its project directory"
+                );
+            }
+            let token = std::env::var("AMUX_GATEWAY_KEY")
+                .context("set AMUX_GATEWAY_KEY for gateway access")?;
+            let machine = Machine::new(
+                std::env::var("AMUX_GATEWAY_MACHINE_ID")
+                    .context("set AMUX_GATEWAY_MACHINE_ID to the provisioned machine UUID")?
+                    .parse()
+                    .context("AMUX_GATEWAY_MACHINE_ID must be a UUID")?,
+                std::env::var("AMUX_GATEWAY_MACHINE_KEY")
+                    .context("set AMUX_GATEWAY_MACHINE_KEY to the operator-issued key")?,
+            )?;
+            let state = identity::state_directory()?;
+            let executor = Executor::load(&state, actor)?;
+            let dispatcher = Dispatcher::new(&gateway_url, token, &project, machine, state)?;
+            let runtime = tokio::runtime::Runtime::new()?;
+            let value = runtime.block_on(amux::dispatch::run(&dispatcher, &executor, operation))?;
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Operation::Tasks {
