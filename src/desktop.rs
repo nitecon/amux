@@ -88,6 +88,7 @@ struct Updates {
     checked_at: Option<Instant>,
     restart_checked_at: Option<Instant>,
     report: Option<amux::updates::UpdateCheck>,
+    restart: amux::updates::Restart,
     error: String,
 }
 impl Updates {
@@ -105,12 +106,24 @@ impl Updates {
             checked_at: None,
             restart_checked_at: None,
             report: None,
+            restart: amux::updates::Restart {
+                required: false,
+                path: None,
+            },
         }
     }
+    fn refresh_restart(&mut self) {
+        if let Some(running) = &self.running {
+            self.restart = amux::updates::restart_status(running);
+        }
+        if let Some(report) = &mut self.report {
+            report.restart = self.restart.clone();
+        }
+        self.restart_checked_at = Some(Instant::now());
+    }
+
     fn attention(&self) -> bool {
-        self.report
-            .as_ref()
-            .is_some_and(|r| r.available.is_some() || r.restart.required)
+        self.restart.required || self.report.as_ref().is_some_and(|r| r.available.is_some())
     }
 }
 
@@ -236,6 +249,7 @@ struct Desktop {
     registry: Option<PathBuf>,
     snapshot_path: Option<PathBuf>,
     dirty: bool,
+    restarting: bool,
     notify_exits: bool,
     notifier: Option<Notifier>,
     notification_status: String,
@@ -297,7 +311,7 @@ impl Desktop {
             status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
             ledger: ledger.ok().flatten(),
             registry: state.ok(),
-            snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false,
+            snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false, restarting: false,
             notify_exits: false, notifier: None, notification_status: String::new(),
         };
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
@@ -582,6 +596,9 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if self.restarting {
+            return Task::none();
+        }
         if matches!(
             &message,
             Message::NewWorkspace
@@ -720,14 +737,15 @@ impl Desktop {
                 self.updates.checked_at = Some(Instant::now());
                 match result {
                     Ok(report) => {
+                        self.updates.restart = report.restart.clone();
                         self.updates.report = Some(report);
-                        self.updates.restart_checked_at = Some(Instant::now());
                         self.updates.error.clear();
                     }
                     Err(error) => {
                         self.updates.error = format!("Could not check for updates: {error}")
                     }
                 }
+                self.updates.refresh_restart();
             }
             Message::CopyUpdateCommand(command) => return iced::clipboard::write(command),
             Message::RestartUpdated => return self.restart_updated(),
@@ -1067,12 +1085,7 @@ impl Desktop {
                     .restart_checked_at
                     .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
                 {
-                    if let (Some(running), Some(report)) =
-                        (&self.updates.running, &mut self.updates.report)
-                    {
-                        report.restart = amux::updates::restart_status(running);
-                    }
-                    self.updates.restart_checked_at = Some(Instant::now());
+                    self.updates.refresh_restart();
                 }
                 let updates = if self
                     .updates
@@ -1097,6 +1110,7 @@ impl Desktop {
         let Some(running) = self.updates.running.clone() else {
             return Task::none();
         };
+        self.updates.refresh_restart();
         self.updates.checking = true;
         Task::perform(
             async move {
@@ -1109,6 +1123,22 @@ impl Desktop {
     }
 
     fn restart_updated(&mut self) -> Task<Message> {
+        self.restart_with(|path, directory| {
+            std::process::Command::new(path)
+                .arg("--project-dir")
+                .arg(directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+            Ok(())
+        })
+    }
+
+    fn restart_with(
+        &mut self,
+        start: impl FnOnce(&std::path::Path, &std::path::Path) -> anyhow::Result<()>,
+    ) -> Task<Message> {
         let restart = self
             .updates
             .running
@@ -1123,25 +1153,64 @@ impl Desktop {
             self.updates.error = "Layout could not be saved; restart cancelled.".into();
             return Task::none();
         }
-        match std::process::Command::new(path)
-            .arg("--project-dir")
-            .arg(&self.workspaces[self.active].directory)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => iced::exit(),
+        let had_ledger = self.pause_for_restart();
+        match start(&path, &self.workspaces[self.active].directory) {
+            Ok(()) => iced::exit(),
             Err(error) => {
+                self.restarting = false;
                 self.updates.error = format!("Could not restart: {error}");
+                if had_ledger {
+                    let reopened = self
+                        .registry
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("reminder storage path unavailable"))
+                        .and_then(|p| DeliveryLedger::open(&p.join("deliveries.json")));
+                    match reopened {
+                        Ok(ledger) => self.ledger = Some(ledger),
+                        Err(error) => self.updates.error.push_str(&format!(
+                            "; reminder storage could not be reopened: {error}"
+                        )),
+                    }
+                }
                 Task::none()
             }
         }
     }
 
+    fn pause_for_restart(&mut self) -> bool {
+        let ids: Vec<_> = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            self.withdraw(id);
+        }
+        let had_ledger = self.ledger.is_some();
+        drop(self.ledger.take());
+        self.restarting = true;
+        had_ledger
+    }
+
     fn updates_view(&self) -> Element<'_, Message> {
         let mut content = column![text("App updates").size(26)].spacing(14);
-        if let Some(report) = &self.updates.report {
+        if self.updates.restart.required {
+            content =
+                content.push(text("An installed update is ready. Restart to use it.").size(20));
+            if self.updates.restart.path.is_some() {
+                let live = self
+                    .workspaces
+                    .iter()
+                    .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
+                    .filter(|t| t.terminal.is_some())
+                    .count();
+                content = content.push(text("Restart closes running sessions and restores the layout with all processes stopped.").size(13))
+                    .push(button(text(format!("Restart amux · close {live} running sessions"))).on_press(Message::RestartUpdated));
+            } else {
+                content = content.push(text("Close and reopen amux to use the installed update."));
+            }
+        } else if let Some(report) = &self.updates.report {
             content = content.push(text(format!(
                 "Installed: {}",
                 report
@@ -1154,8 +1223,6 @@ impl Desktop {
                 content = content
                     .push(text(format!("Update available: {}", release.tag)).size(20))
                     .push(text(&release.html_url).size(12));
-            } else if report.restart.required {
-                content = content.push(text("Updated app installed. Restart to use it.").size(20));
             } else if report.note.is_some() {
                 content = content.push(text("Update status needs attention."));
             } else {
@@ -1191,18 +1258,6 @@ impl Desktop {
             }
             if let Some(note) = &report.note {
                 content = content.push(text(note).size(13));
-            }
-            if report.restart.required && report.restart.path.is_some() {
-                let live = self
-                    .workspaces
-                    .iter()
-                    .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
-                    .filter(|t| t.terminal.is_some())
-                    .count();
-                content = content.push(text("Restart closes running sessions and restores the layout with all processes stopped.").size(13))
-                    .push(button(text(format!("Restart amux · close {live} running sessions"))).on_press(Message::RestartUpdated));
-            } else if report.restart.required {
-                content = content.push(text("Close and reopen amux to use the installed update."));
             }
         }
         if !self.updates.error.is_empty() {
@@ -2027,7 +2082,9 @@ impl Desktop {
                             button::text
                         })
                         .on_press(Message::Updates(true)),
-                        text(if self.updates.attention() {
+                        text(if self.updates.restart.required {
+                            "Restart to use the installed update"
+                        } else if self.updates.attention() {
                             "App update available"
                         } else {
                             "App updates"
@@ -2141,6 +2198,10 @@ mod tests {
                 checked_at: Some(Instant::now()),
                 restart_checked_at: Some(Instant::now()),
                 report: None,
+                restart: amux::updates::Restart {
+                    required: false,
+                    path: None,
+                },
                 error: String::new(),
             },
             preferences: Preferences {
@@ -2159,6 +2220,7 @@ mod tests {
             registry: None,
             snapshot_path: None,
             dirty: false,
+            restarting: false,
             notify_exits: false,
             notifier: None,
             notification_status: String::new(),
@@ -2233,6 +2295,62 @@ mod tests {
         assert!(app.updates.error.contains("No updated desktop"));
         assert!(!app.dirty);
         assert_eq!(app.workspaces.len(), 2);
+    }
+
+    fn restart_fixture() -> (tempfile::TempDir, Desktop, PathBuf) {
+        let (dir, mut app) = preferences_fixture();
+        let exe = dir.path().join("amux-desktop-fixture");
+        std::fs::write(&exe, b"old").unwrap();
+        app.updates.running = Some(std::sync::Arc::new(amux::updates::Running::at(exe.clone())));
+        std::fs::write(&exe, b"new replacement image").unwrap();
+        for workspace in &mut app.workspaces {
+            workspace.directory = dir.path().canonicalize().unwrap();
+        }
+        app.snapshot_path = Some(dir.path().join("layout.json"));
+        app.registry = Some(dir.path().to_owned());
+        let ledger_path = dir.path().join("deliveries.json");
+        app.ledger = Some(DeliveryLedger::open(&ledger_path).unwrap());
+        (dir, app, ledger_path)
+    }
+
+    #[test]
+    fn restart_releases_the_ledger_before_the_replacement_boots() {
+        let (_dir, mut app, ledger_path) = restart_fixture();
+        assert!(DeliveryLedger::open(&ledger_path).is_err());
+        let opened = std::cell::Cell::new(false);
+        let _ = app.restart_with(|_, _| {
+            let _replacement_ledger = DeliveryLedger::open(&ledger_path)?;
+            opened.set(true);
+            Ok(())
+        });
+        assert!(
+            opened.get(),
+            "replacement failed to acquire ledger: {}",
+            app.updates.error
+        );
+    }
+
+    #[test]
+    fn offline_update_check_does_not_hide_a_locally_ready_restart() {
+        let (_dir, mut app, _ledger) = restart_fixture();
+        app.updates.report = None;
+        let _ = app.update(Message::UpdatesChecked(Err("offline".into())));
+        assert!(app.updates.report.is_none());
+        assert!(app.updates.restart.required);
+        assert!(app.updates.attention());
+        assert!(app.updates.error.contains("offline"));
+    }
+
+    #[test]
+    fn failed_restart_reacquires_ledger_and_keeps_the_current_app_usable() {
+        let (_dir, mut app, ledger_path) = restart_fixture();
+        let _ = app.restart_with(|_, _| anyhow::bail!("fixture launch failed"));
+        assert!(!app.restarting);
+        assert!(app.ledger.is_some());
+        assert!(DeliveryLedger::open(&ledger_path).is_err());
+        assert!(app.updates.error.contains("fixture launch failed"));
+        let _ = app.update(Message::Updates(true));
+        assert!(app.updates.open);
     }
 
     fn preferences_fixture() -> (tempfile::TempDir, Desktop) {

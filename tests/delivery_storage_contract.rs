@@ -1,4 +1,4 @@
-//! Storage failure checks only; serialized fixtures do not prove live recipient identity.
+//! Storage failures and ledger lock handoff; serialized fixtures do not prove live recipient identity.
 use amux::{
     delivery::{DeliveryCause, DeliveryLedger},
     identity::{AgentIdentity, Provider},
@@ -221,4 +221,53 @@ fn a_ledger_full_of_live_recipient_fences_refuses_new_reminders() {
     assert!(format!("{error:#}").contains("full"), "{error:#}");
     assert_eq!(ledger.records().len(), 512);
     assert_eq!(fs::read(&path).unwrap(), original, "no fence removed");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn closing_a_ledger_unlocks_it_even_while_a_forked_child_inherits_the_descriptor() {
+    let base =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/delivery-close-fixtures");
+    std::fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    let path = directory.path().join("deliveries.json");
+    let ledger = amux::delivery::DeliveryLedger::open(&path).unwrap();
+    let mut pipe = [0; 2];
+    // The child uses only async-signal-safe syscalls after fork, with no exec
+    // yet: this models the descriptor-inheritance window during PTY startup.
+    assert_eq!(
+        unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        unsafe {
+            libc::close(pipe[1]);
+            let mut byte = [0u8; 1];
+            libc::read(pipe[0], byte.as_mut_ptr().cast(), 1);
+            libc::_exit(0);
+        }
+    }
+    if child < 0 {
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+        }
+        panic!("fork failed");
+    }
+    unsafe {
+        libc::close(pipe[0]);
+    }
+    drop(ledger);
+    let reopened = amux::delivery::DeliveryLedger::open(&path);
+    // Always retire our fixture before asserting, including the RED case.
+    unsafe {
+        libc::write(pipe[1], [1u8].as_ptr().cast(), 1);
+        libc::close(pipe[1]);
+        libc::waitpid(child, std::ptr::null_mut(), 0);
+    }
+    assert!(
+        reopened.is_ok(),
+        "a fork-inherited descriptor kept the old ledger lock"
+    );
 }

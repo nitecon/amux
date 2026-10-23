@@ -65,6 +65,14 @@ pub struct DeliveryLedger {
     invocation: Uuid,
 }
 
+impl Drop for DeliveryLedger {
+    fn drop(&mut self) {
+        // A PTY child may briefly inherit the file description before exec.
+        // Closing our descriptor alone would leave its lock held by that child.
+        let _ = self._lock.unlock();
+    }
+}
+
 /// A durable attempt fence. It is not consent, readiness or a write capability.
 pub struct DeliveryAttempt {
     id: Uuid,
