@@ -119,6 +119,16 @@ enum TaskOperation {
     Release {
         id: Uuid,
     },
+    /// Record cancellation; this does not confirm the executor has stopped.
+    Cancel {
+        id: Uuid,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Fetch a cancellation report, including after an uncertain submission.
+    Cancellation {
+        id: Uuid,
+    },
 }
 
 fn main() -> ExitCode {
@@ -190,12 +200,14 @@ fn run(cli: Cli) -> Result<u8> {
             let value = runtime.block_on(async {
                 if matches!(operation, TaskOperation::List) { return gateway.list(&project).await; }
                 if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
+                if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::verified_from_environment()?;
                 if actor.project_directory != cli.project_dir.canonicalize()? { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
                     TaskOperation::Create { title, specification } => gateway.request(Method::POST, &project, &[], Some(json!({"title": title, "specification": specification})), Some(&actor)).await,
                     TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
                     TaskOperation::Claim { id } => gateway.claim(&project, &id.to_string(), &actor).await,
+                    TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {
                         confirm_owner(&gateway, &project, id, &actor).await?;

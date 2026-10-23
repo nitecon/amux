@@ -162,6 +162,73 @@ impl Gateway {
         self.request(Method::GET, project, &[], None, None).await
     }
 
+    /// Record cancellation without inferring that an executor has stopped.
+    /// An uncertain response must be reconciled with `cancellation`, not retried.
+    pub async fn cancel_task(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        reason: &str,
+        actor: &AgentIdentity,
+    ) -> Result<Value> {
+        let reason = reason.trim();
+        if id.is_nil() || reason.is_empty() || reason.len() > 16_384 {
+            bail!("cancellation requires a nonnil task UUID and a reason of 1..=16384 bytes");
+        }
+        let response = self
+            .request(
+                Method::POST,
+                project,
+                &[&id.to_string(), "cancellation"],
+                Some(json!({"reason": reason})),
+                Some(actor),
+            )
+            .await?;
+        let record = &response["cancellation"];
+        validate_cancellation(record, project, id)?;
+        let origin = json!({
+            "session_id": actor.session_id,
+            "instance_id": actor.instance_id,
+            "provider": actor.provider.command(),
+            "os": actor.os,
+        });
+        let task = &response["task"];
+        if record["reason"] != reason
+            || record["reporter_origin"] != origin
+            || (!record["prior_owner_origin"].is_null() && record["prior_owner_origin"] != origin)
+            || canonical_id(&task["id"]) != Some(id)
+            || task["project_ident"] != project
+            || task["status"] != "cancelled"
+            || task["owner_origin"] != record["prior_owner_origin"]
+            || task["owner_agent_id"] != record["prior_owner_agent_id"]
+            || task["started_at"] != record["prior_started_at"]
+            || !task["done_at"].is_null()
+        {
+            bail!(
+                "gateway cancellation acknowledgment is inconsistent; fetch its cancellation record before continuing"
+            );
+        }
+        Ok(response)
+    }
+
+    /// Read the durable report after reconnect or an uncertain cancellation.
+    pub async fn cancellation(&self, project: &str, id: uuid::Uuid) -> Result<Value> {
+        if id.is_nil() {
+            bail!("cancellation requires a nonnil task UUID");
+        }
+        let record = self
+            .request(
+                Method::GET,
+                project,
+                &[&id.to_string(), "cancellation"],
+                None,
+                None,
+            )
+            .await?;
+        validate_cancellation(&record, project, id)?;
+        Ok(record)
+    }
+
     /// Inline scratch text uses the existing message threads, including resolved ones.
     pub async fn messages(&self, project: &str, limit: u16, offset: usize) -> Result<Value> {
         if !(1..=500).contains(&limit) {
@@ -323,6 +390,36 @@ impl Gateway {
         }
         Ok(result)
     }
+}
+
+fn validate_cancellation(record: &Value, project: &str, id: uuid::Uuid) -> Result<()> {
+    let valid_origin = |origin: &Value| {
+        canonical_id(&origin["session_id"]).is_some()
+            && canonical_id(&origin["instance_id"]).is_some()
+            && matches!(origin["provider"].as_str(), Some("codex" | "claude"))
+            && matches!(origin["os"].as_str(), Some("linux" | "windows" | "macos"))
+    };
+    if canonical_id(&record["task_id"]) != Some(id)
+        || record["project_ident"] != project
+        || !record["reason"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty() && s.len() <= 16_384)
+        || !matches!(
+            record["prior_status"].as_str(),
+            Some("todo" | "in_progress")
+        )
+        || !valid_origin(&record["reporter_origin"])
+        || (!record["prior_owner_origin"].is_null() && !valid_origin(&record["prior_owner_origin"]))
+        || ((record["prior_status"] == "in_progress" || !record["prior_owner_agent_id"].is_null())
+            && record["prior_owner_origin"].is_null())
+        || record["cancelled_at"].as_i64().is_none_or(|n| n <= 0)
+        || record["executor_stop_confirmed"] != false
+    {
+        bail!(
+            "gateway did not return a canonical cancellation report for this task/project; cancellation is unconfirmed"
+        );
+    }
+    Ok(())
 }
 
 fn validate_project(project: &str) -> Result<()> {

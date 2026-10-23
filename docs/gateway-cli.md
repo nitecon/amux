@@ -70,8 +70,34 @@ session and instance. This read is a client check, not server authorization. The
 gateway already guards claims with a bound owner origin, but until it enforces
 the exact owner atomically for every claim type, ownership can change between
 the read and the update.
-Task cancellation is pending a gateway contract
-that preserves the task and reporting actor; deleting a task is not cancellation.
+
+## Task cancellation reports
+
+```sh
+amux tasks cancel TASK_UUID --reason 'The user withdrew this task.'
+amux tasks cancellation TASK_UUID
+```
+
+Cancellation requires the gateway's explicit `POST /tasks/{id}/cancellation`
+contract. It records `cancelled` while retaining the task, prior claimant,
+reporting session and history. The CLI verifies the exact task/project, reason,
+reporter and preserved owner before acknowledging the report. This operation
+requires an amux-launched caller in its original project. The server must enforce
+ownership atomically; the shared bearer and origin headers alone do not
+authenticate a machine.
+
+The report explicitly has `executor_stop_confirmed: false`. Recording it does
+not stop an executor or establish that external work stopped. Dispatch-managed
+tasks use the separate credential-bound dispatch protocol; ordinary cancellation
+must reject them. An unavailable endpoint fails without falling back to deletion
+or completion. Deployment of the owner project's reviewed cancellation revision
+is required; local client fixtures do not establish deployment.
+
+After an error or lost reply, use the read-only `cancellation` command to retrieve
+the durable report before taking further action. The client sends no automatic
+retry. Reasons are trimmed and limited to 16 KiB of UTF-8; responses remain
+limited to 4 MiB. Reading a report does not claim the task and needs no agent
+identity.
 
 Desktop reminder input currently requires explicit task selection and consent
 with the supported Linux/Codex profile; see
