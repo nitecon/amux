@@ -96,9 +96,9 @@ is refused if its pending or requested work names another generation.
 
 - Not run against a deployed gateway or real provisioned credentials; evidence is
   local HTTP fixtures (`tests/dispatch_contract.rs`).
-- The gateway's dispatch `cancel` currently marks the task `done`; an explicit
-  `cancelled` task status is in progress there. amux checks the dispatch state,
-  not the task status.
+- Since agent-gateway `f060414`, dispatch `cancel` marks the task `cancelled`
+  rather than `done`. amux checks the dispatch state, not the task status, so it
+  works with either revision.
 - No background heartbeat, desktop UI or automatic receipt. Recovery is read
   only, and a dead owner's lost generation credentials leave its work fenced, as
   the gateway contract intends.
