@@ -409,11 +409,11 @@ fn acknowledgments_must_match_the_exact_target_task_machine_claim_and_state() {
     let (url, server) = server(replies);
     let dispatcher = dispatcher(&url, machine, &state);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    for _ in 0..=count {
+    for case in 0..=count {
+        let result = runtime.block_on(dispatcher.act(&agent, task, "claim", ActionArgs::default()));
         assert!(
-            runtime
-                .block_on(dispatcher.act(&agent, task, "claim", ActionArgs::default()))
-                .is_err()
+            result.is_err(),
+            "refusal case {case} was accepted: {result:?}"
         );
     }
     // Malformed acknowledgments stay uncertain; the 409 is a definite rejection.
