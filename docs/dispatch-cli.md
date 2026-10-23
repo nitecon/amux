@@ -118,10 +118,10 @@ uncertain and the command fails:
   the machine key);
 - delegation: the exact requested target (state `pending`) or the requested
   machine with no bound session (state `pending_machine`, and its OS matching
-  `--require-os` when given), destination and source projects, no claim,
-  receipt or start, task `todo`;
+  `--require-os` when given), destination and source projects, no receipt,
+  task `todo`, nothing claimed;
 - `receive`: state `received` with `received_at`, bound to this session (and,
-  for machine work, addressed to this machine), task `todo`;
+  for machine work, addressed to this machine), task `todo`, nothing claimed;
 - `claim`: state `claimed` with `claimed_at`, a claim ID and no start time, task
   `in_progress` owned by this origin;
 - `start`: state `running` with `started_at`, echoing the claim and execution
@@ -133,7 +133,12 @@ uncertain and the command fails:
 - `cancel`: state `cancelled` with `finished_at` and the reason, task
   `cancelled` (agent-gateway `f060414`);
 - `handoff`: state `pending` for the requested new target, or `pending_machine`
-  for the requested machine, with no claim, task `todo`.
+  for the requested machine, with no receipt, task `todo`, nothing claimed.
+
+"Nothing claimed" means no claim ID, claim, start, execution, finish or
+cancellation request on the dispatch, and no owner, start or done time on the
+task. Residue from earlier work makes the acknowledgment malformed, so it is
+never recorded as accepted.
 
 Inputs are checked before anything is stored: no nil task or execution IDs, no
 blank claim IDs, and results limited to 64 KiB. Responses are limited to 4 MiB

@@ -1111,3 +1111,89 @@ fn independent_clients_share_the_journal_while_one_call_is_stalled() {
     assert_eq!(requests.len(), 3);
     assert!(requests.iter().all(|r| r["status"] == "accepted"));
 }
+
+#[test]
+fn unclaimed_acknowledgments_carry_no_claim_execution_outcome_or_owner() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let instance = machine.instance_id;
+    let me = agent.target(&machine);
+    let task = Uuid::new_v4();
+    let reason = "needs this machine";
+    let residue = [
+        (["dispatch", "claim_id"], json!("c1")),
+        (["dispatch", "claimed_at"], json!(3)),
+        (["dispatch", "started_at"], json!(5)),
+        (
+            ["dispatch", "execution_id"],
+            json!(Uuid::new_v4().to_string()),
+        ),
+        (["dispatch", "finished_at"], json!(8)),
+        (["dispatch", "cancel_requested_at"], json!(7)),
+        (["task", "owner_origin"], me["origin"].clone()),
+        (["task", "owner_agent_id"], json!("someone")),
+        (["task", "started_at"], json!(5)),
+        (["task", "done_at"], json!(8)),
+    ];
+    let received = ack(
+        &me,
+        task,
+        "todo",
+        json!({"state": "received", "received_at": 4, "machine_target": {"instance_id": instance.to_string(), "os": OS}}),
+    );
+    let mut handed = queued(&me, task, instance, OS);
+    handed["dispatch"]["result"] = json!(reason);
+    let canonical = [queued(&me, task, instance, OS), received, handed];
+    let mut replies = Vec::new();
+    for reply in &canonical {
+        for (path, value) in &residue {
+            let mut bad = reply.clone();
+            bad[path[0]][path[1]] = value.clone();
+            replies.push(Some((200, bad)));
+        }
+        replies.push(Some((200, reply.clone())));
+    }
+    let (url, server) = server(replies);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for step in 0..canonical.len() {
+        let call = || match step {
+            0 => runtime.block_on(dispatcher.delegate(
+                &agent,
+                "demo",
+                Destination::Machine(instance),
+                "Queued",
+                "Spec",
+                None,
+                None,
+            )),
+            1 => runtime.block_on(dispatcher.act(&agent, task, "receive", ActionArgs::default())),
+            _ => runtime.block_on(dispatcher.act(
+                &agent,
+                task,
+                "handoff",
+                ActionArgs {
+                    claim_id: Some("c1".into()),
+                    result: Some(reason.into()),
+                    machine_target: Some(instance),
+                    ..Default::default()
+                },
+            )),
+        };
+        for (case, (path, _)) in residue.iter().enumerate() {
+            let result = call();
+            assert!(
+                result.is_err(),
+                "step {step} residue {case} {path:?} was accepted: {result:?}"
+            );
+        }
+        call().unwrap();
+    }
+    // Residue is never journaled as accepted; each stays uncertain.
+    assert_eq!(
+        dispatcher.uncertain().unwrap().len(),
+        canonical.len() * residue.len()
+    );
+    finish(server);
+}

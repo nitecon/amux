@@ -770,6 +770,22 @@ impl Dispatcher {
         let task_status = task["status"].as_str().unwrap_or_default();
         let state = dispatch["state"].as_str().unwrap_or_default();
         let int = |key: &str| dispatch[key].is_i64();
+        // Unclaimed work carries no claim, execution, outcome or task owner.
+        let pristine = || {
+            [
+                "claim_id",
+                "claimed_at",
+                "started_at",
+                "execution_id",
+                "finished_at",
+                "cancel_requested_at",
+            ]
+            .iter()
+            .all(|key| dispatch[*key].is_null())
+                && ["owner_origin", "owner_agent_id", "started_at", "done_at"]
+                    .iter()
+                    .all(|key| task[*key].is_null())
+        };
         let machine_addressed = Uuid::parse_str(
             dispatch["machine_target"]["instance_id"]
                 .as_str()
@@ -818,9 +834,8 @@ impl Dispatcher {
                     && dispatch["source_project_ident"] == self.project
                     && dispatch["requester"] == me
                     && addressed
-                    && dispatch["claim_id"].is_null()
+                    && pristine()
                     && dispatch["received_at"].is_null()
-                    && dispatch["started_at"].is_null()
                     && task_status == "todo"
             }
             Some(operation) => {
@@ -843,7 +858,7 @@ impl Dispatcher {
                                         == me["origin"]["instance_id"])
                                 && state == "received"
                                 && int("received_at")
-                                && dispatch["claim_id"].is_null()
+                                && pristine()
                                 && task_status == "todo"
                         }
                         "claim" => {
@@ -896,7 +911,8 @@ impl Dispatcher {
                             };
                             dispatch["project_ident"] == self.project
                                 && addressed
-                                && dispatch["claim_id"].is_null()
+                                && pristine()
+                                && dispatch["received_at"].is_null()
                                 && dispatch["result"] == body["result"]
                                 && task_status == "todo"
                         }
