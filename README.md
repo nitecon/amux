@@ -8,7 +8,8 @@ capabilities, and uses agent-gateway as the authoritative
 task store and router between machines. Agents can hand work to agents on other
 machines, and that work survives the destination being offline or rebooting.
 
-Status: native implementation candidate; the MVP is not complete.
+Portable Linux and Windows builds are available in [tagged releases](https://github.com/nitecon/amux/releases/latest).
+Status: early release; the MVP is not complete.
 The provisional Rust/Iced terminal has local workspaces, tabs/splits, explicit
 Codex/Claude launches with separate session identities, layout recovery without
 automatic reruns, gateway task and message CLIs, and reminders to an explicitly

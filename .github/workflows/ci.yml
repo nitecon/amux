@@ -1,8 +1,9 @@
-name: Native candidate
+name: Native build and release
 
 on:
   push:
     branches: [main, 'mvp/**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -27,6 +28,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/package_release.py --check-tag '${{ github.ref_name }}'
       - name: Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt --component clippy
       - name: Select Rust
@@ -47,7 +51,7 @@ jobs:
         run: cargo test --locked --test notifications_contract --test native_notification_contract
       - name: Native release build
         run: cargo build --locked --release --target ${{ matrix.target }} --bin amux --bin amux-desktop
-      - name: Prepare review bundle
+      - name: Prepare portable bundle
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force bundle | Out-Null
@@ -61,6 +65,7 @@ jobs:
           $hash = (Get-FileHash 'bundle/${{ matrix.binary }}' -Algorithm SHA256).Hash.ToLower()
           $gui = (Get-FileHash 'bundle/${{ matrix.gui }}' -Algorithm SHA256).Hash.ToLower()
           "$hash  ${{ matrix.binary }}", "$gui  ${{ matrix.gui }}" | Set-Content bundle/SHA256SUMS -Encoding utf8
+          $package = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           $metadata = @{
             revision = '${{ github.sha }}'
             target = '${{ matrix.target }}'
@@ -69,7 +74,8 @@ jobs:
             binary_sha256 = $hash
             gui_binary = '${{ matrix.gui }}'
             gui_binary_sha256 = $gui
-            candidate_only = $true
+            version = $package.packages[0].version
+            candidate_only = -not ('${{ github.ref }}'.StartsWith('refs/tags/v'))
             native_runtime_acceptance = 'pending CMUX platform review'
           }
           $metadata | ConvertTo-Json | Set-Content bundle/BUILD.json -Encoding utf8
@@ -79,3 +85,29 @@ jobs:
           path: bundle/
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Verify and package both platforms
+        env:
+          TAG: ${{ github.ref_name }}
+          REVISION: ${{ github.sha }}
+        run: python scripts/package_release.py --tag "$TAG" --revision "$REVISION" --artifacts artifacts --output dist
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REVISION: ${{ github.sha }}
+        run: >-
+          gh release create "$TAG" dist/* --verify-tag --target "$REVISION"
+          --title "amux $TAG" --generate-notes
+          --notes "Portable Linux and Windows release. Extract the complete bundle and keep both executables with BUILD.json. Existing supported direct-download installs can run amux --update, then use the desktop bell to restart. See https://github.com/nitecon/amux/blob/$TAG/docs/updates.md for instructions."

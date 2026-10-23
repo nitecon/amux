@@ -21,8 +21,9 @@ terminals or agents. On Windows, files still in use can remain as backup images
 until a later update can remove them. Failures report whether restoration was
 complete; retain any reported backup files if manual recovery is necessary.
 
-Review candidates follow later published review candidates. Stable installs
-follow stable version tags. A modified or incomplete bundle is not overwritten;
+Existing review candidates can update to the first later published stable release,
+`v0.0.1`. Its installed bundle switches to the stable channel, which follows
+increasing `vMAJOR.MINOR.PATCH` tags and ignores previews. A modified or incomplete bundle is not overwritten;
 download and extract a complete bundle instead. If the installed preview cannot
 be matched to published release metadata, the app reports that limitation
 rather than guessing an update order from commit hashes.
@@ -45,6 +46,25 @@ fails, the current app remains open. Some installation methods may require
 closing and reopening amux manually.
 
 ## Release metadata
+
+Official portable bundles are published at
+[GitHub Releases](https://github.com/nitecon/amux/releases/latest) for Linux and
+Windows x86_64. Keep every file in the extracted bundle together. For example,
+an existing candidate extracted into `~/bin/amux` can be upgraded with:
+
+```sh
+cd ~/bin/amux
+./amux --update
+```
+
+Then use the desktop bell to restart when ready. On Windows, run
+`.\amux.exe --update` in PowerShell from the extracted directory.
+
+To publish the next release, bump the package version in `Cargo.toml` and
+`Cargo.lock`, commit, then push the matching `vMAJOR.MINOR.PATCH` tag. The native
+workflow checks that tag against Cargo, tests and builds both platforms, verifies
+the bundles, and publishes both archives and their `SHA256SUMS` only after both
+jobs pass. Tagged bundles have `candidate_only: false` in `BUILD.json`.
 
 Update checks read the public
 [GitHub releases API](https://docs.github.com/en/rest/releases/releases).

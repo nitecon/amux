@@ -459,6 +459,59 @@ async fn unpublished_revision_is_never_offered_an_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn preview_installs_first_stable_and_then_follows_stable_versions() {
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    Bundle::new(INSTALLED).install(&dir);
+    let gui = Running::at(dir.join(GUI));
+    let server = Server::start();
+    let stable_release = |name, rev, published| {
+        let mut spec = review(rev, published);
+        spec.tag = name;
+        spec.prerelease = false;
+        let mut bundle = Bundle::new(rev);
+        bundle.candidate = false;
+        spec.archive = Some(archive(&bundle.entries()));
+        release(&server, spec)
+    };
+    let mut releases = vec![
+        release(&server, review(INSTALLED, "2026-10-01T00:00:00Z")),
+        stable_release("v0.0.1", NEWER, "2026-10-02T00:00:00Z"),
+    ];
+    server.publish(&releases);
+    let found = updates::check(&gui, &server.source()).await.unwrap();
+    assert_eq!(found.channel, Channel::Preview);
+    assert_eq!(found.available.unwrap().tag, "v0.0.1");
+    updates::update(&Running::at(dir.join(CLI)), &server.source())
+        .await
+        .unwrap();
+    let stable = updates::check(&gui, &server.source()).await.unwrap();
+    assert_eq!(stable.channel, Channel::Stable);
+    assert_eq!(stable.installed.unwrap().tag, "v0.0.1");
+    assert_eq!(stable.available, None);
+    assert!(stable.restart.required);
+
+    // A later preview is no longer offered after entering the stable channel.
+    releases.push(release(
+        &server,
+        review(
+            "3333333000000000000000000000000000000000",
+            "2026-10-04T00:00:00Z",
+        ),
+    ));
+    releases.push(stable_release("v0.0.2", OLDER, "2026-10-03T00:00:00Z"));
+    server.publish(&releases);
+    let next = updates::check(&gui, &server.source()).await.unwrap();
+    assert_eq!(next.available.unwrap().tag, "v0.0.2");
+    updates::update(&Running::at(dir.join(CLI)), &server.source())
+        .await
+        .unwrap();
+    let current = updates::check(&gui, &server.source()).await.unwrap();
+    assert_eq!(current.installed.unwrap().tag, "v0.0.2");
+    assert_eq!(current.available, None, "no repeat or downgrade offer");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stable_bundle_ignores_previews_and_older_versions() {
     let root = fixture_root();
     let dir = root.path().join("bundle");
