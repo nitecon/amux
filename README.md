@@ -59,6 +59,10 @@ Scripts run only on an explicit terminal launch, including new tabs and splits;
 restoring a saved layout never reruns them. Git cloning requires Git and configured
 repository access; failed clones keep their partial folder for inspection.
 
+Use the **×** beside a workspace to close it. Running terminals require confirmation;
+project folders and files stay on disk. Closed workspaces stay removed after restart.
+Closing the last workspace opens a fresh **Default** terminal in your home directory.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md): local amux vs. gateway responsibilities,

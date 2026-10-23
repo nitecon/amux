@@ -27,6 +27,9 @@ use uuid::Uuid;
 enum Message {
     NewWorkspace,
     SelectWorkspace(usize),
+    CloseWorkspace(Uuid),
+    RemoveWorkspace(Uuid),
+    CancelCloseWorkspace,
     Workspace(WorkspaceMessage),
     NewTab(Option<Provider>),
     SelectTab(pane_grid::Pane, usize),
@@ -146,6 +149,7 @@ impl Updates {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QueryScope {
     workspace: usize,
+    workspace_id: Uuid,
     directory: PathBuf,
     project: String,
     revision: u64,
@@ -248,6 +252,7 @@ struct Pane {
     active: usize,
 }
 struct Workspace {
+    id: Uuid,
     init_script: Option<PathBuf>,
     directory: PathBuf,
     panes: pane_grid::State<Pane>,
@@ -261,6 +266,7 @@ struct Desktop {
     workspaces: Vec<Workspace>,
     active: usize,
     workspace_dialog: WorkspaceDialog,
+    closing_workspace: Option<Uuid>,
     next_id: u64,
     status: String,
     ledger: Option<DeliveryLedger>,
@@ -329,7 +335,7 @@ impl Desktop {
             main_window,
             updates: Updates::new(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, window: None, tab: PreferencesTab::Gateway, status: preferences_error },
-            workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), next_id: 0,
+            workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
             ledger: ledger.ok().flatten(),
             registry: state.ok(),
@@ -344,6 +350,7 @@ impl Desktop {
                     let panes = pane_grid::State::with_configuration(config);
                     let focused = *panes.iter().next().expect("validated nonempty layout").0;
                     app.workspaces.push(Workspace {
+                        id: Uuid::new_v4(),
                         directory: amux::workspace_launch::external_path(workspace.directory),
                         init_script: workspace
                             .init_script
@@ -366,11 +373,9 @@ impl Desktop {
             _ => {}
         }
         let home = amux::workspace_launch::home_directory().unwrap_or_else(|_| directory.clone());
-        if !app
-            .workspaces
-            .iter()
-            .any(|w| w.directory == home && w.init_script.is_none())
-        {
+        // Respect saved removals: Default is a fallback, not a workspace that
+        // reappears every time a nonempty layout is restored.
+        if app.workspaces.is_empty() {
             app.add_workspace(home.clone());
         }
         if directory != home && !app.workspaces.iter().any(|w| w.directory == directory) {
@@ -651,6 +656,7 @@ impl Desktop {
             active: 0,
         });
         self.workspaces.push(Workspace {
+            id: Uuid::new_v4(),
             directory,
             init_script,
             panes,
@@ -676,6 +682,9 @@ impl Desktop {
         if self.restarting {
             return Task::none();
         }
+        let Some(message) = self.retarget_workspace_message(message) else {
+            return Task::none();
+        };
         if matches!(
             &message,
             Message::NewWorkspace
@@ -709,6 +718,9 @@ impl Desktop {
                 };
             }
             Message::NewWorkspace => return self.open_workspace_dialog(),
+            Message::CloseWorkspace(id) => return self.request_close_workspace(id),
+            Message::RemoveWorkspace(id) => return self.remove_workspace(id),
+            Message::CancelCloseWorkspace => self.closing_workspace = None,
             Message::SelectWorkspace(index) => {
                 if index < self.workspaces.len() {
                     self.active = index;
@@ -1588,6 +1600,7 @@ impl Desktop {
         let current = &self.workspaces[workspace];
         QueryScope {
             workspace,
+            workspace_id: current.id,
             directory: current.directory.clone(),
             project: current.gateway.project.trim().to_owned(),
             revision: current.gateway.revision,
@@ -2226,15 +2239,39 @@ impl Desktop {
                     .unwrap_or(w.directory.as_os_str())
                     .to_string_lossy(),
             };
-            sidebar = sidebar.push(
-                button(text(format!(
-                    "{} {}",
-                    if i == self.active { "●" } else { "○" },
-                    name
-                )))
-                .on_press(Message::SelectWorkspace(i))
-                .width(Length::Fill),
+            let select = button(text(format!(
+                "{} {}",
+                if i == self.active { "●" } else { "○" },
+                name
+            )))
+            .on_press(Message::SelectWorkspace(i))
+            .width(Length::Fill);
+            let close = tooltip(
+                button(text("×").size(14))
+                    .style(button::text)
+                    .padding([4, 6])
+                    .on_press(Message::CloseWorkspace(w.id)),
+                "Close workspace",
+                tooltip::Position::Right,
             );
+            sidebar = sidebar.push(
+                row![select, close]
+                    .align_y(iced::Alignment::Center)
+                    .spacing(4),
+            );
+            if self.closing_workspace == Some(w.id) {
+                let running = w
+                    .panes
+                    .iter()
+                    .flat_map(|(_, pane)| &pane.tabs)
+                    .filter(|tab| tab.terminal.is_some())
+                    .count();
+                sidebar = sidebar.push(container(column![
+                    text(format!("Close workspace and stop {running} running terminal(s)? Project files stay on disk.")).size(12),
+                    row![button("Close").on_press(Message::RemoveWorkspace(w.id)),
+                        button("Cancel").on_press(Message::CancelCloseWorkspace)].spacing(4),
+                ].spacing(8)).padding(8).style(container::rounded_box));
+            }
         }
         sidebar = sidebar
             .push(button("New workspace").on_press(Message::NewWorkspace))
@@ -2434,6 +2471,7 @@ mod tests {
                 active: 0,
             });
             workspaces.push(Workspace {
+                id: Uuid::new_v4(),
                 directory: PathBuf::from(format!("/fixture/{id}")),
                 init_script: None,
                 panes,
@@ -2471,6 +2509,7 @@ mod tests {
             workspaces,
             active: 0,
             workspace_dialog: WorkspaceDialog::default(),
+            closing_workspace: None,
             next_id: 2,
             status: String::new(),
             ledger: None,
@@ -2482,6 +2521,93 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
         }
+    }
+
+    #[test]
+    fn workspace_removal_preserves_selected_peer_and_saves_only_remaining_layout() {
+        let mut app = desktop();
+        let (fixture, _, _) = restart_fixture();
+        let path = fixture.path().join("removed-layout.json");
+        app.snapshot_path = Some(path.clone());
+        for (i, workspace) in app.workspaces.iter_mut().enumerate() {
+            workspace.directory = fixture.path().join(format!("project-{i}"));
+            std::fs::create_dir(&workspace.directory).unwrap();
+            std::fs::write(workspace.directory.join("keep.txt"), "project data").unwrap();
+        }
+        let removed_directory = app.workspaces[0].directory.clone();
+        app.active = 1;
+        let selected = app.workspaces[1].id;
+        let removed = app.workspaces[0].id;
+        drop(app.update(Message::CloseWorkspace(removed)));
+        assert_eq!(app.workspaces.len(), 1);
+        assert_eq!(app.workspaces[app.active].id, selected);
+        assert_eq!(app.active, 0);
+        assert_eq!(
+            std::fs::read_to_string(removed_directory.join("keep.txt")).unwrap(),
+            "project data"
+        );
+        let saved = Snapshot::load(&path).unwrap().unwrap();
+        assert_eq!(saved.workspaces.len(), 1);
+        assert_eq!(saved.workspaces[0].directory, app.workspaces[0].directory);
+        assert_eq!(saved.active, 0);
+        drop(app.update(Message::RemoveWorkspace(removed)));
+        assert_eq!(
+            app.workspaces.len(),
+            1,
+            "stale close targets cannot remove a peer"
+        );
+    }
+
+    #[test]
+    fn closing_workspace_retargets_peer_callbacks_and_discards_removed_callbacks() {
+        let mut app = desktop();
+        // Identical paths/projects are legal; callbacks must distinguish actual
+        // workspace identity, not just an index and repository path.
+        app.workspaces[1].directory = app.workspaces[0].directory.clone();
+        app.workspaces[1].gateway.project = app.workspaces[0].gateway.project.clone();
+        let removed_scope = app.scope(0);
+        let surviving_scope = app.scope(1);
+        let request = Uuid::new_v4();
+        let accepted = Uuid::new_v4();
+        app.workspaces[1].gateway.request = Some(TaskRequest {
+            id: request,
+            project: surviving_scope.project.clone(),
+            title: "Keep receipt".into(),
+            state: TaskRequestState::Sending,
+        });
+        app.workspaces[1].gateway.loading = true;
+        let removed = app.workspaces[0].id;
+        drop(app.update(Message::RemoveWorkspace(removed)));
+        drop(app.update(Message::TasksLoaded(
+            removed_scope,
+            Ok(json!([{"id": Uuid::new_v4(), "title":"wrong workspace", "status":"todo"}])),
+        )));
+        assert!(app.workspaces[0].gateway.tasks.is_empty());
+        drop(app.update(Message::TasksLoaded(surviving_scope.clone(), Ok(json!([])))));
+        assert!(
+            !app.workspaces[0].gateway.loading,
+            "shifted peer query must finish"
+        );
+        drop(app.update(Message::TaskCreated(surviving_scope, request, Ok(accepted))));
+        assert!(
+            matches!(app.workspaces[0].gateway.request.as_ref().unwrap().state, TaskRequestState::Accepted(id) if id == accepted)
+        );
+    }
+
+    #[test]
+    fn workspace_removal_keeps_unconfirmed_gateway_receipt_visible() {
+        let mut app = desktop();
+        let id = app.workspaces[0].id;
+        app.workspaces[0].gateway.request = Some(TaskRequest {
+            id: Uuid::new_v4(),
+            project: "project-0".into(),
+            title: "Unknown acceptance".into(),
+            state: TaskRequestState::Unconfirmed("connection lost".into()),
+        });
+        drop(app.update(Message::RemoveWorkspace(id)));
+        assert_eq!(app.workspaces.len(), 2);
+        assert!(app.workspaces[0].gateway.request.is_some());
+        assert!(app.status.contains("receipt"));
     }
 
     #[test]

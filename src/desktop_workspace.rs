@@ -73,6 +73,110 @@ impl Browser {
 }
 
 impl Desktop {
+    // Indices change when a workspace closes. Route delayed responses by their
+    // runtime workspace identity before applying the existing revision fences.
+    pub(super) fn retarget_workspace_message(&self, message: Message) -> Option<Message> {
+        let remap = |mut scope: QueryScope| {
+            scope.workspace = self
+                .workspaces
+                .iter()
+                .position(|w| w.id == scope.workspace_id)?;
+            Some(scope)
+        };
+        Some(match message {
+            Message::ProjectResolved(scope, result) => {
+                Message::ProjectResolved(remap(scope)?, result)
+            }
+            Message::TasksLoaded(scope, result) => Message::TasksLoaded(remap(scope)?, result),
+            Message::TaskCreated(scope, request, result) => {
+                Message::TaskCreated(remap(scope)?, request, result)
+            }
+            Message::RecoveryLoaded(mut scope, result) => {
+                scope.query = remap(scope.query)?;
+                Message::RecoveryLoaded(scope, result)
+            }
+            Message::ReceiptReported(mut scope, task, result) => {
+                scope.query = remap(scope.query)?;
+                Message::ReceiptReported(scope, task, result)
+            }
+            Message::Remind(scope, task, terminal) => {
+                Message::Remind(remap(scope)?, task, terminal)
+            }
+            message => message,
+        })
+    }
+
+    pub(super) fn request_close_workspace(&mut self, id: Uuid) -> Task<Message> {
+        let Some(workspace) = self.workspaces.iter().find(|w| w.id == id) else {
+            return Task::none();
+        };
+        if workspace
+            .panes
+            .iter()
+            .any(|(_, pane)| pane.tabs.iter().any(|tab| tab.terminal.is_some()))
+        {
+            self.closing_workspace = Some(id);
+            Task::none()
+        } else {
+            self.remove_workspace(id)
+        }
+    }
+
+    pub(super) fn remove_workspace(&mut self, id: Uuid) -> Task<Message> {
+        let Some(index) = self.workspaces.iter().position(|w| w.id == id) else {
+            return Task::none();
+        };
+        if self.workspaces[index]
+            .gateway
+            .request
+            .as_ref()
+            .is_some_and(|request| {
+                matches!(
+                    request.state,
+                    TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                )
+            })
+        {
+            self.status = "This workspace has a pending or unconfirmed task submission. Inspect its receipt before closing.".into();
+            return Task::none();
+        }
+        let fallback = if self.workspaces.len() == 1 {
+            match workspace_launch::home_directory() {
+                Ok(home) => Some(home),
+                Err(error) => {
+                    self.status = format!("Cannot open a fallback Default workspace: {error}");
+                    return Task::none();
+                }
+            }
+        } else {
+            None
+        };
+        let terminals: Vec<_> = self.workspaces[index]
+            .panes
+            .iter()
+            .flat_map(|(_, pane)| &pane.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        self.status = "Workspace closed. Project files were kept on disk.".into();
+        for terminal in terminals {
+            self.withdraw(terminal);
+        }
+        // Dropping tabs retires their owned jobs and PTYs, using the same path as
+        // closing individual tabs. Project directories and files are untouched.
+        self.workspaces.remove(index);
+        if self.workspaces.is_empty() {
+            self.add_workspace(fallback.expect("last workspace fallback validated"));
+        } else if index < self.active {
+            self.active -= 1;
+        } else {
+            self.active = self.active.min(self.workspaces.len() - 1);
+        }
+        self.closing_workspace = None;
+        self.dirty = true;
+        self.save();
+        self.focus()
+    }
+
     pub(super) fn open_workspace_dialog(&mut self) -> Task<Message> {
         if let Some(window) = self.workspace_dialog.window {
             return iced::window::gain_focus(window);
