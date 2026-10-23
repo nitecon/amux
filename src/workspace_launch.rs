@@ -2,17 +2,34 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
+// Rust canonicalization uses extended-length Windows paths. Git and Windows
+// PowerShell 5 cannot reliably consume those; pass ordinary drive/UNC paths.
+pub fn external_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(value) = path.to_str() {
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 pub fn home_directory() -> Result<PathBuf> {
     directories::BaseDirs::new()
         .context("Cannot find your home directory")?
         .home_dir()
         .canonicalize()
+        .map(external_path)
         .context("Cannot open your home directory")
 }
 
 pub fn directory(value: &str) -> Result<PathBuf> {
     let path = Path::new(value)
         .canonicalize()
+        .map(external_path)
         .context("Choose an existing directory")?;
     anyhow::ensure!(path.is_dir(), "Choose a directory, not a file");
     Ok(path)
@@ -21,6 +38,7 @@ pub fn directory(value: &str) -> Result<PathBuf> {
 pub fn script_command(path: &Path) -> Result<(String, Vec<String>)> {
     let path = path
         .canonicalize()
+        .map(external_path)
         .context("Choose an existing initialization script")?;
     anyhow::ensure!(path.is_file(), "Initialization script must be a file");
     let path = path
@@ -55,8 +73,8 @@ pub fn script_command(path: &Path) -> Result<(String, Vec<String>)> {
             ))
         } else if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat") {
             anyhow::ensure!(
-                !path.contains(['%', '!', '\r', '\n', '"']),
-                "Use a script path without cmd expansion characters"
+                !path.contains(['%', '!', '&', '|', '^', '(', ')', '<', '>', '\r', '\n', '"']),
+                "Use a .cmd/.bat script path without command-shell special characters"
             );
             Ok(("cmd.exe".into(), vec!["/D".into(), "/K".into(), path]))
         } else {
@@ -163,7 +181,9 @@ mod tests {
         let (_, args) = script_command(&script).unwrap();
         assert_eq!(
             args.last().unwrap(),
-            script.canonicalize().unwrap().to_str().unwrap()
+            external_path(script.canonicalize().unwrap())
+                .to_str()
+                .unwrap()
         );
         assert!(directory(script.to_str().unwrap()).is_err());
     }
@@ -210,7 +230,11 @@ mod tests {
                 "{name}: {stdout} {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert!(stdout.contains("SCRIPT_RAN"), "{name}: {stdout}");
+            assert!(
+                stdout.contains("SCRIPT_RAN"),
+                "{name}: {stdout} {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert!(stdout.contains("SHELL_ALIVE"), "{name}: {stdout}");
             if !cfg!(windows) {
                 assert!(stdout.contains("REPLY=hello"), "{stdout}");

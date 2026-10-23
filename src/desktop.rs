@@ -274,7 +274,7 @@ struct Desktop {
 }
 
 pub fn run(directory: PathBuf) -> anyhow::Result<()> {
-    let directory = directory.canonicalize()?;
+    let directory = amux::workspace_launch::external_path(directory.canonicalize()?);
     iced::daemon(
         move || Desktop::new(directory.clone()),
         Desktop::update,
@@ -344,8 +344,10 @@ impl Desktop {
                     let panes = pane_grid::State::with_configuration(config);
                     let focused = *panes.iter().next().expect("validated nonempty layout").0;
                     app.workspaces.push(Workspace {
-                        directory: workspace.directory,
-                        init_script: workspace.init_script,
+                        directory: amux::workspace_launch::external_path(workspace.directory),
+                        init_script: workspace
+                            .init_script
+                            .map(amux::workspace_launch::external_path),
                         panes,
                         focused,
                         gateway: TaskPanel::default(),
@@ -2210,19 +2212,19 @@ impl Desktop {
     fn view(&self) -> Element<'_, Message> {
         let workspace = &self.workspaces[self.active];
         let mut sidebar = column![text("amux").size(30), text("WORKSPACES").size(12)].spacing(12);
+        let home = amux::workspace_launch::home_directory().ok();
         for (i, w) in self.workspaces.iter().enumerate() {
-            let name = if let Some(script) = &w.init_script {
-                script
+            let name = match (home.as_ref() == Some(&w.directory), w.init_script.as_ref()) {
+                (true, None) => std::borrow::Cow::Borrowed("Default"),
+                (true, Some(script)) => script
                     .file_name()
                     .unwrap_or(script.as_os_str())
-                    .to_string_lossy()
-            } else if amux::workspace_launch::home_directory().ok().as_ref() == Some(&w.directory) {
-                std::borrow::Cow::Borrowed("Default")
-            } else {
-                w.directory
+                    .to_string_lossy(),
+                _ => w
+                    .directory
                     .file_name()
                     .unwrap_or(w.directory.as_os_str())
-                    .to_string_lossy()
+                    .to_string_lossy(),
             };
             sidebar = sidebar.push(
                 button(text(format!(

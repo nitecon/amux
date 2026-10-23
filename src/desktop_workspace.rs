@@ -177,7 +177,9 @@ impl Desktop {
                         );
                         None
                     } else {
-                        let path = PathBuf::from(&dialog.script).canonicalize()?;
+                        let path = workspace_launch::external_path(
+                            PathBuf::from(&dialog.script).canonicalize()?,
+                        );
                         workspace_launch::script_command(&path)?;
                         Some(path)
                     };
