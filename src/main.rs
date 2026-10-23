@@ -378,7 +378,9 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
         return Err(error);
     }
     let status = child.wait();
-    let _ = std::fs::remove_file(path);
+    // Retain the private native generation record for recovery. A missing
+    // gateway lease alone cannot prove this executor has stopped; live_agents
+    // still lists only records whose native process generation is running.
     let status = status?;
     Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
 }

@@ -133,6 +133,16 @@ fn a_full_ledger_reclaims_only_provably_gone_recipient_generations() {
         .iter()
         .map(|state| stored(&live, state))
         .collect();
+    let unknown = fenced(
+        root.path(),
+        (ABSENT, "unverifiable generation"),
+        (pid, &current),
+    );
+    records.extend(
+        ["Pending", "Uncertain", "Enqueued", "Retired"]
+            .iter()
+            .map(|state| stored(&unknown, state)),
+    );
     // A well-formed native generation that is not this process's: an earlier start.
     let earlier = format!("{}:1", current.rsplit_once(':').unwrap().0);
     // Absent agent PID, or this PID now carrying another generation.
@@ -164,20 +174,21 @@ fn a_full_ledger_reclaims_only_provably_gone_recipient_generations() {
         )
         .unwrap();
     let kept: Vec<_> = ledger.records().iter().map(|r| (r.id, r.state)).collect();
-    let mut expected: Vec<_> = records[..4]
+    let mut expected: Vec<_> = records[..8]
         .iter()
         .map(|r| serde_json::from_value::<amux::delivery::DeliveryRecord>(r.clone()).unwrap())
         .map(|r| (r.id, r.state))
         .collect();
     // Cold open retires stale pending input; it is still kept as a fence.
     expected[0].1 = amux::delivery::DeliveryState::Retired;
-    assert_eq!(kept[..4], expected[..], "every live-recipient fence kept");
-    assert_eq!(kept.len(), 5);
-    assert_eq!(ledger.records()[4].task_id, task);
+    expected[4].1 = amux::delivery::DeliveryState::Retired;
+    assert_eq!(kept[..8], expected[..], "every live or unknown fence kept");
+    assert_eq!(kept.len(), 9);
+    assert_eq!(ledger.records()[8].task_id, task);
     drop(ledger);
     assert_eq!(
         DeliveryLedger::open(&path).unwrap().records().len(),
-        5,
+        9,
         "durable"
     );
 }

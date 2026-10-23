@@ -40,6 +40,20 @@ are bound to the workspace, project revision, consent epoch, terminal and exact
 native actor. Withdrawal aborts pending requests and retires pending input;
 accepted gateway tasks remain on the gateway. Unsupported profiles defer.
 
+A directory lease expiry does not prove that a local executor stopped. A CLI
+executor or a consent-off pane can remain busy without heartbeats. Recovery of
+another local generation requires its retained private registration record and
+positive native exit or generation-replacement evidence. Missing, corrupt or
+unreadable local proof defers that recovery; old installations may therefore
+need explicit inspection and handoff. Of the eligible registered Codex recipients
+in a fresh directory snapshot, one deterministic recipient gets that context.
+This never transfers the old claim or authorizes restarting work.
+
+The bounded delivery ledger reclaims capacity only from exact recipient
+addresses whose native launcher or agent generation is provably gone. It keeps
+all input fences for live or unverifiable recipients, including uncertain
+attempts, and refuses new input when those fences fill its capacity.
+
 The submission coordinator checks native identity, foreground ownership,
 unread terminal input, exact styled empty prompt, settling and consent/input
 checkpoints. It persists an uncertain attempt before enqueueing a bracketed

@@ -39,6 +39,14 @@ impl RecipientAddress {
         &self.identity
     }
 
+    /// Safe to discard input fences only when this exact address cannot return.
+    pub fn is_definitively_gone(&self) -> bool {
+        self.validate().is_ok()
+            && [&self.launcher, &self.agent]
+                .iter()
+                .any(|fence| identity::process_is_gone(fence.pid, &fence.generation))
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.terminal_id == u64::MAX
             || self.identity.session_id.is_nil()

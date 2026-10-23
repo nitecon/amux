@@ -27,6 +27,12 @@ stored hex-encoded under the amux state directory in `dispatch/keys/` with
 authorized machine and generation to the gateway. They are not hardware or
 provider attestation.
 
+Private executor records in `agents/` are retained after clean exit so recovery
+can verify their native PID and process generation. `amux agents` still lists
+only live generations; a retained record confers no ownership or input
+permission. Missing or unreadable historical records are unknown, not evidence
+that another executor stopped.
+
 Every command must run inside an `amux agent codex|claude` launch, from its
 project directory. Callers that are not verified amux launches are refused
 before any secret is created or any request is sent.

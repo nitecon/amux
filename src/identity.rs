@@ -296,6 +296,121 @@ pub fn process_generation(_pid: u32) -> Result<String> {
     bail!("native process-generation verification is not implemented on this platform yet")
 }
 
+/// Positive evidence that an exact native process generation cannot run again.
+/// Inability to inspect a process is not evidence that it exited.
+pub fn process_is_gone(pid: u32, generation: &str) -> bool {
+    if pid == 0 || !native_generation_format(generation) {
+        return false;
+    }
+    match process_generation(pid) {
+        Ok(current) => current != generation || process_is_exited(pid),
+        Err(_) => process_is_absent(pid),
+    }
+}
+
+#[cfg(windows)]
+fn process_is_exited(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    };
+    // A terminated Windows process may retain its PID and creation time while
+    // another handle exists. A signaled process handle is positive exit proof.
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let exited = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+        CloseHandle(process);
+        exited
+    }
+}
+
+#[cfg(not(windows))]
+fn process_is_exited(_pid: u32) -> bool {
+    false
+}
+
+fn native_generation_format(generation: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Some((boot, ticks)) = generation
+            .strip_prefix("linux:")
+            .and_then(|value| value.split_once(':'))
+        else {
+            return false;
+        };
+        Uuid::parse_str(boot).is_ok_and(|id| !id.is_nil() && id.to_string() == boot)
+            && ticks
+                .parse::<u64>()
+                .is_ok_and(|n| n > 0 && n.to_string() == ticks)
+    }
+    #[cfg(windows)]
+    {
+        generation.strip_prefix("windows:").is_some_and(|ticks| {
+            ticks
+                .parse::<u64>()
+                .is_ok_and(|n| n > 0 && n.to_string() == ticks)
+        })
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = generation;
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_absent(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // Signal zero only probes existence. EPERM, including hidden /proc entries,
+    // stays unknown; only ESRCH proves that this PID is absent.
+    (unsafe { libc::kill(pid, 0) == -1 })
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(windows)]
+fn process_is_absent(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+    };
+    // A query-handle failure may mean access denied. Require a complete native
+    // process snapshot instead, and close its non-inheritable handle once.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut next = Process32FirstW(snapshot, &mut entry);
+        let mut seen = false;
+        while next != 0 {
+            seen = true;
+            if entry.th32ProcessID == pid {
+                CloseHandle(snapshot);
+                return false;
+            }
+            next = Process32NextW(snapshot, &mut entry);
+        }
+        let complete = seen && GetLastError() == ERROR_NO_MORE_FILES;
+        CloseHandle(snapshot);
+        complete
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn process_is_absent(_pid: u32) -> bool {
+    false
+}
+
 pub fn state_directory() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("AMUX_STATE_DIR") {
         return Ok(path.into());

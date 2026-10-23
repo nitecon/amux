@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    io::Read,
+    path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -139,6 +140,7 @@ pub async fn query(credentials: Credentials, actor: AgentIdentity) -> Result<Rec
         snapshot,
         &uncertain,
         queried_at,
+        &executor.actor.project_directory,
     )
 }
 
@@ -506,6 +508,35 @@ fn unresolved(c: &Credentials, me: &Target, requests: &[Request]) -> Result<Hash
     Ok(tasks)
 }
 
+fn local_record(c: &Credentials, target: &Target, project: &Path) -> Option<identity::AgentRecord> {
+    if target.origin.instance_id != c.machine_id.to_string()
+        || target.origin.os != std::env::consts::OS
+    {
+        return None;
+    }
+    let path = c
+        .state
+        .join("agents")
+        .join(format!("{}.json", target.origin.session_id));
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(16_385)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 16_384 {
+        return None;
+    }
+    let record: identity::AgentRecord = serde_json::from_slice(&bytes).ok()?;
+    (record.pid != 0
+        && record.identity.session_id.to_string() == target.origin.session_id
+        && record.identity.instance_id.to_string() == target.generation
+        && record.identity.provider.command() == target.origin.provider
+        && record.identity.os == target.origin.os
+        && record.identity.project_directory == project)
+        .then_some(record)
+}
+
 fn parse(
     c: &Credentials,
     me: &Target,
@@ -513,6 +544,7 @@ fn parse(
     snapshot: Value,
     requests: &[Request],
     queried_at: Instant,
+    project: &Path,
 ) -> Result<Recovery> {
     if serde_json::to_vec(&directory)?.len() > 4 * 1024 * 1024
         || serde_json::to_vec(&snapshot)?.len() > 4 * 1024 * 1024
@@ -629,14 +661,27 @@ fn parse(
     for (task, d) in docs {
         let exact = d.target.as_ref() == Some(me);
         let machine = d.state == "pending_machine" && d.eligible(me);
-        let old = d.eligible(me)
-            && d.target
-                .as_ref()
-                .is_some_and(|t| t != me && !live.contains(t))
+        // Leases expire for CLI, busy and consent-off peers too. Require native
+        // death evidence, never absence from the gateway directory alone.
+        let old = d.target.as_ref().is_some_and(|target| {
+            target != me
+                && !live.contains(target)
+                && local_record(c, target, project).is_some_and(|record| {
+                    identity::process_is_gone(record.pid, &record.process_generation)
+                })
+        })
             && matches!(
                 d.state.as_str(),
                 "pending" | "received" | "claimed" | "running"
-            );
+            )
+            // Every query of the same directory chooses the same recipient;
+            // ordinary pending-machine receipt still races atomically at the server.
+            && live.iter().filter(|target| {
+                target.origin.instance_id == me.origin.instance_id
+                    && target.origin.os == me.origin.os
+                    && target.origin.provider == "codex"
+                    && d.eligible(target)
+            }).min_by_key(|target| (&target.origin.session_id, &target.generation)) == Some(me);
         if !((exact && matches!(d.state.as_str(), "pending" | "received")) || machine || old) {
             continue;
         }
@@ -717,6 +762,25 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    fn parse(
+        c: &Credentials,
+        me: &Target,
+        directory: Value,
+        snapshot: Value,
+        requests: &[Request],
+        queried_at: Instant,
+    ) -> Result<Recovery> {
+        super::parse(
+            c,
+            me,
+            directory,
+            snapshot,
+            requests,
+            queried_at,
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+        )
+    }
 
     fn target(machine: Uuid) -> Value {
         json!({"origin": {"session_id": Uuid::new_v4(), "instance_id": machine,
@@ -834,10 +898,64 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    struct NativePeer(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for NativePeer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn native_peer(c: &Credentials, target: &Target) -> NativePeer {
+        use amux::identity::AgentRecord;
+        use std::{
+            fs,
+            process::{Command, Stdio},
+        };
+        let child = NativePeer(
+            Command::new("/bin/sh")
+                .args(["-c", "read -r unused"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let actor = AgentIdentity {
+            session_id: target.origin.session_id.parse().unwrap(),
+            instance_id: target.generation.parse().unwrap(),
+            provider: if target.origin.provider == "claude" {
+                Provider::Claude
+            } else {
+                Provider::Codex
+            },
+            os: target.origin.os.clone(),
+            project_directory: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        };
+        let record = AgentRecord::inspect(actor, child.0.id()).unwrap();
+        fs::create_dir_all(c.state.join("agents")).unwrap();
+        fs::write(
+            c.state
+                .join("agents")
+                .join(format!("{}.json", target.origin.session_id)),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        child
+    }
+
     #[test]
+    #[cfg(target_os = "linux")]
     fn live_peer_is_not_recovered_but_unavailable_peer_retains_claim_and_execution() {
-        let (c, me, _) = fixture();
+        let (mut c, me, _) = fixture();
+        let state = test_state();
+        c.state = state.path().into();
         let peer: Target = serde_json::from_value(target(c.machine_id)).unwrap();
+        let mut native = native_peer(&c, &peer);
         let old = active(dispatch(as_value(&peer), "pending"));
         let p = packet(vec![old.clone()], &me, vec![history(&old, 1, "start")]);
         let r = parse(
@@ -850,6 +968,20 @@ mod tests {
         )
         .unwrap();
         assert!(r.ready.is_empty() && r.awaiting_receipt.is_empty());
+        // Lease expiry/omission is not death: a CLI or consent-off actor can
+        // still be working without sending directory heartbeats.
+        let r = parse(
+            &c,
+            &me,
+            directory(std::slice::from_ref(&me)),
+            p.clone(),
+            &[],
+            Instant::now(),
+        )
+        .unwrap();
+        assert!(r.ready.is_empty() && r.awaiting_receipt.is_empty());
+        native.0.kill().unwrap();
+        native.0.wait().unwrap();
         let r = parse(
             &c,
             &me,
@@ -866,6 +998,79 @@ mod tests {
         }
         assert!(text.contains(&peer.origin.session_id));
         assert!(text.contains("outcome unknown"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn unavailable_work_selects_one_peer_and_requires_local_native_proof() {
+        let (mut c, me, _) = fixture();
+        let state = test_state();
+        c.state = state.path().into();
+        let peer: Target = serde_json::from_value(target(c.machine_id)).unwrap();
+        let other: Target = serde_json::from_value(target(c.machine_id)).unwrap();
+        let old = active(dispatch(as_value(&peer), "pending"));
+        let history = vec![history(&old, 1, "start")];
+        let dir = directory(&[other.clone(), me.clone()]);
+        // A missing/corrupt local record never becomes death evidence.
+        for who in [&me, &other] {
+            let r = parse(
+                &c,
+                who,
+                dir.clone(),
+                packet(vec![old.clone()], who, history.clone()),
+                &[],
+                Instant::now(),
+            )
+            .unwrap();
+            assert!(r.ready.is_empty());
+        }
+        let mut native = native_peer(&c, &peer);
+        native.0.kill().unwrap();
+        native.0.wait().unwrap();
+        let first = parse(
+            &c,
+            &me,
+            dir.clone(),
+            packet(vec![old.clone()], &me, history.clone()),
+            &[],
+            Instant::now(),
+        )
+        .unwrap();
+        let second = parse(
+            &c,
+            &other,
+            directory(&[me.clone(), other.clone()]),
+            packet(vec![old.clone()], &other, history.clone()),
+            &[],
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(first.ready.len() + second.ready.len(), 1);
+        let selected = if me.origin.session_id < other.origin.session_id {
+            &first
+        } else {
+            &second
+        };
+        assert_eq!(selected.ready.len(), 1);
+        assert!(first.awaiting_receipt.is_empty() && second.awaiting_receipt.is_empty());
+        let path = c
+            .state
+            .join("agents")
+            .join(format!("{}.json", peer.origin.session_id));
+        std::fs::write(&path, b"{not valid JSON").unwrap();
+        assert!(
+            parse(
+                &c,
+                &me,
+                dir,
+                packet(vec![old], &me, history),
+                &[],
+                Instant::now()
+            )
+            .unwrap()
+            .ready
+            .is_empty()
+        );
     }
 
     #[test]

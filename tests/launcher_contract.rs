@@ -99,6 +99,19 @@ fn three_live_same_project_agents_are_distinct_and_restart_does_not_reuse_a_clai
             .unwrap()
             .is_empty()
     );
+    // Recovery retains native proof after clean exit, without advertising any
+    // stopped executor as live or letting a new launch inherit its identity.
+    for record in &records {
+        assert!(
+            root.join("state/agents")
+                .join(format!("{}.json", record.identity.session_id))
+                .exists()
+        );
+        assert!(amux::identity::process_is_gone(
+            record.pid,
+            &record.process_generation
+        ));
+    }
     let mut restarted = launch(root);
     let deadline = Instant::now() + Duration::from_secs(10);
     let next = loop {
