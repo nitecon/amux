@@ -44,8 +44,8 @@ checks did not run.
 | 15 | Reviewed exact/prefix resume approval | None | Missing | None | None |
 | 16 | Session geometry, order, topology, selection, history replay | Workspaces, split topology, tabs and active workspace saved atomically (`src/session.rs`); restored processes stay stopped | Partial: no window geometry, no scrollback replay, no browser locations | Local (`tests/session_contract.rs`, GUI restore smoke) | None |
 | 17 | Last cwd, launch-environment persistence, previous-session restore, unclean-launch backup | Workspace directory saved; corrupt or unknown snapshots preserved, not overwritten | Partial: no live cwd tracking, no environment persistence | Local (`tests/session_contract.rs`) | None |
-| 18 | CLI/control API, socket discovery, caller identity, peer auth | CLI: `agent`, `whoami`, `agents`, `tasks`, `messages` (`src/main.rs`); caller identity by registered process ancestry (`src/identity.rs`) | Partial: no socket or named-pipe control API for the desktop | Local (`tests/caller_contract.rs`, `launcher_contract.rs`, `gateway_contract.rs`, `identity_contract.rs`, `messages_contract.rs`) | None |
-| 19 | Gateway routing, recipient/process-generation fences, input protection, injection consent | Explicit task selection with per-agent consent, exact recipient binding, readiness, checked submission and durable dedup (`src/recipient.rs`, `readiness.rs`, `submission.rs`, `delivery.rs`) | Partial: Linux with Codex 0.163 only; no automatic routing or session-start recovery; non-Linux input evidence returns none, so delivery defers | Local (opt-in real Codex turn; see [reminder-validation.md](reminder-validation.md)) | None |
+| 18 | CLI/control API, socket discovery, caller identity, peer auth | CLI: `agent`, `whoami`, `agents`, `tasks`, `messages`, `dispatch` (`src/main.rs`); caller identity by registered process ancestry and credential-bound dispatch (`src/identity.rs`, `dispatch.rs`) | Partial: no socket or named-pipe control API for the desktop | Local (`tests/caller_contract.rs`, `launcher_contract.rs`, `gateway_contract.rs`, `identity_contract.rs`, `messages_contract.rs`, `dispatch_contract.rs`) | None |
+| 19 | Gateway routing, recipient/process-generation fences, input protection, injection consent | Explicit task selection and consented exact-session gateway recovery, with readiness, checked submission and durable dedup (`src/recipient.rs`, `readiness.rs`, `submission.rs`, `delivery.rs`, `desktop_recovery.rs`) | Partial: Linux with Codex 0.163 only; complete gateway history and provisioned machine credentials required; native Windows/Claude readiness and deployed cross-machine acceptance remain open | Local (opt-in real Codex turn; private real-gateway/native GUI fixtures at `137a431`; see [reminder-validation.md](reminder-validation.md)) | None |
 | 20 | SSH workspaces | None | Missing | None | None |
 | 21 | Mosh and Mosh-tmux lane | None | Missing | None | None |
 | 22 | Listening-port attribution and forwarding | None | Missing | None | None |
@@ -72,8 +72,14 @@ cargo test --locked --test notifications_contract --test native_notification_con
 Opt-in provider checks are in [reminder-validation.md](reminder-validation.md).
 Review bundle checks are in [windows-review.md](windows-review.md). The Linux and
 Windows review findings are on CMUX tasks `01a164c9-f932` and `01a164c9-fac2`.
-The Linux follow-up is CMUX task `01a165a5-eba1`. These reviews remain separate
-from implementer evidence. Notification behavior and limits are recorded in
+The completed Linux follow-up is CMUX task `01a165a5-eba1`; it requested changes
+on `014ff96`. The diagnostic/header fixes are implemented and local checks pass.
+The new focused review of `137a431` is task `01a16694-b207` in cmux-gtk
+(native Linux reviewer).
+Both native CI jobs passed for that immutable candidate, and the exact Linux CI
+GUI passed a local shell/output/normal-close smoke. These checks do not establish
+independent platform acceptance. Reviews remain separate from implementer
+evidence. Notification behavior and limits are recorded in
 [notification-validation.md](notification-validation.md).
 
 ## macOS feasibility
