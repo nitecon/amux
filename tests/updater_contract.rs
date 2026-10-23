@@ -929,3 +929,18 @@ fn check_future_is_send_for_the_desktop() {
     let running = Running::at(PathBuf::from("amux"));
     send(&updates::check(&running, &ReleaseSource::github()));
 }
+
+#[test]
+fn cleanup_removes_only_updater_owned_backup_names() {
+    let root = fixture_root();
+    let manual = root.path().join("manual-copy.amux-old");
+    let named = root.path().join(format!("{GUI}.manual.amux-old"));
+    let generated = root.path().join(format!("{GUI}.abcdef12.amux-old"));
+    fs::write(&manual, b"user backup").unwrap();
+    fs::write(&named, b"user named backup").unwrap();
+    fs::write(&generated, b"updater backup").unwrap();
+    assert!(updates::cleanup_backups(root.path()).is_empty());
+    assert!(manual.exists(), "unrelated backup was deleted");
+    assert!(named.exists(), "manually named app backup was deleted");
+    assert!(!generated.exists());
+}

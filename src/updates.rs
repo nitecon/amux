@@ -333,13 +333,29 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
 
 /// Remove `*.amux-old` files left by an update. Returns those still in use.
 pub fn cleanup_backups(dir: &Path) -> Vec<PathBuf> {
+    let Some(platform) = Platform::current() else {
+        return Vec::new();
+    };
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.to_string_lossy().ends_with(BACKUP_SUFFIX) && p.is_file())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        platform.payload().iter().any(|payload| {
+                            name.strip_prefix(&format!("{payload}."))
+                                .and_then(|rest| rest.strip_suffix(BACKUP_SUFFIX))
+                                .is_some_and(|nonce| {
+                                    nonce.len() == 8 && nonce.bytes().all(|c| c.is_ascii_hexdigit())
+                                })
+                        })
+                    })
+        })
         .filter(|p| fs::remove_file(p).is_err())
         .collect()
 }
