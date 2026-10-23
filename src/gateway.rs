@@ -1,9 +1,9 @@
 //! The gateway owns tasks. The client never manufactures successful ownership.
-use crate::identity::AgentIdentity;
+use crate::{gateway_project, identity::AgentIdentity};
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 #[derive(Clone)]
 pub struct Gateway {
@@ -116,6 +116,18 @@ impl Gateway {
             path.extend(["v1", "projects", project]);
             path.extend(suffix);
         }
+        self.exchange(method, url, body, actor, query).await
+    }
+
+    /// One bounded, origin-bound, non-redirecting JSON exchange.
+    async fn exchange(
+        &self,
+        method: Method,
+        url: Url,
+        body: Option<Value>,
+        actor: Option<&AgentIdentity>,
+        query: &[(&str, String)],
+    ) -> Result<Value> {
         let mut request = self
             .client
             .request(method, url)
@@ -156,6 +168,54 @@ impl Gateway {
             return Ok(Value::Null);
         }
         serde_json::from_slice(&bytes).context("gateway returned invalid JSON")
+    }
+
+    /// Resolve the gateway project for a workspace from its Git origin, as CMUX does:
+    /// match canonical remotes, otherwise register the repository and match the reread.
+    /// Existing mappings (aliases) are preserved; nothing is guessed from names.
+    pub async fn resolve_project(&self, directory: PathBuf) -> Result<String> {
+        let remote = tokio::task::spawn_blocking(move || gateway_project::origin(&directory))
+            .await
+            .context("workspace origin lookup failed")??;
+        if let Some(project) = gateway_project::matching(&remote, &self.projects().await?)? {
+            return Ok(project);
+        }
+        let repo_url = format!("https://{remote}");
+        if gateway_project::repository(&repo_url).as_deref() != Some(remote.as_str()) {
+            bail!("workspace origin cannot be registered as a gateway repository");
+        }
+        let registered = self
+            .exchange(
+                Method::POST,
+                self.projects_url()?,
+                Some(json!({"ident": remote, "repo_url": repo_url})),
+                None,
+                &[],
+            )
+            .await
+            .context("gateway project registration not confirmed")?;
+        if registered["ident"]
+            .as_str()
+            .is_none_or(|ident| ident.trim().is_empty())
+        {
+            bail!("gateway did not acknowledge a registered project identity");
+        }
+        gateway_project::matching(&remote, &self.projects().await?)?.context(
+            "gateway has no project mapped to this repository after registration; an existing project may hold its name",
+        )
+    }
+
+    async fn projects(&self) -> Result<Value> {
+        self.exchange(Method::GET, self.projects_url()?, None, None, &[])
+            .await
+    }
+
+    fn projects_url(&self) -> Result<Url> {
+        let mut url = self.base.clone();
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("invalid gateway origin"))?
+            .extend(["v1", "projects"]);
+        Ok(url)
     }
 
     pub async fn list(&self, project: &str) -> Result<Value> {
@@ -422,7 +482,7 @@ fn validate_cancellation(record: &Value, project: &str, id: uuid::Uuid) -> Resul
     Ok(())
 }
 
-fn validate_project(project: &str) -> Result<()> {
+pub(crate) fn validate_project(project: &str) -> Result<()> {
     if project.is_empty()
         || project == "."
         || project == ".."

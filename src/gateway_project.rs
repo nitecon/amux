@@ -1,0 +1,152 @@
+//! CMUX-compatible project resolution: a workspace's Git origin selects exactly one
+//! gateway project by its canonical remote. Identities are never guessed from names.
+use anyhow::{Context, Result, bail};
+use reqwest::Url;
+use serde_json::Value;
+use std::{
+    collections::HashSet,
+    io::Read,
+    path::Path,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
+
+/// Normalize a Git remote to `host[:port]/path` exactly as CMUX does (model.rs `repository`).
+/// Default SSH/Git ports are dropped; custom ports are kept.
+pub fn repository(value: &str) -> Option<String> {
+    if value.len() > 4096 || value.chars().any(char::is_control) {
+        return None;
+    }
+    let url = if value.contains("://") {
+        Url::parse(value).ok()?
+    } else if !value.contains(':')
+        && value
+            .split_once('/')
+            .is_some_and(|(host, _)| host.contains('.'))
+    {
+        Url::parse(&format!("https://{value}")).ok()?
+    } else {
+        let (host, path) = value.split_once(':')?;
+        if host.contains('/') {
+            return None;
+        }
+        Url::parse(&format!("ssh://{host}/{path}")).ok()?
+    };
+    if !matches!(url.scheme(), "https" | "http" | "ssh" | "git")
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let path = url.path().trim_matches('/').to_ascii_lowercase();
+    let path = path.strip_suffix(".git").unwrap_or(&path);
+    if path.is_empty() {
+        return None;
+    }
+    let port = url
+        .port()
+        .filter(|p| !(url.scheme() == "ssh" && *p == 22 || url.scheme() == "git" && *p == 9418));
+    Some(match port {
+        Some(port) => format!("{host}:{port}/{path}"),
+        None => format!("{host}/{path}"),
+    })
+}
+
+/// Read the repository-local `origin` URL of a workspace (any subdirectory or worktree)
+/// with a bounded Git call that ignores inherited Git overrides, prompts and hooks.
+/// Errors never echo the remote, which may embed credentials.
+pub fn origin(directory: &Path) -> Result<String> {
+    let mut command = Command::new("git");
+    command
+        .args([
+            "--no-optional-locks",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+        ])
+        .arg(directory)
+        .args(["config", "--local", "--get", "remote.origin.url"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    let mut child = command
+        .spawn()
+        .context("cannot run git to read the workspace origin")?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("git timed out reading the workspace origin");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let mut text = String::new();
+    if let Some(stdout) = child.stdout.take() {
+        stdout
+            .take(4097)
+            .read_to_string(&mut text)
+            .context("git returned an unreadable workspace origin")?;
+    }
+    if !status.success() {
+        bail!("workspace is not a Git repository with an origin remote");
+    }
+    repository(text.trim_end_matches(['\r', '\n']))
+        .context("workspace origin is not a supported Git remote URL")
+}
+
+/// Select the single project whose canonical remote equals `remote` from a
+/// `/v1/projects` listing. Malformed listings and ambiguous mappings are errors.
+pub fn matching(remote: &str, projects: &Value) -> Result<Option<String>> {
+    let entries = projects
+        .as_array()
+        .filter(|entries| entries.len() <= 4096)
+        .context("gateway returned an invalid project list")?;
+    let mut idents = HashSet::new();
+    let mut found = None;
+    for entry in entries {
+        let ident = entry["ident"]
+            .as_str()
+            .filter(|ident| {
+                !ident.trim().is_empty()
+                    && ident.len() <= 512
+                    && !ident.chars().any(char::is_control)
+            })
+            .context("gateway project list contains an invalid project identity")?;
+        if !idents.insert(ident) {
+            bail!("gateway project list contains a duplicate project identity");
+        }
+        let canonical = match &entry["canonical_remote"] {
+            Value::Null => continue,
+            Value::String(text) => text,
+            _ => bail!("gateway project list contains a malformed canonical remote"),
+        };
+        // Like CMUX, a remote that cannot be normalized maps nothing.
+        if repository(canonical).as_deref() != Some(remote) {
+            continue;
+        }
+        if found.replace(ident).is_some() {
+            bail!(
+                "several gateway projects map this repository; resolve the ambiguity on the gateway"
+            );
+        }
+    }
+    let Some(ident) = found else {
+        return Ok(None);
+    };
+    crate::gateway::validate_project(ident)
+        .context("gateway project mapped to this repository is not a usable identity")?;
+    Ok(Some(ident.to_string()))
+}
