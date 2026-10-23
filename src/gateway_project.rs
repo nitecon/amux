@@ -12,10 +12,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Normalize a Git remote to `host[:port]/path` exactly as CMUX does (model.rs `repository`).
-/// Default SSH/Git ports are dropped; custom ports are kept.
+/// Normalize a Git remote to `host[:port]/path` as CMUX does (model.rs `repository`).
+/// Default SSH/Git ports are dropped; custom ports are kept. Ambiguous Windows
+/// drive-letter origins are local paths, never repository hosts to register.
 pub fn repository(value: &str) -> Option<String> {
     if value.len() > 4096 || value.chars().any(char::is_control) {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         return None;
     }
     let url = if value.contains("://") {

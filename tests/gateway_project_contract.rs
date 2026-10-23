@@ -107,12 +107,34 @@ fn git(directory: &Path, args: &[&str]) {
 
 /// A temporary repository whose origin is `remote`.
 fn workspace(remote: Option<&str>) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = fixture_dir();
     git(dir.path(), &["init", "--quiet"]);
     if let Some(remote) = remote {
         git(dir.path(), &["remote", "add", "origin", remote]);
     }
     dir
+}
+
+fn fixture_dir() -> tempfile::TempDir {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("gateway-project-fixtures");
+    std::fs::create_dir_all(&base).unwrap();
+    tempfile::tempdir_in(base).unwrap()
+}
+
+#[test]
+fn windows_local_origins_cannot_register_bogus_gateway_projects() {
+    for remote in ["C:/repos/x", "C:repos/x", "Z:\\repos\\x"] {
+        assert_eq!(
+            repository(remote),
+            None,
+            "local origin is not a remote host"
+        );
+        let repo = workspace(Some(remote));
+        let (url, server) = server(vec![]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        assert!(resolve(&gateway, repo.path().into()).is_err());
+        assert!(server.join().unwrap().is_empty());
+    }
 }
 
 fn resolve(gateway: &Gateway, directory: PathBuf) -> anyhow::Result<String> {
@@ -207,7 +229,10 @@ fn origin_is_read_from_repository_subdirectory_and_worktree() {
 fn missing_or_unsupported_origins_fail_without_echoing_the_remote() {
     let none = workspace(None);
     assert!(origin(none.path()).is_err());
-    let plain = tempfile::tempdir().unwrap();
+    let plain = fixture_dir();
+    // Fixtures live inside this repository, so an unmarked directory correctly
+    // inherits its origin. A broken Git boundary models an unusable repository.
+    std::fs::write(plain.path().join(".git"), "gitdir: missing\n").unwrap();
     assert!(origin(plain.path()).is_err());
     assert!(origin(&plain.path().join("missing")).is_err());
     let secret = workspace(Some("https://user:hunter2@git.example.test/team/tool"));
