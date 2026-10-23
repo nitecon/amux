@@ -52,6 +52,8 @@ The native event loop also drains a bounded final PTY read on child exit. Withou
 that option, exit can arrive before the read event and lose final output. The
 checked-input/closed-channel protocol test verifies the final reply before
 checking transport closure. This does not establish durable history retention.
+The terminal subscription also finishes when its event channel closes after
+Exit, preserving queued events without polling the closed channel indefinitely.
 
 The Windows candidate uses a private, anonymous Job Object. It opens the initial
 ConPTY child through a retained native handle, checks its exact creation FILETIME,

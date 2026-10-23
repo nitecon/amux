@@ -235,6 +235,7 @@ fn terminal_subscription_stream(
                     if !shutdown {
                         panic!("iced_term stream {}: terminal event channel closed unexpected", id);
                     }
+                    break;
                 },
             }
         }
@@ -249,6 +250,67 @@ mod amux_tests {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use std::time::Duration;
+
+    #[test]
+    #[ignore = "internal bounded subscription fixture"]
+    fn closed_subscription_fixture() {
+        if std::env::var_os("AMUX_CLOSED_SUBSCRIPTION_FIXTURE").is_none() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel(4);
+        sender
+            .blocking_send(AlacrittyEvent::Title("final title".into()))
+            .unwrap();
+        sender.blocking_send(AlacrittyEvent::Exit).unwrap();
+        drop(sender);
+        let data = TerminalSubscriptionData {
+            id: 930_019,
+            event_receiver: Arc::new(Mutex::new(receiver)),
+        };
+        let stream = terminal_subscription_stream(&data);
+        let events = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(stream.collect::<Vec<_>>());
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], Event::BackendCall(930_019, backend::Command::ProcessAlacrittyEvent(AlacrittyEvent::Title(title))) if title == "final title")
+        );
+        assert!(matches!(
+            &events[1],
+            Event::BackendCall(
+                930_019,
+                backend::Command::ProcessAlacrittyEvent(AlacrittyEvent::Exit)
+            )
+        ));
+    }
+
+    #[test]
+    fn closed_after_exit_subscription_finishes_without_spinning() {
+        let mut child =
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "terminal::amux_tests::closed_subscription_fixture",
+                    "--ignored",
+                ])
+                .env("AMUX_CLOSED_SUBSCRIPTION_FIXTURE", "1")
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "closed subscription fixture failed");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("closed terminal event subscription spun instead of finishing");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     fn rendered(terminal: &Terminal) -> String {
         let grid = &terminal.backend.renderable_content().grid;
