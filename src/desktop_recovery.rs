@@ -37,7 +37,8 @@ impl Credentials {
             bail!("recovery requires a canonical project identifier");
         }
         settings.gateway()?;
-        let endpoint = settings.url.trim().to_owned();
+        // Journal entries use Url's canonical origin, including its trailing slash.
+        let endpoint = reqwest::Url::parse(settings.url.trim())?.to_string();
         let token = settings.api_key.clone();
         let machine_id = canonical_uuid(&settings.machine_id)
             .context("Set provisioned machine credentials in Gateway preferences for recovery")?;
@@ -1239,6 +1240,36 @@ mod tests {
             status: "uncertain".into(),
             response: None,
             error: None,
+        }
+    }
+
+    #[test]
+    fn preferences_origin_normalization_keeps_uncertain_receipts_fenced() {
+        let (previous, me, _) = fixture();
+        for (entered, canonical) in [
+            ("https://gw.example", "https://gw.example/"),
+            ("https://GW.EXAMPLE:443", "https://gw.example/"),
+            ("http://LOCALHOST:80", "http://localhost/"),
+        ] {
+            let preferences = amux::gateway_preferences::GatewayPreferences {
+                url: entered.into(),
+                api_key: previous.token.clone(),
+                project: previous.project.clone(),
+                machine_id: previous.machine_id.to_string(),
+                machine_key: previous.machine_key.clone(),
+            };
+            let credentials =
+                Credentials::from_preferences(&previous.project, &preferences).unwrap();
+            let task = Uuid::new_v4();
+            let mut uncertain = intent(&credentials, &me, task);
+            // The dispatcher always writes its parsed, canonical origin to disk.
+            uncertain.gateway = canonical.into();
+            assert_eq!(
+                unresolved(&credentials, &me, &[uncertain]).unwrap(),
+                HashSet::from([task]),
+                "uncertain receipt was lost for {entered}"
+            );
+            assert_eq!(credentials.endpoint, canonical);
         }
     }
 
