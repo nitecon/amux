@@ -1,7 +1,7 @@
 //! Exact-session dispatch client against a local mock gateway. No live gateway,
 //! credential provisioning or executor launch.
 use amux::{
-    dispatch::{ActionArgs, Dispatcher, Executor, Machine},
+    dispatch::{ActionArgs, Destination, Dispatcher, Executor, Machine},
     identity::{AgentIdentity, Provider},
 };
 use serde_json::{Value, json};
@@ -271,20 +271,20 @@ fn a_lost_delegation_reply_stays_durable_and_only_its_execution_replays_it() {
     let lost = runtime.block_on(dispatcher.delegate(
         &requester,
         "demo",
-        destination.clone(),
+        Destination::Session(destination.clone()),
         "Implement it",
         "Spec",
         Some("linux"),
         None,
     ));
     assert!(lost.is_err(), "a lost reply is not acceptance");
-    let pending = dispatcher.uncertain();
+    let pending = dispatcher.uncertain().unwrap();
     assert_eq!(pending.len(), 1);
     let id = pending[0].request_id;
     // A later generation may not adopt or resubmit the earlier request.
     assert!(runtime.block_on(dispatcher.replay(&later, id)).is_err());
     runtime.block_on(dispatcher.replay(&requester, id)).unwrap();
-    assert!(dispatcher.uncertain().is_empty());
+    assert!(dispatcher.uncertain().unwrap().is_empty());
     assert!(
         runtime.block_on(dispatcher.replay(&requester, id)).is_err(),
         "an accepted request is never resent"
@@ -317,7 +317,7 @@ fn a_lost_delegation_reply_stays_durable_and_only_its_execution_replays_it() {
     )
     .unwrap();
     assert!(
-        reopened.uncertain().is_empty(),
+        reopened.uncertain().unwrap().is_empty(),
         "accepted status was durable"
     );
 }
@@ -409,7 +409,7 @@ fn acknowledgments_must_match_the_exact_target_task_machine_claim_and_state() {
         );
     }
     // Malformed acknowledgments stay uncertain; the 409 is a definite rejection.
-    assert_eq!(dispatcher.uncertain().len(), count);
+    assert_eq!(dispatcher.uncertain().unwrap().len(), count);
     let accepted = runtime
         .block_on(dispatcher.act(&agent, task, "claim", ActionArgs::default()))
         .unwrap();
@@ -560,7 +560,7 @@ fn invalid_input_persists_and_sends_nothing() {
             .block_on(dispatcher.delegate(
                 &agent,
                 "demo",
-                me.clone(),
+                Destination::Session(me.clone()),
                 &"t".repeat(513),
                 "",
                 None,
@@ -570,15 +570,10 @@ fn invalid_input_persists_and_sends_nothing() {
     );
     assert!(
         runtime
-            .block_on(dispatcher.delegate(&agent, "../x", me.clone(), "title", "", None, None))
-            .is_err()
-    );
-    assert!(
-        runtime
             .block_on(dispatcher.delegate(
                 &agent,
-                "demo",
-                json!({"origin": {}}),
+                "../x",
+                Destination::Session(me.clone()),
                 "title",
                 "",
                 None,
@@ -587,7 +582,20 @@ fn invalid_input_persists_and_sends_nothing() {
             .is_err()
     );
     assert!(
-        dispatcher.uncertain().is_empty(),
+        runtime
+            .block_on(dispatcher.delegate(
+                &agent,
+                "demo",
+                Destination::Session(json!({"origin": {}})),
+                "title",
+                "",
+                None,
+                None
+            ))
+            .is_err()
+    );
+    assert!(
+        dispatcher.uncertain().unwrap().is_empty(),
         "invalid input persists nothing"
     );
     assert!(
@@ -627,26 +635,34 @@ fn corrupt_oversized_or_locked_journals_are_preserved_and_refused() {
         assert_eq!(std::fs::read(&journal).unwrap(), bytes, "never reset");
     }
     std::fs::remove_file(&journal).unwrap();
-    let first = Dispatcher::new(
-        "http://127.0.0.1:9",
-        "t".into(),
-        "demo",
-        machine(),
-        state.clone(),
-    )
-    .unwrap();
-    assert!(
-        Dispatcher::new(
-            "http://127.0.0.1:9",
-            "t".into(),
+    // A process that holds the journal lock past the bounded wait makes a
+    // write fail closed, and nothing is sent.
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let me = agent.target(&machine);
+    let (url, server) = server(vec![]);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let holder = std::fs::OpenOptions::new()
+        .write(true)
+        .open(state.join("dispatch/journal.lock"))
+        .unwrap();
+    holder.try_lock().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let error = runtime
+        .block_on(dispatcher.delegate(
+            &agent,
             "demo",
-            machine(),
-            state.clone()
-        )
-        .is_err(),
-        "a second process may not share the journal"
-    );
-    drop(first);
+            Destination::Session(me),
+            "title",
+            "",
+            None,
+            None,
+        ))
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("busy"), "{error:#}");
+    drop(holder);
+    assert!(finish(server).is_empty(), "zero HTTP requests");
+    assert!(dispatcher.uncertain().unwrap().is_empty());
 }
 
 /// Unix permissions make the journal directory unwritable; skipped as root.
@@ -667,7 +683,15 @@ fn a_request_that_cannot_be_persisted_is_never_sent() {
     }
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let error = runtime
-        .block_on(dispatcher.delegate(&agent, "demo", me, "title", "", None, None))
+        .block_on(dispatcher.delegate(
+            &agent,
+            "demo",
+            Destination::Session(me),
+            "title",
+            "",
+            None,
+            None,
+        ))
         .unwrap_err();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(
@@ -707,4 +731,377 @@ fn shipped_cli_refuses_dispatch_outside_an_amux_launched_agent() {
         !state.join("dispatch").exists(),
         "no secret is created for an unverified caller"
     );
+}
+
+/// A pending_machine acknowledgment: no bound session, provisioned OS from the server.
+fn queued(me: &Value, task: Uuid, instance: Uuid, os: &str) -> Value {
+    ack(
+        me,
+        task,
+        "todo",
+        json!({"state": "pending_machine", "target": null, "machine_target": {"instance_id": instance.to_string(), "os": os}}),
+    )
+}
+
+#[test]
+fn work_queues_for_an_offline_machine_without_changing_session_requests() {
+    let (_fixture, state) = state_dir();
+    let requester = executor(&state, Provider::Claude);
+    let machine = machine();
+    let me = requester.target(&machine);
+    let windows = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    let mut bound = queued(&me, task, windows, "windows");
+    bound["dispatch"]["target"] = me.clone();
+    let replies = vec![
+        Some((200, queued(&me, task, Uuid::new_v4(), "windows"))), // another machine
+        Some((200, queued(&me, task, windows, "linux"))),          // not the required OS
+        Some((
+            200,
+            ack(
+                &me,
+                task,
+                "todo",
+                json!({"machine_target": {"instance_id": windows.to_string(), "os": "windows"}}),
+            ),
+        )), // pending, not pending_machine
+        Some((200, bound)),                                        // already bound to a session
+        Some((
+            409,
+            json!({"error": "target machine is not provisioned/eligible in project"}),
+        )),
+        Some((200, queued(&me, task, windows, "windows"))),
+        Some((200, ack(&me, task, "todo", json!({})))), // exact-session delegation
+    ];
+    let (url, server) = server(replies);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let to_machine = || {
+        dispatcher.delegate(
+            &requester,
+            "demo",
+            Destination::Machine(windows),
+            "Run on Windows",
+            "Spec",
+            Some("windows"),
+            Some("codex"),
+        )
+    };
+    for _ in 0..5 {
+        assert!(runtime.block_on(to_machine()).is_err());
+    }
+    assert_eq!(
+        dispatcher.uncertain().unwrap().len(),
+        4,
+        "the 409 is a definite rejection"
+    );
+    let accepted = runtime.block_on(to_machine()).unwrap();
+    assert_eq!(accepted["dispatch"]["state"], "pending_machine");
+    assert!(
+        accepted["dispatch"]["target"].is_null(),
+        "no session is bound or claimed"
+    );
+    runtime
+        .block_on(dispatcher.delegate(
+            &requester,
+            "demo",
+            Destination::Session(me.clone()),
+            "Here",
+            "",
+            None,
+            None,
+        ))
+        .unwrap();
+    let seen = finish(server);
+    let machine_body = &seen[5].body;
+    assert_eq!(
+        machine_body["machine_target"],
+        json!({"instance_id": windows.to_string()})
+    );
+    assert!(
+        machine_body.get("target").is_none(),
+        "exactly one destination"
+    );
+    let session_body = &seen[6].body;
+    assert!(
+        session_body.get("machine_target").is_none(),
+        "exact-session request bodies (and their replay fingerprints) are unchanged"
+    );
+    assert_eq!(session_body["target"], me);
+}
+
+#[test]
+fn a_machine_item_is_bound_only_by_explicit_receive_and_one_session_wins() {
+    let (_fixture, state) = state_dir();
+    let first = executor(&state, Provider::Codex);
+    let second = executor(&state, Provider::Codex);
+    let machine = machine();
+    let instance = machine.instance_id;
+    let me = first.target(&machine);
+    let task = Uuid::new_v4();
+    let received = |target: &Value, instance: Uuid| {
+        ack(
+            target,
+            task,
+            "todo",
+            json!({"state": "received", "received_at": 4, "machine_target": {"instance_id": instance.to_string(), "os": "linux"}}),
+        )
+    };
+    let recovery = |items: Vec<Value>| json!({"pending": [], "machine_pending": items, "machine_dispatches": [], "prior_claims": [], "requested": []});
+    let mut other_machine = queued(&me, task, Uuid::new_v4(), "linux")["dispatch"].clone();
+    other_machine["requester"] = me.clone();
+    let mut already_bound = queued(&me, task, instance, "linux")["dispatch"].clone();
+    already_bound["target"] = me.clone();
+    let replies = vec![
+        Some((
+            200,
+            recovery(vec![
+                queued(&me, task, instance, "linux")["dispatch"].clone(),
+            ]),
+        )),
+        Some((200, recovery(vec![other_machine]))),
+        Some((200, recovery(vec![already_bound]))),
+        Some((200, received(&me, Uuid::new_v4()))), // receipt for another machine
+        Some((200, received(&me, instance))),
+        Some((409, json!({"error": "ownership conflict"}))), // second session loses
+    ];
+    let (url, server) = server(replies);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pending = runtime.block_on(dispatcher.recover(&first)).unwrap();
+    assert_eq!(pending["machine_pending"].as_array().unwrap().len(), 1);
+    assert!(
+        runtime.block_on(dispatcher.recover(&first)).is_err(),
+        "another machine's work"
+    );
+    assert!(
+        runtime.block_on(dispatcher.recover(&first)).is_err(),
+        "already bound work"
+    );
+    assert!(
+        runtime
+            .block_on(dispatcher.act(&first, task, "receive", ActionArgs::default()))
+            .is_err()
+    );
+    let bound = runtime
+        .block_on(dispatcher.act(&first, task, "receive", ActionArgs::default()))
+        .unwrap();
+    assert_eq!(
+        bound["dispatch"]["target"], me,
+        "receipt binds this exact session"
+    );
+    assert!(
+        bound["dispatch"]["claim_id"].is_null(),
+        "receipt is not a claim"
+    );
+    assert_eq!(bound["task"]["status"], "todo");
+    let error = runtime
+        .block_on(dispatcher.act(&second, task, "receive", ActionArgs::default()))
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("409"), "{error:#}");
+    let seen = finish(server);
+    assert!(
+        seen[0]
+            .head
+            .starts_with("get /v1/projects/demo/task-dispatches/recovery")
+    );
+    assert!(
+        seen[4].body.get("machine_target").is_none(),
+        "receive names no destination"
+    );
+}
+
+#[test]
+fn owners_can_hand_off_to_a_machine_and_destinations_are_exclusive() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let me = agent.target(&machine);
+    let windows = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    let reason = "needs Windows";
+    let handed = |instance: Uuid| {
+        let mut reply = queued(&me, task, instance, "windows");
+        reply["dispatch"]["result"] = json!(reason);
+        reply
+    };
+    let (url, server) = server(vec![
+        Some((200, handed(Uuid::new_v4()))),
+        Some((200, handed(windows))),
+    ]);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let handoff = |target: Option<Value>, machine_target: Option<Uuid>| ActionArgs {
+        claim_id: Some("c1".into()),
+        result: Some(reason.into()),
+        target,
+        machine_target,
+        ..Default::default()
+    };
+    let invalid = [
+        ("handoff", handoff(Some(me.clone()), Some(windows))),
+        ("handoff", handoff(None, Some(Uuid::nil()))),
+        ("handoff", handoff(None, None)),
+        ("claim", handoff(None, Some(windows))),
+    ];
+    for (operation, args) in invalid {
+        assert!(
+            runtime
+                .block_on(dispatcher.act(&agent, task, operation, args))
+                .is_err()
+        );
+    }
+    assert!(
+        dispatcher.uncertain().unwrap().is_empty(),
+        "invalid destinations persist nothing"
+    );
+    assert!(
+        runtime
+            .block_on(dispatcher.act(&agent, task, "handoff", handoff(None, Some(windows))))
+            .is_err(),
+        "queued for a different machine"
+    );
+    let queued = runtime
+        .block_on(dispatcher.act(&agent, task, "handoff", handoff(None, Some(windows))))
+        .unwrap();
+    assert_eq!(queued["dispatch"]["state"], "pending_machine");
+    assert!(
+        queued["dispatch"]["claim_id"].is_null(),
+        "the old claim is cleared"
+    );
+    let seen = finish(server);
+    assert_eq!(seen.len(), 2);
+    assert_eq!(
+        seen[1].body["machine_target"],
+        json!({"instance_id": windows.to_string()})
+    );
+    assert!(seen[1].body["target"].is_null());
+}
+
+#[test]
+fn independent_clients_share_the_journal_while_one_call_is_stalled() {
+    use std::{
+        collections::HashMap,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+    let (_fixture, state) = state_dir();
+    let agents = [
+        executor(&state, Provider::Codex),
+        executor(&state, Provider::Codex),
+        executor(&state, Provider::Claude),
+    ];
+    let machine_id = Uuid::new_v4();
+    let machine = || Machine::new(machine_id, MACHINE_KEY.into()).unwrap();
+    let targets: Vec<Value> = agents.iter().map(|a| a.target(&machine())).collect();
+    let destination = targets[0].clone();
+    let replies: HashMap<String, Value> = agents
+        .iter()
+        .zip(&targets)
+        .map(|(agent, me)| {
+            let reply = ack(me, Uuid::new_v4(), "todo", json!({"target": destination}));
+            (agent.actor.session_id.to_string(), reply)
+        })
+        .collect();
+    let stalled = agents[0].actor.session_id.to_string();
+    // Concurrent mock gateway: the first agent's call waits until both peers
+    // have been answered.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let answered = Arc::new(AtomicUsize::new(0));
+    let gateway = {
+        let answered = answered.clone();
+        thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let (replies, stalled, answered) =
+                    (replies.clone(), stalled.clone(), answered.clone());
+                handlers.push(thread::spawn(move || {
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut bytes = Vec::new();
+                    let (end, length) = loop {
+                        let mut buf = [0; 4096];
+                        let count = stream.read(&mut buf).unwrap();
+                        bytes.extend_from_slice(&buf[..count]);
+                        if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                            let length = head
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length: ")?.parse().ok())
+                                .unwrap_or(0usize);
+                            break (end + 4, length);
+                        }
+                    };
+                    while bytes.len() < end + length {
+                        let mut buf = [0; 4096];
+                        let count = stream.read(&mut buf).unwrap();
+                        bytes.extend_from_slice(&buf[..count]);
+                    }
+                    let head = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    let session = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("x-agent-session-id: "))
+                        .unwrap()
+                        .to_owned();
+                    if session == stalled {
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        while answered.load(Ordering::SeqCst) < 2 {
+                            assert!(Instant::now() < deadline, "peers were blocked by the stalled call");
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                    let body = serde_json::to_vec(&replies[&session]).unwrap();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+                    stream.flush().unwrap();
+                    if session != stalled {
+                        answered.fetch_add(1, Ordering::SeqCst);
+                    }
+                }));
+            }
+            for handler in handlers {
+                handler.join().unwrap();
+            }
+        })
+    };
+    // Three independent clients, as three CLI processes would create them.
+    let clients: Vec<Dispatcher> = (0..3)
+        .map(|_| dispatcher(&url, machine(), &state))
+        .collect();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let call = |i: usize| {
+        clients[i].delegate(
+            &agents[i],
+            "demo",
+            Destination::Session(destination.clone()),
+            "Parallel work",
+            "",
+            None,
+            None,
+        )
+    };
+    let results = runtime.block_on(async {
+        let (a, b, c) = tokio::join!(call(0), call(1), call(2));
+        [a, b, c]
+    });
+    gateway.join().unwrap();
+    for result in results {
+        result.unwrap();
+    }
+    assert_eq!(answered.load(Ordering::SeqCst), 2);
+    // All three outcomes survive in the shared journal, none lost to a peer's write.
+    let journal: Value =
+        serde_json::from_slice(&std::fs::read(state.join("dispatch/journal.json")).unwrap())
+            .unwrap();
+    let requests = journal["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|r| r["status"] == "accepted"));
 }

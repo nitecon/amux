@@ -15,7 +15,6 @@ use std::{
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
     time::Duration,
 };
 use uuid::Uuid;
@@ -27,6 +26,8 @@ const MAX_SPECIFICATION: usize = 65_536;
 const MAX_RESULT: usize = 65_536;
 const MAX_JOURNAL_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REQUESTS: usize = 512;
+/// How long a journal operation waits for another process's short transaction.
+const LOCK_WAIT: Duration = Duration::from_secs(2);
 
 /// The provisioned machine credential. It is issued by a gateway operator and
 /// supplied by the user; amux never provisions or stores it.
@@ -163,16 +164,23 @@ impl Request {
         let body_id = self.body["request_id"]
             .as_str()
             .and_then(|id| Uuid::parse_str(id).ok());
+        let destinations = self.body.get("target").is_some_and(|t| !t.is_null()) as u8
+            + self
+                .body
+                .get("machine_target")
+                .is_some_and(|m| !m.is_null()) as u8;
         let delegation = self.path == ["task-dispatches"]
             && self.body["operation"].is_null()
-            && self.body["target_project_ident"].is_string();
+            && self.body["target_project_ident"].is_string()
+            && destinations == 1;
         let action = self.path.len() == 3
             && self.path[0] == "task-dispatches"
             && self.path[2] == "actions"
             && Uuid::parse_str(&self.path[1]).is_ok_and(|id| !id.is_nil())
             && self.body["operation"]
                 .as_str()
-                .is_some_and(|op| OPERATIONS.contains(&op));
+                .is_some_and(|op| OPERATIONS.contains(&op))
+            && (self.body["operation"] != "handoff" || destinations == 1);
         if self.request_id.is_nil()
             || body_id != Some(self.request_id)
             || self.body["generation"].as_str() != Some(self.generation.to_string().as_str())
@@ -211,28 +219,41 @@ impl Journal {
     }
 }
 
-/// The bounded request journal, owned exclusively by one process at a time.
-/// A corrupt journal is preserved and refused, never reset.
+/// The bounded request journal shared by every amux process on this machine.
+/// Each operation holds the cross-process lock only for one short fresh
+/// read-modify-write, never across network calls. A corrupt journal is
+/// preserved and refused, never reset.
 struct Store {
-    path: PathBuf,
-    _lock: File,
-    journal: Journal,
+    directory: PathBuf,
 }
 
 impl Store {
     fn open(state: &Path) -> Result<Self> {
         let directory = state.join("dispatch");
         std::fs::create_dir_all(&directory)?;
-        let path = directory.join("journal.json");
+        let store = Self { directory };
+        store.transact(|_| Ok(((), false)))?;
+        Ok(store)
+    }
+
+    /// Runs `change` on the current journal under the lock, writing it back
+    /// durably when `change` reports a modification.
+    fn transact<T>(&self, change: impl FnOnce(&mut Journal) -> Result<(T, bool)>) -> Result<T> {
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(directory.join("journal.lock"))?;
-        lock.try_lock()
-            .context("dispatch journal is in use by another amux process")?;
-        let journal = match File::open(&path) {
+            .open(self.directory.join("journal.lock"))?;
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        while lock.try_lock().is_err() {
+            if std::time::Instant::now() > deadline {
+                bail!("dispatch journal is busy in another amux process; nothing was changed");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let path = self.directory.join("journal.json");
+        let mut journal = match File::open(&path) {
             Ok(file) => {
                 let mut bytes = Vec::new();
                 file.take(MAX_JOURNAL_BYTES as u64 + 1)
@@ -253,49 +274,58 @@ impl Store {
             },
             Err(e) => return Err(e.into()),
         };
-        Ok(Self {
-            path,
-            _lock: lock,
-            journal,
+        let (value, changed) = change(&mut journal)?;
+        if changed {
+            journal.validate()?;
+            let bytes = serde_json::to_vec(&journal)?;
+            if bytes.len() > MAX_JOURNAL_BYTES {
+                bail!("dispatch journal would exceed 2 MiB");
+            }
+            let mut file = tempfile::NamedTempFile::new_in(&self.directory)?;
+            file.write_all(&bytes)?;
+            file.as_file().sync_all()?;
+            file.persist(&path).map_err(|e| e.error)?;
+            sync_directory(&self.directory)?;
+        }
+        Ok(value)
+    }
+
+    /// Writes `request` durably, replacing an entry with the same ID.
+    fn record(&self, request: &Request) -> Result<()> {
+        self.transact(|journal| {
+            match journal
+                .requests
+                .iter_mut()
+                .find(|r| r.request_id == request.request_id)
+            {
+                Some(existing) => *existing = request.clone(),
+                None => journal.requests.push(request.clone()),
+            }
+            Ok(((), true))
         })
     }
 
-    /// Writes `request` durably, replacing an entry with the same ID. Memory is
-    /// updated only after the file and directory are synced.
-    fn record(&mut self, request: &Request) -> Result<()> {
-        let mut requests = self.journal.requests.clone();
-        match requests
-            .iter_mut()
-            .find(|r| r.request_id == request.request_id)
-        {
-            Some(existing) => *existing = request.clone(),
-            None => requests.push(request.clone()),
-        }
-        let next = Journal {
-            version: 1,
-            requests,
-        };
-        next.validate()?;
-        let bytes = serde_json::to_vec(&next)?;
-        if bytes.len() > MAX_JOURNAL_BYTES {
-            bail!("dispatch journal would exceed 2 MiB");
-        }
-        let directory = self.path.parent().context("journal has no directory")?;
-        let mut file = tempfile::NamedTempFile::new_in(directory)?;
-        file.write_all(&bytes)?;
-        file.as_file().sync_all()?;
-        file.persist(&self.path).map_err(|e| e.error)?;
-        sync_directory(directory)?;
-        self.journal = next;
-        Ok(())
+    fn get(&self, id: Uuid) -> Result<Option<Request>> {
+        self.transact(|journal| {
+            let found = journal
+                .requests
+                .iter()
+                .find(|r| r.request_id == id)
+                .cloned();
+            Ok((found, false))
+        })
     }
 
-    fn get(&self, id: Uuid) -> Option<Request> {
-        self.journal
-            .requests
-            .iter()
-            .find(|r| r.request_id == id)
-            .cloned()
+    fn uncertain(&self) -> Result<Vec<Request>> {
+        self.transact(|journal| {
+            let found = journal
+                .requests
+                .iter()
+                .filter(|r| r.status == "uncertain")
+                .cloned()
+                .collect();
+            Ok((found, false))
+        })
     }
 }
 
@@ -305,7 +335,7 @@ pub struct Dispatcher {
     token: String,
     project: String,
     machine: Machine,
-    store: Mutex<Store>,
+    store: Store,
 }
 
 /// Arguments for an action on an existing dispatch.
@@ -315,6 +345,15 @@ pub struct ActionArgs {
     pub execution_id: Option<Uuid>,
     pub result: Option<String>,
     pub target: Option<Value>,
+    /// Hand off to a provisioned machine instead of a live session.
+    pub machine_target: Option<Uuid>,
+}
+
+/// Where a delegation goes: one exact live session generation, or a
+/// provisioned machine whose sessions may be offline.
+pub enum Destination {
+    Session(Value),
+    Machine(Uuid),
 }
 
 pub const OPERATIONS: [&str; 8] = [
@@ -368,20 +407,13 @@ impl Dispatcher {
             token,
             project: project.to_owned(),
             machine,
-            store: Mutex::new(Store::open(&state)?),
+            store: Store::open(&state)?,
         })
     }
 
     /// Requests whose outcome is not known, in journal order.
-    pub fn uncertain(&self) -> Vec<Request> {
-        let store = self.store.lock().unwrap();
-        store
-            .journal
-            .requests
-            .iter()
-            .filter(|r| r.status == "uncertain")
-            .cloned()
-            .collect()
+    pub fn uncertain(&self) -> Result<Vec<Request>> {
+        self.store.uncertain()
     }
 
     async fn send(
@@ -495,15 +527,25 @@ impl Dispatcher {
                 .as_array()
                 .filter(|items| items.len() <= MAX_REQUESTS * 8)
         };
-        let (Some(pending), Some(_), Some(_), Some(requested)) = (
+        let (Some(pending), Some(machine_pending), Some(_), Some(_), Some(requested)) = (
             list("pending"),
+            list("machine_pending"),
             list("machine_dispatches"),
             list("prior_claims"),
             list("requested"),
         ) else {
             bail!("gateway recovery is malformed or too large");
         };
+        // Unbound machine work must be addressed to this machine and OS; reading
+        // it binds, receives, claims and starts nothing.
+        let unbound_here = |d: &Value| {
+            d["state"] == "pending_machine"
+                && d["target"].is_null()
+                && d["machine_target"]["instance_id"] == me["origin"]["instance_id"]
+                && d["machine_target"]["os"] == me["origin"]["os"]
+        };
         if pending.iter().any(|d| d["target"] != me)
+            || !machine_pending.iter().all(unbound_here)
             || requested.iter().any(|d| d["requester"] != me)
         {
             bail!("gateway recovery contains work for another generation");
@@ -517,14 +559,19 @@ impl Dispatcher {
         &self,
         executor: &Executor,
         target_project: &str,
-        target: Value,
+        destination: Destination,
         title: &str,
         specification: &str,
         required_os: Option<&str>,
         required_provider: Option<&str>,
     ) -> Result<Value> {
-        if !is_target(&target) {
+        if let Destination::Session(target) = &destination
+            && !is_target(target)
+        {
             bail!("target needs origin session_id, instance_id, provider, os and a generation");
+        }
+        if matches!(destination, Destination::Machine(id) if id.is_nil()) {
+            bail!("machine target must be a non-nil UUID");
         }
         if !is_project(target_project) {
             bail!("target project must be a project identifier");
@@ -536,16 +583,21 @@ impl Dispatcher {
             bail!("title must be 1-512 bytes and specification at most 65,536 bytes");
         }
         let request_id = Uuid::new_v4();
-        let body = json!({
+        let mut body = json!({
             "request_id": request_id.to_string(),
             "generation": executor.generation().to_string(),
             "target_project_ident": target_project,
-            "target": target,
             "title": title,
             "specification": specification,
             "required_os": required_os,
             "required_provider": required_provider,
         });
+        match destination {
+            Destination::Session(target) => body["target"] = target,
+            Destination::Machine(id) => {
+                body["machine_target"] = json!({"instance_id": id.to_string()})
+            }
+        }
         self.submit(executor, request_id, vec!["task-dispatches".into()], body)
             .await
     }
@@ -585,8 +637,14 @@ impl Dispatcher {
         if matches!(operation, "start" | "succeeded" | "failed") && args.execution_id.is_none() {
             bail!("{operation} requires the executor's --execution-id");
         }
-        if operation == "handoff" && args.target.as_ref().is_none_or(|t| !is_target(t)) {
-            bail!("handoff requires a complete new target");
+        if operation == "handoff" {
+            match (&args.target, args.machine_target) {
+                (Some(t), None) if is_target(t) => {}
+                (None, Some(id)) if !id.is_nil() => {}
+                _ => bail!("handoff requires exactly one complete --target or --machine-target"),
+            }
+        } else if args.target.is_some() || args.machine_target.is_some() {
+            bail!("only handoff takes a target");
         }
         let request_id = Uuid::new_v4();
         let body = json!({
@@ -598,6 +656,14 @@ impl Dispatcher {
             "result": args.result,
             "target": args.target,
         });
+        let body = match args.machine_target {
+            Some(id) => {
+                let mut body = body;
+                body["machine_target"] = json!({"instance_id": id.to_string()});
+                body
+            }
+            None => body,
+        };
         let path = vec![
             "task-dispatches".into(),
             task_id.to_string(),
@@ -609,12 +675,7 @@ impl Dispatcher {
     /// Resends a stored uncertain request, unchanged, from the execution, machine,
     /// project and gateway that created it. A later generation never adopts it.
     pub async fn replay(&self, executor: &Executor, request_id: Uuid) -> Result<Value> {
-        let request = self
-            .store
-            .lock()
-            .unwrap()
-            .get(request_id)
-            .context("unknown request ID")?;
+        let request = self.store.get(request_id)?.context("unknown request ID")?;
         request.validate()?;
         if request.status != "uncertain" {
             bail!("request {request_id} is already {}", request.status);
@@ -653,8 +714,6 @@ impl Dispatcher {
             error: None,
         };
         self.store
-            .lock()
-            .unwrap()
             .record(&request)
             .context("could not persist the request; nothing was sent")?;
         self.deliver(executor, request).await
@@ -687,7 +746,7 @@ impl Dispatcher {
             Err(e) => updated.error = Some(format!("{e:#}")),
         }
         // If this write fails, the journal still holds the request as uncertain.
-        if let Err(error) = self.store.lock().unwrap().record(&updated) {
+        if let Err(error) = self.store.record(&updated) {
             return Err(error.context(format!(
                 "request {} outcome could not be recorded; it remains uncertain",
                 request.request_id
@@ -711,6 +770,22 @@ impl Dispatcher {
         let task_status = task["status"].as_str().unwrap_or_default();
         let state = dispatch["state"].as_str().unwrap_or_default();
         let int = |key: &str| dispatch[key].is_i64();
+        let machine_addressed = Uuid::parse_str(
+            dispatch["machine_target"]["instance_id"]
+                .as_str()
+                .unwrap_or_default(),
+        )
+        .is_ok_and(|id| !id.is_nil())
+            && matches!(
+                dispatch["machine_target"]["os"].as_str(),
+                Some("linux" | "windows" | "macos")
+            );
+        // pending_machine work has no bound session yet.
+        let unbound =
+            state == "pending_machine" && dispatch["target"].is_null() && machine_addressed;
+        let requested_machine = |body: &Value| {
+            dispatch["machine_target"]["instance_id"] == body["machine_target"]["instance_id"]
+        };
         if task_id.is_none()
             || task["id"].as_str() != dispatch["task_id"].as_str()
             || task["project_ident"] != dispatch["project_ident"]
@@ -720,8 +795,9 @@ impl Dispatcher {
             || machine["instance_id"] != me["origin"]["instance_id"]
             || machine["os"] != me["origin"]["os"]
             || machine["credential_id"] != self.machine.credential_id()
-            || !is_target(&dispatch["target"])
+            || !(is_target(&dispatch["target"]) || unbound)
             || !is_target(&dispatch["requester"])
+            || !dispatch["machine_target"].is_null() && !machine_addressed
         {
             bail!(
                 "gateway acknowledgment does not identify this exact execution, machine and task; outcome unknown"
@@ -729,12 +805,22 @@ impl Dispatcher {
         }
         let ok = match body["operation"].as_str() {
             None => {
-                // Delegation.
+                // Delegation: exact session, or queued for a provisioned machine.
+                let addressed = if body["machine_target"].is_null() {
+                    dispatch["target"] == body["target"] && state == "pending"
+                } else {
+                    unbound
+                        && requested_machine(body)
+                        && (body["required_os"].is_null()
+                            || dispatch["machine_target"]["os"] == body["required_os"])
+                };
                 dispatch["project_ident"] == body["target_project_ident"]
                     && dispatch["source_project_ident"] == self.project
                     && dispatch["requester"] == me
-                    && dispatch["target"] == body["target"]
-                    && state == "pending"
+                    && addressed
+                    && dispatch["claim_id"].is_null()
+                    && dispatch["received_at"].is_null()
+                    && dispatch["started_at"].is_null()
                     && task_status == "todo"
             }
             Some(operation) => {
@@ -748,8 +834,13 @@ impl Dispatcher {
                 // Task status as of agent-gateway f060414.
                 same_task
                     && match operation {
+                        // A machine item is bound to this exact session on receipt,
+                        // and must have been addressed to this machine.
                         "receive" => {
                             destination
+                                && (dispatch["machine_target"].is_null()
+                                    || dispatch["machine_target"]["instance_id"]
+                                        == me["origin"]["instance_id"])
                                 && state == "received"
                                 && int("received_at")
                                 && dispatch["claim_id"].is_null()
@@ -798,9 +889,13 @@ impl Dispatcher {
                                 && task_status == "cancelled"
                         }
                         "handoff" => {
+                            let addressed = if body["machine_target"].is_null() {
+                                state == "pending" && dispatch["target"] == body["target"]
+                            } else {
+                                unbound && requested_machine(body)
+                            };
                             dispatch["project_ident"] == self.project
-                                && state == "pending"
-                                && dispatch["target"] == body["target"]
+                                && addressed
                                 && dispatch["claim_id"].is_null()
                                 && dispatch["result"] == body["result"]
                                 && task_status == "todo"
@@ -868,8 +963,15 @@ pub enum Command {
     Delegate {
         title: String,
         /// Target JSON: {"origin":{session_id,instance_id,provider,os},"generation"}.
+        #[arg(
+            long,
+            required_unless_present = "machine_target",
+            conflicts_with = "machine_target"
+        )]
+        target: Option<String>,
+        /// Queue for a provisioned machine UUID; its sessions may be offline.
         #[arg(long)]
-        target: String,
+        machine_target: Option<Uuid>,
         /// Destination project (defaults to this project).
         #[arg(long)]
         target_project: Option<String>,
@@ -894,8 +996,11 @@ pub enum Command {
         #[arg(long)]
         result: Option<String>,
         /// New target JSON for handoff.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "machine_target")]
         target: Option<String>,
+        /// Hand off to a provisioned machine UUID instead.
+        #[arg(long)]
+        machine_target: Option<Uuid>,
     },
     /// Resend a persisted uncertain request unchanged (same execution only).
     Replay { request: Uuid },
@@ -914,10 +1019,11 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
         Command::Register => dispatcher.register(executor).await,
         Command::Sessions => dispatcher.sessions(executor).await,
         Command::Recover => dispatcher.recover(executor).await,
-        Command::Requests => Ok(serde_json::to_value(dispatcher.uncertain())?),
+        Command::Requests => Ok(serde_json::to_value(dispatcher.uncertain()?)?),
         Command::Delegate {
             title,
             target,
+            machine_target,
             target_project,
             specification,
             require_os,
@@ -928,7 +1034,11 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
                 .delegate(
                     executor,
                     &project,
-                    parse_target(&target)?,
+                    match (target, machine_target) {
+                        (Some(target), None) => Destination::Session(parse_target(&target)?),
+                        (None, Some(id)) => Destination::Machine(id),
+                        _ => bail!("give exactly one of --target or --machine-target"),
+                    },
                     &title,
                     &specification,
                     require_os.as_deref(),
@@ -943,6 +1053,7 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
             execution_id,
             result,
             target,
+            machine_target,
         } => {
             let target = target.as_deref().map(parse_target).transpose()?;
             let args = ActionArgs {
@@ -950,6 +1061,7 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
                 execution_id,
                 result,
                 target,
+                machine_target,
             };
             dispatcher.act(executor, task, &operation, args).await
         }

@@ -39,6 +39,8 @@ amux dispatch sessions                      # live eligible targets in this proj
 amux dispatch delegate "Title" --target '<target JSON>' \
     [--target-project other] [--specification text] \
     [--require-os linux] [--require-provider codex]
+amux dispatch delegate "Title" --machine-target <machine-uuid> \
+    [--require-os windows] [--require-provider codex]
 amux dispatch act <task> receive
 amux dispatch act <task> claim
 amux dispatch act <task> start --claim-id <id> --execution-id <uuid>
@@ -46,6 +48,7 @@ amux dispatch act <task> succeeded --claim-id <id> --execution-id <uuid> --resul
 amux dispatch act <task> request_cancel --claim-id <id> --result "reason"
 amux dispatch act <task> cancel [--claim-id <id> --execution-id <uuid>] --result "reason"
 amux dispatch act <task> handoff [--claim-id <id>] --target '<target JSON>' --result "reason"
+amux dispatch act <task> handoff [--claim-id <id>] --machine-target <machine-uuid> --result "reason"
 amux dispatch recover                       # read-only recovery for this generation
 amux dispatch requests                      # requests with unknown outcomes
 amux dispatch replay <request-id>           # resend one, unchanged
@@ -59,13 +62,34 @@ report by the executor after it has launched, carrying its own execution UUID.
 running work requires the executor's execution UUID as its confirmation that it
 stopped.
 
+## Offline machines
+
+`--machine-target` queues work for a provisioned machine instead of one live
+session, so it can be delegated or handed off while the destination is off
+(agent-gateway `1b3f4b4`). It and `--target` are mutually exclusive. The gateway
+takes the machine's OS from its provisioning record; `--require-os` and
+`--require-provider` stay exact constraints. Accepted work is `pending_machine`
+with no bound session, claim, receipt or start.
+
+When a session on that machine starts, `recover` lists the work in
+`machine_pending`; reading it changes nothing. The session takes an item only
+with an explicit `act <task> receive`, which binds it to that exact session and
+generation and leaves the task TODO and unowned. A competing session's receipt
+is rejected. Claim and start remain separate explicit reports, and once bound
+all exact-session fences apply. A later generation cannot receive work already
+bound to an earlier one. Exact-session requests are unchanged: they carry no
+`machine_target` field, so their stored bodies and replay fingerprints stay the
+same.
+
 ## Requests and recovery
 
 Every `delegate` and `act` request is written to the dispatch journal
-(`dispatch/journal.json`) with a fresh request ID before it is sent. The journal
-is held under an exclusive lock by one amux process at a time, limited to 512
-requests and 2 MiB, and written through a synced private temporary file and a
-directory sync. If it cannot be written, nothing is sent. A corrupt, oversized
+(`dispatch/journal.json`) with a fresh request ID before it is sent. Every amux
+process on the machine shares the journal: each read or write takes its lock
+only for one short read-modify-write (waiting at most 2 seconds), never across a
+network call, so one agent's slow request does not block another's. It is
+limited to 512 requests and 2 MiB, and written through a synced private
+temporary file and a directory sync. If it cannot be written, nothing is sent. A corrupt, oversized
 or unknown-version journal is preserved and refused, never reset or skipped.
 
 A request becomes `accepted` when the gateway acknowledges exactly what was
@@ -92,9 +116,12 @@ uncertain and the command fails:
 - `authentication` names this exact session and generation, and its machine
   record has this project, machine UUID, OS and credential ID (the SHA-256 of
   the machine key);
-- delegation: the exact requested target, destination project and source
-  project, state `pending`, task `todo`;
-- `receive`: state `received` with `received_at`, task `todo`;
+- delegation: the exact requested target (state `pending`) or the requested
+  machine with no bound session (state `pending_machine`, and its OS matching
+  `--require-os` when given), destination and source projects, no claim,
+  receipt or start, task `todo`;
+- `receive`: state `received` with `received_at`, bound to this session (and,
+  for machine work, addressed to this machine), task `todo`;
 - `claim`: state `claimed` with `claimed_at`, a claim ID and no start time, task
   `in_progress` owned by this origin;
 - `start`: state `running` with `started_at`, echoing the claim and execution
@@ -105,16 +132,19 @@ uncertain and the command fails:
   reason, task still `in_progress`;
 - `cancel`: state `cancelled` with `finished_at` and the reason, task
   `cancelled` (agent-gateway `f060414`);
-- `handoff`: state `pending` for the requested new target with no claim, task
-  `todo`.
+- `handoff`: state `pending` for the requested new target, or `pending_machine`
+  for the requested machine, with no claim, task `todo`.
 
 Inputs are checked before anything is stored: no nil task or execution IDs, no
 blank claim IDs, and results limited to 64 KiB. Responses are limited to 4 MiB
 and the session list to 1,000 entries. Recovery is refused if its pending or
-requested work names another generation.
+requested work names another generation, or if `machine_pending` holds work
+that is bound or addressed to another machine or OS.
 
 ## Limits
 
+- Offline-machine delivery needs agent-gateway `1b3f4b4` or later; an older
+  gateway rejects `machine_target` and amux reports the rejection.
 - Not run against a deployed gateway or real provisioned credentials; evidence is
   local HTTP fixtures (`tests/dispatch_contract.rs`).
 - Requires agent-gateway `f060414` or later: earlier revisions marked a
