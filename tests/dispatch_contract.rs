@@ -17,6 +17,14 @@ use uuid::Uuid;
 
 const MACHINE_KEY: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
+/// This machine's OS, as the gateway would have provisioned it.
+const OS: &str = std::env::consts::OS;
+
+/// A supported OS that is not this one, for mismatch fixtures.
+fn other_os() -> &'static str {
+    if OS == "windows" { "linux" } else { "windows" }
+}
+
 struct Seen {
     head: String,
     body: Value,
@@ -381,7 +389,7 @@ fn acknowledgments_must_match_the_exact_target_task_machine_claim_and_state() {
         mutate(
             claimed(json!({})),
             &["authentication", "machine", "os"],
-            json!("windows"),
+            json!(other_os()),
         ),
     ];
     let count = refusals.len();
@@ -844,20 +852,18 @@ fn a_machine_item_is_bound_only_by_explicit_receive_and_one_session_wins() {
             target,
             task,
             "todo",
-            json!({"state": "received", "received_at": 4, "machine_target": {"instance_id": instance.to_string(), "os": "linux"}}),
+            json!({"state": "received", "received_at": 4, "machine_target": {"instance_id": instance.to_string(), "os": OS}}),
         )
     };
     let recovery = |items: Vec<Value>| json!({"pending": [], "machine_pending": items, "machine_dispatches": [], "prior_claims": [], "requested": []});
-    let mut other_machine = queued(&me, task, Uuid::new_v4(), "linux")["dispatch"].clone();
+    let mut other_machine = queued(&me, task, Uuid::new_v4(), OS)["dispatch"].clone();
     other_machine["requester"] = me.clone();
-    let mut already_bound = queued(&me, task, instance, "linux")["dispatch"].clone();
+    let mut already_bound = queued(&me, task, instance, OS)["dispatch"].clone();
     already_bound["target"] = me.clone();
     let replies = vec![
         Some((
             200,
-            recovery(vec![
-                queued(&me, task, instance, "linux")["dispatch"].clone(),
-            ]),
+            recovery(vec![queued(&me, task, instance, OS)["dispatch"].clone()]),
         )),
         Some((200, recovery(vec![other_machine]))),
         Some((200, recovery(vec![already_bound]))),
