@@ -133,9 +133,11 @@ fn a_full_ledger_reclaims_only_provably_gone_recipient_generations() {
         .iter()
         .map(|state| stored(&live, state))
         .collect();
+    // A well-formed native generation that is not this process's: an earlier start.
+    let earlier = format!("{}:1", current.rsplit_once(':').unwrap().0);
     // Absent agent PID, or this PID now carrying another generation.
-    let absent = fenced(root.path(), (pid, &current), (ABSENT, "exited agent"));
-    let reused = fenced(root.path(), (pid, "earlier launcher"), (pid, &current));
+    let absent = fenced(root.path(), (pid, &current), (ABSENT, &earlier));
+    let reused = fenced(root.path(), (pid, &earlier), (pid, &current));
     while records.len() < 512 {
         let gone = if records.len() % 2 == 0 {
             &absent

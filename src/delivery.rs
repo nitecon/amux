@@ -217,7 +217,7 @@ impl DeliveryLedger {
             // Only a recipient generation that can never match again loses its fences.
             self.snapshot
                 .records
-                .retain(|record| !recipient_gone(&record.recipient));
+                .retain(|record| !record.recipient.is_definitively_gone());
             if self.snapshot.records.len() >= MAX_RECORDS {
                 bail!("delivery ledger is full; existing deduplication fences retained");
             }
@@ -355,56 +355,6 @@ impl DeliveryLedger {
         record.state = DeliveryState::Pending;
         self.persist()
     }
-}
-
-/// The persisted process fences of an address, read back from its stored form.
-#[derive(Deserialize)]
-struct StoredFences {
-    launcher: StoredFence,
-    agent: StoredFence,
-}
-
-#[derive(Deserialize)]
-struct StoredFence {
-    pid: u32,
-    generation: String,
-}
-
-/// True only when the OS proves the launcher or agent generation is gone: its
-/// PID is absent or now has another generation. Unknown, permission and
-/// unsupported-platform failures keep the record.
-fn recipient_gone(recipient: &RecipientAddress) -> bool {
-    let Ok(fences) =
-        serde_json::to_value(recipient).and_then(serde_json::from_value::<StoredFences>)
-    else {
-        return false;
-    };
-    [fences.launcher, fences.agent].iter().any(|fence| {
-        match crate::identity::process_generation(fence.pid) {
-            Ok(generation) => generation != fence.generation,
-            Err(error) => error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(process_absent),
-        }
-    })
-}
-
-/// `/proc/<pid>/stat` does not exist.
-#[cfg(target_os = "linux")]
-fn process_absent(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::NotFound
-}
-
-/// `OpenProcess` reports ERROR_INVALID_PARAMETER for a PID with no process;
-/// access denial is not absence. Not yet verified on native Windows.
-#[cfg(windows)]
-fn process_absent(error: &std::io::Error) -> bool {
-    error.raw_os_error() == Some(87)
-}
-
-#[cfg(not(any(target_os = "linux", windows)))]
-fn process_absent(_error: &std::io::Error) -> bool {
-    false
 }
 
 fn fresh(observed: u64, now: u64) -> bool {
