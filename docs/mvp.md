@@ -75,6 +75,13 @@ acceptance. The Windows review covered the CLI, provider
 launches and a responding window. Its interactive checks did not run because
 screen-control approval timed out.
 
+The independent Linux review of `014ff96` verified packaging, shell routing,
+layout restore and task receipts, and requested exit diagnostics and contained
+tab headers. These fixes are in `39de3d6`; local optimized GUI checks confirm
+both, with bounded final visible text retained after the PTY closes. `b4454c5`
+also ends closed terminal event subscriptions. Independent review of the new
+bundle and native Windows interactive evidence remain required.
+
 ### M2: gateway handoff and exact-agent ownership
 
 **Goal:** shared task operations and reminders delivered through the terminal,
@@ -99,6 +106,15 @@ binding, readiness checks and a persistent reminder record. Automatic
 assignment, recovery of previously claimed work, Claude and Windows readiness,
 and cross-machine handoff are not done. See
 [reminder-validation.md](reminder-validation.md).
+
+The native CLI now consumes credential-bound exact-session registration,
+delegation, receipt, claim, start, outcome and recovery operations. A private
+real gateway at `f060414` and amux at `b4454c5` passed three native fixture
+executors, wrong-peer rejection, stable-ID recovery after a lost reply, explicit
+handoff and prior-generation claim inspection without adoption. These fixtures
+are separate from installed-provider and deployed cross-machine acceptance.
+Gateway offline machine delivery is implemented separately at `1b3f4b4`;
+amux client integration, desktop reminders and platform acceptance remain open.
 
 ### M3: cross-platform MVP acceptance
 
