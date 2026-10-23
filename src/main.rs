@@ -18,8 +18,8 @@ mod desktop;
 #[derive(Parser)]
 #[command(version, about = "Agent terminals and gateway task coordination")]
 struct Cli {
-    #[arg(long, global = true, default_value = ".")]
-    project_dir: PathBuf,
+    #[arg(long, global = true)]
+    project_dir: Option<PathBuf>,
     /// Update a direct-download install; managed installs show their update command.
     #[arg(long, exclusive = true)]
     update: bool,
@@ -160,17 +160,25 @@ fn run(cli: Cli) -> Result<u8> {
         println!("{}", amux::updates::cli_update()?);
         return Ok(0);
     }
+    let project_dir = cli
+        .project_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
     match cli.command.unwrap_or(Operation::Desktop) {
         Operation::Desktop => {
             #[cfg(feature = "desktop")]
             {
-                desktop::run(cli.project_dir)?;
+                desktop::run(
+                    cli.project_dir
+                        .map(Ok)
+                        .unwrap_or_else(amux::workspace_launch::home_directory)?,
+                )?;
             }
             #[cfg(not(feature = "desktop"))]
             bail!("desktop not included; build without --no-default-features");
         }
         Operation::Agent { provider, args } => {
-            return launch_agent(cli.project_dir, provider, args);
+            return launch_agent(project_dir, provider, args);
         }
         Operation::Whoami => println!(
             "{}",
@@ -197,7 +205,7 @@ fn run(cli: Cli) -> Result<u8> {
                     MessageOperation::Get { id } => gateway.message(&project, id).await,
                     MessageOperation::Send { body, subject } => {
                         let actor = AgentIdentity::verified_from_environment()?;
-                        if actor.project_directory != cli.project_dir.canonicalize()? {
+                        if actor.project_directory != project_dir.canonicalize()? {
                             bail!("message publication project directory differs from this agent's launch; switch to its project directory");
                         }
                         gateway.send_message(&project, body, subject, &actor).await
@@ -213,7 +221,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => {
             use amux::dispatch::{Dispatcher, Executor, Machine};
             let actor = AgentIdentity::verified_from_environment()?;
-            if actor.project_directory != cli.project_dir.canonicalize()? {
+            if actor.project_directory != project_dir.canonicalize()? {
                 bail!(
                     "dispatch project directory differs from this agent's launch; switch to its project directory"
                 );
@@ -249,7 +257,7 @@ fn run(cli: Cli) -> Result<u8> {
                 if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::verified_from_environment()?;
-                if actor.project_directory != cli.project_dir.canonicalize()? { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
+                if actor.project_directory != project_dir.canonicalize()? { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
                     TaskOperation::Create { title, specification } => gateway.request(Method::POST, &project, &[], Some(json!({"title": title, "specification": specification})), Some(&actor)).await,
                     TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,

@@ -22,6 +22,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
         version: 1,
         active: 0,
         workspaces: vec![SavedWorkspace {
+            init_script: Some(fixture.path().join("not-executed.sh")),
             directory: fixture.path().into(),
             layout: Layout::Split {
                 vertical: true,
@@ -44,6 +45,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
         version: 1,
         active: 0,
         workspaces: vec![SavedWorkspace {
+            init_script: None,
             directory: fixture.path().into(),
             layout: Layout::Split {
                 vertical: true,

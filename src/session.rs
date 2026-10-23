@@ -31,6 +31,8 @@ pub enum Layout {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedWorkspace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init_script: Option<PathBuf>,
     pub directory: PathBuf,
     pub layout: Layout,
 }
@@ -77,8 +79,13 @@ impl Snapshot {
             Ok(())
         }
         for workspace in &self.workspaces {
-            if !workspace.directory.is_absolute() {
-                bail!("saved workspace directory must be absolute");
+            if !workspace.directory.is_absolute()
+                || workspace
+                    .init_script
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute())
+            {
+                bail!("saved workspace directory and script must be absolute");
             }
             walk(&workspace.layout, &mut ids, 0)?;
         }

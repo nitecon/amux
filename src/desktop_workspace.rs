@@ -1,0 +1,385 @@
+//! Workspace creation window and a portable folder/script browser.
+use super::*;
+use amux::workspace_launch;
+use iced::widget::column;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Kind {
+    #[default]
+    General,
+    Clone,
+    Script,
+}
+#[derive(Debug, Clone)]
+pub(super) enum WorkspaceMessage {
+    Tab(Kind),
+    Folder(String),
+    Script(String),
+    Repository(String),
+    Browse(bool),
+    Location(String),
+    Navigate(PathBuf),
+    Pick(PathBuf),
+    UseFolder,
+    Back,
+    Start,
+    Cloned(Result<PathBuf, String>),
+    Cancel,
+}
+#[derive(Default)]
+pub(super) struct WorkspaceDialog {
+    pub window: Option<iced::window::Id>,
+    pub busy: bool,
+    tab: Kind,
+    folder: String,
+    script: String,
+    repository: String,
+    status: String,
+    browser: Option<Browser>,
+}
+struct Browser {
+    script: bool,
+    directory: PathBuf,
+    location: String,
+    entries: Vec<(PathBuf, bool)>,
+    error: String,
+}
+impl Browser {
+    fn new(script: bool, directory: PathBuf) -> Self {
+        let mut browser = Self {
+            script,
+            location: directory.display().to_string(),
+            directory,
+            entries: Vec::new(),
+            error: String::new(),
+        };
+        match std::fs::read_dir(&browser.directory) {
+            Ok(entries) => {
+                for entry in entries.take(2000).flatten() {
+                    let path = entry.path();
+                    let is_dir = path.is_dir();
+                    if is_dir || script && path.is_file() {
+                        browser.entries.push((path, is_dir));
+                    }
+                }
+                browser
+                    .entries
+                    .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            }
+            Err(error) => browser.error = format!("Cannot browse this folder: {error}"),
+        }
+        browser
+    }
+}
+
+impl Desktop {
+    pub(super) fn open_workspace_dialog(&mut self) -> Task<Message> {
+        if let Some(window) = self.workspace_dialog.window {
+            return iced::window::gain_focus(window);
+        }
+        let (window, open) = iced::window::open(iced::window::Settings {
+            size: iced::Size::new(760.0, 620.0),
+            min_size: Some(iced::Size::new(600.0, 460.0)),
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+        self.workspace_dialog = WorkspaceDialog {
+            window: Some(window),
+            folder: workspace_launch::home_directory()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        open.map(|_| Message::WindowReady)
+    }
+    pub(super) fn close_workspace_dialog(&mut self) -> Task<Message> {
+        if self.workspace_dialog.busy {
+            return Task::none();
+        }
+        match self.workspace_dialog.window.take() {
+            Some(window) => Task::batch([
+                iced::window::close(window),
+                iced::window::gain_focus(self.main_window),
+                self.focus(),
+            ]),
+            None => Task::none(),
+        }
+    }
+    pub(super) fn workspace_message(&mut self, message: WorkspaceMessage) -> Task<Message> {
+        use WorkspaceMessage::*;
+        if self.workspace_dialog.window.is_none() {
+            return Task::none();
+        }
+        if self.workspace_dialog.busy && !matches!(message, Cloned(_)) {
+            return Task::none();
+        }
+        let dialog = &mut self.workspace_dialog;
+        match message {
+            Tab(tab) => {
+                dialog.tab = tab;
+                dialog.status.clear();
+                dialog.browser = None;
+            }
+            Folder(value) => dialog.folder = value,
+            Script(value) => dialog.script = value,
+            Repository(value) => dialog.repository = value,
+            Browse(script) => {
+                let path = PathBuf::from(if script {
+                    &dialog.script
+                } else {
+                    &dialog.folder
+                });
+                let directory = if path.is_dir() {
+                    Some(path)
+                } else {
+                    path.parent().filter(|p| p.is_dir()).map(PathBuf::from)
+                };
+                match directory.or_else(|| workspace_launch::home_directory().ok()) {
+                    Some(directory) => dialog.browser = Some(Browser::new(script, directory)),
+                    None => {
+                        dialog.status =
+                            "Cannot find your home directory; enter a folder path.".into()
+                    }
+                }
+            }
+            Location(value) => {
+                if let Some(browser) = &mut dialog.browser {
+                    browser.location = value;
+                }
+            }
+            Navigate(path) => {
+                if let Some(browser) = &dialog.browser {
+                    dialog.browser = Some(Browser::new(browser.script, path));
+                }
+            }
+            Pick(path) => {
+                dialog.script = path.display().to_string();
+                dialog.browser = None;
+            }
+            UseFolder => {
+                if let Some(browser) = dialog.browser.take() {
+                    dialog.folder = browser.directory.display().to_string();
+                }
+            }
+            Back => dialog.browser = None,
+            Cancel => return self.close_workspace_dialog(),
+            Start => {
+                let result = (|| -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
+                    let directory = if dialog.tab == Kind::Script {
+                        workspace_launch::home_directory()?
+                    } else {
+                        workspace_launch::directory(&dialog.folder)?
+                    };
+                    let script = if dialog.tab == Kind::Clone || dialog.script.is_empty() {
+                        anyhow::ensure!(
+                            dialog.tab != Kind::Script,
+                            "Choose an initialization script"
+                        );
+                        None
+                    } else {
+                        let path = PathBuf::from(&dialog.script).canonicalize()?;
+                        workspace_launch::script_command(&path)?;
+                        Some(path)
+                    };
+                    if dialog.tab == Kind::Clone {
+                        workspace_launch::clone_name(&dialog.repository)?;
+                    }
+                    Ok((directory, script))
+                })();
+                match result {
+                    Ok((directory, script)) => {
+                        if dialog.tab == Kind::Clone {
+                            dialog.busy = true;
+                            dialog.status =
+                                "Cloning repository… You can keep using the main window.".into();
+                            let repository = dialog.repository.clone();
+                            return Task::perform(
+                                async move {
+                                    workspace_launch::clone_repository(directory, repository)
+                                        .await
+                                        .map_err(|e| format!("{e:#}"))
+                                },
+                                |result| Message::Workspace(Cloned(result)),
+                            );
+                        }
+                        self.add_workspace_with_script(directory, script);
+                        self.dirty = true;
+                        return Task::batch([
+                            self.close_workspace_dialog(),
+                            self.query(self.active),
+                        ]);
+                    }
+                    Err(error) => dialog.status = format!("{error:#}"),
+                }
+            }
+            Cloned(result) => {
+                dialog.busy = false;
+                match result {
+                    Ok(directory) => {
+                        self.add_workspace(directory);
+                        self.dirty = true;
+                        return Task::batch([
+                            self.close_workspace_dialog(),
+                            self.query(self.active),
+                        ]);
+                    }
+                    Err(error) => dialog.status = error,
+                }
+            }
+        }
+        Task::none()
+    }
+    pub(super) fn workspace_dialog_view(&self) -> Element<'_, Message> {
+        use WorkspaceMessage::*;
+        let dialog = &self.workspace_dialog;
+        let msg = Message::Workspace;
+        if let Some(browser) = &dialog.browser {
+            let mut entries = column![].spacing(4);
+            for (path, is_dir) in &browser.entries {
+                let label = format!(
+                    "{} {}",
+                    if *is_dir { "▸" } else { "" },
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                entries = entries.push(
+                    button(text(label))
+                        .on_press(msg(if *is_dir {
+                            Navigate(path.clone())
+                        } else {
+                            Pick(path.clone())
+                        }))
+                        .width(Length::Fill),
+                );
+            }
+            let mut navigation = row![button("Back").on_press(msg(Back))].spacing(8);
+            if let Some(parent) = browser.directory.parent() {
+                navigation =
+                    navigation.push(button("Parent folder").on_press(msg(Navigate(parent.into()))));
+            }
+            if !browser.script && browser.error.is_empty() {
+                navigation = navigation.push(button("Choose this folder").on_press(msg(UseFolder)));
+            }
+            return container(
+                column![
+                    text(if browser.script {
+                        "Choose initialization script"
+                    } else {
+                        "Choose folder"
+                    })
+                    .size(24),
+                    row![
+                        text_input("Folder path", &browser.location)
+                            .on_input(|v| Message::Workspace(Location(v)))
+                            .on_submit(msg(Navigate(PathBuf::from(&browser.location)))),
+                        button("Go").on_press(msg(Navigate(PathBuf::from(&browser.location))))
+                    ]
+                    .spacing(8),
+                    navigation,
+                    text(&browser.error),
+                    scrollable(entries).height(Length::Fill),
+                ]
+                .spacing(12),
+            )
+            .padding(24)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        }
+        let tab = |label, kind| {
+            button(label)
+                .on_press_maybe((!dialog.busy).then_some(msg(Tab(kind))))
+                .style(if dialog.tab == kind {
+                    button::primary
+                } else {
+                    button::secondary
+                })
+        };
+        let mut body = column![
+            text("New workspace").size(26),
+            row![
+                tab("General", Kind::General),
+                tab("Clone", Kind::Clone),
+                tab("Script", Kind::Script)
+            ]
+            .spacing(8)
+        ]
+        .spacing(16);
+        body = body.push(text(match dialog.tab {
+            Kind::General => "Open an existing folder. New terminals will start there.",
+            Kind::Clone => "Clone a Git repository into a new folder inside the selected parent.",
+            Kind::Script => "Run an initialization script interactively from your home directory.",
+        }));
+        if dialog.tab != Kind::Script {
+            body = body
+                .push(text(if dialog.tab == Kind::Clone {
+                    "Clone into parent directory"
+                } else {
+                    "Workspace directory"
+                }))
+                .push(
+                    row![
+                        text_input("Select a directory", &dialog.folder)
+                            .on_input(|v| Message::Workspace(Folder(v))),
+                        button("Browse…")
+                            .on_press_maybe((!dialog.busy).then_some(msg(Browse(false))))
+                    ]
+                    .spacing(8),
+                );
+        } else {
+            body = body.push(text(format!(
+                "Starting directory: {}",
+                workspace_launch::home_directory()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )));
+        }
+        if dialog.tab == Kind::Clone {
+            body = body.push(text("Repository URL")).push(
+                text_input(
+                    "https://host/owner/repository.git or git@host:owner/repository.git",
+                    &dialog.repository,
+                )
+                .on_input(|v| Message::Workspace(Repository(v))),
+            );
+            body = body.push(text("Git must be installed and repository credentials already configured. Existing folders are never overwritten.").size(13));
+        } else {
+            body = body
+                .push(text(if dialog.tab == Kind::General {
+                    "Initialization script (optional)"
+                } else {
+                    "Initialization script"
+                }))
+                .push(
+                    row![
+                        text_input(
+                            if cfg!(windows) {
+                                "PowerShell .ps1 or command .cmd/.bat file"
+                            } else {
+                                "POSIX shell script"
+                            },
+                            &dialog.script
+                        )
+                        .on_input(|v| Message::Workspace(Script(v))),
+                        button("Browse…").on_press(msg(Browse(true)))
+                    ]
+                    .spacing(8),
+                );
+            body = body.push(text("Runs when you explicitly start a terminal. Restoring a layout does not run scripts.").size(13));
+        }
+        body = body
+            .push(
+                row![
+                    button(if dialog.busy { "Cloning…" } else { "Start" })
+                        .on_press_maybe((!dialog.busy).then_some(msg(Start))),
+                    button("Cancel").on_press_maybe((!dialog.busy).then_some(msg(Cancel)))
+                ]
+                .spacing(8),
+            )
+            .push(text(&dialog.status).size(13));
+        container(scrollable(body))
+            .padding(24)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+}

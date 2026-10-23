@@ -12,12 +12,17 @@ use std::{path::PathBuf, process::ExitCode};
 #[derive(Parser)]
 #[command(name = "amux-desktop", version)]
 struct Args {
-    #[arg(long, default_value = ".")]
-    project_dir: PathBuf,
+    #[arg(long)]
+    project_dir: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
-    match desktop::run(Args::parse().project_dir) {
+    match Args::parse()
+        .project_dir
+        .map(Ok)
+        .unwrap_or_else(amux::workspace_launch::home_directory)
+        .and_then(desktop::run)
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("amux-desktop: {error:#}");

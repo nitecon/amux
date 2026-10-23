@@ -9,6 +9,9 @@ use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::submission::{Submission, submit_literal};
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
+#[path = "desktop_workspace.rs"]
+mod desktop_workspace;
+use desktop_workspace::{WorkspaceDialog, WorkspaceMessage};
 use iced::widget::{
     button, checkbox, column, container, pane_grid, row, scrollable, svg, text, text_editor,
     text_input, tooltip,
@@ -24,7 +27,7 @@ use uuid::Uuid;
 enum Message {
     NewWorkspace,
     SelectWorkspace(usize),
-    Directory(String),
+    Workspace(WorkspaceMessage),
     NewTab(Option<Provider>),
     SelectTab(pane_grid::Pane, usize),
     Split(pane_grid::Axis),
@@ -245,6 +248,7 @@ struct Pane {
     active: usize,
 }
 struct Workspace {
+    init_script: Option<PathBuf>,
     directory: PathBuf,
     panes: pane_grid::State<Pane>,
     focused: pane_grid::Pane,
@@ -256,7 +260,7 @@ struct Desktop {
     updates: Updates,
     workspaces: Vec<Workspace>,
     active: usize,
-    directory: String,
+    workspace_dialog: WorkspaceDialog,
     next_id: u64,
     status: String,
     ledger: Option<DeliveryLedger>,
@@ -325,7 +329,7 @@ impl Desktop {
             main_window,
             updates: Updates::new(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, window: None, tab: PreferencesTab::Gateway, status: preferences_error },
-            workspaces: Vec::new(), active: 0, directory: directory.display().to_string(), next_id: 0,
+            workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), next_id: 0,
             status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
             ledger: ledger.ok().flatten(),
             registry: state.ok(),
@@ -341,6 +345,7 @@ impl Desktop {
                     let focused = *panes.iter().next().expect("validated nonempty layout").0;
                     app.workspaces.push(Workspace {
                         directory: workspace.directory,
+                        init_script: workspace.init_script,
                         panes,
                         focused,
                         gateway: TaskPanel::default(),
@@ -358,7 +363,15 @@ impl Desktop {
             }
             _ => {}
         }
-        if app.workspaces.is_empty() {
+        let home = amux::workspace_launch::home_directory().unwrap_or_else(|_| directory.clone());
+        if !app
+            .workspaces
+            .iter()
+            .any(|w| w.directory == home && w.init_script.is_none())
+        {
+            app.add_workspace(home.clone());
+        }
+        if directory != home && !app.workspaces.iter().any(|w| w.directory == directory) {
             app.add_workspace(directory.clone());
         }
         if let Some(error) = delivery_error {
@@ -464,6 +477,7 @@ impl Desktop {
                 .iter()
                 .map(|w| SavedWorkspace {
                     directory: w.directory.clone(),
+                    init_script: w.init_script.clone(),
                     layout: layout(w.panes.layout(), &w.panes),
                 })
                 .collect(),
@@ -480,7 +494,12 @@ impl Desktop {
         }
     }
 
-    fn terminal(&mut self, directory: &std::path::Path, provider: Option<Provider>) -> Tab {
+    fn terminal_with_script(
+        &mut self,
+        directory: &std::path::Path,
+        provider: Option<Provider>,
+        script: Option<&std::path::Path>,
+    ) -> Tab {
         let id = self.next_id;
         self.next_id += 1;
         let mut backend = iced_term::settings::BackendSettings {
@@ -526,6 +545,32 @@ impl Desktop {
             #[cfg(not(windows))]
             {
                 backend.program = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            }
+        }
+        if provider.is_none()
+            && let Some(script) = script
+        {
+            match amux::workspace_launch::script_command(script) {
+                Ok((program, args)) => {
+                    backend.program = program;
+                    backend.args = args;
+                }
+                Err(error) => {
+                    // Creation validates scripts before getting here. A later explicit
+                    // terminal launch can find a removed script; show the error instead.
+                    self.status = format!("Initialization script unavailable: {error}");
+                    return Tab {
+                        id,
+                        title: self.status.clone(),
+                        #[cfg(any(target_os = "linux", windows))]
+                        lifetime: None,
+                        terminal: None,
+                        stopped_output: None,
+                        provider: None,
+                        recipient: None,
+                        reminders: Reminders::default(),
+                    };
+                }
             }
         }
         // Do not let shells or another agent launch inherit a previous agent identity.
@@ -594,18 +639,24 @@ impl Desktop {
     }
 
     fn add_workspace(&mut self, directory: PathBuf) {
-        let tab = self.terminal(&directory, None);
+        self.add_workspace_with_script(directory, None);
+    }
+
+    fn add_workspace_with_script(&mut self, directory: PathBuf, init_script: Option<PathBuf>) {
+        let tab = self.terminal_with_script(&directory, None, init_script.as_deref());
         let (panes, focused) = pane_grid::State::new(Pane {
             tabs: vec![tab],
             active: 0,
         });
         self.workspaces.push(Workspace {
             directory,
+            init_script,
             panes,
             focused,
             gateway: TaskPanel::default(),
         });
         self.active = self.workspaces.len() - 1;
+        self.dirty = true;
     }
 
     fn focus(&self) -> Task<Message> {
@@ -643,7 +694,7 @@ impl Desktop {
             Message::Close(window) => {
                 return self.close_window(window);
             }
-            Message::Directory(value) => self.directory = value,
+            Message::Workspace(message) => return self.workspace_message(message),
             Message::LocalNotifications(enabled) => {
                 self.notify_exits = enabled;
                 if enabled && self.notifier.is_none() {
@@ -655,13 +706,7 @@ impl Desktop {
                     "Desktop notifications disabled for future process exits".into()
                 };
             }
-            Message::NewWorkspace => match PathBuf::from(&self.directory).canonicalize() {
-                Ok(directory) if directory.is_dir() => {
-                    self.add_workspace(directory);
-                    return Task::batch([self.focus(), self.query(self.active)]);
-                }
-                _ => self.status = "Choose an existing project directory".into(),
-            },
+            Message::NewWorkspace => return self.open_workspace_dialog(),
             Message::SelectWorkspace(index) => {
                 if index < self.workspaces.len() {
                     self.active = index;
@@ -670,7 +715,8 @@ impl Desktop {
             }
             Message::NewTab(provider) => {
                 let directory = self.workspaces[self.active].directory.clone();
-                let tab = self.terminal(&directory, provider);
+                let script = self.workspaces[self.active].init_script.clone();
+                let tab = self.terminal_with_script(&directory, provider, script.as_deref());
                 let workspace = &mut self.workspaces[self.active];
                 if let Some(pane) = workspace.panes.get_mut(workspace.focused) {
                     pane.tabs.push(tab);
@@ -694,7 +740,8 @@ impl Desktop {
             }
             Message::Split(axis) => {
                 let directory = self.workspaces[self.active].directory.clone();
-                let tab = self.terminal(&directory, None);
+                let script = self.workspaces[self.active].init_script.clone();
+                let tab = self.terminal_with_script(&directory, None, script.as_deref());
                 let workspace = &mut self.workspaces[self.active];
                 if let Some((pane, _)) = workspace.panes.split(
                     axis,
@@ -1210,7 +1257,7 @@ impl Desktop {
         &mut self,
         start: impl FnOnce(&std::path::Path, &std::path::Path) -> anyhow::Result<()>,
     ) -> Task<Message> {
-        if self.updates.installing {
+        if self.updates.installing || self.workspace_dialog.busy {
             return Task::none();
         }
         let restart = self
@@ -1381,11 +1428,16 @@ impl Desktop {
     }
 
     fn close_window(&mut self, window: iced::window::Id) -> Task<Message> {
+        if self.workspace_dialog.window == Some(window) {
+            return self.close_workspace_dialog();
+        }
         if self.preferences.window == Some(window) {
             return self.close_preferences();
         }
         if window == self.main_window {
-            if self.updates.installing {
+            if self.workspace_dialog.busy {
+                self.status = "Wait for the repository clone to finish before closing amux.".into();
+            } else if self.updates.installing {
                 self.status =
                     "An update is installing. Wait for it to finish before closing amux.".into();
             } else if self.save() {
@@ -1396,7 +1448,9 @@ impl Desktop {
     }
 
     fn window_title(&self, window: iced::window::Id) -> String {
-        if self.preferences.window == Some(window) {
+        if self.workspace_dialog.window == Some(window) {
+            "amux · New workspace"
+        } else if self.preferences.window == Some(window) {
             "amux · Preferences"
         } else {
             "amux · agent workspaces"
@@ -1405,6 +1459,9 @@ impl Desktop {
     }
 
     fn window_view(&self, window: iced::window::Id) -> Element<'_, Message> {
+        if self.workspace_dialog.window == Some(window) {
+            return self.workspace_dialog_view();
+        }
         if self.preferences.window != Some(window) {
             return self.view();
         }
@@ -2154,11 +2211,19 @@ impl Desktop {
         let workspace = &self.workspaces[self.active];
         let mut sidebar = column![text("amux").size(30), text("WORKSPACES").size(12)].spacing(12);
         for (i, w) in self.workspaces.iter().enumerate() {
-            let name = w
-                .directory
-                .file_name()
-                .unwrap_or(w.directory.as_os_str())
-                .to_string_lossy();
+            let name = if let Some(script) = &w.init_script {
+                script
+                    .file_name()
+                    .unwrap_or(script.as_os_str())
+                    .to_string_lossy()
+            } else if amux::workspace_launch::home_directory().ok().as_ref() == Some(&w.directory) {
+                std::borrow::Cow::Borrowed("Default")
+            } else {
+                w.directory
+                    .file_name()
+                    .unwrap_or(w.directory.as_os_str())
+                    .to_string_lossy()
+            };
             sidebar = sidebar.push(
                 button(text(format!(
                     "{} {}",
@@ -2170,7 +2235,6 @@ impl Desktop {
             );
         }
         sidebar = sidebar
-            .push(text_input("Project directory", &self.directory).on_input(Message::Directory))
             .push(button("New workspace").on_press(Message::NewWorkspace))
             .push(button("Preferences").on_press(Message::Preferences(true)))
             .push(
@@ -2369,6 +2433,7 @@ mod tests {
             });
             workspaces.push(Workspace {
                 directory: PathBuf::from(format!("/fixture/{id}")),
+                init_script: None,
                 panes,
                 focused,
                 gateway: TaskPanel {
@@ -2403,7 +2468,7 @@ mod tests {
             },
             workspaces,
             active: 0,
-            directory: String::new(),
+            workspace_dialog: WorkspaceDialog::default(),
             next_id: 2,
             status: String::new(),
             ledger: None,
@@ -2415,6 +2480,34 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
         }
+    }
+
+    #[test]
+    fn workspace_dialog_does_not_create_until_validated_and_clone_blocks_duplicate_actions() {
+        use desktop_workspace::{Kind, WorkspaceMessage as W};
+        let mut app = desktop();
+        let before = app.workspaces.len();
+        drop(app.update(Message::NewWorkspace));
+        let window = app.workspace_dialog.window.unwrap();
+        drop(app.update(Message::NewWorkspace));
+        assert_eq!(app.workspace_dialog.window, Some(window));
+        assert_eq!(app.workspaces.len(), before);
+        drop(app.update(Message::Workspace(W::Folder(
+            "target/no-such-workspace-directory".into(),
+        ))));
+        drop(app.update(Message::Workspace(W::Start)));
+        assert_eq!(app.workspaces.len(), before);
+        drop(app.update(Message::Workspace(W::Tab(Kind::Script))));
+        drop(app.update(Message::Workspace(W::Start)));
+        assert_eq!(app.workspaces.len(), before);
+        app.workspace_dialog.busy = true;
+        drop(app.update(Message::Workspace(W::Cancel)));
+        drop(app.update(Message::Close(app.main_window)));
+        assert_eq!(app.workspace_dialog.window, Some(window));
+        assert_eq!(app.workspaces.len(), before);
+        app.workspace_dialog.busy = false;
+        drop(app.update(Message::Close(window)));
+        assert!(app.workspace_dialog.window.is_none());
     }
 
     #[test]

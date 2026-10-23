@@ -20,3 +20,5 @@ pub mod terminal_lifetime;
 pub mod terminal_lifetime;
 
 pub mod updates;
+
+pub mod workspace_launch;

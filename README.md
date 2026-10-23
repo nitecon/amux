@@ -49,6 +49,16 @@ identity. `cargo run -- agents` lists live launches. Provider commands must alre
 be on PATH. See [native review instructions](docs/windows-review.md) for bundles,
 gateway configuration, platform limitations and feedback requirements.
 
+Launch the desktop without arguments to open **Default**, a terminal in your home directory.
+Use **New workspace** to select an existing directory (**General**), clone a Git repository
+into a chosen parent folder (**Clone**), or start an interactive initialization script
+from home (**Script**). General also accepts an optional initialization script.
+The dialog includes a folder and script browser; paths can also be entered directly.
+Unix scripts use POSIX shell; Windows supports PowerShell `.ps1` and `.cmd`/`.bat`.
+Scripts run only on an explicit terminal launch, including new tabs and splits;
+restoring a saved layout never reruns them. Git cloning requires Git and configured
+repository access; failed clones keep their partial folder for inspection.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md): local amux vs. gateway responsibilities,
