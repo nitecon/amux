@@ -1,10 +1,11 @@
 //! Exact-session dispatch client against a local mock gateway. No live gateway,
 //! credential provisioning or executor launch.
 use amux::{
-    dispatch::{ActionArgs, Dispatcher, Executor, Machine, uncertain},
+    dispatch::{ActionArgs, Dispatcher, Executor, Machine},
     identity::{AgentIdentity, Provider},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     io::{ErrorKind, Read, Write},
     net::TcpListener,
@@ -109,6 +110,13 @@ fn machine() -> Machine {
     Machine::new(Uuid::new_v4(), MACHINE_KEY.into()).unwrap()
 }
 
+fn credential_id() -> String {
+    Sha256::digest(MACHINE_KEY.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 fn executor(state: &Path, provider: Provider) -> Executor {
     let actor = AgentIdentity::new(provider, Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
     Executor::load(state, actor).unwrap()
@@ -126,8 +134,8 @@ fn session_key(state: &Path, executor: &Executor) -> String {
     .unwrap()
 }
 
-/// A gateway acknowledgment for `me`.
-fn ack(me: &Value, task: Uuid, dispatch: Value) -> Value {
+/// A gateway acknowledgment for `me`, as the f060414 gateway returns it.
+fn ack(me: &Value, task: Uuid, task_status: &str, dispatch: Value) -> Value {
     let mut full = json!({
         "task_id": task.to_string(),
         "project_ident": "demo",
@@ -136,18 +144,33 @@ fn ack(me: &Value, task: Uuid, dispatch: Value) -> Value {
         "target": me,
         "state": "pending",
         "claim_id": null,
+        "received_at": null,
+        "claimed_at": null,
         "started_at": null,
+        "finished_at": null,
         "execution_id": null,
         "cancel_requested_at": null,
+        "cancel_reason": null,
+        "result": null,
     });
     for (key, value) in dispatch.as_object().unwrap() {
         full[key] = value.clone();
     }
     json!({
         "dispatch": full,
-        "task": {"id": task.to_string()},
+        "task": {
+            "id": task.to_string(),
+            "project_ident": full["project_ident"],
+            "status": task_status,
+            "owner_origin": if task_status == "in_progress" { me["origin"].clone() } else { Value::Null },
+        },
         "authentication": {
-            "machine": {"instance_id": me["origin"]["instance_id"], "credential_id": "hash"},
+            "machine": {
+                "project_ident": "demo",
+                "instance_id": me["origin"]["instance_id"],
+                "os": me["origin"]["os"],
+                "credential_id": credential_id(),
+            },
             "session": me["origin"],
             "generation": me["generation"],
         },
@@ -240,11 +263,7 @@ fn a_lost_delegation_reply_stays_durable_and_only_its_execution_replays_it() {
     let me = requester.target(&machine);
     let destination = executor(&state, Provider::Codex).target(&machine);
     let task = Uuid::new_v4();
-    let accepted = ack(
-        &me,
-        task,
-        json!({"target": destination, "state": "pending"}),
-    );
+    let accepted = ack(&me, task, "todo", json!({"target": destination}));
     let (url, server) = server(vec![None, Some((200, accepted))]);
     let dispatcher = dispatcher(&url, machine, &state);
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -259,13 +278,13 @@ fn a_lost_delegation_reply_stays_durable_and_only_its_execution_replays_it() {
         None,
     ));
     assert!(lost.is_err(), "a lost reply is not acceptance");
-    let pending = uncertain(&state).unwrap();
+    let pending = dispatcher.uncertain();
     assert_eq!(pending.len(), 1);
     let id = pending[0].request_id;
     // A later generation may not adopt or resubmit the earlier request.
     assert!(runtime.block_on(dispatcher.replay(&later, id)).is_err());
     runtime.block_on(dispatcher.replay(&requester, id)).unwrap();
-    assert!(uncertain(&state).unwrap().is_empty());
+    assert!(dispatcher.uncertain().is_empty());
     assert!(
         runtime.block_on(dispatcher.replay(&requester, id)).is_err(),
         "an accepted request is never resent"
@@ -287,10 +306,24 @@ fn a_lost_delegation_reply_stays_durable_and_only_its_execution_replays_it() {
             .head
             .starts_with("post /v1/projects/demo/task-dispatches ")
     );
+    // The request survives a restart of the client.
+    drop(dispatcher);
+    let reopened = Dispatcher::new(
+        "http://127.0.0.1:9",
+        "t".into(),
+        "demo",
+        self::machine(),
+        state.clone(),
+    )
+    .unwrap();
+    assert!(
+        reopened.uncertain().is_empty(),
+        "accepted status was durable"
+    );
 }
 
 #[test]
-fn acknowledgments_must_match_the_exact_target_task_claim_and_state() {
+fn acknowledgments_must_match_the_exact_target_task_machine_claim_and_state() {
     let (_fixture, state) = state_dir();
     let agent = executor(&state, Provider::Codex);
     let machine = machine();
@@ -298,55 +331,77 @@ fn acknowledgments_must_match_the_exact_target_task_claim_and_state() {
     let other = executor(&state, Provider::Codex).target(&machine);
     let task = Uuid::new_v4();
     let execution = Uuid::new_v4();
-    let mut wrong_generation = ack(&me, task, json!({"state": "claimed", "claim_id": "c1"}));
-    wrong_generation["authentication"]["generation"] = json!(Uuid::new_v4().to_string());
+    let claimed = |extra: Value| {
+        let mut fields = json!({"state": "claimed", "claim_id": "c1", "claimed_at": 3});
+        for (k, v) in extra.as_object().unwrap() {
+            fields[k] = v.clone();
+        }
+        ack(&me, task, "in_progress", fields)
+    };
+    let mutate = |mut reply: Value, path: &[&str], value: Value| {
+        let mut slot = &mut reply;
+        for key in path {
+            slot = &mut slot[*key];
+        }
+        *slot = value;
+        reply
+    };
     let refusals = vec![
-        Some((
-            200,
-            ack(
-                &me,
-                Uuid::new_v4(),
-                json!({"state": "claimed", "claim_id": "c1"}),
-            ),
-        )),
-        Some((200, ack(&me, task, json!({"state": "claimed"})))),
-        Some((
-            200,
-            ack(
-                &me,
-                task,
-                json!({"state": "claimed", "claim_id": "c1", "target": other}),
-            ),
-        )),
-        Some((200, wrong_generation)),
-        Some((
-            200,
-            ack(
-                &me,
-                task,
-                json!({"state": "claimed", "claim_id": "c1", "started_at": 5}),
-            ),
-        )),
-        Some((409, json!({"error": "claimed by another session"}))),
+        claimed(json!({"task_id": Uuid::new_v4().to_string()})),
+        mutate(
+            claimed(json!({})),
+            &["dispatch", "task_id"],
+            json!(Uuid::nil().to_string()),
+        ),
+        claimed(json!({"claim_id": null})),
+        claimed(json!({"target": other})),
+        claimed(json!({"started_at": 5})),
+        claimed(json!({"claimed_at": null})),
+        mutate(
+            claimed(json!({})),
+            &["task", "project_ident"],
+            json!("elsewhere"),
+        ),
+        mutate(claimed(json!({})), &["task", "status"], json!("todo")),
+        mutate(
+            claimed(json!({})),
+            &["authentication", "generation"],
+            json!(Uuid::new_v4().to_string()),
+        ),
+        mutate(
+            claimed(json!({})),
+            &["authentication", "machine", "project_ident"],
+            json!("elsewhere"),
+        ),
+        mutate(
+            claimed(json!({})),
+            &["authentication", "machine", "credential_id"],
+            json!("0".repeat(64)),
+        ),
+        mutate(
+            claimed(json!({})),
+            &["authentication", "machine", "os"],
+            json!("windows"),
+        ),
     ];
     let count = refusals.len();
-    let mut replies = refusals;
-    replies.push(Some((
-        200,
-        ack(&me, task, json!({"state": "claimed", "claim_id": "c1"})),
-    )));
-    replies.push(Some((
-        200,
-        ack(&me, task, json!({"state": "running", "claim_id": "c1", "execution_id": Uuid::new_v4().to_string()})),
-    )));
-    replies.push(Some((
-        200,
-        ack(&me, task, json!({"state": "running", "claim_id": "c1", "execution_id": execution.to_string(), "started_at": 9})),
-    )));
+    let mut replies: Vec<_> = refusals.into_iter().map(|r| Some((200, r))).collect();
+    replies.push(Some((409, json!({"error": "claimed by another session"}))));
+    replies.push(Some((200, claimed(json!({})))));
+    let running = |execution_id: Uuid| {
+        ack(
+            &me,
+            task,
+            "in_progress",
+            json!({"state": "running", "claim_id": "c1", "claimed_at": 3, "started_at": 9, "execution_id": execution_id.to_string()}),
+        )
+    };
+    replies.push(Some((200, running(Uuid::new_v4()))));
+    replies.push(Some((200, running(execution))));
     let (url, server) = server(replies);
     let dispatcher = dispatcher(&url, machine, &state);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    for _ in 0..count {
+    for _ in 0..=count {
         assert!(
             runtime
                 .block_on(dispatcher.act(&agent, task, "claim", ActionArgs::default()))
@@ -354,34 +409,33 @@ fn acknowledgments_must_match_the_exact_target_task_claim_and_state() {
         );
     }
     // Malformed acknowledgments stay uncertain; the 409 is a definite rejection.
-    assert_eq!(uncertain(&state).unwrap().len(), count - 1);
-    let claimed = runtime
+    assert_eq!(dispatcher.uncertain().len(), count);
+    let accepted = runtime
         .block_on(dispatcher.act(&agent, task, "claim", ActionArgs::default()))
         .unwrap();
-    assert_eq!(claimed["dispatch"]["claim_id"], "c1");
+    assert_eq!(accepted["dispatch"]["claim_id"], "c1");
     assert!(
-        claimed["dispatch"]["started_at"].is_null(),
+        accepted["dispatch"]["started_at"].is_null(),
         "a claim is not a start"
     );
-    let start = |_: ()| ActionArgs {
+    let start = || ActionArgs {
         claim_id: Some("c1".into()),
         execution_id: Some(execution),
         ..Default::default()
     };
     assert!(
         runtime
-            .block_on(dispatcher.act(&agent, task, "start", start(())))
+            .block_on(dispatcher.act(&agent, task, "start", start()))
             .is_err(),
         "a different execution ID is not this start"
     );
     runtime
-        .block_on(dispatcher.act(&agent, task, "start", start(())))
+        .block_on(dispatcher.act(&agent, task, "start", start()))
         .unwrap();
     let seen = finish(server);
-    assert!(seen[count].head.starts_with(&format!(
+    assert!(seen[0].head.starts_with(&format!(
         "post /v1/projects/demo/task-dispatches/{task}/actions "
     )));
-    assert_eq!(seen.last().unwrap().body["operation"], "start");
     assert_eq!(
         seen.last().unwrap().body["execution_id"],
         execution.to_string()
@@ -389,7 +443,52 @@ fn acknowledgments_must_match_the_exact_target_task_claim_and_state() {
 }
 
 #[test]
-fn invalid_actions_and_foreign_recovery_send_nothing_or_fail_closed() {
+fn cancellation_acknowledgments_follow_the_final_cancelled_task_status() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let me = agent.target(&machine);
+    let task = Uuid::new_v4();
+    let reason = "no longer needed";
+    let cancelled = json!({"state": "cancelled", "finished_at": 8, "result": reason});
+    let requested = json!({"state": "claimed", "claim_id": "c1", "claimed_at": 3, "cancel_requested_at": 7, "cancel_reason": reason});
+    let replies = vec![
+        // Pre-f060414 semantics (cancel finished the task as done) are refused.
+        Some((200, ack(&me, task, "done", cancelled.clone()))),
+        Some((200, ack(&me, task, "cancelled", cancelled))),
+        // A cancellation request records intent; the task stays in progress.
+        Some((200, ack(&me, task, "done", requested.clone()))),
+        Some((200, ack(&me, task, "in_progress", requested))),
+    ];
+    let (url, server) = server(replies);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let args = |claim: Option<&str>| ActionArgs {
+        claim_id: claim.map(String::from),
+        result: Some(reason.into()),
+        ..Default::default()
+    };
+    assert!(
+        runtime
+            .block_on(dispatcher.act(&agent, task, "cancel", args(None)))
+            .is_err()
+    );
+    runtime
+        .block_on(dispatcher.act(&agent, task, "cancel", args(None)))
+        .unwrap();
+    assert!(
+        runtime
+            .block_on(dispatcher.act(&agent, task, "request_cancel", args(Some("c1"))))
+            .is_err()
+    );
+    runtime
+        .block_on(dispatcher.act(&agent, task, "request_cancel", args(Some("c1"))))
+        .unwrap();
+    assert_eq!(finish(server).len(), 4);
+}
+
+#[test]
+fn invalid_input_persists_and_sends_nothing() {
     let (_fixture, state) = state_dir();
     let agent = executor(&state, Provider::Claude);
     let machine = machine();
@@ -401,25 +500,54 @@ fn invalid_actions_and_foreign_recovery_send_nothing_or_fail_closed() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let task = Uuid::new_v4();
     let invalid = [
-        ("start", ActionArgs::default()),
+        (task, "start", ActionArgs::default()),
         (
+            task,
             "succeeded",
             ActionArgs {
                 execution_id: Some(Uuid::new_v4()),
                 ..Default::default()
             },
         ),
-        ("cancel", ActionArgs::default()),
+        (task, "cancel", ActionArgs::default()),
         (
+            task,
             "handoff",
             ActionArgs {
                 result: Some("reason".into()),
                 ..Default::default()
             },
         ),
-        ("adopt", ActionArgs::default()),
+        (task, "adopt", ActionArgs::default()),
+        (Uuid::nil(), "receive", ActionArgs::default()),
+        (
+            task,
+            "start",
+            ActionArgs {
+                claim_id: Some("c1".into()),
+                execution_id: Some(Uuid::nil()),
+                ..Default::default()
+            },
+        ),
+        (
+            task,
+            "claim",
+            ActionArgs {
+                claim_id: Some(" ".into()),
+                ..Default::default()
+            },
+        ),
+        (
+            task,
+            "failed",
+            ActionArgs {
+                execution_id: Some(Uuid::new_v4()),
+                result: Some("x".repeat(65_537)),
+                ..Default::default()
+            },
+        ),
     ];
-    for (operation, args) in invalid {
+    for (task, operation, args) in invalid {
         assert!(
             runtime
                 .block_on(dispatcher.act(&agent, task, operation, args))
@@ -442,6 +570,11 @@ fn invalid_actions_and_foreign_recovery_send_nothing_or_fail_closed() {
     );
     assert!(
         runtime
+            .block_on(dispatcher.delegate(&agent, "../x", me.clone(), "title", "", None, None))
+            .is_err()
+    );
+    assert!(
+        runtime
             .block_on(dispatcher.delegate(
                 &agent,
                 "demo",
@@ -454,7 +587,7 @@ fn invalid_actions_and_foreign_recovery_send_nothing_or_fail_closed() {
             .is_err()
     );
     assert!(
-        uncertain(&state).unwrap().is_empty(),
+        dispatcher.uncertain().is_empty(),
         "invalid input persists nothing"
     );
     assert!(
@@ -467,6 +600,81 @@ fn invalid_actions_and_foreign_recovery_send_nothing_or_fail_closed() {
         "get /v1/projects/demo/task-dispatches/recovery?generation={} ",
         agent.actor.instance_id
     )));
+}
+
+#[test]
+fn corrupt_oversized_or_locked_journals_are_preserved_and_refused() {
+    let (_fixture, state) = state_dir();
+    let journal = state.join("dispatch/journal.json");
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    let cases: [Vec<u8>; 3] = [
+        b"not json".to_vec(),
+        br#"{"version":2,"requests":[]}"#.to_vec(),
+        vec![b' '; 2 * 1024 * 1024 + 1],
+    ];
+    for bytes in cases {
+        std::fs::write(&journal, &bytes).unwrap();
+        assert!(
+            Dispatcher::new(
+                "http://127.0.0.1:9",
+                "t".into(),
+                "demo",
+                machine(),
+                state.clone()
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&journal).unwrap(), bytes, "never reset");
+    }
+    std::fs::remove_file(&journal).unwrap();
+    let first = Dispatcher::new(
+        "http://127.0.0.1:9",
+        "t".into(),
+        "demo",
+        machine(),
+        state.clone(),
+    )
+    .unwrap();
+    assert!(
+        Dispatcher::new(
+            "http://127.0.0.1:9",
+            "t".into(),
+            "demo",
+            machine(),
+            state.clone()
+        )
+        .is_err(),
+        "a second process may not share the journal"
+    );
+    drop(first);
+}
+
+/// Unix permissions make the journal directory unwritable; skipped as root.
+#[cfg(unix)]
+#[test]
+fn a_request_that_cannot_be_persisted_is_never_sent() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let me = agent.target(&machine);
+    let (url, server) = server(vec![]);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let directory = state.join("dispatch");
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if std::fs::write(directory.join("probe"), b"").is_ok() {
+        return; // Running as root; permissions cannot block the write.
+    }
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let error = runtime
+        .block_on(dispatcher.delegate(&agent, "demo", me, "title", "", None, None))
+        .unwrap_err();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        format!("{error:#}").contains("nothing was sent"),
+        "{error:#}"
+    );
+    assert!(finish(server).is_empty(), "zero HTTP requests");
 }
 
 #[test]
@@ -499,63 +707,4 @@ fn shipped_cli_refuses_dispatch_outside_an_amux_launched_agent() {
         !state.join("dispatch").exists(),
         "no secret is created for an unverified caller"
     );
-}
-
-#[test]
-fn cancellation_acknowledgments_follow_the_final_cancelled_task_status() {
-    let (_fixture, state) = state_dir();
-    let agent = executor(&state, Provider::Codex);
-    let machine = machine();
-    let me = agent.target(&machine);
-    let task = Uuid::new_v4();
-    let with_status = |dispatch: Value, status: &str| {
-        let mut reply = ack(&me, task, dispatch);
-        reply["task"]["status"] = json!(status);
-        reply
-    };
-    let replies = vec![
-        // Pre-f060414 semantics (cancel finished the task as done) are refused.
-        Some((200, with_status(json!({"state": "cancelled"}), "done"))),
-        Some((200, with_status(json!({"state": "cancelled"}), "cancelled"))),
-        // A cancellation request records intent; the task stays in progress.
-        Some((
-            200,
-            with_status(
-                json!({"state": "claimed", "claim_id": "c1", "cancel_requested_at": 7}),
-                "done",
-            ),
-        )),
-        Some((
-            200,
-            with_status(
-                json!({"state": "claimed", "claim_id": "c1", "cancel_requested_at": 7}),
-                "in_progress",
-            ),
-        )),
-    ];
-    let (url, server) = server(replies);
-    let dispatcher = dispatcher(&url, machine, &state);
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let reason = |claim: Option<&str>| ActionArgs {
-        claim_id: claim.map(String::from),
-        result: Some("no longer needed".into()),
-        ..Default::default()
-    };
-    assert!(
-        runtime
-            .block_on(dispatcher.act(&agent, task, "cancel", reason(None)))
-            .is_err()
-    );
-    runtime
-        .block_on(dispatcher.act(&agent, task, "cancel", reason(None)))
-        .unwrap();
-    assert!(
-        runtime
-            .block_on(dispatcher.act(&agent, task, "request_cancel", reason(Some("c1"))))
-            .is_err()
-    );
-    runtime
-        .block_on(dispatcher.act(&agent, task, "request_cancel", reason(Some("c1"))))
-        .unwrap();
-    assert_eq!(finish(server).len(), 4);
 }

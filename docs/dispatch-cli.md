@@ -61,38 +61,57 @@ stopped.
 
 ## Requests and recovery
 
-Every `delegate` and `act` request is written to `dispatch/requests/` with a
-fresh request ID before it is sent. Its status becomes `accepted` when the
-gateway acknowledges exactly what was asked, or `rejected` on a definite 4xx
-rejection. A lost reply, a 5xx or a malformed acknowledgment leaves it
-`uncertain`: the gateway may have committed it. amux never resubmits on its own.
+Every `delegate` and `act` request is written to the dispatch journal
+(`dispatch/journal.json`) with a fresh request ID before it is sent. The journal
+is held under an exclusive lock by one amux process at a time, limited to 512
+requests and 2 MiB, and written through a synced private temporary file and a
+directory sync. If it cannot be written, nothing is sent. A corrupt, oversized
+or unknown-version journal is preserved and refused, never reset or skipped.
+
+A request becomes `accepted` when the gateway acknowledges exactly what was
+asked, or `rejected` on a definite 4xx rejection. A lost reply, a 5xx or a
+malformed acknowledgment leaves it `uncertain`: the gateway may have committed
+it. If recording the outcome fails, the journal still shows it `uncertain`.
+amux never resubmits on its own.
 
 `replay` resends an uncertain request byte for byte, with the same request ID,
-so the gateway returns its original response instead of acting twice. Only the
-execution that created a request may replay it. A later launch, even of the same
-agent, has a new generation and cannot adopt or resend an earlier generation's
-requests or claims; use `recover` to inspect their state instead.
+so the gateway returns its original response instead of acting twice. Before
+sending, it rechecks the stored request's shape (request ID, generation, path
+and operation) and that the same gateway, project, machine, session and
+generation are making the call. A later launch, even of the same agent, has a
+new generation and cannot adopt or resend an earlier generation's requests or
+claims; use `recover` to inspect their state instead.
 
 ## Acknowledgment checks
 
 A reply is accepted only if all of these hold, otherwise the request stays
 uncertain and the command fails:
 
-- the dispatch and task IDs match, and the task is the one acted on;
-- `authentication` names this exact session, generation and machine;
+- the task UUID is not nil and matches the dispatch, and the task belongs to the
+  dispatch's project;
+- `authentication` names this exact session and generation, and its machine
+  record has this project, machine UUID, OS and credential ID (the SHA-256 of
+  the machine key);
 - delegation: the exact requested target, destination project and source
-  project, with state `pending`;
-- `receive`, `claim`, `start`, `succeeded`, `failed`: this generation is the
-  destination and the state is the one that operation produces; a claim returns
-  a claim ID and no start time; `start` and outcomes echo the claim and
-  execution IDs;
-- outcomes leave the task `done`; `request_cancel` records a cancellation
-  request and leaves the task `in_progress`; `cancel` reaches `cancelled` with
-  the task `cancelled` (agent-gateway `f060414`); `handoff` returns the dispatch
-  to `pending` for the requested new target.
+  project, state `pending`, task `todo`;
+- `receive`: state `received` with `received_at`, task `todo`;
+- `claim`: state `claimed` with `claimed_at`, a claim ID and no start time, task
+  `in_progress` owned by this origin;
+- `start`: state `running` with `started_at`, echoing the claim and execution
+  IDs;
+- `succeeded` / `failed`: that state with `finished_at`, echoing claim,
+  execution and result, task `done`;
+- `request_cancel`: claimed or running with `cancel_requested_at` and the
+  reason, task still `in_progress`;
+- `cancel`: state `cancelled` with `finished_at` and the reason, task
+  `cancelled` (agent-gateway `f060414`);
+- `handoff`: state `pending` for the requested new target with no claim, task
+  `todo`.
 
-Responses are limited to 4 MiB and the session list to 1,000 entries. Recovery
-is refused if its pending or requested work names another generation.
+Inputs are checked before anything is stored: no nil task or execution IDs, no
+blank claim IDs, and results limited to 64 KiB. Responses are limited to 4 MiB
+and the session list to 1,000 entries. Recovery is refused if its pending or
+requested work names another generation.
 
 ## Limits
 
