@@ -89,7 +89,11 @@ process on the machine shares the journal: each read or write takes its lock
 only for one short read-modify-write (waiting at most 2 seconds), never across a
 network call, so one agent's slow request does not block another's. It is
 limited to 512 requests and 2 MiB, and written through a synced private
-temporary file and a directory sync. If it cannot be written, nothing is sent. A corrupt, oversized
+temporary file and a directory sync. When a new write would exceed either limit,
+the oldest `accepted` or `rejected` requests are dropped under the same lock;
+`uncertain` requests are never dropped, so a journal full of them refuses the
+write. A dropped request ID is unknown to `replay`, which sends nothing. If it
+cannot be written, nothing is sent. A corrupt, oversized
 or unknown-version journal is preserved and refused, never reset or skipped.
 
 A request becomes `accepted` when the gateway acknowledges exactly what was

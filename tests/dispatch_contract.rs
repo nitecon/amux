@@ -1197,3 +1197,201 @@ fn unclaimed_acknowledgments_carry_no_claim_execution_outcome_or_owner() {
     );
     finish(server);
 }
+
+/// A stored delegation from `executor` on `machine` through `url`.
+fn stored(
+    url: &str,
+    machine: Uuid,
+    executor: &Executor,
+    status: &str,
+    specification: usize,
+) -> Value {
+    let id = Uuid::new_v4();
+    json!({
+        "request_id": id,
+        "gateway": format!("{url}/"),
+        "project": "demo",
+        "machine_instance": machine,
+        "session_id": executor.actor.session_id,
+        "generation": executor.generation(),
+        "path": ["task-dispatches"],
+        "body": {
+            "request_id": id,
+            "generation": executor.generation(),
+            "target_project_ident": "demo",
+            "target": executor.target(&Machine::new(machine, MACHINE_KEY.into()).unwrap()),
+            "title": "seeded",
+            "specification": "s".repeat(specification),
+        },
+        "status": status,
+        "response": null,
+        "error": null,
+    })
+}
+
+fn seed(state: &Path, requests: &[Value]) -> PathBuf {
+    let path = state.join("dispatch/journal.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"version": 1, "requests": requests})).unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+fn journal_ids(path: &Path) -> Vec<String> {
+    let journal: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    journal["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["request_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_full_journal_drops_only_its_oldest_settled_request() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Claude);
+    let machine = machine();
+    let instance = machine.instance_id;
+    let me = agent.target(&machine);
+    let (url, server) = server(vec![None, None]);
+    let mut requests = vec![
+        stored(&url, instance, &agent, "accepted", 0),
+        stored(&url, instance, &agent, "rejected", 0),
+    ];
+    for _ in 2..512 {
+        requests.push(stored(&url, instance, &agent, "uncertain", 0));
+    }
+    let path = seed(&state, &requests);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let lost = runtime.block_on(dispatcher.delegate(
+        &agent,
+        "demo",
+        Destination::Session(me),
+        "new work",
+        "",
+        None,
+        None,
+    ));
+    assert!(lost.is_err(), "a lost reply is not acceptance");
+    let ids = journal_ids(&path);
+    assert_eq!(ids.len(), 512, "the journal stays bounded");
+    let evicted = requests[0]["request_id"].as_str().unwrap();
+    assert!(
+        !ids.iter().any(|id| id == evicted),
+        "oldest settled request dropped"
+    );
+    assert!(
+        ids.iter()
+            .any(|id| id == requests[1]["request_id"].as_str().unwrap())
+    );
+    for request in &requests[2..] {
+        assert!(
+            ids.contains(&request["request_id"].as_str().unwrap().to_owned()),
+            "uncertain kept"
+        );
+    }
+    assert_eq!(dispatcher.uncertain().unwrap().len(), 511);
+
+    // An evicted ID is unknown and never resent.
+    let error = runtime
+        .block_on(dispatcher.replay(&agent, Uuid::parse_str(evicted).unwrap()))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("nothing was sent"),
+        "{error:#}"
+    );
+    // A retained uncertain request still replays unchanged under its stable ID.
+    let retained = Uuid::parse_str(requests[2]["request_id"].as_str().unwrap()).unwrap();
+    assert!(
+        runtime
+            .block_on(dispatcher.replay(&agent, retained))
+            .is_err()
+    );
+    let seen = finish(server);
+    assert_eq!(seen.len(), 2, "one new request and one explicit replay");
+    assert_eq!(seen[0].body["title"], "new work");
+    assert_eq!(seen[1].body, requests[2]["body"]);
+    assert_eq!(journal_ids(&path).len(), 512);
+}
+
+#[test]
+fn a_journal_full_of_uncertain_requests_refuses_before_sending() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Codex);
+    let machine = machine();
+    let instance = machine.instance_id;
+    let me = agent.target(&machine);
+    let (url, server) = server(vec![]);
+    let requests: Vec<_> = (0..512)
+        .map(|_| stored(&url, instance, &agent, "uncertain", 0))
+        .collect();
+    let path = seed(&state, &requests);
+    let original = std::fs::read(&path).unwrap();
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let error = runtime
+        .block_on(dispatcher.delegate(
+            &agent,
+            "demo",
+            Destination::Session(me),
+            "t",
+            "",
+            None,
+            None,
+        ))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("nothing was sent"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original, "journal unchanged");
+    assert!(finish(server).is_empty(), "zero HTTP requests");
+}
+
+#[test]
+fn the_byte_bound_also_drops_only_settled_requests() {
+    let (_fixture, state) = state_dir();
+    let agent = executor(&state, Provider::Claude);
+    let machine = machine();
+    let instance = machine.instance_id;
+    let me = agent.target(&machine);
+    let (url, server) = server(vec![None]);
+    // One uncertain and 30 settled large requests fit under 2 MiB; one more does not.
+    let mut requests: Vec<_> = (0..30)
+        .map(|_| stored(&url, instance, &agent, "accepted", 66_000))
+        .collect();
+    requests.insert(0, stored(&url, instance, &agent, "uncertain", 66_000));
+    let path = seed(&state, &requests);
+    let dispatcher = dispatcher(&url, machine, &state);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let specification = "n".repeat(65_536);
+    assert!(
+        runtime
+            .block_on(dispatcher.delegate(
+                &agent,
+                "demo",
+                Destination::Session(me),
+                "big",
+                &specification,
+                None,
+                None,
+            ))
+            .is_err()
+    );
+    assert_eq!(finish(server).len(), 1);
+    let ids = journal_ids(&path);
+    assert!(std::fs::metadata(&path).unwrap().len() <= 2 * 1024 * 1024);
+    assert_eq!(
+        ids[0],
+        requests[0]["request_id"].as_str().unwrap(),
+        "uncertain kept"
+    );
+    assert!(!ids.contains(&requests[1]["request_id"].as_str().unwrap().to_owned()));
+    assert_eq!(ids.len(), 31, "exactly one settled request dropped");
+}

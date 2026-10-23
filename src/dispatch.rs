@@ -290,7 +290,10 @@ impl Store {
         Ok(value)
     }
 
-    /// Writes `request` durably, replacing an entry with the same ID.
+    /// Writes `request` durably, replacing an entry with the same ID. When the
+    /// journal is full, the oldest settled (accepted/rejected) entries are
+    /// dropped; uncertain entries are never dropped, so a journal full of them
+    /// refuses the write.
     fn record(&self, request: &Request) -> Result<()> {
         self.transact(|journal| {
             match journal
@@ -300,6 +303,20 @@ impl Store {
             {
                 Some(existing) => *existing = request.clone(),
                 None => journal.requests.push(request.clone()),
+            }
+            let mut bytes = serde_json::to_vec(journal)?.len();
+            while journal.requests.len() > MAX_REQUESTS || bytes > MAX_JOURNAL_BYTES {
+                let Some(oldest) = journal
+                    .requests
+                    .iter()
+                    .position(|r| r.status != "uncertain" && r.request_id != request.request_id)
+                else {
+                    bail!(
+                        "dispatch journal is full of uncertain requests; inspect them with recovery"
+                    );
+                };
+                let removed = journal.requests.remove(oldest);
+                bytes -= serde_json::to_vec(&removed)?.len() + 1;
             }
             Ok(((), true))
         })
@@ -675,7 +692,9 @@ impl Dispatcher {
     /// Resends a stored uncertain request, unchanged, from the execution, machine,
     /// project and gateway that created it. A later generation never adopts it.
     pub async fn replay(&self, executor: &Executor, request_id: Uuid) -> Result<Value> {
-        let request = self.store.get(request_id)?.context("unknown request ID")?;
+        let request = self.store.get(request_id)?.context(
+            "unknown request ID: never recorded here, or settled and later dropped from the bounded journal; nothing was sent",
+        )?;
         request.validate()?;
         if request.status != "uncertain" {
             bail!("request {request_id} is already {}", request.status);
