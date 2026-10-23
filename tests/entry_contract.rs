@@ -54,3 +54,18 @@ fn gui_entry_never_accepts_cli_commands_or_opens_a_window_on_bad_input() {
             .success()
     );
 }
+
+#[test]
+fn cli_update_recognizes_the_flag_but_never_overwrites_an_unmanaged_install() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_amux"))
+        .arg("--update")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("not a verified amux direct-download bundle"),
+        "{error}"
+    );
+    assert!(error.contains("Nothing was changed"), "{error}");
+}

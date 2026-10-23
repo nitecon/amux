@@ -20,6 +20,9 @@ mod desktop;
 struct Cli {
     #[arg(long, global = true, default_value = ".")]
     project_dir: PathBuf,
+    /// Update a direct-download install; managed installs show their update command.
+    #[arg(long, exclusive = true)]
+    update: bool,
     #[command(subcommand)]
     command: Option<Operation>,
 }
@@ -153,6 +156,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<u8> {
+    if cli.update {
+        println!("{}", amux::updates::cli_update()?);
+        return Ok(0);
+    }
     match cli.command.unwrap_or(Operation::Desktop) {
         Operation::Desktop => {
             #[cfg(feature = "desktop")]

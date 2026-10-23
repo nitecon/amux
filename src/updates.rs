@@ -34,6 +34,7 @@ const MAX_RELEASE_LIST: u64 = 8 << 20;
 const MAX_SUMS: u64 = 64 << 10;
 const MAX_ARCHIVE: u64 = 256 << 20;
 const MAX_ENTRY: u64 = 128 << 20;
+const MAX_UNPACKED: u64 = 256 << 20;
 const MAX_ENTRIES: usize = 64;
 const DOCUMENTS: [&str; 4] = [
     "LICENSE",
@@ -214,7 +215,8 @@ pub fn cli_update() -> Result<String> {
 }
 
 /// Update the verified bundle containing `running.exe` to the selected
-/// release. Any failure leaves the previous bundle in place.
+/// release. Installation failures restore the previous bundle where possible;
+/// incomplete rollback is reported explicitly.
 pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String> {
     let detected = detect(&running.exe);
     let dir = match &detected.method {
@@ -230,6 +232,24 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
             detected.note.as_deref().unwrap_or("no matching BUILD.json")
         ),
     };
+    // Keep one transaction per install, including cleanup and provenance checks.
+    // Leave the lock inode in place after unlock so another process cannot lock
+    // a newly-created file while the old inode is still held.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".amux-update.lock"))
+        .context("cannot open update lock; nothing was changed")?;
+    lock.try_lock().map_err(|error| {
+        anyhow!("another amux update may be running; nothing was changed: {error}")
+    })?;
+    let detected = detect(&running.exe);
+    ensure!(
+        matches!(&detected.method, InstallMethod::Direct { dir: current, .. } if current == &dir),
+        "installation changed before update lock was acquired; nothing was changed"
+    );
     let platform = Platform::current().context("unsupported platform")?;
     let stale = cleanup_backups(&dir);
     let releases = fetch_releases(source).await?;
@@ -762,14 +782,26 @@ fn extract(bytes: &[u8], platform: &Platform, out: &Path) -> Result<HashSet<Stri
     if platform.extension == ".zip" {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         ensure!(archive.len() <= MAX_ENTRIES, "archive has too many entries");
+        let mut unpacked = 0u64;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
+            ensure!(entry.size() <= MAX_ENTRY, "archive entry is too large");
+            unpacked = unpacked
+                .checked_add(entry.size())
+                .context("archive size overflow")?;
+            ensure!(
+                unpacked <= MAX_UNPACKED,
+                "archive expands beyond its size limit"
+            );
             let raw = entry.name()?.into_owned();
             let regular = entry.is_file() && !entry.is_symlink();
             keep(&raw, regular, &mut entry)?;
         }
     } else {
-        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+        // Bound decompression before tar processes PAX/GNU extension headers,
+        // which its iterator reads internally before yielding an entry.
+        let expanded = expand_tar(bytes, MAX_UNPACKED)?;
+        let mut archive = tar::Archive::new(Cursor::new(expanded));
         for entry in archive.entries()? {
             let mut entry = entry?;
             let raw = String::from_utf8(entry.path_bytes().into_owned())
@@ -779,6 +811,18 @@ fn extract(bytes: &[u8], platform: &Platform, out: &Path) -> Result<HashSet<Stri
         }
     }
     Ok(seen)
+}
+
+fn expand_tar(bytes: &[u8], limit: u64) -> Result<Vec<u8>> {
+    let mut expanded = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take(limit + 1)
+        .read_to_end(&mut expanded)?;
+    ensure!(
+        expanded.len() as u64 <= limit,
+        "archive expands beyond its size limit"
+    );
+    Ok(expanded)
 }
 
 fn create(path: &Path, executable: bool) -> io::Result<File> {
@@ -950,4 +994,20 @@ fn rollback(done: Vec<Swapped>) -> Result<()> {
     }
     ensure!(failed.is_empty(), "could not restore {}", failed.join(", "));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn compressed_metadata_cannot_bypass_the_unpacked_byte_limit() {
+        use std::io::Write;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(&[0; 4096]).unwrap();
+        let bytes = gzip.finish().unwrap();
+        assert!(bytes.len() < 1024);
+        let error = expand_tar(&bytes, 1024).unwrap_err();
+        assert!(error.to_string().contains("expands beyond"));
+        assert_eq!(expand_tar(&bytes, 4096).unwrap().len(), 4096);
+    }
 }

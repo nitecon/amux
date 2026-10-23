@@ -37,6 +37,10 @@ the desktop. Optional machine credentials are needed only for supported recovery
 Each Terminal, Codex and Claude tab has its own **×** close button and a directory
 subtitle; hover the subtitle for the full path and terminal title.
 
+The top-right bell shows app updates. Direct-download installs use
+`amux --update`; package-managed installs show their own upgrade instructions.
+Restart is explicit and restores tabs stopped. See [app updates](docs/updates.md).
+
 `whoami` runs inside an amux-launched agent and prints that execution's inherited
 identity. `cargo run -- agents` lists live launches. Provider commands must already
 be on PATH. See [native review instructions](docs/windows-review.md) for bundles,

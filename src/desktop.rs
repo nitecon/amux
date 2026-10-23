@@ -10,8 +10,8 @@ use amux::submission::{Submission, submit_literal};
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
 use iced::widget::{
-    button, checkbox, column, container, pane_grid, row, scrollable, text, text_editor, text_input,
-    tooltip,
+    button, checkbox, column, container, pane_grid, row, scrollable, svg, text, text_editor,
+    text_input, tooltip,
 };
 use iced::{Element, Length, Subscription, Task, Theme};
 use iced_term::{Terminal, TerminalView};
@@ -33,6 +33,11 @@ enum Message {
     Preferences(bool),
     Preference(PreferenceField, Secret),
     SavePreferences,
+    Updates(bool),
+    CheckUpdates,
+    UpdatesChecked(Result<amux::updates::UpdateCheck, String>),
+    CopyUpdateCommand(String),
+    RestartUpdated,
     Resize(pane_grid::ResizeEvent),
     Terminal(iced_term::Event),
     GatewayProject(String),
@@ -74,6 +79,39 @@ struct Preferences {
     path: Option<PathBuf>,
     open: bool,
     status: String,
+}
+
+struct Updates {
+    running: Option<std::sync::Arc<amux::updates::Running>>,
+    open: bool,
+    checking: bool,
+    checked_at: Option<Instant>,
+    restart_checked_at: Option<Instant>,
+    report: Option<amux::updates::UpdateCheck>,
+    error: String,
+}
+impl Updates {
+    fn new() -> Self {
+        let running = amux::updates::Running::capture();
+        Self {
+            error: running
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            running: running.ok().map(std::sync::Arc::new),
+            open: false,
+            checking: false,
+            checked_at: None,
+            restart_checked_at: None,
+            report: None,
+        }
+    }
+    fn attention(&self) -> bool {
+        self.report
+            .as_ref()
+            .is_some_and(|r| r.available.is_some() || r.restart.required)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,6 +226,7 @@ struct Workspace {
 }
 struct Desktop {
     preferences: Preferences,
+    updates: Updates,
     workspaces: Vec<Workspace>,
     active: usize,
     directory: String,
@@ -252,6 +291,7 @@ impl Desktop {
             ),
         };
         let mut app = Self {
+            updates: Updates::new(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, status: preferences_error },
             workspaces: Vec::new(), active: 0, directory: directory.display().to_string(), next_id: 0,
             status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
@@ -300,7 +340,8 @@ impl Desktop {
                 format!("Reminder storage unavailable: {error}. Local terminals remain available.");
         }
         let focus = app.focus();
-        (app, focus)
+        let updates = app.check_updates();
+        (app, Task::batch([focus, updates]))
     }
 
     fn restore_layout(&mut self, layout: Layout) -> pane_grid::Configuration<Pane> {
@@ -672,6 +713,24 @@ impl Desktop {
                 }
             }
             Message::SavePreferences => return self.save_preferences(),
+            Message::Updates(open) => self.updates.open = open,
+            Message::CheckUpdates => return self.check_updates(),
+            Message::UpdatesChecked(result) => {
+                self.updates.checking = false;
+                self.updates.checked_at = Some(Instant::now());
+                match result {
+                    Ok(report) => {
+                        self.updates.report = Some(report);
+                        self.updates.restart_checked_at = Some(Instant::now());
+                        self.updates.error.clear();
+                    }
+                    Err(error) => {
+                        self.updates.error = format!("Could not check for updates: {error}")
+                    }
+                }
+            }
+            Message::CopyUpdateCommand(command) => return iced::clipboard::write(command),
+            Message::RestartUpdated => return self.restart_updated(),
             Message::Resize(event) => self.workspaces[self.active]
                 .panes
                 .resize(event.split, event.ratio.clamp(0.05, 0.95)),
@@ -1003,10 +1062,169 @@ impl Desktop {
                         };
                     }
                 }
-                return self.delivery_tick();
+                if self
+                    .updates
+                    .restart_checked_at
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
+                {
+                    if let (Some(running), Some(report)) =
+                        (&self.updates.running, &mut self.updates.report)
+                    {
+                        report.restart = amux::updates::restart_status(running);
+                    }
+                    self.updates.restart_checked_at = Some(Instant::now());
+                }
+                let updates = if self
+                    .updates
+                    .checked_at
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(3600))
+                {
+                    self.check_updates()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([self.delivery_tick(), updates]);
             }
         }
         Task::none()
+    }
+
+    fn check_updates(&mut self) -> Task<Message> {
+        if self.updates.checking {
+            return Task::none();
+        }
+        self.updates.checked_at = Some(Instant::now());
+        let Some(running) = self.updates.running.clone() else {
+            return Task::none();
+        };
+        self.updates.checking = true;
+        Task::perform(
+            async move {
+                amux::updates::check(&running, &amux::updates::ReleaseSource::github())
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            Message::UpdatesChecked,
+        )
+    }
+
+    fn restart_updated(&mut self) -> Task<Message> {
+        let restart = self
+            .updates
+            .running
+            .as_ref()
+            .map(|running| amux::updates::restart_status(running));
+        let Some(path) = restart.filter(|r| r.required).and_then(|r| r.path) else {
+            self.updates.error = "No updated desktop is ready to restart yet.".into();
+            return Task::none();
+        };
+        self.dirty = true;
+        if !self.save() {
+            self.updates.error = "Layout could not be saved; restart cancelled.".into();
+            return Task::none();
+        }
+        match std::process::Command::new(path)
+            .arg("--project-dir")
+            .arg(&self.workspaces[self.active].directory)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => iced::exit(),
+            Err(error) => {
+                self.updates.error = format!("Could not restart: {error}");
+                Task::none()
+            }
+        }
+    }
+
+    fn updates_view(&self) -> Element<'_, Message> {
+        let mut content = column![text("App updates").size(26)].spacing(14);
+        if let Some(report) = &self.updates.report {
+            content = content.push(text(format!(
+                "Installed: {}",
+                report
+                    .installed
+                    .as_ref()
+                    .map(|r| r.tag.as_str())
+                    .unwrap_or(env!("CARGO_PKG_VERSION"))
+            )));
+            if let Some(release) = &report.available {
+                content = content
+                    .push(text(format!("Update available: {}", release.tag)).size(20))
+                    .push(text(&release.html_url).size(12));
+            } else if report.restart.required {
+                content = content.push(text("Updated app installed. Restart to use it.").size(20));
+            } else if report.note.is_some() {
+                content = content.push(text("Update status needs attention."));
+            } else {
+                content =
+                    content.push(text("No newer release is available for this installation."));
+            }
+            let command = match &report.guidance {
+                amux::updates::Guidance::CliUpdate { .. } => {
+                    content = content.push(text(
+                        "Open a terminal in the amux download folder, then run:",
+                    ));
+                    Some(if cfg!(windows) {
+                        ".\\amux.exe --update"
+                    } else {
+                        "./amux --update"
+                    })
+                }
+                amux::updates::Guidance::Homebrew { command } => Some(command.as_str()),
+                amux::updates::Guidance::Manual { url } => {
+                    content = content.push(text(format!(
+                        "Update using your installation method: {url}"
+                    )));
+                    None
+                }
+            };
+            if let Some(command) = command {
+                content = content
+                    .push(text(command).font(iced::Font::MONOSPACE))
+                    .push(
+                        button("Copy update command")
+                            .on_press(Message::CopyUpdateCommand(command.to_owned())),
+                    );
+            }
+            if let Some(note) = &report.note {
+                content = content.push(text(note).size(13));
+            }
+            if report.restart.required && report.restart.path.is_some() {
+                let live = self
+                    .workspaces
+                    .iter()
+                    .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
+                    .filter(|t| t.terminal.is_some())
+                    .count();
+                content = content.push(text("Restart closes running sessions and restores the layout with all processes stopped.").size(13))
+                    .push(button(text(format!("Restart amux · close {live} running sessions"))).on_press(Message::RestartUpdated));
+            } else if report.restart.required {
+                content = content.push(text("Close and reopen amux to use the installed update."));
+            }
+        }
+        if !self.updates.error.is_empty() {
+            content = content.push(text(&self.updates.error));
+        }
+        content = content.push(
+            row![
+                button(if self.updates.checking {
+                    "Checking…"
+                } else {
+                    "Check for updates"
+                })
+                .on_press_maybe((!self.updates.checking).then_some(Message::CheckUpdates)),
+                button("Back").on_press(Message::Updates(false))
+            ]
+            .spacing(8),
+        );
+        container(scrollable(content.max_width(650)))
+            .padding(24)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn save_preferences(&mut self) -> Task<Message> {
@@ -1689,6 +1907,9 @@ impl Desktop {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if self.updates.open {
+            return self.updates_view();
+        }
         if self.preferences.open {
             return self.preferences_view();
         }
@@ -1786,6 +2007,34 @@ impl Desktop {
         .width(280);
         container(
             column![
+                row![
+                    iced::widget::Space::new().width(Length::Fill),
+                    tooltip(
+                        button(
+                            row![
+                                svg(svg::Handle::from_memory(include_bytes!(
+                                    "../assets/icons/bell.svg"
+                                )))
+                                .width(20)
+                                .height(20),
+                                text(if self.updates.attention() { "●" } else { "" })
+                            ]
+                            .spacing(3)
+                        )
+                        .style(if self.updates.attention() {
+                            button::primary
+                        } else {
+                            button::text
+                        })
+                        .on_press(Message::Updates(true)),
+                        text(if self.updates.attention() {
+                            "App update available"
+                        } else {
+                            "App updates"
+                        }),
+                        tooltip::Position::Bottom
+                    )
+                ],
                 row![
                     container(scrollable(sidebar)).width(200).padding(12),
                     column![
@@ -1885,6 +2134,15 @@ mod tests {
             });
         }
         Desktop {
+            updates: Updates {
+                running: None,
+                open: false,
+                checking: false,
+                checked_at: Some(Instant::now()),
+                restart_checked_at: Some(Instant::now()),
+                report: None,
+                error: String::new(),
+            },
             preferences: Preferences {
                 current: GatewayPreferences::default(),
                 draft: GatewayPreferences::default(),
@@ -1905,6 +2163,76 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
         }
+    }
+
+    fn update_report() -> amux::updates::UpdateCheck {
+        amux::updates::UpdateCheck {
+            method: amux::updates::InstallMethod::Homebrew {
+                prefix: PathBuf::from("/fixture/brew"),
+                cask: false,
+            },
+            channel: amux::updates::Channel::Stable,
+            installed: None,
+            available: Some(amux::updates::Release {
+                tag: "v0.2.0".into(),
+                name: "amux0.2".into(),
+                published_at: "2026-10-24T00:00:00Z".into(),
+                html_url: "https://github.com/nitecon/amux/releases/tag/v0.2.0".into(),
+                prerelease: false,
+            }),
+            guidance: amux::updates::Guidance::Homebrew {
+                command: "brew upgrade amux".into(),
+            },
+            restart: amux::updates::Restart {
+                required: false,
+                path: None,
+            },
+            note: None,
+        }
+    }
+
+    #[test]
+    fn update_badge_survives_a_failed_refresh_without_changing_sessions_or_consent() {
+        let mut app = desktop();
+        let workspace = &mut app.workspaces[0];
+        workspace.panes.get_mut(workspace.focused).unwrap().tabs[0]
+            .reminders
+            .consent = true;
+        let _ = app.update(Message::UpdatesChecked(Ok(update_report())));
+        assert!(app.updates.attention());
+        let _ = app.update(Message::UpdatesChecked(Err("offline".into())));
+        assert!(app.updates.attention());
+        assert!(app.updates.error.contains("offline"));
+        let _ = app.update(Message::Updates(true));
+        assert!(app.updates.open);
+        assert!(
+            app.workspaces[0]
+                .panes
+                .get(app.workspaces[0].focused)
+                .unwrap()
+                .tabs[0]
+                .reminders
+                .consent
+        );
+        assert_eq!(app.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn update_restart_rechecks_disk_instead_of_trusting_an_old_report() {
+        let (dir, mut app) = preferences_fixture();
+        let exe = dir.path().join("unchanged-amux");
+        std::fs::write(&exe, b"unchanged fixture").unwrap();
+        app.updates.running = Some(std::sync::Arc::new(amux::updates::Running::at(exe.clone())));
+        let mut report = update_report();
+        report.restart = amux::updates::Restart {
+            required: true,
+            path: Some(exe),
+        };
+        let _ = app.update(Message::UpdatesChecked(Ok(report)));
+        let _ = app.update(Message::RestartUpdated);
+        assert!(app.updates.error.contains("No updated desktop"));
+        assert!(!app.dirty);
+        assert_eq!(app.workspaces.len(), 2);
     }
 
     fn preferences_fixture() -> (tempfile::TempDir, Desktop) {

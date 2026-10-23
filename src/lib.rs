@@ -17,3 +17,5 @@ pub mod terminal_lifetime;
 #[cfg(windows)]
 #[path = "terminal_lifetime_windows.rs"]
 pub mod terminal_lifetime;
+
+pub mod updates;

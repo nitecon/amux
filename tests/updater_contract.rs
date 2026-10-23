@@ -50,6 +50,7 @@ fn sha(bytes: &[u8]) -> String {
 struct Server {
     url: String,
     routes: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    requests: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Server {
@@ -58,6 +59,8 @@ impl Server {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let routes: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::default();
         let shared = routes.clone();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = requests.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
@@ -71,6 +74,7 @@ impl Server {
                 }
                 let text = String::from_utf8_lossy(&request);
                 let path = text.split_whitespace().nth(1).unwrap_or("").to_owned();
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let body = shared.lock().unwrap().get(&path).cloned();
                 let (status, body) = match body {
                     Some(body) => ("200 OK", body),
@@ -84,7 +88,11 @@ impl Server {
                 let _ = stream.write_all(&body);
             }
         });
-        Self { url, routes }
+        Self {
+            url,
+            routes,
+            requests,
+        }
     }
 
     fn source(&self) -> ReleaseSource {
@@ -276,6 +284,8 @@ fn snapshot(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     fs::read_dir(dir)
         .unwrap()
         .flatten()
+        // A persistent lock inode is coordination metadata, not bundle payload.
+        .filter(|e| e.file_name() != ".amux-update.lock")
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let bytes = fs::read(e.path()).unwrap_or_default();
@@ -297,6 +307,58 @@ fn preview_releases(server: &Server) -> Vec<Value> {
         release(server, review(INSTALLED, "2026-10-02T00:00:00Z")),
         release(server, review(NEWER, "2026-10-03T00:00:00Z")),
     ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_update_cannot_cleanup_or_install_during_the_first_download() {
+    use std::sync::{atomic::Ordering, mpsc};
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    Bundle::new(INSTALLED).install(&dir);
+    let before = snapshot(&dir);
+    let server = Server::start();
+    server.publish(&preview_releases(&server));
+    // Hold the first real HTTP response while its updater owns the install.
+    let routes = server.routes.clone();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let gate = std::thread::spawn(move || {
+        let _routes = routes.lock().unwrap();
+        ready_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let running = Running::at(dir.join(CLI));
+    let first_running = running.clone();
+    let first_source = server.source();
+    let first = tokio::spawn(async move { updates::update(&first_running, &first_source).await });
+    wait_for("first update HTTP request", || {
+        server.requests.load(Ordering::SeqCst) == 1
+    });
+    let second = tokio::time::timeout(
+        Duration::from_secs(1),
+        updates::update(&running, &server.source()),
+    )
+    .await;
+    let during = snapshot(&dir);
+    let requests = server.requests.load(Ordering::SeqCst);
+    release_tx.send(()).unwrap();
+    gate.join().unwrap();
+    let first_result = first.await.unwrap();
+    let error = second
+        .expect("second update should refuse without waiting on HTTP")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("another amux update"),
+        "{error:#}"
+    );
+    assert_eq!(
+        during, before,
+        "no interleaved installation before verification"
+    );
+    assert_eq!(requests, 1, "the second updater sent no HTTP request");
+    first_result.unwrap();
+    assert_eq!(installed_revision(&dir), NEWER);
 }
 
 // ---------- discovery and channels ----------
