@@ -28,11 +28,14 @@ pub fn home_directory() -> Result<PathBuf> {
 
 pub fn directory(value: &str) -> Result<PathBuf> {
     // Prefer literal names, including real backslashes and quotes. Only fall
-    // back to a pasted shell-style path when the literal path is absent.
+    // back when the literal path is absent or Windows rejects its quoted syntax.
     let literal = Path::new(value).canonicalize();
     let path = match literal {
         Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || (cfg!(windows) && error.raw_os_error() == Some(123)) =>
+        {
             let trimmed = value.trim();
             let unquoted = trimmed
                 .strip_prefix('"')
