@@ -101,9 +101,6 @@ impl Desktop {
                 scope.query = remap(scope.query)?;
                 Message::ReceiptReported(scope, task, result)
             }
-            Message::Remind(scope, task, terminal) => {
-                Message::Remind(remap(scope)?, task, terminal)
-            }
             message => message,
         })
     }

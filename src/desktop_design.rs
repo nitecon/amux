@@ -923,21 +923,6 @@ impl Desktop {
                     ]
                     .padding([3, 8]),
                 );
-                if !self.preferences.current.automatic_notifications
-                    && cfg!(target_os = "linux")
-                    && tab_provider(tab) == Some(Provider::Codex)
-                    && tab.recipient.is_some()
-                    && self.ledger.is_some()
-                {
-                    let id = tab.id;
-                    title = title.push(
-                        checkbox(tab.reminders.consent)
-                            .label("Allow gateway reminders + Enter")
-                            .on_toggle(move |v| Message::Consent(id, v))
-                            .size(12)
-                            .text_size(10),
-                    );
-                }
             }
             let body: Element<'_, Message> =
                 match pane.tabs.get(pane.active).and_then(|t| t.terminal.as_ref()) {
@@ -1051,7 +1036,7 @@ impl Desktop {
             count += 1;
             let id = task["id"].as_str().unwrap_or("?");
             let owner = self.design_task_owner(task);
-            let mut item = column![
+            let item = column![
                 row![
                     text(format!("#{}", id.chars().take(8).collect::<String>()))
                         .size(10)
@@ -1078,22 +1063,6 @@ impl Desktop {
                 .color(MUTED),
             ]
             .spacing(9);
-            let w = &self.workspaces[self.active];
-            if let Some(tab) = w
-                .panes
-                .get(w.focused)
-                .and_then(|p| p.tabs.get(p.active))
-                .filter(|t| t.reminders.consent && t.terminal.is_some())
-                && let Ok(id) = Uuid::parse_str(id)
-                && panel.pending_task(id)
-            {
-                item = item.push(control(
-                    "send",
-                    "Remind agent",
-                    Message::Remind(self.scope(self.active), id, tab.id),
-                    false,
-                ));
-            }
             cards = cards.push(
                 container(item)
                     .padding(11)

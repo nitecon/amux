@@ -20,6 +20,8 @@ The header exposes connection state, agent activity, Events, app updates and
 Settings. `Ctrl+,` opens Settings without forwarding the shortcut to the terminal
 or replacing its typed input. A 256-pixel workspace sidebar and 320-pixel task column surround the
 native panes. Narrow windows use compact, labeled-on-hover toolbar controls.
+The UI uses the fresh native-notification preference; legacy manual-reminder
+controls that enter screen-based readiness are not exposed.
 Single view maximizes a pane; Restore panes brings its peers back without
 terminating their sessions. Tabs retain close controls and directory subtitles.
 

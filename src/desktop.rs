@@ -74,8 +74,8 @@ enum Message {
     TaskCreated(QueryScope, Uuid, Result<Uuid, String>),
     #[cfg(test)]
     LocalNotifications(bool),
+    #[cfg(test)]
     Consent(u64, bool),
-    Remind(QueryScope, Uuid, u64),
     DeliveryTick,
     Save,
     Close(iced::window::Id),
@@ -1328,6 +1328,7 @@ impl Desktop {
                     }
                 }
             }
+            #[cfg(test)]
             Message::Consent(id, enabled) => {
                 if !enabled {
                     self.withdraw(id);
@@ -1353,7 +1354,6 @@ impl Desktop {
                         .unwrap_or_else(Task::none);
                 }
             }
-            Message::Remind(scope, task, terminal) => self.queue_reminder(&scope, task, terminal),
             Message::DeliveryTick => {
                 if let Some(notifier) = &self.notifier {
                     for outcome in notifier.outcomes() {
@@ -2008,64 +2008,6 @@ impl Desktop {
         {
             self.status = format!("Reminder retirement failed: {error}. Delivery disabled.");
         }
-    }
-
-    fn queue_reminder(&mut self, scope: &QueryScope, task: Uuid, id: u64) {
-        if !self.scope_current(scope) {
-            return;
-        }
-        let workspace = &mut self.workspaces[scope.workspace];
-        if !workspace.gateway.pending_task(task) {
-            workspace.gateway.status = "Refresh before selecting a currently pending task.".into();
-            return;
-        }
-        let Some(tab) = workspace
-            .panes
-            .iter_mut()
-            .flat_map(|(_, pane)| &mut pane.tabs)
-            .find(|tab| tab.id == id && tab.reminders.consent)
-        else {
-            return;
-        };
-        let result = (|| -> anyhow::Result<DeliveryState> {
-            let recipient = tab
-                .recipient
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("Agent stopped"))?;
-            recipient.resolve(
-                self.registry
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("Agent registry unavailable"))?,
-            )?;
-            let address = recipient
-                .address(id)
-                .ok_or_else(|| anyhow::anyhow!("Agent recipient is no longer live"))?;
-            let ledger = self
-                .ledger
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("Reminder storage unavailable"))?;
-            let now = unix_ms();
-            let delivery = ledger.queue(
-                task,
-                address,
-                DeliveryCause::RecoveryQuery,
-                workspace.gateway.observed_at_ms,
-                now,
-            )?;
-            Ok(ledger
-                .records()
-                .iter()
-                .find(|r| r.id == delivery)
-                .unwrap()
-                .state)
-        })();
-        tab.reminders.status = match result {
-            Ok(DeliveryState::Pending) => {
-                "Task queued for this agent; waiting for a supported empty prompt.".into()
-            }
-            Ok(state) => format!("Existing reminder {state:?}; no replay."),
-            Err(error) => format!("Reminder not queued: {error}"),
-        };
     }
 
     fn delivery_tick(&mut self) -> Task<Message> {
