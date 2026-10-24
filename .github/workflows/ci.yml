@@ -63,6 +63,9 @@ jobs:
           Copy-Item docs/notification-validation.md bundle/notification-validation.md
           Copy-Item LICENSE bundle/
           Copy-Item vendor/iced_term/LICENSE bundle/ICED_TERM_LICENSE
+          # Preserve the existing update archive format while including icon attribution.
+          Add-Content bundle/ICED_TERM_LICENSE "`nLucide icons`n"
+          Get-Content assets/icons/design/LICENSE -Raw | Add-Content bundle/ICED_TERM_LICENSE
           # binary_sha256 stays the CLI hash for existing reviewers.
           $hash = (Get-FileHash 'bundle/${{ matrix.binary }}' -Algorithm SHA256).Hash.ToLower()
           $gui = (Get-FileHash 'bundle/${{ matrix.gui }}' -Algorithm SHA256).Hash.ToLower()

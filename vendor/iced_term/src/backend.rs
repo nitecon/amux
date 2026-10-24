@@ -141,6 +141,7 @@ pub struct Backend {
     notifier: Notifier,
     last_content: RenderableContent,
     redraw_pending: Arc<AtomicBool>,
+    activity: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     pub(crate) url_regex: RegexSearch,
 }
 
@@ -175,9 +176,11 @@ impl Backend {
         let child_pid = pty.child_watcher().pid().map(|pid| pid.get());
 
         let redraw_pending = Arc::new(AtomicBool::new(false));
+        let activity = Arc::new(std::sync::Mutex::new(None));
         let event_proxy = EventProxy {
             sender: pty_event_proxy_sender,
             redraw_pending: redraw_pending.clone(),
+            activity: activity.clone(),
         };
 
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
@@ -211,6 +214,7 @@ impl Backend {
             notifier,
             last_content: initial_content,
             redraw_pending,
+            activity,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
         })
     }
@@ -486,14 +490,29 @@ impl Backend {
     }
 
     fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
+        *self.activity.lock().expect("activity clock") =
+            Some(std::time::Instant::now());
         self.notifier.notify(input);
     }
 
+    pub fn activity_elapsed(&self) -> Option<std::time::Duration> {
+        self.activity
+            .lock()
+            .expect("activity clock")
+            .map(|at| at.elapsed())
+    }
+
     pub fn try_enqueue_input(&self, input: Vec<u8>) -> Result<()> {
+        let has_input = !input.is_empty();
         self.notifier
             .0
             .send(Msg::Input(Cow::Owned(input)))
-            .map_err(|error| std::io::Error::other(error.to_string()))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if has_input {
+            *self.activity.lock().expect("activity clock") =
+                Some(std::time::Instant::now());
+        }
+        Ok(())
     }
 
     fn scroll(&mut self, terminal: &mut Term<EventProxy>, delta_value: i32) {
@@ -686,10 +705,16 @@ impl Drop for Backend {
 pub struct EventProxy {
     sender: mpsc::Sender<Event>,
     redraw_pending: Arc<AtomicBool>,
+    activity: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
+        // Record output before redraw coalescing. Never inspect rendered text.
+        if matches!(event, Event::Wakeup) {
+            *self.activity.lock().expect("activity clock") =
+                Some(std::time::Instant::now());
+        }
         let event = match event {
             Event::Wakeup | Event::MouseCursorDirty => {
                 if self.redraw_pending.swap(true, Ordering::AcqRel) {
@@ -700,5 +725,28 @@ impl EventListener for EventProxy {
             event => event,
         };
         let _ = self.sender.blocking_send(event);
+    }
+}
+
+#[cfg(test)]
+mod amux_tests {
+    use super::*;
+    #[test]
+    fn native_activity_records_output_before_coalescing_and_ignores_cursor_redraw(
+    ) {
+        let (sender, _receiver) = mpsc::channel(8);
+        let activity = Arc::new(std::sync::Mutex::new(None));
+        let proxy = EventProxy {
+            sender,
+            redraw_pending: Arc::new(AtomicBool::new(false)),
+            activity: activity.clone(),
+        };
+        proxy.send_event(Event::MouseCursorDirty);
+        assert!(activity.lock().unwrap().is_none());
+        // The cursor event already queued a redraw. Output still advances the clock.
+        proxy.send_event(Event::Wakeup);
+        let first = activity.lock().unwrap().unwrap();
+        proxy.send_event(Event::Wakeup);
+        assert!(activity.lock().unwrap().unwrap() >= first);
     }
 }

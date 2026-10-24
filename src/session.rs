@@ -66,6 +66,8 @@ pub enum Layout {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedWorkspace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init_script: Option<PathBuf>,
     pub directory: PathBuf,
     pub layout: Layout,

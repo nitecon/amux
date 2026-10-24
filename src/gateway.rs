@@ -231,6 +231,19 @@ impl Gateway {
         self.request(Method::GET, project, &[], None, None).await
     }
 
+    /// Desktop task filters need completed work as well as the active queue.
+    pub async fn list_all(&self, project: &str) -> Result<Value> {
+        self.project_request(
+            Method::GET,
+            project,
+            &["tasks"],
+            None,
+            None,
+            &[("status", "todo,in_progress,done,cancelled".into())],
+        )
+        .await
+    }
+
     /// Record cancellation without inferring that an executor has stopped.
     /// An uncertain response must be reconciled with `cancellation`, not retried.
     pub async fn cancel_task(

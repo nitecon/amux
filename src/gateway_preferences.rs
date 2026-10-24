@@ -6,14 +6,30 @@ use std::{
     path::Path,
 };
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GatewayPreferences {
     pub url: String,
     pub api_key: String,
     pub automatic_notifications: bool,
+    pub notify_exits: bool,
+    pub auto_resume: bool,
     pub machine_id: String,
     pub machine_key: String,
+}
+
+impl Default for GatewayPreferences {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            api_key: String::new(),
+            automatic_notifications: false,
+            notify_exits: false,
+            auto_resume: true,
+            machine_id: String::new(),
+            machine_key: String::new(),
+        }
+    }
 }
 
 impl GatewayPreferences {
@@ -25,6 +41,7 @@ impl GatewayPreferences {
             automatic_notifications: false,
             machine_id: value("AMUX_GATEWAY_MACHINE_ID"),
             machine_key: value("AMUX_GATEWAY_MACHINE_KEY"),
+            ..Self::default()
         }
     }
 
@@ -39,7 +56,12 @@ impl GatewayPreferences {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.gateway()?;
+        if self.automatic_notifications
+            || !self.url.trim().is_empty()
+            || !self.api_key.trim().is_empty()
+        {
+            self.gateway()?;
+        }
         if !self.machine_id.is_empty() || !self.machine_key.is_empty() {
             let id = uuid::Uuid::parse_str(&self.machine_id)
                 .ok()

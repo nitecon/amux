@@ -1,5 +1,5 @@
 //! CMUX-style lifecycle notifications. The UI owns all terminal access and final input checks.
-use super::{Desktop, Element, Instant, Message, Provider, Tab, Task, column, text, unix_ms};
+use super::{Desktop, Instant, Message, Provider, Tab, Task, unix_ms};
 use amux::{
     delegation::{self, Outcome, Target},
     delegation_connection::{self as connection, ConnectionEvent},
@@ -364,6 +364,7 @@ impl Desktop {
         }
         let now = self.delegation.now_ms();
         let mut follow = Task::none();
+        let mut refresh = Task::none();
         let result: anyhow::Result<()> = match event {
             Event::Stream(ConnectionEvent::Clock(clock)) => {
                 self.delegation.clock = Some(clock);
@@ -389,6 +390,7 @@ impl Desktop {
                     .map_or(Ok(()), |q| q.subscribed(cursor, replay_through))
             }
             Event::Stream(ConnectionEvent::Event(event)) => {
+                refresh = self.refresh_task_project(&event.project);
                 // Pin the last completed native scan at arrival, rather than spawning an
                 // unbounded scan task for every stream event or attaching agents started later.
                 let targets = if self
@@ -611,7 +613,7 @@ impl Desktop {
             follow = Task::none();
         }
         self.delegation_acknowledge();
-        follow
+        Task::batch([follow, refresh])
     }
 
     pub fn delegation_tick(&mut self) -> Task<Message> {
@@ -730,58 +732,112 @@ impl Desktop {
         }
         Task::batch(tasks)
     }
-    pub fn delegation_view(&self) -> Element<'_, Message> {
-        let pending = self.delegation.queue.as_ref().map_or(0, |q| {
-            q.journal
-                .receipts
-                .iter()
-                .flat_map(|r| &r.recipients)
-                .filter(|r| !r.outcome.terminal())
-                .count()
-        });
-        let mut view = column![
-            text(format!(
-                "{} · {} agents · {pending} pending",
-                self.delegation.status,
-                self.delegation.candidates.len()
-            ))
-            .size(13)
-        ]
-        .spacing(4);
-        if let Some(q) = &self.delegation.queue {
-            for r in q.journal.receipts.iter().rev().take(8) {
-                view = view.push(
-                    text(format!(
-                        "{} · {}{}",
-                        r.event.task,
-                        match r.status() {
-                            "skipped" => "Not sent",
-                            "injected" => "Sent to terminal",
-                            "queued" => "Waiting for agent",
-                            "received" => "Received",
-                            "uncertain" => "Delivery uncertain",
-                            _ => "Failed",
-                        },
-                        if r.confirmed { " · saved" } else { "" }
-                    ))
-                    .size(12),
+}
+
+impl Desktop {
+    fn refresh_task_project(&mut self, project: &str) -> Task<Message> {
+        let mut ready = Vec::new();
+        for (index, w) in self
+            .workspaces
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, w)| w.gateway.project == project)
+        {
+            if w.gateway.loading {
+                w.gateway.refresh_pending = true;
+            } else {
+                ready.push(index);
+            }
+        }
+        Task::batch(
+            ready
+                .into_iter()
+                .map(|index| self.query(index))
+                .collect::<Vec<_>>(),
+        )
+    }
+    pub(super) fn design_connection(&self) -> String {
+        if self.delegation.connection.is_some() {
+            "Gateway: Connected".into()
+        } else if self.preferences.current.url.is_empty() {
+            "Gateway: Not configured".into()
+        } else if !self.preferences.current.automatic_notifications {
+            "Gateway: Configured · notifications off".into()
+        } else {
+            "Gateway: Disconnected".into()
+        }
+    }
+    pub(super) fn design_owned_tasks(
+        &self,
+        terminal: u64,
+        tasks: &[serde_json::Value],
+    ) -> Vec<String> {
+        let Some(origin) = self
+            .delegation
+            .candidates
+            .iter()
+            .find(|c| c.root.terminal == terminal)
+            .and_then(|c| c.target.origin.as_ref())
+        else {
+            return Vec::new();
+        };
+        let session = origin.session_id.to_string();
+        tasks
+            .iter()
+            .filter(|t| t["owner_agent_id"] == session && t["status"] == "in_progress")
+            .filter_map(|t| t["title"].as_str().map(str::to_owned))
+            .collect()
+    }
+    pub(super) fn design_events(&self) -> Vec<super::desktop_design::EventCard> {
+        let mut events = Vec::new();
+        if !self.status.is_empty() {
+            events.push(super::desktop_design::EventCard {
+                key: format!("app:{}", self.status),
+                title: "Application".into(),
+                detail: self.status.clone(),
+            });
+        }
+        if !self.notification_status.is_empty() {
+            events.push(super::desktop_design::EventCard {
+                key: format!("notifications:{}", self.notification_status),
+                title: "Notifications".into(),
+                detail: self.notification_status.clone(),
+            });
+        }
+        if !self.delegation.status.is_empty() {
+            events.push(super::desktop_design::EventCard {
+                key: format!("connection:{}", self.delegation.status),
+                title: "Connection".into(),
+                detail: self.delegation.status.clone(),
+            });
+        }
+        if let Some(queue) = &self.delegation.queue {
+            for receipt in &queue.journal.receipts {
+                let mut detail = format!(
+                    "Task {} · {}{}\n{}",
+                    receipt.event.task,
+                    receipt.status(),
+                    if receipt.confirmed { " · saved" } else { "" },
+                    receipt.reason
                 );
-                if !r.reason.is_empty() {
-                    view = view.push(text(&r.reason).size(12));
-                }
-                for recipient in &r.recipients {
+                for recipient in &receipt.recipients {
                     let name = self
                         .delegation
                         .candidates
                         .iter()
                         .find(|c| c.target.session == recipient.target.session)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| "Previous agent".into());
-                    view = view.push(text(format!("{name} · {}", recipient.reason)).size(12));
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("Previous agent");
+                    detail.push_str(&format!("\n{name} · {}", recipient.reason));
                 }
+                events.push(super::desktop_design::EventCard {
+                    key: format!("{}:{}:{}", receipt.event.id, receipt.status(), detail),
+                    title: format!("Gateway · {}", receipt.status()),
+                    detail,
+                });
             }
         }
-        view.into()
+        events
     }
 }
 

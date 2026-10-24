@@ -14,6 +14,7 @@ pub(super) enum Kind {
 pub(super) enum WorkspaceMessage {
     Tab(Kind),
     Folder(String),
+    Name(String),
     Script(String),
     Repository(String),
     Browse(bool),
@@ -28,7 +29,8 @@ pub(super) enum WorkspaceMessage {
 }
 #[derive(Default)]
 pub(super) struct WorkspaceDialog {
-    pub window: Option<iced::window::Id>,
+    pub open: bool,
+    name: String,
     pub busy: bool,
     tab: Kind,
     folder: String,
@@ -172,46 +174,37 @@ impl Desktop {
             self.active = self.active.min(self.workspaces.len() - 1);
         }
         self.closing_workspace = None;
+        self.show_terminals();
         self.dirty = true;
         self.save();
         self.focus()
     }
 
     pub(super) fn open_workspace_dialog(&mut self) -> Task<Message> {
-        if let Some(window) = self.workspace_dialog.window {
-            return iced::window::gain_focus(window);
+        if self.workspace_dialog.open {
+            return Task::none();
         }
-        let (window, open) = iced::window::open(iced::window::Settings {
-            size: iced::Size::new(760.0, 620.0),
-            min_size: Some(iced::Size::new(600.0, 460.0)),
-            exit_on_close_request: false,
-            ..Default::default()
-        });
+        self.close_design_popovers();
+        self.preferences.open = false;
         self.workspace_dialog = WorkspaceDialog {
-            window: Some(window),
+            open: true,
             folder: workspace_launch::home_directory()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
             ..Default::default()
         };
-        open.map(|_| Message::WindowReady)
+        iced::widget::operation::focus("workspace-name")
     }
     pub(super) fn close_workspace_dialog(&mut self) -> Task<Message> {
         if self.workspace_dialog.busy {
             return Task::none();
         }
-        match self.workspace_dialog.window.take() {
-            Some(window) => Task::batch([
-                iced::window::close(window),
-                iced::window::gain_focus(self.main_window),
-                self.focus(),
-            ]),
-            None => Task::none(),
-        }
+        self.workspace_dialog.open = false;
+        self.focus()
     }
     pub(super) fn workspace_message(&mut self, message: WorkspaceMessage) -> Task<Message> {
         use WorkspaceMessage::*;
-        if self.workspace_dialog.window.is_none() {
+        if !self.workspace_dialog.open {
             return Task::none();
         }
         if self.workspace_dialog.busy && !matches!(message, Cloned(_)) {
@@ -219,6 +212,7 @@ impl Desktop {
         }
         let dialog = &mut self.workspace_dialog;
         match message {
+            Name(name) => dialog.name = name.chars().filter(|c| !c.is_control()).take(80).collect(),
             Tab(tab) => {
                 dialog.tab = tab;
                 dialog.status.clear();
@@ -297,7 +291,8 @@ impl Desktop {
                         if dialog.tab == Kind::Clone {
                             dialog.busy = true;
                             dialog.status =
-                                "Cloning repository… You can keep using the main window.".into();
+                                "Cloning repository… The workspace opens when cloning finishes."
+                                    .into();
                             let repository = dialog.repository.clone();
                             return Task::perform(
                                 async move {
@@ -308,7 +303,9 @@ impl Desktop {
                                 |result| Message::Workspace(Cloned(result)),
                             );
                         }
+                        let name = dialog.name.trim().to_owned();
                         self.add_workspace_with_script(directory, script);
+                        self.workspaces[self.active].name = (!name.is_empty()).then_some(name);
                         self.dirty = true;
                         return Task::batch([
                             self.close_workspace_dialog(),
@@ -322,7 +319,9 @@ impl Desktop {
                 dialog.busy = false;
                 match result {
                     Ok(directory) => {
+                        let name = dialog.name.trim().to_owned();
                         self.add_workspace(directory);
+                        self.workspaces[self.active].name = (!name.is_empty()).then_some(name);
                         self.dirty = true;
                         return Task::batch([
                             self.close_workspace_dialog(),
@@ -394,14 +393,21 @@ impl Desktop {
         let tab = |label, kind| {
             button(label)
                 .on_press_maybe((!dialog.busy).then_some(msg(Tab(kind))))
-                .style(if dialog.tab == kind {
-                    button::primary
-                } else {
-                    button::secondary
+                .style(move |theme, status| {
+                    desktop_design::button_style(dialog.tab == kind, theme, status)
                 })
         };
         let mut body = column![
-            text("New workspace").size(26),
+            row![
+                text("New workspace").size(22),
+                iced::widget::Space::new().width(Length::Fill),
+                button("×").on_press_maybe((!dialog.busy).then_some(msg(Cancel)))
+            ]
+            .align_y(iced::Alignment::Center),
+            text_input("Workspace name (optional)", &dialog.name)
+                .id("workspace-name")
+                .on_input(|v| Message::Workspace(Name(v)))
+                .size(13),
             row![
                 tab("General", Kind::General),
                 tab("Clone", Kind::Clone),

@@ -1260,6 +1260,7 @@ mod tests {
                 api_key: previous.token.clone(),
                 machine_id: previous.machine_id.to_string(),
                 machine_key: previous.machine_key.clone(),
+                ..Default::default()
             };
             let credentials =
                 Credentials::from_preferences(&previous.project, &preferences).unwrap();

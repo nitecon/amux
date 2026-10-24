@@ -9,6 +9,8 @@ use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::submission::{Submission, submit_literal};
 #[path = "desktop_delegation.rs"]
 mod desktop_delegation;
+#[path = "desktop_design.rs"]
+mod desktop_design;
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
 #[path = "desktop_workspace.rs"]
@@ -27,6 +29,9 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 enum Message {
+    Design(desktop_design::Action),
+    Escape,
+    WindowResized(iced::window::Id, iced::Size),
     NewWorkspace,
     SelectWorkspace(usize),
     CloseWorkspace(Uuid),
@@ -44,6 +49,8 @@ enum Message {
     Preference(PreferenceField, Secret),
     SavePreferences,
     AutomaticNotifications(bool),
+    AutoResume(bool),
+    ExitNotifications(bool),
     Delegation(u64, desktop_delegation::Event),
     Updates(bool),
     CheckUpdates,
@@ -65,6 +72,7 @@ enum Message {
     SubmitTask,
     NewTaskRequest,
     TaskCreated(QueryScope, Uuid, Result<Uuid, String>),
+    #[cfg(test)]
     LocalNotifications(bool),
     Consent(u64, bool),
     Remind(QueryScope, Uuid, u64),
@@ -89,7 +97,7 @@ struct Preferences {
     current: GatewayPreferences,
     draft: GatewayPreferences,
     path: Option<PathBuf>,
-    window: Option<iced::window::Id>,
+    open: bool,
     tab: PreferencesTab,
     status: String,
 }
@@ -97,6 +105,7 @@ struct Preferences {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreferencesTab {
     Gateway,
+    General,
     Updates,
 }
 
@@ -198,6 +207,7 @@ struct TaskPanel {
     project: String,
     revision: u64,
     loading: bool,
+    refresh_pending: bool,
     tasks: Vec<serde_json::Value>,
     status: String,
     loaded_at: Option<Instant>,
@@ -255,6 +265,7 @@ struct Pane {
     active: usize,
 }
 struct Workspace {
+    name: Option<String>,
     id: Uuid,
     init_script: Option<PathBuf>,
     directory: PathBuf,
@@ -263,6 +274,7 @@ struct Workspace {
     gateway: TaskPanel,
 }
 struct Desktop {
+    design: desktop_design::State,
     main_window: iced::window::Id,
     preferences: Preferences,
     updates: Updates,
@@ -291,7 +303,11 @@ pub fn run(directory: PathBuf) -> anyhow::Result<()> {
         Desktop::window_view,
     )
     .title(Desktop::window_title)
-    .theme(|_: &Desktop, _| Theme::TokyoNight)
+    .theme(|_: &Desktop, _| desktop_design::theme())
+    .settings(iced::Settings {
+        default_text_size: iced::Pixels(13.0),
+        ..Default::default()
+    })
     .subscription(Desktop::subscription)
     .run()?;
     Ok(())
@@ -300,7 +316,8 @@ pub fn run(directory: PathBuf) -> anyhow::Result<()> {
 impl Desktop {
     fn new(directory: PathBuf) -> (Self, Task<Message>) {
         let (main_window, open) = iced::window::open(iced::window::Settings {
-            size: iced::Size::new(1380.0, 840.0),
+            size: iced::Size::new(1600.0, 1000.0),
+            min_size: Some(iced::Size::new(1100.0, 700.0)),
             exit_on_close_request: false,
             ..Default::default()
         });
@@ -336,9 +353,10 @@ impl Desktop {
             ),
         };
         let mut app = Self {
+            design: desktop_design::State::default(),
             main_window,
             updates: Updates::new(),
-            preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, window: None, tab: PreferencesTab::Gateway, status: preferences_error },
+            preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
             ledger: ledger.ok().flatten(),
@@ -347,6 +365,10 @@ impl Desktop {
             notify_exits: false, notifier: None, notification_status: String::new(),
             delegation: desktop_delegation::Bridge::default(),
         };
+        app.notify_exits = app.preferences.current.notify_exits;
+        if app.notify_exits {
+            app.notifier = Some(Notifier::native());
+        }
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
             Ok(Some(Some(saved))) => {
                 app.active = saved.active;
@@ -355,6 +377,7 @@ impl Desktop {
                     let panes = pane_grid::State::with_configuration(config);
                     let focused = *panes.iter().next().expect("validated nonempty layout").0;
                     app.workspaces.push(Workspace {
+                        name: workspace.name,
                         id: Uuid::new_v4(),
                         directory: amux::workspace_launch::external_path(workspace.directory),
                         init_script: workspace
@@ -418,7 +441,9 @@ impl Desktop {
                     .into_iter()
                     .map(|tab| {
                         self.next_id = self.next_id.max(tab.id + 1);
-                        if tab.running {
+                        if tab.running
+                            && (tab.provider.is_none() || self.preferences.current.auto_resume)
+                        {
                             let cwd = tab.directory.as_deref().unwrap_or(directory);
                             let mut reopened = self.open_terminal(
                                 tab.id,
@@ -525,6 +550,7 @@ impl Desktop {
                 .workspaces
                 .iter()
                 .map(|w| SavedWorkspace {
+                    name: w.name.clone(),
                     directory: w.directory.clone(),
                     init_script: w.init_script.clone(),
                     layout: layout(w.panes.layout(), &w.panes),
@@ -702,6 +728,11 @@ impl Desktop {
             id,
             iced_term::settings::Settings {
                 backend,
+                theme: iced_term::settings::ThemeSettings::new(Box::new(iced_term::ColorPalette {
+                    background: "#070a0f".into(),
+                    foreground: "#cbd5e1".into(),
+                    ..Default::default()
+                })),
                 ..Default::default()
             },
         ) {
@@ -760,12 +791,14 @@ impl Desktop {
     }
 
     fn add_workspace_with_script(&mut self, directory: PathBuf, init_script: Option<PathBuf>) {
+        self.show_terminals();
         let tab = self.terminal_with_script(&directory, None, init_script.as_deref());
         let (panes, focused) = pane_grid::State::new(Pane {
             tabs: vec![tab],
             active: 0,
         });
         self.workspaces.push(Workspace {
+            name: None,
             id: Uuid::new_v4(),
             directory,
             init_script,
@@ -778,6 +811,9 @@ impl Desktop {
     }
 
     fn focus(&self) -> Task<Message> {
+        if self.preferences.open || self.workspace_dialog.open {
+            return Task::none();
+        }
         let workspace = &self.workspaces[self.active];
         workspace
             .panes
@@ -808,7 +844,24 @@ impl Desktop {
             self.dirty = true;
         }
         match message {
+            Message::WindowResized(id, size) => {
+                if id == self.main_window {
+                    self.set_compact(size.width < 1400.0);
+                }
+            }
+            Message::Escape => {
+                if self.workspace_dialog.open {
+                    return self.close_workspace_dialog();
+                }
+                if self.preferences.open {
+                    return self.close_preferences();
+                }
+                self.close_design_popovers();
+            }
+            Message::Design(value) => return self.design_message(value),
             Message::WindowReady => {}
+            Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
+            Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
             Message::AutomaticNotifications(value) => {
                 self.preferences.draft.automatic_notifications = value
             }
@@ -820,6 +873,7 @@ impl Desktop {
                 return self.close_window(window);
             }
             Message::Workspace(message) => return self.workspace_message(message),
+            #[cfg(test)]
             Message::LocalNotifications(enabled) => {
                 self.notify_exits = enabled;
                 if enabled && self.notifier.is_none() {
@@ -837,11 +891,13 @@ impl Desktop {
             Message::CancelCloseWorkspace => self.closing_workspace = None,
             Message::SelectWorkspace(index) => {
                 if index < self.workspaces.len() {
+                    self.show_terminals();
                     self.active = index;
                     return self.focus();
                 }
             }
             Message::NewTab(provider) => {
+                self.show_terminals();
                 let directory = self.workspaces[self.active].directory.clone();
                 let script = self.workspaces[self.active].init_script.clone();
                 let tab = self.terminal_with_script(&directory, provider, script.as_deref());
@@ -867,10 +923,12 @@ impl Desktop {
                 return self.focus();
             }
             Message::Split(axis) => {
+                self.show_terminals();
                 let directory = self.workspaces[self.active].directory.clone();
                 let script = self.workspaces[self.active].init_script.clone();
                 let tab = self.terminal_with_script(&directory, None, script.as_deref());
                 let workspace = &mut self.workspaces[self.active];
+                workspace.panes.restore();
                 if let Some((pane, _)) = workspace.panes.split(
                     axis,
                     workspace.focused,
@@ -1132,7 +1190,7 @@ impl Desktop {
                         panel.tasks = tasks;
                         panel.loaded_at = Some(Instant::now());
                         panel.observed_at_ms = unix_ms();
-                        panel.status = "Select a pending task to remind one consenting agent. Claims remain agent decisions.".into();
+                        panel.status = format!("{} gateway tasks", panel.tasks.len());
                     }
                     Ok(_) => {
                         panel.tasks.clear();
@@ -1143,6 +1201,9 @@ impl Desktop {
                         panel.status =
                             format!("Gateway unavailable: {error}. Queued delivery paused.");
                     }
+                }
+                if std::mem::take(&mut panel.refresh_pending) {
+                    return self.query(scope.workspace);
                 }
             }
             Message::RecoveryLoaded(scope, result) => {
@@ -1530,39 +1591,21 @@ impl Desktop {
 
     fn open_preferences(&mut self, tab: PreferencesTab) -> Task<Message> {
         self.preferences.tab = tab;
-        if let Some(window) = self.preferences.window {
-            return iced::window::gain_focus(window);
+        if !self.preferences.open {
+            self.preferences.draft = self.preferences.current.clone();
         }
-        self.preferences.draft = self.preferences.current.clone();
-        let (window, open) = iced::window::open(iced::window::Settings {
-            size: iced::Size::new(720.0, 720.0),
-            min_size: Some(iced::Size::new(520.0, 420.0)),
-            exit_on_close_request: false,
-            ..Default::default()
-        });
-        self.preferences.window = Some(window);
-        open.map(|_| Message::WindowReady)
+        self.preferences.open = true;
+        self.close_design_popovers();
+        iced::widget::operation::focus("gateway-url")
     }
 
     fn close_preferences(&mut self) -> Task<Message> {
         self.preferences.draft = self.preferences.current.clone();
-        match self.preferences.window.take() {
-            Some(window) => Task::batch([
-                iced::window::close(window),
-                iced::window::gain_focus(self.main_window),
-                self.focus(),
-            ]),
-            None => Task::none(),
-        }
+        self.preferences.open = false;
+        self.focus()
     }
 
     fn close_window(&mut self, window: iced::window::Id) -> Task<Message> {
-        if self.workspace_dialog.window == Some(window) {
-            return self.close_workspace_dialog();
-        }
-        if self.preferences.window == Some(window) {
-            return self.close_preferences();
-        }
         if window == self.main_window {
             if self.workspace_dialog.busy {
                 self.status = "Wait for the repository clone to finish before closing amux.".into();
@@ -1579,65 +1622,29 @@ impl Desktop {
         Task::none()
     }
 
-    fn window_title(&self, window: iced::window::Id) -> String {
-        if self.workspace_dialog.window == Some(window) {
-            "amux · New workspace"
-        } else if self.preferences.window == Some(window) {
-            "amux · Preferences"
-        } else {
-            "amux · agent workspaces"
-        }
-        .into()
+    fn window_title(&self, _: iced::window::Id) -> String {
+        "amux · agent workspaces".into()
     }
-
-    fn window_view(&self, window: iced::window::Id) -> Element<'_, Message> {
-        if self.workspace_dialog.window == Some(window) {
-            return self.workspace_dialog_view();
-        }
-        if self.preferences.window != Some(window) {
-            return self.view();
-        }
-        let tab = |label, kind| {
-            button(label)
-                .on_press(Message::PreferencesTab(kind))
-                .style(move |theme, status| {
-                    if self.preferences.tab == kind {
-                        button::primary(theme, status)
-                    } else {
-                        button::secondary(theme, status)
-                    }
-                })
-        };
-        let body = match self.preferences.tab {
-            PreferencesTab::Gateway => self.preferences_view(),
-            PreferencesTab::Updates => self.updates_view(),
-        };
-        container(
-            column![
-                row![
-                    tab("Gateway", PreferencesTab::Gateway),
-                    tab("Updates", PreferencesTab::Updates)
-                ]
-                .spacing(8),
-                body
-            ]
-            .spacing(20),
-        )
-        .padding(24)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    fn window_view(&self, _: iced::window::Id) -> Element<'_, Message> {
+        self.view()
     }
 
     fn save_preferences(&mut self) -> Task<Message> {
-        if self.workspaces.iter().any(|w| {
-            w.gateway.request.as_ref().is_some_and(|r| {
-                matches!(
-                    r.state,
-                    TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
-                )
+        let connection_changed = self.preferences.current.url.trim()
+            != self.preferences.draft.url.trim()
+            || self.preferences.current.api_key.trim() != self.preferences.draft.api_key.trim()
+            || self.preferences.current.automatic_notifications
+                != self.preferences.draft.automatic_notifications;
+        if connection_changed
+            && self.workspaces.iter().any(|w| {
+                w.gateway.request.as_ref().is_some_and(|r| {
+                    matches!(
+                        r.state,
+                        TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                    )
+                })
             })
-        }) {
+        {
             self.preferences.status = "A task submission is pending or unconfirmed. Inspect its result before changing connections; use New task only after resolving it.".into();
             return Task::none();
         }
@@ -1656,6 +1663,15 @@ impl Desktop {
             self.preferences.status = format!("Not saved: {error}");
             return Task::none();
         }
+        self.notify_exits = draft.notify_exits;
+        if self.notify_exits && self.notifier.is_none() {
+            self.notifier = Some(Notifier::native());
+        }
+        if !connection_changed {
+            self.preferences.current = draft;
+            self.preferences.status = "Preferences saved".into();
+            return self.close_preferences();
+        }
         let ids: Vec<_> = self
             .workspaces
             .iter()
@@ -1670,6 +1686,7 @@ impl Desktop {
             panel.revision += 1;
             panel.project.clear();
             panel.loading = false;
+            panel.refresh_pending = false;
             panel.loaded_at = None;
             panel.queried_at = None;
             panel.tasks.clear();
@@ -1681,11 +1698,12 @@ impl Desktop {
         self.preferences.current = draft;
         self.preferences.status = "Gateway preferences saved".into();
         self.status = "Gateway preferences saved. Connecting repositories…".into();
-        Task::batch(
+        let queries = Task::batch(
             (0..self.workspaces.len())
                 .map(|i| self.query(i))
                 .collect::<Vec<_>>(),
-        )
+        );
+        Task::batch([queries, self.close_preferences()])
     }
 
     fn preferences_view(&self) -> Element<'_, Message> {
@@ -1694,23 +1712,25 @@ impl Desktop {
             column![
                 text(label).size(13),
                 text_input("", value)
+                    .id(if matches!(kind, PreferenceField::Url) {
+                        "gateway-url"
+                    } else {
+                        "gateway-key"
+                    })
                     .secure(secure)
                     .on_input(move |value| Message::Preference(kind, Secret(value)))
             ]
             .spacing(4)
         };
         container(scrollable(column![
-            text("Gateway preferences").size(26),
+            text("Gateway Server").size(20),
             text("Connect with your gateway URL and API key. Projects are resolved automatically from each workspace’s Git remote."),
             field("Gateway URL", &draft.url, PreferenceField::Url, false),
             field("API key", &draft.api_key, PreferenceField::ApiKey, true),
             checkbox(draft.automatic_notifications).label("Send fresh gateway task notifications to agents in this app").on_toggle(Message::AutomaticNotifications),
-            text("Notifications wait for an empty agent prompt. Session identities are created automatically; tasks remain yours to claim.").size(12),
-            self.delegation_view(),
-            text("Settings are saved on this device.").size(12),
-            text(&self.preferences.status).size(13),
+            text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12),
+            text("Repository matching is required. Settings are saved on this device.").size(12),
             text(&self.workspaces[self.active].gateway.status).size(13),
-            row![button("Save preferences").on_press(Message::SavePreferences), button("Cancel").on_press(Message::Preferences(false))].spacing(8),
         ].spacing(14))).width(Length::Fill).height(Length::Fill).into()
     }
 
@@ -1739,6 +1759,7 @@ impl Desktop {
         panel.project = project;
         panel.revision += 1;
         panel.loading = false;
+        panel.refresh_pending = false;
         panel.loaded_at = None;
         panel.tasks.clear();
         panel.status = "Repository project resolved; reminder consent remains off.".into();
@@ -1775,7 +1796,7 @@ impl Desktop {
                 Task::perform(
                     async move {
                         let result = gateway
-                            .list(&scope.project)
+                            .list_all(&scope.project)
                             .await
                             .map_err(|e| e.to_string());
                         (scope, result)
@@ -2275,60 +2296,19 @@ impl Desktop {
             return receipt.into();
         }
         column![
-            text("New task · not submitted").size(14),
+            text("Target: automatic project routing").size(11),
             text_input("Task title", &panel.draft_title).on_input(Message::TaskTitle),
             text_editor(&panel.draft_context)
                 .placeholder("Context / handoff text (optional)")
                 .on_action(Message::TaskContext)
                 .height(100),
-            button("Create task").on_press(Message::SubmitTask),
+            button("Submit Task to Gateway")
+                .on_press(Message::SubmitTask)
+                .width(Length::Fill),
             text(&panel.draft_status).size(12),
         ]
         .spacing(6)
         .into()
-    }
-
-    fn task_list(&self) -> Element<'_, Message> {
-        let workspace = &self.workspaces[self.active];
-        let panel = &workspace.gateway;
-        let recipient = workspace
-            .panes
-            .get(workspace.focused)
-            .and_then(|pane| pane.tabs.get(pane.active))
-            .filter(|tab| tab.reminders.consent && tab.terminal.is_some());
-        let mut list = column![text(&panel.status).size(12)].spacing(12);
-        for task in &panel.tasks {
-            let id = task["id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
-            let mut item = column![
-                text(task["title"].as_str().unwrap_or("Untitled")).size(14),
-                text(format!(
-                    "{} · {}",
-                    task["id"].as_str().unwrap_or("?"),
-                    task["status"].as_str().unwrap_or("unknown")
-                ))
-                .size(12),
-                text(format!(
-                    "Owner: {}",
-                    task["owner_origin"]["session_id"]
-                        .as_str()
-                        .or(task["owner_agent_id"].as_str())
-                        .unwrap_or("unclaimed")
-                ))
-                .size(12)
-            ]
-            .spacing(4);
-            if let (Some(task), Some(tab)) = (id, recipient)
-                && panel.pending_task(task)
-            {
-                item =
-                    item.push(
-                        button(text(format!("Remind agent #{}", tab.id)))
-                            .on_press(Message::Remind(self.scope(self.active), task, tab.id)),
-                    );
-            }
-            list = list.push(item);
-        }
-        list.into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -2342,6 +2322,14 @@ impl Desktop {
         );
         Subscription::batch([
             terminals,
+            iced::window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::Escape),
+                _ => None,
+            }),
             iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Save),
             iced::window::close_requests().map(Message::Close),
             iced::time::every(Duration::from_millis(250)).map(|_| Message::DeliveryTick),
@@ -2349,188 +2337,7 @@ impl Desktop {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let workspace = &self.workspaces[self.active];
-        let mut sidebar = column![text("amux").size(30), text("WORKSPACES").size(12)].spacing(12);
-        let home = amux::workspace_launch::home_directory().ok();
-        for (i, w) in self.workspaces.iter().enumerate() {
-            let name = match (home.as_ref() == Some(&w.directory), w.init_script.as_ref()) {
-                (true, None) => std::borrow::Cow::Borrowed("Default"),
-                (true, Some(script)) => script
-                    .file_name()
-                    .unwrap_or(script.as_os_str())
-                    .to_string_lossy(),
-                _ => w
-                    .directory
-                    .file_name()
-                    .unwrap_or(w.directory.as_os_str())
-                    .to_string_lossy(),
-            };
-            let select = button(text(format!(
-                "{} {}",
-                if i == self.active { "●" } else { "○" },
-                name
-            )))
-            .on_press(Message::SelectWorkspace(i))
-            .width(Length::Fill);
-            let close = tooltip(
-                button(text("×").size(14))
-                    .style(button::text)
-                    .padding([4, 6])
-                    .on_press(Message::CloseWorkspace(w.id)),
-                "Close workspace",
-                tooltip::Position::Right,
-            );
-            sidebar = sidebar.push(
-                row![select, close]
-                    .align_y(iced::Alignment::Center)
-                    .spacing(4),
-            );
-            if self.closing_workspace == Some(w.id) {
-                let running = w
-                    .panes
-                    .iter()
-                    .flat_map(|(_, pane)| &pane.tabs)
-                    .filter(|tab| tab.terminal.is_some())
-                    .count();
-                sidebar = sidebar.push(container(column![
-                    text(format!("Close workspace and stop {running} running terminal(s)? Project files stay on disk.")).size(12),
-                    row![button("Close").on_press(Message::RemoveWorkspace(w.id)),
-                        button("Cancel").on_press(Message::CancelCloseWorkspace)].spacing(4),
-                ].spacing(8)).padding(8).style(container::rounded_box));
-            }
-        }
-        sidebar = sidebar
-            .push(button("New workspace").on_press(Message::NewWorkspace))
-            .push(button("Preferences").on_press(Message::Preferences(true)))
-            .push(
-                checkbox(self.notify_exits)
-                    .label("Notify on process exit")
-                    .on_toggle(Message::LocalNotifications),
-            );
-        let toolbar = row![
-            button("Terminal").on_press(Message::NewTab(None)),
-            button("Codex").on_press(Message::NewTab(Some(Provider::Codex))),
-            button("Claude").on_press(Message::NewTab(Some(Provider::Claude))),
-            button("Split right").on_press(Message::Split(pane_grid::Axis::Vertical)),
-            button("Split down").on_press(Message::Split(pane_grid::Axis::Horizontal))
-        ]
-        .spacing(8);
-        let grid = pane_grid::PaneGrid::new(&workspace.panes, |id, pane, _| {
-            let mut tabs = row![].spacing(4);
-            for (i, tab) in pane.tabs.iter().enumerate() {
-                let label = match tab.provider { Some(Provider::Codex) => "Codex", Some(Provider::Claude) => "Claude", None => "Terminal" };
-                // Two sibling controls in one tab container: closing never selects a peer.
-                let select = button(text(label)).style(if pane.active == i { button::primary } else { button::secondary })
-                    .on_press(Message::SelectTab(id, i));
-                let close = button(text("×").size(14)).style(button::text).padding([4, 6])
-                    .on_press(Message::CloseTab(id, tab.id));
-                let number = if let Some(name) = &tab.delegation.agent_name { format!("{name} · ") } else if tab.delegation.terminal_number > 0 { format!("#{} · ", tab.delegation.terminal_number) } else { String::new() };
-                let subtitle = format!("{}{}{}", number, workspace.directory.file_name().unwrap_or(workspace.directory.as_os_str()).to_string_lossy(), if tab.terminal.is_none() { " · stopped" } else { "" });
-                tabs = tabs.push(container(column![
-                    container(row![select, close].align_y(iced::Alignment::Center)).style(container::rounded_box),
-                    tooltip(text(short_title(&subtitle)).size(11).wrapping(iced::widget::text::Wrapping::None), container(text(format!("{} · {}", workspace.directory.display(), short_title(&tab.title)))).padding(6), tooltip::Position::Bottom),
-                ].spacing(3)));
-            }
-            if let Some(tab) = pane.tabs.get(pane.active)
-                && !self.preferences.current.automatic_notifications && cfg!(target_os = "linux") && tab.provider == Some(Provider::Codex) && tab.recipient.is_some() && self.ledger.is_some() {
-                    let terminal_id = tab.id;
-                    tabs = tabs.push(checkbox(tab.reminders.consent).label("Allow gateway reminders + Enter")
-                        .on_toggle(move |enabled| Message::Consent(terminal_id, enabled)));
-            }
-            let body: Element<'_, Message> = match pane.tabs.get(pane.active).and_then(|t| t.terminal.as_ref()) {
-                Some(terminal) => {
-                    let id = terminal.id;
-                    let resize = move |size| Message::Terminal(iced_term::Event::BackendCall(id, iced_term::BackendCommand::Resize(Some(size), None)));
-                    iced::widget::Sensor::new(TerminalView::show(terminal).map(Message::Terminal))
-                        .key(id).on_show(resize).on_resize(resize).into()
-                },
-                None => {
-                    let mut stopped = column![text("Terminal is not running. Check its title for launch errors, or start a Terminal, Codex or Claude session.")].spacing(12);
-                    if let Some(output) = pane.tabs.get(pane.active).and_then(|tab| tab.stopped_output.as_ref()) {
-                        stopped = stopped.push(scrollable(text(output).font(iced::Font::MONOSPACE)).height(Length::Fill));
-                    }
-                    container(stopped).padding(20).into()
-                },
-            };
-            let mut header = column![scrollable(tabs).horizontal().width(Length::Fill).height(64)].spacing(4);
-            if let Some(tab) = pane.tabs.get(pane.active) {
-                let status = if self.preferences.current.automatic_notifications { tab.delegation.status() } else { &tab.reminders.status };
-                if !status.is_empty() { header = header.push(text(status).size(11)); }
-            }
-            pane_grid::Content::new(body).title_bar(pane_grid::TitleBar::new(header).padding(4))
-        }).spacing(5).on_click(Message::Focus).on_resize(8, Message::Resize).width(Length::Fill).height(Length::Fill);
-        let tasks = column![
-            text("GATEWAY TASKS").size(16),
-            button("Gateway preferences").on_press(Message::Preferences(true)),
-            self.delegation_view(),
-            text(if workspace.gateway.project.is_empty() {
-                "Project: resolving from repository…".to_owned()
-            } else {
-                format!("Project: {}", workspace.gateway.project)
-            })
-            .size(13),
-            button(if workspace.gateway.loading {
-                "Loading…"
-            } else {
-                "Refresh"
-            })
-            .on_press(Message::RefreshTasks),
-            scrollable(column![self.task_form(), self.task_list()].spacing(16))
-        ]
-        .spacing(10)
-        .width(280);
-        container(
-            column![
-                row![
-                    iced::widget::Space::new().width(Length::Fill),
-                    tooltip(
-                        button(
-                            row![
-                                svg(svg::Handle::from_memory(include_bytes!(
-                                    "../assets/icons/bell.svg"
-                                )))
-                                .width(20)
-                                .height(20),
-                                text(if self.updates.attention() { "●" } else { "" })
-                            ]
-                            .spacing(3)
-                        )
-                        .style(if self.updates.attention() {
-                            button::primary
-                        } else {
-                            button::text
-                        })
-                        .on_press(Message::Updates(true)),
-                        text(if self.updates.restart.required {
-                            "Restart to use the installed update"
-                        } else if self.updates.attention() {
-                            "App update available"
-                        } else {
-                            "App updates"
-                        }),
-                        tooltip::Position::Bottom
-                    )
-                ],
-                row![
-                    container(scrollable(sidebar)).width(200).padding(12),
-                    column![
-                        toolbar,
-                        text(workspace.directory.display().to_string()).size(12),
-                        grid
-                    ]
-                    .spacing(10)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-                    container(tasks).padding(12)
-                ]
-                .height(Length::Fill),
-                text(&self.status).size(12),
-                text(&self.notification_status).size(12),
-            ]
-            .spacing(8),
-        )
-        .padding(10)
-        .into()
+        self.design_view()
     }
 }
 
@@ -2601,6 +2408,7 @@ mod tests {
                 active: 0,
             });
             workspaces.push(Workspace {
+                name: None,
                 id: Uuid::new_v4(),
                 directory: PathBuf::from(format!("/fixture/{id}")),
                 init_script: None,
@@ -2613,6 +2421,7 @@ mod tests {
             });
         }
         Desktop {
+            design: desktop_design::State::default(),
             main_window: iced::window::Id::unique(),
             updates: Updates {
                 running: None,
@@ -2632,7 +2441,7 @@ mod tests {
                 current: GatewayPreferences::default(),
                 draft: GatewayPreferences::default(),
                 path: None,
-                window: None,
+                open: false,
                 tab: PreferencesTab::Gateway,
                 status: String::new(),
             },
@@ -2747,9 +2556,9 @@ mod tests {
         let mut app = desktop();
         let before = app.workspaces.len();
         drop(app.update(Message::NewWorkspace));
-        let window = app.workspace_dialog.window.unwrap();
+        assert!(app.workspace_dialog.open);
         drop(app.update(Message::NewWorkspace));
-        assert_eq!(app.workspace_dialog.window, Some(window));
+        assert!(app.workspace_dialog.open);
         assert_eq!(app.workspaces.len(), before);
         drop(app.update(Message::Workspace(W::Folder(
             "target/no-such-workspace-directory".into(),
@@ -2762,31 +2571,26 @@ mod tests {
         app.workspace_dialog.busy = true;
         drop(app.update(Message::Workspace(W::Cancel)));
         drop(app.update(Message::Close(app.main_window)));
-        assert_eq!(app.workspace_dialog.window, Some(window));
+        assert!(app.workspace_dialog.open);
         assert_eq!(app.workspaces.len(), before);
         app.workspace_dialog.busy = false;
-        drop(app.update(Message::Close(window)));
-        assert!(app.workspace_dialog.window.is_none());
+        drop(app.update(Message::Workspace(W::Cancel)));
+        assert!(!app.workspace_dialog.open);
     }
 
     #[test]
-    fn preferences_use_one_separate_window_and_closing_it_preserves_workspaces() {
+    fn preferences_modal_preserves_workspaces_and_draft_between_tabs() {
         let mut app = desktop();
-        let workspace_count = app.workspaces.len();
+        let count = app.workspaces.len();
         let _ = app.update(Message::Preferences(true));
-        let window = app.preferences.window.unwrap();
-        assert_ne!(window, app.main_window);
+        assert!(app.preferences.open);
         app.preferences.draft.url = "https://gateway.nitecon.org".into();
         let _ = app.update(Message::Updates(true));
-        assert_eq!(app.preferences.window, Some(window));
         assert_eq!(app.preferences.tab, PreferencesTab::Updates);
         assert_eq!(app.preferences.draft.url, "https://gateway.nitecon.org");
-        let _ = app.update(Message::Close(window));
-        assert!(app.preferences.window.is_none());
-        assert_eq!(app.workspaces.len(), workspace_count);
-        assert!(!app.restarting);
-        let _ = app.update(Message::Preferences(true));
-        assert_ne!(app.preferences.window, Some(window));
+        let _ = app.update(Message::Preferences(false));
+        assert!(!app.preferences.open);
+        assert_eq!(app.workspaces.len(), count);
         assert!(app.preferences.draft.url.is_empty());
     }
 
@@ -2892,7 +2696,7 @@ mod tests {
         assert!(app.updates.attention());
         assert!(app.updates.error.contains("offline"));
         let _ = app.update(Message::Updates(true));
-        assert!(app.preferences.window.is_some());
+        assert!(app.preferences.open);
         assert_eq!(app.preferences.tab, PreferencesTab::Updates);
         assert!(
             app.workspaces[0]
@@ -2977,7 +2781,7 @@ mod tests {
         assert!(DeliveryLedger::open(&ledger_path).is_err());
         assert!(app.updates.error.contains("fixture launch failed"));
         let _ = app.update(Message::Updates(true));
-        assert!(app.preferences.window.is_some());
+        assert!(app.preferences.open);
         assert_eq!(app.preferences.tab, PreferencesTab::Updates);
     }
 

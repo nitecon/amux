@@ -1085,3 +1085,31 @@ fn native_delivery_does_not_require_a_recognized_screen() {
     });
     assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
 }
+
+#[test]
+fn task_events_coalesce_a_refresh_without_changing_durable_delivery() {
+    let mut app = desktop();
+    app.preferences.current.url = "http://127.0.0.1:9".into();
+    app.preferences.current.api_key = "fixture-only".into();
+    app.workspaces[0].gateway.loading = true;
+    let event = Lifecycle {
+        id: 100,
+        project: "project-0".into(),
+        task: Uuid::new_v4(),
+        kind: Kind::Completed,
+        created_at: unix_ms() as i64,
+        origin: None,
+        goal: None,
+    };
+    drop(app.delegation_message(
+        app.delegation.epoch,
+        Event::Stream(ConnectionEvent::Event(event)),
+    ));
+    assert!(app.workspaces[0].gateway.refresh_pending);
+    assert!(app.delegation.queue.is_none());
+    let scope = app.scope(0);
+    drop(app.update(Message::TasksLoaded(scope, Ok(serde_json::json!([])))));
+    assert!(app.workspaces[0].gateway.loading);
+    assert!(!app.workspaces[0].gateway.refresh_pending);
+    assert!(app.delegation.queue.is_none());
+}

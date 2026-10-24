@@ -84,6 +84,11 @@ impl Terminal {
 
     /// A successful enqueue is not proof of a PTY write or agent acknowledgment.
     /// An error may follow channel acceptance; callers must retain uncertainty.
+    /// Time since native PTY output or terminal input; no screen interpretation.
+    pub fn activity_elapsed(&self) -> Option<std::time::Duration> {
+        self.backend.activity_elapsed()
+    }
+
     pub fn try_enqueue_input(&self, input: Vec<u8>) -> std::io::Result<()> {
         self.backend.try_enqueue_input(input)
     }
