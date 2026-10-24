@@ -1,7 +1,9 @@
 use amux::delegation::{Origin, Target};
 use amux::delegation_actor::{self, Actor, ActorTarget};
 use amux::identity::Provider;
-use serde_json::{Value, json};
+#[cfg(target_os = "linux")]
+use serde_json::Value;
+use serde_json::json;
 use uuid::Uuid;
 
 const INSTANCE: &str = "00112233-4455-4677-8899-aabbccddeeff";
