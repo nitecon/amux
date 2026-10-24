@@ -2303,6 +2303,7 @@ impl Desktop {
                 .on_action(Message::TaskContext)
                 .height(100),
             button("Submit Task to Gateway")
+                .style(desktop_design::primary_action)
                 .on_press(Message::SubmitTask)
                 .width(Length::Fill),
             text(&panel.draft_status).size(12),

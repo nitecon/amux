@@ -767,6 +767,23 @@ impl Desktop {
             "Gateway: Disconnected".into()
         }
     }
+    pub(super) fn design_task_owner(&self, task: &serde_json::Value) -> String {
+        let Some(owner) = task["owner_agent_id"].as_str() else {
+            return "Unassigned".into();
+        };
+        self.delegation
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate
+                    .target
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.session_id.to_string() == owner)
+            })
+            .map(|candidate| candidate.name.clone())
+            .unwrap_or_else(|| owner.to_owned())
+    }
     pub(super) fn design_owned_tasks(
         &self,
         terminal: u64,

@@ -91,6 +91,58 @@ fn surface(color: Color, rounded: bool) -> container::Style {
         ..Default::default()
     }
 }
+fn accent_gradient() -> iced::Gradient {
+    iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
+        .add_stop(0.0, CYAN)
+        .add_stop(1.0, Color::from_rgb8(20, 184, 166))
+        .into()
+}
+pub(super) fn primary_action(_: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(
+            accent_gradient()
+                .scale_alpha(if matches!(status, button::Status::Disabled) {
+                    0.4
+                } else {
+                    1.0
+                })
+                .into(),
+        ),
+        text_color: BG,
+        border: Border {
+            radius: 5.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+fn status_badge(status: &str) -> Element<'static, Message> {
+    let (label, color) = match status {
+        "done" => ("COMPLETED", GREEN),
+        "todo" => ("QUEUED", AMBER),
+        "in_progress" => ("IN PROGRESS", CYAN),
+        "cancelled" => ("CANCELLED", MUTED),
+        _ => ("UNKNOWN", MUTED),
+    };
+    container(text(label).size(9).color(color))
+        .padding([3, 5])
+        .style(move |_| {
+            let mut tint = color;
+            tint.a = 0.12;
+            let mut border = color;
+            border.a = 0.3;
+            container::Style {
+                background: Some(tint.into()),
+                border: Border {
+                    color: border,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
 fn icon(name: &str) -> iced::widget::Svg<'static> {
     let bytes: &'static [u8] = match name {
         "terminal" => include_bytes!("../assets/icons/design/Terminal.svg"),
@@ -185,6 +237,9 @@ fn tool_control<'a>(
 }
 fn action(value: Action) -> Message {
     Message::Design(value)
+}
+fn tab_provider(tab: &Tab) -> Option<Provider> {
+    tab.delegation.provider.or(tab.provider)
 }
 fn active(tab: &Tab) -> bool {
     tab.terminal
@@ -288,11 +343,11 @@ impl Desktop {
         let all_tabs: Vec<_> = self.workspaces.iter().flat_map(tabs).collect();
         let agents = all_tabs
             .iter()
-            .filter(|t| t.provider.is_some() && t.terminal.is_some())
+            .filter(|t| tab_provider(t).is_some() && t.terminal.is_some())
             .count();
         let busy = all_tabs
             .iter()
-            .filter(|t| t.provider.is_some() && active(t))
+            .filter(|t| tab_provider(t).is_some() && active(t))
             .count();
         let events = self.design_events();
         let unread = events
@@ -301,9 +356,13 @@ impl Desktop {
             .count();
         let header = container(
             row![
-                container(icon("terminal"))
+                container(icon("terminal").style(|_, _| svg::Style { color: Some(BG) }))
                     .padding(7)
-                    .style(|_| surface(CYAN, true)),
+                    .style(|_| {
+                        let mut style = surface(CYAN, true);
+                        style.background = Some(accent_gradient().into());
+                        style
+                    }),
                 text("amux").size(15),
                 text(if self.design.compact {
                     ""
@@ -382,10 +441,10 @@ impl Desktop {
         for (index, w) in self.workspaces.iter().enumerate() {
             let sessions = tabs(w).count();
             let agents = tabs(w)
-                .filter(|t| t.provider.is_some() && t.terminal.is_some())
+                .filter(|t| tab_provider(t).is_some() && t.terminal.is_some())
                 .count();
             let busy = tabs(w)
-                .filter(|t| t.provider.is_some() && active(t))
+                .filter(|t| tab_provider(t).is_some() && active(t))
                 .count();
             let badge = if busy > 0 {
                 format!("{busy}/{agents} active")
@@ -405,7 +464,7 @@ impl Desktop {
                     text(format!(
                         "{} · {} · {}",
                         tab.delegation.agent_name.as_deref().unwrap_or("Terminal"),
-                        tab.provider.map(Provider::command).unwrap_or("shell"),
+                        tab_provider(tab).map(Provider::command).unwrap_or("shell"),
                         if tab.terminal.is_none() {
                             "stopped"
                         } else if active(tab) {
@@ -476,14 +535,18 @@ impl Desktop {
                 .align_y(Alignment::Center),
             )
             .style(move |_| {
-                surface(
+                let mut style = surface(
                     if selected {
                         Color::from_rgb8(13, 39, 51)
                     } else {
                         CARD
                     },
                     true,
-                )
+                );
+                if selected {
+                    style.border.color = Color::from_rgb8(8, 145, 178);
+                }
+                style
             });
             sidebar = sidebar.push(tooltip(
                 card,
@@ -642,6 +705,13 @@ impl Desktop {
                     "Checking for updates…"
                 } else if !self.updates.error.is_empty() {
                     "Update check failed. Open Updates for details."
+                } else if self
+                    .updates
+                    .report
+                    .as_ref()
+                    .is_some_and(|report| report.note.is_some())
+                {
+                    "Update status needs attention. Open Updates for details."
                 } else if self.updates.report.is_none() {
                     "Updates have not been checked yet."
                 } else {
@@ -723,7 +793,7 @@ impl Desktop {
         pane_grid::PaneGrid::new(&w.panes, |pane_id, pane, _| {
             let mut strip = row![].spacing(3);
             for (index, tab) in pane.tabs.iter().enumerate() {
-                let label = match tab.provider {
+                let label = match tab_provider(tab) {
                     Some(Provider::Codex) => "Codex",
                     Some(Provider::Claude) => "Claude",
                     None => "Terminal",
@@ -731,14 +801,13 @@ impl Desktop {
                 let selected = index == pane.active;
                 let subtitle = format!(
                     "{} · {}{}",
-                    tab.delegation
-                        .agent_name
-                        .as_deref()
-                        .unwrap_or(if tab.provider.is_some() {
+                    tab.delegation.agent_name.as_deref().unwrap_or(
+                        if tab_provider(tab).is_some() {
                             "Agent"
                         } else {
                             "Local shell"
-                        }),
+                        }
+                    ),
                     workspace_name(w),
                     if tab.terminal.is_none() {
                         " · stopped"
@@ -757,7 +826,7 @@ impl Desktop {
                                     selected
                                 )
                                 .style(move |theme, status| {
-                                    if selected && tab.provider == Some(Provider::Claude) {
+                                    if selected && tab_provider(tab) == Some(Provider::Claude) {
                                         claude_style(theme, status)
                                     } else {
                                         button_style(selected, theme, status)
@@ -797,7 +866,7 @@ impl Desktop {
             let identity = pane
                 .tabs
                 .get(pane.active)
-                .filter(|tab| tab.provider.is_some())
+                .filter(|tab| tab_provider(tab).is_some())
                 .map(|tab| {
                     format!(
                         "ID: {} · {}",
@@ -846,7 +915,7 @@ impl Desktop {
                 );
                 if !self.preferences.current.automatic_notifications
                     && cfg!(target_os = "linux")
-                    && tab.provider == Some(Provider::Codex)
+                    && tab_provider(tab) == Some(Provider::Codex)
                     && tab.recipient.is_some()
                     && self.ledger.is_some()
                 {
@@ -942,7 +1011,7 @@ impl Desktop {
                             "Tasks offline"
                         },
                         tabs(&self.workspaces[self.active])
-                            .filter(|t| t.provider.is_some() && t.terminal.is_some())
+                            .filter(|t| tab_provider(t).is_some() && t.terminal.is_some())
                             .count()
                     ))
                     .size(10)
@@ -971,10 +1040,7 @@ impl Desktop {
             }
             count += 1;
             let id = task["id"].as_str().unwrap_or("?");
-            let owner = task["owner_name"]
-                .as_str()
-                .or(task["owner_agent_id"].as_str())
-                .unwrap_or("Unassigned");
+            let owner = self.design_task_owner(task);
             let mut item = column![
                 row![
                     text(format!("#{}", id.chars().take(8).collect::<String>()))
@@ -982,21 +1048,7 @@ impl Desktop {
                         .font(iced::Font::MONOSPACE)
                         .color(CYAN),
                     Space::new().width(Length::Fill),
-                    text(match status {
-                        "done" => "COMPLETED",
-                        "todo" => "QUEUED",
-                        "in_progress" => "IN PROGRESS",
-                        "cancelled" => "CANCELLED",
-                        _ => "UNKNOWN",
-                    })
-                    .size(9)
-                    .color(if status == "done" {
-                        GREEN
-                    } else if status == "in_progress" {
-                        CYAN
-                    } else {
-                        AMBER
-                    })
+                    status_badge(status)
                 ],
                 text(task["title"].as_str().unwrap_or("Untitled")).size(12),
                 text(format!("→ {owner}")).size(10).color(MUTED),
@@ -1192,7 +1244,13 @@ impl Desktop {
                 container(scrollable(body).height(Length::Fill)).padding(20),
                 container(
                     column![
-                        text(&self.preferences.status).size(11).color(AMBER),
+                        text(&self.preferences.status).size(11).color(
+                            if self.preferences.status.starts_with("Not saved") {
+                                AMBER
+                            } else {
+                                MUTED
+                            }
+                        ),
                         row![
                             Space::new().width(Length::Fill),
                             control("x", "Cancel", Message::Preferences(false), false),

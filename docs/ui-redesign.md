@@ -55,5 +55,8 @@ No live gateway mutation or model turn was used for these checks. Evidence is
 under ignored `artifacts/design-preview/`, including `native-evidence.json`.
 
 Core, desktop, terminal protocol and notification checks run through the normal
-CI workflow on Linux and Windows. Native Windows validation and the eventual
-release are still pending for this change.
+CI workflow on Linux and Windows. The initial review commit `ba0449c` passed both platforms, including native
+terminal tests and optimized builds ([CI run](https://github.com/nitecon/amux/actions/runs/40119844767)).
+Both artifact sets had their binary hashes, source revision, Windows executable
+subsystems and bundled Lucide notice checked. Native Windows visual review and
+the eventual release remain pending.
