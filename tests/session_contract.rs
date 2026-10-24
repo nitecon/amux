@@ -13,6 +13,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
     let pane = |id| Layout::Pane {
         active: 0,
         tabs: vec![SavedTab {
+            terminal_number: Some(id + 1),
             id,
             title: "Agent".into(),
             provider: Some(Provider::Claude),

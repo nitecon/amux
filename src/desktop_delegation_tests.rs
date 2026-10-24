@@ -269,6 +269,7 @@ fn fixtures() -> &'static Path {
 
 /// One native terminal per fixture agent, in its own scratch working directory.
 struct Agent {
+    terminal: u64,
     directory: PathBuf,
     log: PathBuf,
 }
@@ -337,6 +338,7 @@ fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layou
     tab.delegation = TabState::capture(&terminal, id + 1, &directory);
     tab.terminal = Some(terminal);
     let agent = Agent {
+        terminal: id,
         directory: amux::workspace_launch::external_path(
             std::fs::canonicalize(&directory).unwrap(),
         ),
@@ -446,6 +448,16 @@ fn lifecycle(id: i64, project: &str) -> Lifecycle {
         origin: None,
         goal: None,
     }
+}
+
+fn notification(app: &Desktop, agent: &Agent, event: &Lifecycle) -> String {
+    let candidate = app
+        .delegation
+        .candidates
+        .iter()
+        .find(|c| c.target.terminal == agent.terminal)
+        .unwrap();
+    event.assigned_terminal_text(candidate.target.session, &candidate.name)
 }
 
 fn outcome(app: &Desktop, event: i64, terminal: u64) -> Option<Outcome> {
@@ -642,7 +654,7 @@ fn native_delivery_submits_the_exact_compact_notification_once() {
     let acks = deliver(&mut app, &mut frames, |app| {
         outcome(app, 1, 0) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
     assert!(
         acks.iter()
             .any(|f| f["event_id"] == 1 && f["status"] == "injected"),
@@ -650,7 +662,7 @@ fn native_delivery_submits_the_exact_compact_notification_once() {
     );
     // A submitted notification is never replayed into the agent.
     never_verifies(&mut app, &mut frames);
-    assert_eq!(agent.lines(), [event.terminal_text()]);
+    assert_eq!(agent.lines(), [notification(&app, &agent, &event)]);
 }
 
 #[cfg(target_os = "linux")]
@@ -674,7 +686,10 @@ fn native_bracketed_paste_prompt_receives_the_notification_as_one_paste() {
     });
     assert_eq!(
         wait_lines(&agent, 1),
-        [format!("\x1b[200~{}\x1b[201~", event.terminal_text())]
+        [format!(
+            "\x1b[200~{}\x1b[201~",
+            notification(&app, &agent, &event)
+        )]
     );
 }
 
@@ -694,7 +709,7 @@ fn native_delivery_submits_immediately_and_restores_teed_user_input() {
     human(&mut app, 0, b"more");
     verified(&mut app, proof.clone(), native_verify(&proof));
     assert_eq!(outcome(&app, 1, 0), Some(Outcome::Submitted));
-    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
     wait(&app, |app| {
         grid(app, 0).is_some_and(|g| {
             g.observation
@@ -708,7 +723,7 @@ fn native_delivery_submits_immediately_and_restores_teed_user_input() {
     human(&mut app, 0, b"\r");
     assert_eq!(
         wait_lines(&agent, 2),
-        [event.terminal_text(), "my draft more".into()]
+        [notification(&app, &agent, &event), "my draft more".into()]
     );
     assert!(find(&app, 0).delegation.input.is_empty());
 }
@@ -864,7 +879,7 @@ fn stale_final_proofs_never_write_native_input() {
     deliver(&mut app, &mut frames, |app| {
         outcome(app, 8, 0) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -921,7 +936,7 @@ fn native_peer_agents_have_unique_sessions_and_isolated_input() {
         );
         assert_eq!(
             find(&app, target.terminal).delegation.agent_name.as_deref(),
-            Some(name.as_str())
+            Some(record.identity.display_name().as_str())
         );
     }
     // Sessions are stable across rescans of the same process attachment.
@@ -935,8 +950,8 @@ fn native_peer_agents_have_unique_sessions_and_isolated_input() {
         outcome(app, 1, 1) == Some(Outcome::Submitted)
             && outcome(app, 1, 2) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&codex, 1), [beta.terminal_text()]);
-    assert_eq!(wait_lines(&claude, 1), [beta.terminal_text()]);
+    assert_eq!(wait_lines(&codex, 1), [notification(&app, &codex, &beta)]);
+    assert_eq!(wait_lines(&claude, 1), [notification(&app, &claude, &beta)]);
     assert!(alpha.lines().is_empty(), "peer project received input");
     assert!(
         acks.iter()
@@ -950,10 +965,10 @@ fn native_peer_agents_have_unique_sessions_and_isolated_input() {
     deliver(&mut app, &mut frames, |app| {
         outcome(app, 2, 0) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&alpha, 1), [own.terminal_text()]);
+    assert_eq!(wait_lines(&alpha, 1), [notification(&app, &alpha, &own)]);
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(codex.lines(), [beta.terminal_text()]);
-    assert_eq!(claude.lines(), [beta.terminal_text()]);
+    assert_eq!(codex.lines(), [notification(&app, &codex, &beta)]);
+    assert_eq!(claude.lines(), [notification(&app, &claude, &beta)]);
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -999,7 +1014,7 @@ fn gateway_clock_delivers_fresh_comments_despite_local_clock_skew_and_expires_ol
     deliver(&mut app, &mut frames, |app| {
         outcome(app, 1, 0) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
     let mut expired = lifecycle(2, "amux");
     expired.created_at = app.delegation.now_ms() - delegation::MAX_EVENT_AGE_MS - 1000;
     scan(&mut app, Some(expired));
@@ -1016,7 +1031,7 @@ fn gateway_clock_delivers_fresh_comments_despite_local_clock_skew_and_expires_ol
     assert_eq!(expired.outcome, Outcome::Skipped);
     assert!(expired.reason.contains("expired"));
     never_verifies(&mut app, &mut frames);
-    assert_eq!(agent.lines(), [event.terminal_text()]);
+    assert_eq!(agent.lines(), [notification(&app, &agent, &event)]);
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1032,7 +1047,7 @@ fn burst_paste_submits_without_a_delay_or_footer_check() {
     deliver(&mut app, &mut frames, |app| {
         outcome(app, 1, 0) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
 }
 
 #[test]
@@ -1068,5 +1083,5 @@ fn native_delivery_does_not_require_a_recognized_screen() {
     deliver(&mut app, &mut frames, |app| {
         outcome(app, 1, 0) == Some(Outcome::Submitted)
     });
-    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    assert_eq!(wait_lines(&agent, 1), [notification(&app, &agent, &event)]);
 }

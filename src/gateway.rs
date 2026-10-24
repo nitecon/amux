@@ -140,7 +140,7 @@ impl Gateway {
                     if actor.agent_id.is_empty() {
                         actor.session_id.to_string()
                     } else {
-                        actor.agent_id.clone()
+                        actor.display_name()
                     },
                 )
                 .header("X-Agent-Session-Id", actor.session_id.to_string())
@@ -444,7 +444,7 @@ impl Gateway {
                 Method::PATCH,
                 project,
                 &[task],
-                Some(json!({"status":"in_progress","owner_agent_id":if actor.agent_id.is_empty() {actor.session_id.to_string()} else {actor.agent_id.clone()}})),
+                Some(json!({"status":"in_progress","owner_agent_id":if actor.agent_id.is_empty() {actor.session_id.to_string()} else {actor.display_name()}})),
                 Some(actor),
             )
             .await?;

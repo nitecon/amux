@@ -131,19 +131,79 @@ fn three_same_project_agents_each_claim_with_only_their_own_identity() {
         let head = &request.head;
         assert!(head.starts_with(&format!("patch /v1/projects/demo/tasks/{TASK} ")));
         assert!(head.contains("authorization: bearer test-only"));
-        assert!(head.contains(&format!("x-agent-id: {}", actor.agent_id)));
+        assert!(head.contains(&format!(
+            "x-agent-id: {}",
+            actor.display_name().to_lowercase()
+        )));
         assert!(head.contains(&format!("x-agent-session-id: {}", actor.session_id)));
         assert!(head.contains(&format!("x-agent-instance-id: {}", actor.instance_id)));
         assert!(head.contains(&format!("x-agent-provider: {}", actor.provider.command())));
         assert!(head.contains(&format!("x-agent-os: {}", actor.os)));
         assert_eq!(request.body["status"], "in_progress");
-        assert_eq!(request.body["owner_agent_id"], actor.agent_id);
+        assert_eq!(request.body["owner_agent_id"], actor.display_name());
         // No request may carry a peer's identity.
         for peer in agents.iter().filter(|p| *p != actor) {
             assert!(!head.contains(&peer.session_id.to_string()));
             assert!(!head.contains(&peer.instance_id.to_string()));
         }
     }
+}
+
+#[test]
+fn assigned_cli_claim_works_when_provider_environment_and_ancestry_are_unavailable() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("assigned-gateway");
+    std::fs::create_dir_all(&base).unwrap();
+    let state = tempfile::tempdir_in(base).unwrap();
+    let actor = agent(Provider::Codex);
+    let record = amux::identity::AgentRecord {
+        identity: actor.clone(),
+        pid: 0,
+        process_start: 0,
+        process_generation: "unavailable".into(),
+    };
+    std::fs::create_dir(state.path().join("agents")).unwrap();
+    std::fs::write(
+        state
+            .path()
+            .join("agents")
+            .join(format!("{}.json", actor.session_id)),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let (url, server) = server(vec![reply(200, &owned_by(&actor))]);
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
+    for name in actor.environment().keys() {
+        command.env_remove(name);
+    }
+    let output = command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("AMUX_STATE_DIR", state.path())
+        .env("AMUX_GATEWAY_KEY", "test-only")
+        .args([
+            "--agent",
+            &actor.session_id.to_string(),
+            "tasks",
+            "--project",
+            "demo",
+            "--gateway-url",
+            &url,
+            "claim",
+            TASK,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests[0].body["owner_agent_id"], actor.display_name());
+    assert!(
+        requests[0]
+            .head
+            .contains(&format!("x-agent-session-id: {}", actor.session_id))
+    );
 }
 
 #[test]

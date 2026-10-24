@@ -20,6 +20,9 @@ mod desktop;
 struct Cli {
     #[arg(long, global = true)]
     project_dir: Option<PathBuf>,
+    /// Assigned amux agent ID, shown in gateway notifications.
+    #[arg(long, global = true)]
+    agent: Option<String>,
     /// Update a direct-download install; managed installs show their update command.
     #[arg(long, exclusive = true)]
     update: bool,
@@ -183,10 +186,10 @@ fn run(cli: Cli) -> Result<u8> {
         }
         Operation::Whoami => println!(
             "{}",
-            serde_json::to_string_pretty(
-                &AgentIdentity::verified_from_environment()
-                    .or_else(|_| AgentIdentity::from_environment())?
-            )?
+            serde_json::to_string_pretty(&AgentIdentity::assigned(
+                cli.agent.as_deref(),
+                &project_dir
+            )?)?
         ),
         Operation::Agents => println!(
             "{}",
@@ -208,7 +211,7 @@ fn run(cli: Cli) -> Result<u8> {
                     }
                     MessageOperation::Get { id } => gateway.message(&project, id).await,
                     MessageOperation::Send { body, subject } => {
-                        let actor = AgentIdentity::verified_from_environment()?;
+                        let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                         if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory {
                             bail!("message publication project directory differs from this agent's launch; switch to its project directory");
                         }
@@ -278,7 +281,7 @@ fn run(cli: Cli) -> Result<u8> {
                 if matches!(operation, TaskOperation::List) { return gateway.list(&project).await; }
                 if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
-                let actor = AgentIdentity::verified_from_environment()?;
+                let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
                     TaskOperation::Create { title, specification } => gateway.request(Method::POST, &project, &[], Some(json!({"title": title, "specification": specification})), Some(&actor)).await,

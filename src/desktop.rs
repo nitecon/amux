@@ -420,8 +420,14 @@ impl Desktop {
                         self.next_id = self.next_id.max(tab.id + 1);
                         if tab.running {
                             let cwd = tab.directory.as_deref().unwrap_or(directory);
-                            let mut reopened =
-                                self.open_terminal(tab.id, cwd, tab.provider, None, true);
+                            let mut reopened = self.open_terminal(
+                                tab.id,
+                                cwd,
+                                tab.provider,
+                                None,
+                                true,
+                                tab.terminal_number,
+                            );
                             if reopened.terminal.is_some() {
                                 reopened.title = tab.title;
                             } else {
@@ -440,7 +446,11 @@ impl Desktop {
                             stopped_output: None,
                             recipient: None,
                             reminders: Reminders::default(),
-                            delegation: desktop_delegation::TabState::default(),
+                            delegation: {
+                                let mut state = desktop_delegation::TabState::default();
+                                state.terminal_number = tab.terminal_number.unwrap_or_default();
+                                state
+                            },
                         }
                     })
                     .collect(),
@@ -479,6 +489,8 @@ impl Desktop {
                             .iter()
                             .map(|t| SavedTab {
                                 id: t.id,
+                                terminal_number: Some(t.delegation.terminal_number)
+                                    .filter(|n| *n > 0),
                                 title: t.title.clone(),
                                 provider: t.provider.or(t.delegation.provider),
                                 running: t.terminal.is_some(),
@@ -539,7 +551,7 @@ impl Desktop {
     ) -> Tab {
         let id = self.next_id;
         self.next_id += 1;
-        self.open_terminal(id, directory, provider, script, false)
+        self.open_terminal(id, directory, provider, script, false, None)
     }
 
     fn open_terminal(
@@ -549,23 +561,28 @@ impl Desktop {
         provider: Option<Provider>,
         script: Option<&std::path::Path>,
         resume: bool,
+        assigned_number: Option<u64>,
     ) -> Tab {
         let mut backend = iced_term::settings::BackendSettings {
             working_directory: Some(directory.into()),
             ..Default::default()
         };
-        let terminal_number = match self
-            .registry
-            .as_deref()
-            .map(amux::identity::next_terminal_number_at)
-            .transpose()
-        {
-            Ok(Some(number)) => number,
-            Ok(None) => 0,
-            Err(error) => {
-                self.status = format!("Terminal identity unavailable: {error}");
-                // No agent identity is published without a reserved number.
-                0
+        let terminal_number = if let Some(number) = assigned_number.filter(|n| *n > 0) {
+            number
+        } else {
+            match self
+                .registry
+                .as_deref()
+                .map(amux::identity::next_terminal_number_at)
+                .transpose()
+            {
+                Ok(Some(number)) => number,
+                Ok(None) => 0,
+                Err(error) => {
+                    self.status = format!("Terminal identity unavailable: {error}");
+                    // No agent identity is published without a reserved number.
+                    0
+                }
             }
         };
         backend
@@ -673,6 +690,7 @@ impl Desktop {
             "AMUX_AGENT_PROJECT",
             "AMUX_AGENT_PROJECT_ID",
             "AMUX_AGENT_ID",
+            "AMUX_AGENT_NAME",
         ] {
             backend.env.insert(name.into(), String::new());
         }
@@ -3071,6 +3089,7 @@ mod tests {
             active: 1,
             tabs: vec![
                 SavedTab {
+                    terminal_number: Some(42),
                     id: 42,
                     title: "Restored shell".into(),
                     provider: None,
@@ -3078,6 +3097,7 @@ mod tests {
                     directory: Some(directory.clone()),
                 },
                 SavedTab {
+                    terminal_number: Some(43),
                     id: 43,
                     title: "Exited agent".into(),
                     provider: Some(Provider::Claude),
@@ -3097,6 +3117,7 @@ mod tests {
             .terminal
             .as_ref()
             .expect("restored tab must own a live terminal");
+        assert_eq!(pane.tabs[0].delegation.terminal_number, 42);
         assert!(terminal.child_pid().is_some());
         assert_eq!(
             pane.tabs[0].delegation.directory.as_ref(),
@@ -3132,6 +3153,7 @@ mod tests {
             panic!("expected pane")
         };
         assert!(tabs[0].running);
+        assert_eq!(tabs[0].terminal_number, Some(1));
         assert_eq!(tabs[0].directory.as_ref(), Some(&directory));
     }
 

@@ -127,6 +127,14 @@ impl Event {
             && self.created_at <= now_ms.saturating_add(30_000)
             && now_ms.saturating_sub(self.created_at) <= MAX_EVENT_AGE_MS
     }
+    pub fn assigned_terminal_text(&self, session: Uuid, name: &str) -> String {
+        format!(
+            "{} [Amux identity: {name}. Use amux --agent {session} tasks get {} and the same --agent ID for task mutations.]",
+            self.terminal_text(),
+            self.task
+        )
+    }
+
     pub fn terminal_text(&self) -> String {
         let title = match self.kind {
             Kind::Created => "New delegated task received",

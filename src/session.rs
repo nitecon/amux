@@ -13,6 +13,8 @@ pub struct SavedTab {
     pub id: u64,
     pub title: String,
     pub provider: Option<Provider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_number: Option<u64>,
     /// Legacy layouts contained placeholders only; reopen them on the first upgrade.
     #[serde(default = "was_running")]
     pub running: bool,

@@ -97,6 +97,7 @@ pub(super) struct Found {
 }
 #[derive(Debug, Clone)]
 struct Candidate {
+    name: String,
     root: Root,
     process: AgentProcess,
     target: Target,
@@ -451,6 +452,7 @@ impl Desktop {
                             .and_then(|(_, p)| p.clone())
                             .unwrap_or_default();
                         Candidate {
+                            name: f.actor.display_name(),
                             target: Target {
                                 workspace: f.root.workspace,
                                 terminal: f.root.terminal,
@@ -510,13 +512,7 @@ impl Desktop {
                                 tab.delegation.agent_name = candidates
                                     .iter()
                                     .find(|c| c.root.terminal == tab.id)
-                                    .map(|c| {
-                                        format!(
-                                            "{}-{}",
-                                            c.process.provider.command(),
-                                            c.root.number
-                                        )
-                                    });
+                                    .map(|c| c.name.clone());
                             }
                         }
                     }
@@ -579,7 +575,10 @@ impl Desktop {
                         if !tab.delegation.input.is_empty() {
                             bytes.push(0x03); // Clear the current provider draft (Ctrl+C).
                         }
-                        let message = proof.attempt.event.terminal_text();
+                        let message = proof.attempt.event.assigned_terminal_text(
+                            proof.attempt.target.session,
+                            &proof.candidate.name,
+                        );
                         if terminal
                             .input_mode()
                             .contains(iced_term::TermMode::BRACKETED_PASTE)
@@ -776,7 +775,7 @@ impl Desktop {
                         .candidates
                         .iter()
                         .find(|c| c.target.session == recipient.target.session)
-                        .map(|c| format!("{}-{}", c.process.provider.command(), c.root.number))
+                        .map(|c| c.name.clone())
                         .unwrap_or_else(|| "Previous agent".into());
                     view = view.push(text(format!("{name} · {}", recipient.reason)).size(12));
                 }

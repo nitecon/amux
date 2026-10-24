@@ -498,24 +498,8 @@ impl Backend {
 
     fn scroll(&mut self, terminal: &mut Term<EventProxy>, delta_value: i32) {
         if delta_value != 0 {
-            let scroll = Scroll::Delta(delta_value);
-            if terminal
-                .mode()
-                .contains(TermMode::ALTERNATE_SCROLL | TermMode::ALT_SCREEN)
-            {
-                let line_cmd = if delta_value > 0 { b'A' } else { b'B' };
-                let mut content = vec![];
-
-                for _ in 0..delta_value.abs() {
-                    content.push(0x1b);
-                    content.push(b'O');
-                    content.push(line_cmd);
-                }
-
-                self.notifier.notify(content);
-            } else {
-                terminal.grid_mut().scroll_display(scroll);
-            }
+            // Local scrollback never synthesizes keyboard input.
+            terminal.scroll_display(Scroll::Delta(delta_value));
         }
     }
 

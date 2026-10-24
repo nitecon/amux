@@ -20,17 +20,25 @@ separate checkouts get separate UUIDs. The gateway project name is separate and
 uses the lowercase repository basename, such as `amux` or `sre`. Existing verified
 gateway aliases remain usable.
 
-Each terminal receives a number when created. Its running provider uses that number
-as its agent name: `codex-1`, `codex-2`, `claude-3`, and so on. The name and project
-UUID determine its gateway session UUID. Execution instances and native process
-generations keep old launches from claiming the identity of a replacement process.
-The desktop also discovers providers started in ordinary shell tabs after `cd`.
+Amux assigns a name to each terminal from a built-in pool of 500 technology
+contributors across the eras, with Will Hattingh at entry 251. The name is saved
+with the assignment and displayed with the provider, such as `Alan Turing - Codex`.
+Terminal numbers and project UUIDs continue to determine distinct internal session
+IDs. After the pool wraps, a numeric suffix keeps names distinct. The desktop also
+discovers providers started in ordinary shell tabs after `cd`.
 
-Use the bundled `amux whoami` and `amux agents` commands to inspect identity and
-local running peers. The desktop makes the bundled CLI available on terminal PATH.
+Each gateway notification includes its recipient's assigned ID and a command such
+as `amux --agent <id> tasks get <task-id>`. Use the same `--agent` ID for `whoami`,
+claim, comment and completion. Task commands resolve that stored assignment
+directly, without OS ancestry lookup. This also works when a provider filters the
+terminal's environment variables. Assigned launch environment values remain
+supported. An unknown or ambiguous assignment is rejected.
+
+Use the bundled `amux agents` command to inspect local running peers. The desktop
+makes the bundled CLI available on terminal PATH.
 Gateway task commands use the saved gateway preferences and resolve the project
 automatically; environment variables and flags can override those settings. amux
-owns registration and native ancestry checks. No agent-tools update, provider hook,
+owns assignment and registration. No agent-tools update, provider hook,
 or actor announcement is required. An exact origin suppresses its own notification;
 other matching terminals remain eligible. Named-goal events still require an
 explicit matching goal and are skipped when no goal is bound.

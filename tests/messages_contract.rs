@@ -289,7 +289,10 @@ fn launched_agent_publishes_with_its_registered_execution_identity() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].body["body"], body);
     let headers = requests[0].headers.to_lowercase();
-    assert!(headers.contains(&format!("x-agent-id: {}", record.identity.agent_id)));
+    assert!(headers.contains(&format!(
+        "x-agent-id: {}",
+        record.identity.display_name().to_lowercase()
+    )));
     assert!(headers.contains(&format!(
         "x-agent-session-id: {}",
         record.identity.session_id

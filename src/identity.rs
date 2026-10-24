@@ -36,10 +36,68 @@ pub struct AgentIdentity {
     /// Readable terminal agent name such as `codex-1`; empty for legacy records.
     #[serde(default)]
     pub agent_id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 impl AgentIdentity {
-    /// Mutation authority requires a live launch and verified caller ancestry.
+    /// Resolve the assignment supplied by amux, without OS ancestry discovery.
+    pub fn assigned(selector: Option<&str>, project: &Path) -> Result<Self> {
+        if let Some(selector) = selector {
+            let directory = crate::project_identity::resolve(project)?.directory;
+            let state = state_directory()?;
+            let mut matching = Vec::new();
+            for entry in std::fs::read_dir(state.join("agents"))
+                .context("no amux agent assignments available")?
+            {
+                let path = entry?.path();
+                if path.extension().is_none_or(|ext| ext != "json") {
+                    continue;
+                }
+                let Ok(record) = serde_json::from_slice::<AgentRecord>(&std::fs::read(path)?)
+                else {
+                    continue;
+                };
+                let actor = record.identity;
+                if actor.project_directory == directory
+                    && (selector == actor.session_id.to_string()
+                        || selector == actor.agent_id
+                        || selector == actor.display_name())
+                {
+                    matching.push(actor);
+                }
+            }
+            if matching.len() != 1 {
+                bail!(
+                    "agent assignment is missing or ambiguous; use the --agent ID supplied by amux"
+                );
+            }
+            return Ok(matching.remove(0));
+        }
+        Self::from_environment()
+            .context("use amux --agent <assigned-id> from this session's gateway notification")
+    }
+
+    pub fn display_name(&self) -> String {
+        let person = if self.name.is_empty() {
+            self.agent_id
+                .rsplit_once('-')
+                .and_then(|(_, number)| number.parse().ok())
+                .map(assigned_name)
+        } else {
+            Some(self.name.clone())
+        };
+        let provider = match self.provider {
+            Provider::Codex => "Codex",
+            Provider::Claude => "Claude",
+        };
+        person
+            .map(|name| format!("{name} - {provider}"))
+            .unwrap_or_else(|| self.agent_id.clone())
+    }
+
+    /// Legacy machine dispatch verifies a live launch and caller ancestry.
+    /// Ordinary task commands use the app-assigned identity instead.
     /// The UUID is amux's execution identity, not a provider-native conversation ID.
     /// Without a wrapper identity, a plain-shell native executor registered by the
     /// desktop is found in the caller's ancestry instead.
@@ -103,10 +161,7 @@ impl AgentIdentity {
     /// A nested launch under another agent always gets a fresh terminal number.
     pub fn new(provider: Provider, project: &Path) -> Result<Self> {
         let inherited = environment_value("AMUX_TERMINAL_NUMBER")
-            .filter(|_| {
-                environment_value("AMUX_AGENT_SESSION_ID").is_none()
-                    && Self::verified_from_environment().is_err()
-            })
+            .filter(|_| environment_value("AMUX_AGENT_SESSION_ID").is_none())
             .map(|value| {
                 value
                     .parse::<u64>()
@@ -138,6 +193,7 @@ impl AgentIdentity {
             project_directory: project.directory,
             project_id: project.id,
             agent_id,
+            name: assigned_name(number),
         })
     }
 
@@ -156,6 +212,7 @@ impl AgentIdentity {
             ),
             ("AMUX_AGENT_PROJECT_ID".into(), self.project_id.to_string()),
             ("AMUX_AGENT_ID".into(), self.agent_id.clone()),
+            ("AMUX_AGENT_NAME".into(), self.name.clone()),
         ])
     }
 
@@ -202,7 +259,20 @@ impl AgentIdentity {
             project_directory: PathBuf::from(get("AMUX_AGENT_PROJECT")?),
             project_id,
             agent_id: values.get("AMUX_AGENT_ID").cloned().unwrap_or_default(),
+            name: values.get("AMUX_AGENT_NAME").cloned().unwrap_or_default(),
         })
+    }
+}
+
+fn assigned_name(number: u64) -> String {
+    let names: Vec<_> = include_str!("../assets/agent_names.txt").lines().collect();
+    let index = number.saturating_sub(1);
+    let name = names[(index % names.len() as u64) as usize];
+    let cycle = index / names.len() as u64;
+    if cycle == 0 {
+        name.to_owned()
+    } else {
+        format!("{name} {}", cycle + 1)
     }
 }
 

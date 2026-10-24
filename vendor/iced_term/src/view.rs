@@ -160,6 +160,7 @@ impl<'a> TerminalView<'a> {
                     state,
                     *delta,
                     &self.term.font.measure,
+                    &terminal_mode,
                     &mut commands,
                 );
             },
@@ -282,22 +283,42 @@ impl<'a> TerminalView<'a> {
         state: &mut TerminalViewState,
         delta: ScrollDelta,
         font_measure: &Size<f32>,
+        mode: &TermMode,
         commands: &mut Vec<Command>,
     ) {
-        match delta {
-            ScrollDelta::Lines { y, .. } => {
-                let lines = y.signum() * y.abs().round();
-                commands.push(Command::Scroll(lines as i32));
-            },
+        let lines = match delta {
+            ScrollDelta::Lines { y, .. } => y.round() as i32,
             ScrollDelta::Pixels { y, .. } => {
-                state.scroll_pixels -= y;
-                let line_height = font_measure.height; // Assume this method exists and gives the height of a line
-                let lines = (state.scroll_pixels / line_height).trunc();
-                state.scroll_pixels %= line_height;
-                if lines != 0.0 {
-                    commands.push(Command::Scroll(lines as i32));
-                }
+                state.scroll_pixels += y;
+                let lines = (state.scroll_pixels / font_measure.height).trunc();
+                state.scroll_pixels %= font_measure.height;
+                lines as i32
             },
+        };
+        if lines == 0 {
+            return;
+        }
+        // Windows console applications can enable mouse input through WinAPI,
+        // while only their SGR encoding request reaches the ConPTY host.
+        let captured = mode.intersects(TermMode::MOUSE_MODE)
+            || (cfg!(windows)
+                && mode.contains(TermMode::ALT_SCREEN | TermMode::SGR_MOUSE));
+        if captured && !state.keyboard_modifiers.contains(Modifiers::SHIFT) {
+            let button = if lines > 0 {
+                MouseButton::ScrollUp
+            } else {
+                MouseButton::ScrollDown
+            };
+            for _ in 0..lines.unsigned_abs() {
+                commands.push(Command::MouseReport(
+                    button.clone(),
+                    state.keyboard_modifiers,
+                    state.mouse_position_on_grid,
+                    true,
+                ));
+            }
+        } else {
+            commands.push(Command::Scroll(lines));
         }
     }
 
@@ -1192,6 +1213,59 @@ mod tests {
         use crate::settings::FontSettings;
 
         #[test]
+        fn amux_tests_captured_wheel_sends_mouse_events_and_shift_uses_local_scrollback(
+        ) {
+            let mut state = TerminalViewState::new();
+            let font = TermFont::new(FontSettings::default());
+            let mut commands = Vec::new();
+            let mode = TermMode::MOUSE_MODE
+                | TermMode::SGR_MOUSE
+                | TermMode::ALT_SCREEN;
+            TerminalView::handle_wheel_scrolled(
+                &mut state,
+                ScrollDelta::Lines { y: 2.0, x: 0.0 },
+                &font.measure,
+                &mode,
+                &mut commands,
+            );
+            assert_eq!(commands.len(), 2);
+            assert!(commands.iter().all(|c| matches!(
+                c,
+                Command::MouseReport(MouseButton::ScrollUp, _, _, true)
+            )));
+            commands.clear();
+            state.keyboard_modifiers = Modifiers::SHIFT;
+            TerminalView::handle_wheel_scrolled(
+                &mut state,
+                ScrollDelta::Lines { y: -2.0, x: 0.0 },
+                &font.measure,
+                &mode,
+                &mut commands,
+            );
+            assert!(matches!(commands.as_slice(), [Command::Scroll(-2)]));
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn amux_tests_conpty_sgr_request_routes_wheel_without_vt_mouse_tracking_flags(
+        ) {
+            let mut state = TerminalViewState::new();
+            let font = TermFont::new(FontSettings::default());
+            let mut commands = Vec::new();
+            TerminalView::handle_wheel_scrolled(
+                &mut state,
+                ScrollDelta::Lines { y: -1.0, x: 0.0 },
+                &font.measure,
+                &(TermMode::ALT_SCREEN | TermMode::SGR_MOUSE),
+                &mut commands,
+            );
+            assert!(matches!(
+                commands.as_slice(),
+                [Command::MouseReport(MouseButton::ScrollDown, _, _, true)]
+            ));
+        }
+
+        #[test]
         fn scroll_with_lines_downward() {
             let mut state = TerminalViewState::new();
             let font = TermFont::new(FontSettings::default());
@@ -1201,6 +1275,7 @@ mod tests {
                 &mut state,
                 ScrollDelta::Lines { y: 3.0, x: 0.0 }, // Scroll down 3 lines
                 &font.measure,
+                &TermMode::empty(),
                 &mut commands,
             );
 
@@ -1218,6 +1293,7 @@ mod tests {
                 &mut state,
                 ScrollDelta::Lines { y: -2.0, x: 0.0 },
                 &font.measure,
+                &TermMode::empty(),
                 &mut commands,
             );
 
@@ -1235,12 +1311,13 @@ mod tests {
                 &mut state,
                 ScrollDelta::Pixels { y: 45.0, x: 0.0 },
                 &font.measure,
+                &TermMode::empty(),
                 &mut commands,
             );
 
             assert_eq!(commands.len(), 1);
-            assert!(matches!(commands[0], Command::Scroll(-2)));
-            assert_eq!(state.scroll_pixels, -8.600002);
+            assert!(matches!(commands[0], Command::Scroll(2)));
+            assert_eq!(state.scroll_pixels, 8.600002);
         }
 
         #[test]
@@ -1253,12 +1330,13 @@ mod tests {
                 &mut state,
                 ScrollDelta::Pixels { y: -60.0, x: 0.0 },
                 &font.measure,
+                &TermMode::empty(),
                 &mut commands,
             );
 
             assert_eq!(commands.len(), 1);
-            assert!(matches!(commands[0], Command::Scroll(3)));
-            assert_eq!(state.scroll_pixels, 5.4000034);
+            assert!(matches!(commands[0], Command::Scroll(-3)));
+            assert_eq!(state.scroll_pixels, -5.4000034);
         }
     }
 }
