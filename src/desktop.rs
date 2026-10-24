@@ -314,6 +314,10 @@ pub fn run(directory: PathBuf) -> anyhow::Result<()> {
     .theme(|_: &Desktop, _| desktop_design::theme())
     .settings(iced::Settings {
         default_text_size: iced::Pixels(13.0),
+        // Linux Wayland/NVIDIA FIFO presentation can leave a frame callback
+        // pending until pointer activity. Keep this event-driven UI responsive
+        // without waiting for synchronized GPU presentation.
+        vsync: !cfg!(target_os = "linux"),
         ..Default::default()
     })
     .subscription(Desktop::subscription)
