@@ -445,6 +445,8 @@ fn lifecycle(id: i64, project: &str) -> Lifecycle {
         task: Uuid::new_v4(),
         kind: Kind::Created,
         created_at: unix_ms() as i64,
+        routing: Default::default(),
+        owner: None,
         origin: None,
         goal: None,
     }
@@ -981,6 +983,12 @@ fn native_plain_shell_identity_suppresses_its_own_notification() {
     wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
     scan(&mut app, None);
     let target = app.delegation.targets().remove(0);
+    let advertised = app.routing_actors(app.workspaces[0].id);
+    assert_eq!(advertised.len(), 1);
+    assert_eq!(advertised[0].0.session_id, target.session);
+    assert_eq!(advertised[0].1, target.executor_generation());
+    assert_eq!(advertised[0].2, target.directory);
+    assert!(app.routing_actors(Uuid::new_v4()).is_empty());
     let mut event = lifecycle(1, "amux");
     event.origin = target.origin;
     assert!(event.origin.is_some());
@@ -1098,6 +1106,8 @@ fn task_events_coalesce_a_refresh_without_changing_durable_delivery() {
         task: Uuid::new_v4(),
         kind: Kind::Completed,
         created_at: unix_ms() as i64,
+        routing: Default::default(),
+        owner: None,
         origin: None,
         goal: None,
     };

@@ -90,6 +90,7 @@ impl Desktop {
                 Message::ProjectResolved(remap(scope)?, result)
             }
             Message::TasksLoaded(scope, result) => Message::TasksLoaded(remap(scope)?, result),
+            Message::RoutingLoaded(scope, result) => Message::RoutingLoaded(remap(scope)?, result),
             Message::TaskCreated(scope, request, result) => {
                 Message::TaskCreated(remap(scope)?, request, result)
             }

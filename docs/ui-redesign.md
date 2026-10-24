@@ -39,14 +39,31 @@ existing gateway preferences. General changes do not rebind the gateway or
 discard an uncertain task request. The update bell uses the existing verified
 binary installer and restart flow.
 
-## Remaining integration
+## Task routing
 
-Exact agent, unassigned and broadcast targets in the prototype's task composer
-require a gateway API contract. Gateway support is delegated to owning-project
-task `01a16f17-6788-7791-b5d2-a052b207c38a`; the amux tracker is
-`01a16f17-6788-7791-b5d2-a065f4979044`. Until integrated, the composer honestly
-uses automatic project routing. The owner approved publishing v0.0.11 for
-testing while these targeting modes remain a delegated follow-up.
+The composer supports automatic project routing, queue unassigned, broadcast,
+and an exact live agent execution. The gateway recipient directory is scoped to
+the workspace's canonical Git remote. Ordinary agent presence uses the existing
+URL/API key and the terminal's assigned native identity; no additional machine
+or session keys are required. Availability refreshes every 30 seconds and uses
+the gateway's 120-second lease. Closed agents stop advertising and expire there.
+
+Human task creation sends no agent origin headers. The selected session and
+generation come from the directory; stale or unavailable selections are never
+silently changed to automatic routing. Submission rechecks the actual Git
+remote and project, and explicit routing must be acknowledged by the gateway.
+Errors retain an uncertain receipt and never automatically replay a POST.
+
+Queue-only creation does not inject a notification. Broadcast creates one
+unclaimed task and fans out to matching local agents; agents still arbitrate
+ownership through normal claims. Exact creation targets only the selected
+execution. Later comments follow current ownership, and released tasks can route
+normally. Existing repository, goal, self-origin and offline-history gates remain.
+
+Gateway support was delegated through task
+`01a16f17-6788-7791-b5d2-a052b207c38a` and deployed in v1.23.0. Older gateways
+retain automatic routing while the UI explains that explicit recipients are
+unavailable. The published v0.0.11 testing release predates this integration.
 
 ## Validation
 
@@ -66,3 +83,9 @@ subsystems and bundled Lucide notice checked. The final design commit `c1f7b0c`
 also passed both platforms ([CI run](https://github.com/nitecon/amux/actions/runs/40124785852));
 both portable bundles were verified against their hashes and source revision.
 Native Windows visual review remains an owner testing step.
+
+Recipient integration has local HTTP and durable queue tests for attribution,
+repository fences, all delivery modes and stale execution handling. An isolated
+native GUI fixture submitted each of the four composer modes exactly once with
+matching repository metadata and no agent impersonation headers. Evidence is
+`artifacts/design-preview/routing-native/evidence.json`.

@@ -97,6 +97,7 @@ pub(super) struct Found {
 }
 #[derive(Debug, Clone)]
 struct Candidate {
+    actor: amux::identity::AgentIdentity,
     name: String,
     root: Root,
     process: AgentProcess,
@@ -473,6 +474,7 @@ impl Desktop {
                             },
                             root: f.root,
                             process: f.process,
+                            actor: f.actor,
                         }
                     })
                     .collect();
@@ -735,6 +737,43 @@ impl Desktop {
 }
 
 impl Desktop {
+    pub(super) fn routing_actors(
+        &self,
+        workspace: Uuid,
+    ) -> Vec<(amux::identity::AgentIdentity, Uuid, PathBuf)> {
+        if self
+            .delegation
+            .scan_completed
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
+        {
+            return Vec::new();
+        }
+        self.delegation
+            .candidates
+            .iter()
+            .filter(|c| c.root.workspace == workspace)
+            .map(|c| {
+                (
+                    c.actor.clone(),
+                    c.target.executor_generation(),
+                    c.target.directory.clone(),
+                )
+            })
+            .collect()
+    }
+    pub(super) fn routing_name(
+        &self,
+        target: &amux::task_routing::SessionTarget,
+    ) -> Option<String> {
+        self.delegation
+            .candidates
+            .iter()
+            .find(|c| {
+                c.target.origin.as_ref() == Some(&target.origin)
+                    && c.target.executor_generation() == target.generation
+            })
+            .map(|c| c.name.clone())
+    }
     fn refresh_task_project(&mut self, project: &str) -> Task<Message> {
         let mut ready = Vec::new();
         for (index, w) in self

@@ -23,7 +23,7 @@ pub struct Origin {
     pub os: String,
 }
 impl Origin {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             !self.session_id.is_nil() && !self.instance_id.is_nil(),
             "Invalid event origin"
@@ -52,12 +52,16 @@ pub struct Event {
     pub created_at: i64,
     pub origin: Option<Origin>,
     pub goal: Option<String>,
+    #[serde(default)]
+    pub routing: Box<crate::task_routing::Routing>,
+    #[serde(default)]
+    pub owner: Option<Origin>,
 }
 impl Event {
     /// Retain identifiers only. Task descriptions and comment bodies never reach input or the journal.
     pub fn parse(value: &Value) -> Result<Option<Self>> {
         let kind = match value["kind"].as_str() {
-            Some("task_created") => Kind::Created,
+            Some("task_created" | "task_unclaimed") => Kind::Created,
             Some("task_commented") => Kind::Commented,
             Some("task_completed") => Kind::Completed,
             _ => bail!("Unsupported lifecycle event"),
@@ -103,6 +107,19 @@ impl Event {
             created_at: value["created_at"].as_i64().unwrap_or(0),
             origin,
             goal,
+            routing: match value["task"].get("routing") {
+                _ if value["kind"] == "task_unclaimed" => Default::default(),
+                None | Some(Value::Null) => Default::default(),
+                Some(value) => {
+                    serde_json::from_value(value.clone()).context("Invalid task routing")?
+                }
+            },
+            owner: match value["task"].get("owner_origin") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    Some(serde_json::from_value(value.clone()).context("Invalid task owner")?)
+                }
+            },
         };
         event.validate()?;
         Ok(Some(event))
@@ -115,6 +132,12 @@ impl Event {
         identifier(&self.project)?;
         if let Some(origin) = &self.origin {
             origin.validate()?;
+        }
+        if let Some(owner) = &self.owner {
+            owner.validate()?;
+        }
+        if let crate::task_routing::Routing::Session { target } = self.routing.as_ref() {
+            target.validate()?;
         }
         ensure!(
             normalize_goal(self.goal.as_deref())? == self.goal,
@@ -180,6 +203,13 @@ pub struct Target {
     pub goal: Option<String>,
 }
 impl Target {
+    /// Lifecycle token for this attachment; never changes the assigned agent identity.
+    pub fn executor_generation(&self) -> Uuid {
+        Uuid::new_v5(
+            &self.session,
+            format!("{}:{}", self.pid, self.generation).as_bytes(),
+        )
+    }
     fn validate(&self) -> Result<()> {
         ensure!(
             !self.workspace.is_nil()
@@ -222,10 +252,26 @@ impl Target {
         self.mismatch_reason(event).is_none()
     }
     pub fn mismatch_reason(&self, event: &Event) -> Option<&'static str> {
+        use crate::task_routing::Routing;
         if self.project != event.project {
             Some("Agent repository does not match the task project")
         } else if event.goal.is_some() && self.goal != event.goal {
             Some("Task goal does not match this agent")
+        } else if event.kind == Kind::Created && *event.routing == Routing::Unassigned {
+            Some("Task queued without an agent notification")
+        } else if event.kind == Kind::Created
+            && let Routing::Session { target } = event.routing.as_ref()
+            && (self.origin.as_ref() != Some(&target.origin)
+                || self.executor_generation() != target.generation)
+        {
+            Some("Task targets another agent execution")
+        } else if !(event.kind == Kind::Created && *event.routing == Routing::Broadcast)
+            && event
+                .owner
+                .as_ref()
+                .is_some_and(|owner| self.origin.as_ref() != Some(owner))
+        {
+            Some("Task belongs to another agent")
         } else if event.origin.as_ref().is_some_and(|origin| {
             self.origin.as_ref().is_some_and(|own| {
                 own.session_id == origin.session_id && own.instance_id == origin.instance_id

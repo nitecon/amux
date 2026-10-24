@@ -22,6 +22,8 @@ fn event(id: i64) -> Event {
         task: Uuid::new_v4(),
         kind: Kind::Created,
         created_at: 1_000_000,
+        routing: Default::default(),
+        owner: None,
         origin: None,
         goal: None,
     }
@@ -33,6 +35,83 @@ fn fixture() -> (tempfile::TempDir, Queue) {
     let mut queue = Queue::open(dir.path().join("journal.json"), "fixture").unwrap();
     queue.subscribed(0, 9).unwrap();
     (dir, queue)
+}
+
+#[test]
+fn explicit_routing_controls_native_audience_and_keeps_one_task() {
+    use amux::{
+        identity::Provider,
+        task_routing::{Routing, SessionTarget},
+    };
+    let origin = |session| Origin {
+        session_id: session,
+        instance_id: Uuid::new_v4(),
+        provider: Provider::Codex,
+        os: "windows".into(),
+    };
+    let mut a = target();
+    a.origin = Some(origin(a.session));
+    let mut b = target();
+    b.origin = Some(origin(b.session));
+    let selected = SessionTarget {
+        origin: a.origin.clone().unwrap(),
+        generation: a.executor_generation(),
+    };
+    let (_dir, mut queue) = fixture();
+    let mut exact = event(10);
+    *exact.routing = Routing::Session {
+        target: selected.clone(),
+    };
+    exact.owner = a.origin.clone();
+    queue
+        .receive(exact.clone(), &[a.clone(), b.clone()], true, 1_000_000)
+        .unwrap();
+    assert_eq!(
+        queue.journal.receipts[0].recipients[0].outcome,
+        Outcome::Queued
+    );
+    assert_eq!(
+        queue.journal.receipts[0].recipients[1].outcome,
+        Outcome::Skipped
+    );
+    let mut queued = event(11);
+    *queued.routing = Routing::Unassigned;
+    queue
+        .receive(queued, &[a.clone(), b.clone()], true, 1_000_000)
+        .unwrap();
+    assert!(
+        queue.journal.receipts[1]
+            .recipients
+            .iter()
+            .all(|r| r.outcome == Outcome::Skipped)
+    );
+    let mut broadcast = event(12);
+    *broadcast.routing = Routing::Broadcast;
+    queue
+        .receive(broadcast, &[a.clone(), b.clone()], true, 1_000_000)
+        .unwrap();
+    assert!(
+        queue.journal.receipts[2]
+            .recipients
+            .iter()
+            .all(|r| r.outcome == Outcome::Queued)
+    );
+    let mut replacement = a.clone();
+    replacement.generation = "new process".into();
+    assert!(!replacement.accepts(&exact));
+    let mut later = exact.clone();
+    later.kind = Kind::Commented;
+    later.owner = b.origin.clone();
+    assert!(!a.accepts(&later));
+    assert!(b.accepts(&later));
+    let released=Event::parse(&serde_json::json!({"id":13,"kind":"task_unclaimed","project_ident":"amux","created_at":1_000_000,"task":{"id":exact.task,"routing":exact.routing,"owner_origin":null}})).unwrap().unwrap();
+    assert!(a.accepts(&released));
+    assert!(b.accepts(&released));
+    let foreign = Target {
+        project: "other".into(),
+        ..b
+    };
+    assert!(!foreign.accepts(&event(14)));
 }
 #[test]
 fn offline_history_duplicate_and_later_agents_never_receive_input() {

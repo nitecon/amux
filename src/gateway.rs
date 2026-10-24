@@ -98,7 +98,7 @@ impl Gateway {
         Ok(result)
     }
 
-    async fn project_request(
+    pub(crate) async fn project_request(
         &self,
         method: Method,
         project: &str,
@@ -214,7 +214,7 @@ impl Gateway {
         )
     }
 
-    async fn projects(&self) -> Result<Value> {
+    pub(crate) async fn projects(&self) -> Result<Value> {
         self.exchange(Method::GET, self.projects_url()?, None, None, &[])
             .await
     }

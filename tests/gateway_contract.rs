@@ -111,6 +111,189 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recipient() {
+    use amux::{
+        delegation::Origin,
+        task_routing::{Routing, SessionTarget},
+    };
+    let actor = agent(Provider::Codex);
+    let target = SessionTarget {
+        origin: Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let routing = Routing::Session {
+        target: target.clone(),
+    };
+    let available = json!({"target":target,"seen_at":1000000,"expires_at":1120000,"canonical_remote":"github.com/nitecon/amux"});
+    let accepted = json!({"id": TASK,"project_ident":"demo","status":"todo","routing":routing,"owner_origin":target.origin});
+    let (url, server) = server(vec![
+        reply(200, &available),
+        reply(
+            200,
+            &json!({"targets":[available],"canonical_remote":"github.com/nitecon/amux"}),
+        ),
+        reply(
+            200,
+            &json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]),
+        ),
+        reply(200, &accepted),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        gateway
+            .advertise_task_target("demo", "github.com/nitecon/amux", &actor, target.generation)
+            .await
+            .unwrap();
+        let directory = gateway
+            .task_targets("demo", "github.com/nitecon/amux")
+            .await
+            .unwrap();
+        assert_eq!(directory.targets[0].target, target);
+        assert_eq!(
+            gateway
+                .create_routed_task(
+                    "demo",
+                    "Human task",
+                    "exact\ncontext",
+                    Some("github.com/nitecon/amux"),
+                    &routing
+                )
+                .await
+                .unwrap()
+                .to_string(),
+            TASK
+        );
+    });
+    let requests = server.join().unwrap();
+    for request in &requests {
+        assert!(request.head.contains("authorization: bearer test-only"));
+        assert!(!request.head.contains("x-machine"));
+    }
+    assert!(
+        requests[0]
+            .head
+            .starts_with("post /v1/projects/demo/task-targets ")
+    );
+    assert!(
+        requests[0]
+            .head
+            .contains(&format!("x-agent-session-id: {}", actor.session_id))
+    );
+    assert_eq!(
+        requests[0].body,
+        json!({"generation":target.generation,"canonical_remote":"github.com/nitecon/amux"})
+    );
+    assert!(
+        requests[1]
+            .head
+            .starts_with("get /v1/projects/demo/task-targets ")
+    );
+    assert!(!requests[1].head.contains("x-agent-"));
+    assert!(!requests[2].head.contains("x-agent-"));
+    assert!(!requests[3].head.contains("x-agent-"));
+    assert_eq!(
+        requests[3].body["routing"],
+        serde_json::to_value(routing).unwrap()
+    );
+    assert_eq!(requests[3].body["specification"], "exact\ncontext");
+}
+
+#[test]
+fn routed_task_errors_never_retry_or_silently_fall_back_to_auto() {
+    use amux::task_routing::Routing;
+    let (url, server) = server(vec![
+        reply(
+            200,
+            &json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]),
+        ),
+        reply(409, &json!({"error":"stale target"})),
+        reply(
+            200,
+            &json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]),
+        ),
+        reply(
+            200,
+            &json!({"id":TASK,"project_ident":"demo","status":"todo","routing":{"mode":"auto"}}),
+        ),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    assert!(
+        runtime
+            .block_on(gateway.create_routed_task(
+                "demo",
+                "Queued",
+                "",
+                Some("github.com/nitecon/amux"),
+                &Routing::Unassigned
+            ))
+            .is_err()
+    );
+    assert!(
+        runtime
+            .block_on(gateway.create_routed_task(
+                "demo",
+                "Broadcast",
+                "",
+                Some("github.com/nitecon/amux"),
+                &Routing::Broadcast
+            ))
+            .is_err()
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1].body["routing"]["mode"], "unassigned");
+    assert_eq!(requests[3].body["routing"]["mode"], "broadcast");
+    assert!(requests.iter().all(|r| !r.head.contains("x-agent-")));
+}
+
+#[test]
+fn recipient_directory_from_another_repository_is_rejected() {
+    let (url, server) = server(vec![reply(
+        200,
+        &json!({"targets":[],"canonical_remote":"github.com/nitecon/other"}),
+    )]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    assert!(
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(gateway.task_targets("demo", "github.com/nitecon/amux"))
+            .is_err()
+    );
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[test]
+fn changed_repository_project_prevents_even_an_automatic_task_post() {
+    let (url, server) = server(vec![reply(
+        200,
+        &json!([{"ident":"other","canonical_remote":"github.com/nitecon/amux"}]),
+    )]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    assert!(
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(gateway.create_routed_task(
+                "demo",
+                "Do not misroute",
+                "",
+                Some("github.com/nitecon/amux"),
+                &amux::task_routing::Routing::Auto
+            ))
+            .is_err()
+    );
+    let seen = server.join().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].head.starts_with("get /v1/projects "));
+}
+
+#[test]
 fn three_same_project_agents_each_claim_with_only_their_own_identity() {
     let agents = [
         agent(Provider::Codex),

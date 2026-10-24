@@ -13,6 +13,8 @@ mod desktop_delegation;
 mod desktop_design;
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
+#[path = "desktop_routing.rs"]
+mod desktop_routing;
 #[path = "desktop_workspace.rs"]
 mod desktop_workspace;
 use desktop_workspace::{WorkspaceDialog, WorkspaceMessage};
@@ -65,6 +67,11 @@ enum Message {
     ProjectResolved(QueryScope, Result<String, String>),
     RefreshTasks,
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
+    RoutingLoaded(
+        QueryScope,
+        Result<(amux::task_routing::Directory, Option<String>), String>,
+    ),
+    TaskTarget(desktop_routing::Choice),
     RecoveryLoaded(RecoveryScope, Result<desktop_recovery::Recovery, String>),
     ReceiptReported(RecoveryScope, Uuid, Result<(), String>),
     TaskTitle(String),
@@ -204,6 +211,7 @@ impl RecoveryBridge {
 
 #[derive(Default)]
 struct TaskPanel {
+    routing: desktop_routing::Panel,
     project: String,
     revision: u64,
     loading: bool,
@@ -853,6 +861,14 @@ impl Desktop {
             self.dirty = true;
         }
         match message {
+            Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
+            Message::TaskTarget(choice) => {
+                let panel = &mut self.workspaces[self.active].gateway;
+                if panel.request.is_none() {
+                    panel.routing.choice = choice;
+                    panel.draft_status.clear();
+                }
+            }
             Message::WindowResized(id, size) => {
                 if id == self.main_window {
                     self.set_compact(size.width < 1400.0);
@@ -1384,7 +1400,12 @@ impl Desktop {
                 } else {
                     Task::none()
                 };
-                return Task::batch([self.delivery_tick(), self.delegation_tick(), updates]);
+                return Task::batch([
+                    self.delivery_tick(),
+                    self.delegation_tick(),
+                    self.routing_tick(),
+                    updates,
+                ]);
             }
         }
         Task::none()
@@ -1694,6 +1715,7 @@ impl Desktop {
             let panel = &mut workspace.gateway;
             panel.revision += 1;
             panel.project.clear();
+            panel.routing = Default::default();
             panel.loading = false;
             panel.refresh_pending = false;
             panel.loaded_at = None;
@@ -1765,6 +1787,7 @@ impl Desktop {
             self.withdraw(id);
         }
         let panel = &mut self.workspaces[workspace].gateway;
+        panel.routing = Default::default();
         panel.project = project;
         panel.revision += 1;
         panel.loading = false;
@@ -1827,6 +1850,10 @@ impl Desktop {
         if panel.request.is_some() {
             return Task::none();
         }
+        if !panel.routing.can_submit() {
+            panel.draft_status = "Not submitted: selected recipient is unavailable; refresh or choose automatic routing".into();
+            return Task::none();
+        }
         if scope.project.is_empty() || panel.draft_title.trim().is_empty() {
             panel.draft_status =
                 "Not submitted: wait for the repository connection and enter a task title".into();
@@ -1847,6 +1874,12 @@ impl Desktop {
         let request_id = Uuid::new_v4();
         let title = panel.draft_title.clone();
         let context = panel.draft_context.text();
+        let routing = panel.routing.choice.routing();
+        let remote = panel
+            .routing
+            .directory
+            .as_ref()
+            .map(|d| d.canonical_remote.clone());
         panel.request = Some(TaskRequest {
             id: request_id,
             project: scope.project.clone(),
@@ -1859,16 +1892,30 @@ impl Desktop {
                 // A desktop user's request is not attributed to any agent execution.
                 // The shared client validates the accepted task UUID/project/status.
                 let result = async {
-                    let task = gateway
-                        .request(
-                            reqwest::Method::POST,
+                    let directory = scope.directory.clone();
+                    let actual = tokio::task::spawn_blocking(move || {
+                        amux::gateway_project::origin(&directory)
+                    })
+                    .await??;
+                    if routing != amux::task_routing::Routing::Auto {
+                        anyhow::ensure!(
+                            remote
+                                .as_deref()
+                                .and_then(amux::gateway_project::repository)
+                                .as_deref()
+                                == Some(actual.as_str()),
+                            "Repository changed; refresh recipients before submitting"
+                        );
+                    }
+                    gateway
+                        .create_routed_task(
                             &scope.project,
-                            &[],
-                            Some(serde_json::json!({"title": title, "specification": context})),
-                            None,
+                            &title,
+                            &context,
+                            Some(&actual),
+                            &routing,
                         )
-                        .await?;
-                    serde_json::from_value::<Uuid>(task["id"].clone()).map_err(anyhow::Error::from)
+                        .await
                 }
                 .await
                 .map_err(|error| error.to_string());
@@ -2247,7 +2294,7 @@ impl Desktop {
             return receipt.into();
         }
         column![
-            text("Target: automatic project routing").size(11),
+            self.routing_form(),
             text_input("Task title", &panel.draft_title).on_input(Message::TaskTitle),
             text_editor(&panel.draft_context)
                 .placeholder("Context / handoff text (optional)")
