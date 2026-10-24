@@ -70,3 +70,9 @@ dropped; `Backend::handle` clears the flag before the caller syncs, so later
 output queues a fresh `Wakeup`. Every other event keeps its order. Upstream
 queued two events per echoed character into the 100-slot channel, so a slow
 renderer throttled PTY reading to one batch per frame and left output undrawn.
+
+The per-terminal activity clock records only parser output wakeups, including
+output received while redraws are coalesced. Neither widget input nor checked
+input enqueues advance it; cursor-only redraws also leave it unchanged. Native
+PTY coverage disables echo to verify input alone stays idle, then verifies new
+output advances the clock without activating another terminal.

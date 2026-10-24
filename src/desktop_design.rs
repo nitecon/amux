@@ -394,7 +394,7 @@ impl Desktop {
                     )
                     .padding([5, 10])
                     .style(|_| surface(CARD, true)),
-                    "Active means terminal input/output within the last 5 seconds.",
+                    "Active means terminal output within the last 5 seconds.",
                     tooltip::Position::Bottom
                 ),
                 Space::new().width(Length::Fill),
@@ -481,7 +481,7 @@ impl Desktop {
                 }
                 if let Some(elapsed) = tab.terminal.as_ref().and_then(Terminal::activity_elapsed) {
                     diagnostic = diagnostic.push(
-                        text(format!("Last terminal I/O: {}s ago", elapsed.as_secs()))
+                        text(format!("Last terminal output: {}s ago", elapsed.as_secs()))
                             .size(10)
                             .color(MUTED),
                     );
@@ -914,7 +914,7 @@ impl Desktop {
                         .color(MUTED),
                         Space::new().width(Length::Fill),
                         text(if active(tab) {
-                            "● Recent I/O"
+                            "● Recent output"
                         } else {
                             "○ Idle"
                         })

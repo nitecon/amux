@@ -490,8 +490,6 @@ impl Backend {
     }
 
     fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
-        *self.activity.lock().expect("activity clock") =
-            Some(std::time::Instant::now());
         self.notifier.notify(input);
     }
 
@@ -503,15 +501,10 @@ impl Backend {
     }
 
     pub fn try_enqueue_input(&self, input: Vec<u8>) -> Result<()> {
-        let has_input = !input.is_empty();
         self.notifier
             .0
             .send(Msg::Input(Cow::Owned(input)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        if has_input {
-            *self.activity.lock().expect("activity clock") =
-                Some(std::time::Instant::now());
-        }
         Ok(())
     }
 

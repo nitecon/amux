@@ -7,7 +7,8 @@ The desktop remains a native Rust/Iced application with native terminal panes.
 
 - Settings uses the reference's in-window modal.
 - Repository matching is required for task delivery.
-- Activity means native terminal input or output within five seconds. It does not
+- Activity means native terminal output within five seconds. Input alone does not
+  activate a session; output echoed by the terminal still counts. It does not
   imply that a model is reasoning. No rendered terminal text drives this metric.
 - Sample transcripts, file locks, model names, quotas and the simulation panel
   from the prototype are illustrative data and are not shipped as live features.

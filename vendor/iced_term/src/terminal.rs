@@ -82,13 +82,14 @@ impl Terminal {
         self.backend.native_terminal_fd()
     }
 
-    /// A successful enqueue is not proof of a PTY write or agent acknowledgment.
-    /// An error may follow channel acceptance; callers must retain uncertainty.
-    /// Time since native PTY output or terminal input; no screen interpretation.
+    /// Time since native PTY output; input and cursor redraws do not advance it.
+    /// Output echoed by the terminal still counts; no screen interpretation.
     pub fn activity_elapsed(&self) -> Option<std::time::Duration> {
         self.backend.activity_elapsed()
     }
 
+    /// A successful enqueue is not proof of a PTY write or agent acknowledgment.
+    /// An error may follow channel acceptance; callers must retain uncertainty.
     pub fn try_enqueue_input(&self, input: Vec<u8>) -> std::io::Result<()> {
         self.backend.try_enqueue_input(input)
     }
@@ -375,6 +376,69 @@ mod amux_tests {
             assert_eq!(id, terminal.id);
             terminal.handle(Command::ProxyToBackend(command));
         }
+    }
+
+    #[test]
+    fn native_activity_changes_only_for_output_from_its_own_terminal() {
+        let mut terminal = Terminal::new(930_031, Settings {
+            backend: BackendSettings {
+                program: "/usr/bin/python3".into(),
+                args: vec!["-c".into(), "import os,tty,time; tty.setraw(0); os.write(1,b'OUTPUT_READY'); os.read(0,1); os.read(0,1); os.read(0,1); os.write(1,b'OUTPUT_AFTER_INPUT'); time.sleep(30)".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        }).unwrap();
+        let peer = Terminal::new(
+            930_032,
+            Settings {
+                backend: BackendSettings {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exec sleep 30".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut events = events_for(&terminal);
+        drive_until_rendered(
+            &mut terminal,
+            &mut events,
+            &runtime,
+            "OUTPUT_READY",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        let before_write = terminal.activity_elapsed().unwrap();
+        terminal.handle(Command::ProxyToBackend(backend::Command::Write(
+            b"a".to_vec(),
+        )));
+        assert!(
+            terminal.activity_elapsed().unwrap() >= before_write,
+            "widget input reset output activity"
+        );
+        let before_enqueue = terminal.activity_elapsed().unwrap();
+        terminal.try_enqueue_input(b"b".to_vec()).unwrap();
+        assert!(
+            terminal.activity_elapsed().unwrap() >= before_enqueue,
+            "checked input reset output activity"
+        );
+        let released = std::time::Instant::now();
+        terminal.try_enqueue_input(b"c".to_vec()).unwrap();
+        drive_until_rendered(
+            &mut terminal,
+            &mut events,
+            &runtime,
+            "OUTPUT_AFTER_INPUT",
+        );
+        assert!(
+            terminal.activity_elapsed().unwrap() <= released.elapsed(),
+            "new output did not refresh activity"
+        );
+        assert!(
+            peer.activity_elapsed().is_none(),
+            "output activated a different terminal"
+        );
     }
 
     #[test]
