@@ -15,6 +15,8 @@ mod desktop_design;
 mod desktop_recovery;
 #[path = "desktop_routing.rs"]
 mod desktop_routing;
+#[path = "desktop_tasks.rs"]
+mod desktop_tasks;
 #[path = "desktop_workspace.rs"]
 mod desktop_workspace;
 use desktop_workspace::{WorkspaceDialog, WorkspaceMessage};
@@ -31,6 +33,15 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 enum Message {
+    ManageTask(desktop_tasks::Action),
+    TaskDetailLoaded(QueryScope, Uuid, Uuid, Result<serde_json::Value, String>),
+    TaskChanged(
+        QueryScope,
+        Uuid,
+        Uuid,
+        desktop_tasks::Change,
+        Result<serde_json::Value, String>,
+    ),
     Design(desktop_design::Action),
     Escape,
     WindowResized(iced::window::Id, iced::Size),
@@ -211,6 +222,7 @@ impl RecoveryBridge {
 
 #[derive(Default)]
 struct TaskPanel {
+    detail: desktop_tasks::Panel,
     routing: desktop_routing::Panel,
     project: String,
     revision: u64,
@@ -865,6 +877,13 @@ impl Desktop {
             self.dirty = true;
         }
         match message {
+            Message::ManageTask(action) => return self.manage_task(action),
+            Message::TaskDetailLoaded(scope, id, request, result) => {
+                self.task_detail_loaded(scope, id, request, result)
+            }
+            Message::TaskChanged(scope, id, request, change, result) => {
+                return self.task_changed(scope, id, request, change, result);
+            }
             Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
             Message::TaskTarget(choice) => {
                 let panel = &mut self.workspaces[self.active].gateway;
@@ -1233,6 +1252,9 @@ impl Desktop {
                 }
                 if std::mem::take(&mut panel.refresh_pending) {
                     return self.query(scope.workspace);
+                }
+                if panel.loaded_at.is_some() && panel.detail.refresh_with_list() {
+                    return self.refresh_open_task(scope.workspace);
                 }
             }
             Message::RecoveryLoaded(scope, result) => {
@@ -1671,15 +1693,16 @@ impl Desktop {
                 != self.preferences.draft.automatic_notifications;
         if connection_changed
             && self.workspaces.iter().any(|w| {
-                w.gateway.request.as_ref().is_some_and(|r| {
-                    matches!(
-                        r.state,
-                        TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
-                    )
-                })
+                w.gateway.detail.unresolved()
+                    || w.gateway.request.as_ref().is_some_and(|r| {
+                        matches!(
+                            r.state,
+                            TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                        )
+                    })
             })
         {
-            self.preferences.status = "A task submission is pending or unconfirmed. Inspect its result before changing connections; use New task only after resolving it.".into();
+            self.preferences.status = "A gateway task action is pending or unconfirmed. Refresh and inspect its result before changing connections.".into();
             return Task::none();
         }
         let mut draft = self.preferences.draft.clone();
@@ -1719,6 +1742,7 @@ impl Desktop {
             let panel = &mut workspace.gateway;
             panel.revision += 1;
             panel.project.clear();
+            panel.detail = Default::default();
             panel.routing = Default::default();
             panel.loading = false;
             panel.refresh_pending = false;
@@ -1793,6 +1817,7 @@ impl Desktop {
         let panel = &mut self.workspaces[workspace].gateway;
         panel.routing = Default::default();
         panel.project = project;
+        panel.detail = Default::default();
         panel.revision += 1;
         panel.loading = false;
         panel.refresh_pending = false;

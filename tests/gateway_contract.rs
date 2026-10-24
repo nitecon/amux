@@ -111,6 +111,182 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn sidebar_actions_are_human_requests_and_confirm_the_requested_result() {
+    use amux::{delegation::Origin, task_management::TaskEdits, task_routing::SessionTarget};
+    let target = SessionTarget {
+        origin: Origin {
+            session_id: uuid::Uuid::new_v4(),
+            instance_id: uuid::Uuid::new_v4(),
+            provider: Provider::Codex,
+            os: "windows".into(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let task = json!({"id":TASK,"project_ident":"demo","status":"todo", "title":"Updated title","description":"Two\nlines", "specification":"Exact handoff\nwith newlines"});
+    let (url, server) = server(vec![
+        reply(200, &task),
+        reply(
+            200,
+            &json!({"id":uuid::Uuid::new_v4(),"task_id":TASK,"content":"User comment\nsecond line","author_type":"user"}),
+        ),
+        reply(
+            200,
+            &json!({"id":TASK,"project_ident":"demo","status":"todo","owner_origin":target.origin}),
+        ),
+        reply(
+            200,
+            &json!({"id":TASK,"project_ident":"demo","status":"done"}),
+        ),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let id = uuid::Uuid::parse_str(TASK).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        gateway
+            .edit_desktop_task(
+                "demo",
+                id,
+                &TaskEdits {
+                    title: "Updated title".into(),
+                    description: "Two\nlines".into(),
+                    specification: "Exact handoff\nwith newlines".into(),
+                },
+            )
+            .await
+            .unwrap();
+        gateway
+            .comment_on_task("demo", id, "User comment\nsecond line")
+            .await
+            .unwrap();
+        gateway
+            .assign_desktop_task("demo", id, &target)
+            .await
+            .unwrap();
+        gateway.close_desktop_task("demo", id).await.unwrap();
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in &requests {
+        assert!(request.head.contains("authorization: bearer test-only"));
+        assert!(
+            !request.head.contains("x-agent-"),
+            "desktop actions must not impersonate the assigned agent"
+        );
+    }
+    assert!(
+        requests[0]
+            .head
+            .starts_with(&format!("patch /v1/projects/demo/tasks/{TASK} "))
+    );
+    assert_eq!(requests[0].body["description"], "Two\nlines");
+    assert_eq!(
+        requests[0].body["specification"],
+        "Exact handoff\nwith newlines"
+    );
+    assert!(
+        requests[1]
+            .head
+            .starts_with(&format!("post /v1/projects/demo/tasks/{TASK}/comments "))
+    );
+    assert_eq!(requests[1].body["author_type"], "user");
+    assert!(
+        requests[2]
+            .head
+            .starts_with(&format!("post /v1/projects/demo/tasks/{TASK}/assign "))
+    );
+    assert_eq!(requests[2].body, json!({"target":target}));
+    assert_eq!(requests[3].body, json!({"status":"done"}));
+}
+
+#[test]
+fn sidebar_rejects_wrong_owners_and_failed_posts_without_replay() {
+    use amux::{delegation::Origin, task_routing::SessionTarget};
+    let target = SessionTarget {
+        origin: Origin {
+            session_id: uuid::Uuid::new_v4(),
+            instance_id: uuid::Uuid::new_v4(),
+            provider: Provider::Codex,
+            os: "linux".into(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let (url, server) = server(vec![
+        reply(
+            200,
+            &json!({"id":TASK,"project_ident":"demo","status":"todo","owner_origin":null}),
+        ),
+        reply(409, &json!({"error":"stale target"})),
+        reply(
+            200,
+            &json!({"id":uuid::Uuid::new_v4(),"task_id":uuid::Uuid::new_v4(),"content":"comment","author_type":"user"}),
+        ),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let id = uuid::Uuid::parse_str(TASK).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        assert!(
+            gateway
+                .assign_desktop_task("demo", id, &target)
+                .await
+                .is_err()
+        );
+        assert!(
+            gateway
+                .assign_desktop_task("demo", id, &target)
+                .await
+                .is_err()
+        );
+        assert!(
+            gateway
+                .comment_on_task("demo", id, "comment")
+                .await
+                .is_err()
+        );
+    });
+    assert_eq!(
+        server.join().unwrap().len(),
+        3,
+        "never replay a user mutation after an unconfirmed response"
+    );
+}
+
+#[test]
+fn presence_labels_fall_back_only_for_old_gateway_schema() {
+    use amux::task_routing::SessionTarget;
+    let actor = agent(Provider::Codex);
+    let target = SessionTarget {
+        origin: amux::delegation::Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let available = json!({"target":target,"seen_at":1000000,"expires_at":1120000,"canonical_remote":"github.com/nitecon/amux"});
+    let (url, server) = server(vec![
+        reply(400, &json!({"error":"unknown field display_name"})),
+        reply(200, &available),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(gateway.advertise_task_target(
+            "demo",
+            "github.com/nitecon/amux",
+            &actor,
+            target.generation,
+        ))
+        .unwrap();
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body["display_name"], actor.display_name());
+    assert_eq!(
+        requests[1].body,
+        json!({"generation":target.generation,"canonical_remote":"github.com/nitecon/amux"})
+    );
+}
+
+#[test]
 fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recipient() {
     use amux::{
         delegation::Origin,
@@ -187,7 +363,7 @@ fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recip
     );
     assert_eq!(
         requests[0].body,
-        json!({"generation":target.generation,"canonical_remote":"github.com/nitecon/amux"})
+        json!({"generation":target.generation,"canonical_remote":"github.com/nitecon/amux", "display_name":actor.display_name(),"hostname":sysinfo::System::host_name()})
     );
     assert!(
         requests[1]

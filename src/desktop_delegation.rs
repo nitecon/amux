@@ -810,6 +810,22 @@ impl Desktop {
         let Some(owner) = task["owner_agent_id"].as_str() else {
             return "Unassigned".into();
         };
+        if let Ok(origin) =
+            serde_json::from_value::<amux::delegation::Origin>(task["owner_origin"].clone())
+            && let Some(name) =
+                self.task_agent_choices()
+                    .into_iter()
+                    .find_map(|choice| match choice {
+                        super::desktop_routing::Choice::Session(target, name)
+                            if target.origin == origin =>
+                        {
+                            Some(name)
+                        }
+                        _ => None,
+                    })
+        {
+            return name;
+        }
         self.delegation
             .candidates
             .iter()

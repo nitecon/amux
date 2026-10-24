@@ -91,6 +91,12 @@ impl Desktop {
             }
             Message::TasksLoaded(scope, result) => Message::TasksLoaded(remap(scope)?, result),
             Message::RoutingLoaded(scope, result) => Message::RoutingLoaded(remap(scope)?, result),
+            Message::TaskDetailLoaded(scope, id, request, result) => {
+                Message::TaskDetailLoaded(remap(scope)?, id, request, result)
+            }
+            Message::TaskChanged(scope, id, request, change, result) => {
+                Message::TaskChanged(remap(scope)?, id, request, change, result)
+            }
             Message::TaskCreated(scope, request, result) => {
                 Message::TaskCreated(remap(scope)?, request, result)
             }
@@ -126,18 +132,19 @@ impl Desktop {
         let Some(index) = self.workspaces.iter().position(|w| w.id == id) else {
             return Task::none();
         };
-        if self.workspaces[index]
-            .gateway
-            .request
-            .as_ref()
-            .is_some_and(|request| {
-                matches!(
-                    request.state,
-                    TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
-                )
-            })
+        if self.workspaces[index].gateway.detail.unresolved()
+            || self.workspaces[index]
+                .gateway
+                .request
+                .as_ref()
+                .is_some_and(|request| {
+                    matches!(
+                        request.state,
+                        TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                    )
+                })
         {
-            self.status = "This workspace has a pending or unconfirmed task submission. Inspect its receipt before closing.".into();
+            self.status = "This workspace has a pending or unconfirmed gateway task action. Refresh and inspect its result before closing.".into();
             return Task::none();
         }
         let fallback = if self.workspaces.len() == 1 {

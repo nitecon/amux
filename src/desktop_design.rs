@@ -974,6 +974,14 @@ impl Desktop {
     }
     fn design_tasks(&self) -> Element<'_, Message> {
         let panel = &self.workspaces[self.active].gateway;
+        if panel.detail.selected.is_some() {
+            return container(scrollable(self.task_detail_view()).height(Length::Fill))
+                .padding(12)
+                .width(320)
+                .height(Length::Fill)
+                .style(|_| surface(PANEL, false))
+                .into();
+        }
         let filter = |label, kind| {
             control(
                 "",
@@ -1036,33 +1044,39 @@ impl Desktop {
             count += 1;
             let id = task["id"].as_str().unwrap_or("?");
             let owner = self.design_task_owner(task);
-            let item = column![
-                row![
-                    text(format!("#{}", id.chars().take(8).collect::<String>()))
-                        .size(10)
-                        .font(iced::Font::MONOSPACE)
-                        .color(CYAN),
-                    Space::new().width(Length::Fill),
-                    status_badge(status)
-                ],
-                text(task["title"].as_str().unwrap_or("Untitled")).size(12),
-                text(format!("→ {owner}")).size(10).color(MUTED),
-                text(format!(
-                    "Project: {}{}",
-                    panel.project,
-                    task["updated_at"]
-                        .as_u64()
-                        .map(|ms| format!(
-                            " · updated {}s ago",
-                            unix_ms().saturating_sub(ms) / 1000
-                        ))
-                        .unwrap_or_default()
-                ))
-                .size(10)
-                .font(iced::Font::MONOSPACE)
-                .color(MUTED),
-            ]
-            .spacing(9);
+            let item =
+                column![
+                    row![
+                        text(format!("#{}", id.chars().take(8).collect::<String>()))
+                            .size(10)
+                            .font(iced::Font::MONOSPACE)
+                            .color(CYAN),
+                        Space::new().width(Length::Fill),
+                        status_badge(status),
+                        button(text("Open").size(10))
+                            .style(button::text)
+                            .on_press_maybe(Uuid::parse_str(id).ok().map(
+                                |id| Message::ManageTask(super::desktop_tasks::Action::Open(id))
+                            ))
+                    ],
+                    text(task["title"].as_str().unwrap_or("Untitled")).size(12),
+                    text(format!("→ {owner}")).size(10).color(MUTED),
+                    text(format!(
+                        "Project: {}{}",
+                        panel.project,
+                        task["updated_at"]
+                            .as_u64()
+                            .map(|ms| format!(
+                                " · updated {}s ago",
+                                unix_ms().saturating_sub(ms) / 1000
+                            ))
+                            .unwrap_or_default()
+                    ))
+                    .size(10)
+                    .font(iced::Font::MONOSPACE)
+                    .color(MUTED),
+                ]
+                .spacing(9);
             cards = cards.push(
                 container(item)
                     .padding(11)

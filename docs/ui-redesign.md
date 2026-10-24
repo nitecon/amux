@@ -32,6 +32,16 @@ lists; concurrent refreshes coalesce. The Events drawer searches real receipts
 and connection information. Clear hides entries from that view and never deletes
 or acknowledges delivery records.
 
+Open a task to manage it in the right-hand column. The detail view displays its
+description, specification and comment thread, with Edit, Assign and Close task
+actions. Edit changes the title, description and specification; Close task marks
+it completed. Comments are posted as the user. Assignment lists the gateway's
+available agents with their machine names and targets the selected execution.
+The gateway retains normal inactivity-based unassignment. Pending actions block
+duplicate submission, and unconfirmed results require a refresh before repeating
+the action; drafts are retained. Switching workspaces never retargets a pending
+operation.
+
 Files browses actual workspace directories and previews text. Git shows the
 actual branch, working tree and recent commits. Both are read-only. Settings
 persists process-exit notifications and startup agent resume alongside the

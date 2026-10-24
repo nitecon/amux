@@ -32,8 +32,10 @@ mod tests {
             canonical_remote: "github.com/nitecon/amux".into(),
             targets: vec![Available {
                 target,
-                seen_at: 1_000_000,
-                expires_at: 1_120_000,
+                seen_at: unix_ms() as i64,
+                expires_at: unix_ms() as i64 + 120_000,
+                display_name: None,
+                hostname: None,
             }],
         }
     }
@@ -113,6 +115,13 @@ pub(super) struct Panel {
     pub status: String,
 }
 impl Panel {
+    pub fn available(&self, target: &SessionTarget) -> bool {
+        self.fresh()
+            && self
+                .directory
+                .as_ref()
+                .is_some_and(|d| d.targets.iter().any(|entry| &entry.target == target))
+    }
     fn fresh(&self) -> bool {
         self.directory.is_some()
             && self
@@ -123,16 +132,53 @@ impl Panel {
         self.choice == Choice::Auto
             || self.fresh()
                 && match &self.choice {
-                    Choice::Session(target, _) => self
-                        .directory
-                        .as_ref()
-                        .is_some_and(|d| d.targets.iter().any(|a| &a.target == target)),
+                    Choice::Session(target, _) => self.available(target),
                     _ => true,
                 }
     }
 }
 
 impl Desktop {
+    pub(super) fn refresh_task_targets(&mut self) -> Task<Message> {
+        self.workspaces[self.active].gateway.routing.polled = None;
+        self.routing_tick()
+    }
+
+    pub(super) fn task_agent_choices(&self) -> Vec<Choice> {
+        let panel = &self.workspaces[self.active].gateway.routing;
+        if !panel.fresh() {
+            return Vec::new();
+        }
+        panel
+            .directory
+            .as_ref()
+            .unwrap()
+            .targets
+            .iter()
+            .map(|entry| {
+                let target = &entry.target;
+                let name = entry
+                    .display_name
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| self.routing_name(target))
+                    .unwrap_or_else(|| target.origin.provider.command().to_owned());
+                let machine = entry
+                    .hostname
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("machine unavailable");
+                Choice::Session(
+                    target.clone(),
+                    format!(
+                        "{name} · {machine} · {} · {}",
+                        target.origin.os,
+                        &target.origin.session_id.to_string()[..8]
+                    ),
+                )
+            })
+            .collect()
+    }
     pub(super) fn routing_tick(&mut self) -> Task<Message> {
         let Ok(gateway) = self.preferences.current.gateway() else {
             return Task::none();

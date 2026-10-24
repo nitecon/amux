@@ -29,6 +29,10 @@ pub struct Available {
     pub target: SessionTarget,
     pub seen_at: i64,
     pub expires_at: i64,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub hostname: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -133,16 +137,36 @@ impl Gateway {
         actor: &AgentIdentity,
         generation: Uuid,
     ) -> Result<()> {
-        let value = self
+        let bare = json!({"generation": generation, "canonical_remote": remote});
+        let mut labeled = bare.clone();
+        labeled["display_name"] = json!(actor.display_name());
+        labeled["hostname"] = json!(sysinfo::System::host_name());
+        let response = self
             .project_request(
                 Method::POST,
                 project,
                 &["task-targets"],
-                Some(json!({"generation": generation, "canonical_remote": remote})),
+                Some(labeled),
                 Some(actor),
                 &[],
             )
-            .await?;
+            .await;
+        // Old gateways reject unknown label fields. Presence is an idempotent
+        // heartbeat, so only that request may fall back to its original shape.
+        let value = match response {
+            Err(error) if error.to_string().contains("400 Bad Request") => {
+                self.project_request(
+                    Method::POST,
+                    project,
+                    &["task-targets"],
+                    Some(bare),
+                    Some(actor),
+                    &[],
+                )
+                .await?
+            }
+            response => response?,
+        };
         let advertised: Available = serde_json::from_value(value.clone())?;
         ensure!(
             advertised.target.origin.session_id == actor.session_id
