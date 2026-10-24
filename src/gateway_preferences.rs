@@ -11,6 +11,7 @@ use std::{
 pub struct GatewayPreferences {
     pub url: String,
     pub api_key: String,
+    pub automatic_notifications: bool,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -21,6 +22,7 @@ impl GatewayPreferences {
         Self {
             url: value("AMUX_GATEWAY_URL"),
             api_key: value("AMUX_GATEWAY_KEY"),
+            automatic_notifications: false,
             machine_id: value("AMUX_GATEWAY_MACHINE_ID"),
             machine_key: value("AMUX_GATEWAY_MACHINE_KEY"),
         }

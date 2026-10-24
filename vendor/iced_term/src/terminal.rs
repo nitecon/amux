@@ -96,6 +96,15 @@ impl Terminal {
         self.backend.observation(max_cells)
     }
 
+    /// The same bounded observation with styling for every visible cell,
+    /// captured atomically. Never an acknowledgment or readiness proof.
+    pub fn grid_observation(
+        &self,
+        max_cells: usize,
+    ) -> Option<crate::TerminalGridObservation> {
+        self.backend.grid_observation(max_cells)
+    }
+
     /// Plain text from the current rendered viewport, capped at 32,768 characters.
     /// Includes combining marks; excludes scrollback and any readiness semantics.
     pub fn screen_text(&self) -> String {

@@ -7,6 +7,8 @@ use amux::readiness::ReadinessGate;
 use amux::recipient::TerminalRecipient;
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::submission::{Submission, submit_literal};
+#[path = "desktop_delegation.rs"]
+mod desktop_delegation;
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
 #[path = "desktop_workspace.rs"]
@@ -41,6 +43,8 @@ enum Message {
     WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
+    AutomaticNotifications(bool),
+    Delegation(u64, desktop_delegation::Event),
     Updates(bool),
     CheckUpdates,
     UpdatesChecked(Result<amux::updates::UpdateCheck, String>),
@@ -73,8 +77,6 @@ enum Message {
 enum PreferenceField {
     Url,
     ApiKey,
-    MachineId,
-    MachineKey,
 }
 #[derive(Clone)]
 struct Secret(String);
@@ -239,6 +241,7 @@ struct Tab {
     provider: Option<Provider>,
     recipient: Option<TerminalRecipient>,
     reminders: Reminders,
+    delegation: desktop_delegation::TabState,
 }
 
 impl Drop for Tab {
@@ -277,6 +280,7 @@ struct Desktop {
     notify_exits: bool,
     notifier: Option<Notifier>,
     notification_status: String,
+    delegation: desktop_delegation::Bridge,
 }
 
 pub fn run(directory: PathBuf) -> anyhow::Result<()> {
@@ -336,11 +340,12 @@ impl Desktop {
             updates: Updates::new(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, window: None, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
-            status: "Gateway reminders require per-agent consent and a supported empty prompt. Only Linux/Codex0.163 is supported; other profiles defer.".into(),
+            status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
             ledger: ledger.ok().flatten(),
             registry: state.ok(),
             snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false, restarting: false,
             notify_exits: false, notifier: None, notification_status: String::new(),
+            delegation: desktop_delegation::Bridge::default(),
         };
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
             Ok(Some(Some(saved))) => {
@@ -419,6 +424,7 @@ impl Desktop {
                             stopped_output: None,
                             recipient: None,
                             reminders: Reminders::default(),
+                            delegation: desktop_delegation::TabState::default(),
                         }
                     })
                     .collect(),
@@ -513,6 +519,17 @@ impl Desktop {
             working_directory: Some(directory.into()),
             ..Default::default()
         };
+        if let Some(registry) = &self.registry {
+            backend.env.insert(
+                "AMUX_DELIVERY_DIRECTORY".into(),
+                registry.join("delegation").display().to_string(),
+            );
+        }
+        if let Ok(exe) = std::env::current_exe().and_then(|exe| amux::cli_path::cli_beside(&exe)) {
+            backend
+                .env
+                .insert("AMUX_CLI_PATH".into(), exe.display().to_string());
+        }
         // Describe this terminal, independently of the process that launched amux.
         backend.env.insert("TERM".into(), "xterm-256color".into());
         backend.env.insert("COLORTERM".into(), "truecolor".into());
@@ -541,6 +558,7 @@ impl Desktop {
                         provider: Some(provider),
                         recipient: None,
                         reminders: Reminders::default(),
+                        delegation: desktop_delegation::TabState::default(),
                     };
                 }
             }
@@ -576,6 +594,7 @@ impl Desktop {
                         provider: None,
                         recipient: None,
                         reminders: Reminders::default(),
+                        delegation: desktop_delegation::TabState::default(),
                     };
                 }
             }
@@ -621,6 +640,7 @@ impl Desktop {
                     title,
                     #[cfg(any(target_os = "linux", windows))]
                     lifetime,
+                    delegation: desktop_delegation::TabState::capture(&terminal),
                     terminal: Some(terminal),
                     stopped_output: None,
                     provider,
@@ -640,6 +660,7 @@ impl Desktop {
                     provider,
                     recipient: None,
                     reminders: Reminders::default(),
+                    delegation: desktop_delegation::TabState::default(),
                 }
             }
         }
@@ -699,6 +720,10 @@ impl Desktop {
         }
         match message {
             Message::WindowReady => {}
+            Message::AutomaticNotifications(value) => {
+                self.preferences.draft.automatic_notifications = value
+            }
+            Message::Delegation(epoch, event) => return self.delegation_message(epoch, event),
             Message::Save => {
                 self.save();
             }
@@ -811,8 +836,6 @@ impl Desktop {
                     *match field {
                         PreferenceField::Url => &mut draft.url,
                         PreferenceField::ApiKey => &mut draft.api_key,
-                        PreferenceField::MachineId => &mut draft.machine_id,
-                        PreferenceField::MachineKey => &mut draft.machine_key,
                     } = value;
                 }
             }
@@ -862,6 +885,7 @@ impl Desktop {
                 for workspace in &mut self.workspaces {
                     for (_, pane) in workspace.panes.iter_mut() {
                         if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id) {
+                            tab.delegation.note_command(&command);
                             if matches!(
                                 &command,
                                 iced_term::BackendCommand::Write(_)
@@ -1200,7 +1224,7 @@ impl Desktop {
                 } else {
                     Task::none()
                 };
-                return Task::batch([self.delivery_tick(), updates]);
+                return Task::batch([self.delivery_tick(), self.delegation_tick(), updates]);
             }
         }
         Task::none()
@@ -1322,6 +1346,7 @@ impl Desktop {
         for id in ids {
             self.withdraw(id);
         }
+        self.delegation.stop();
         let had_ledger = self.ledger.is_some();
         drop(self.ledger.take());
         self.restarting = true;
@@ -1559,6 +1584,7 @@ impl Desktop {
                 "Gateway preferences changed. Refresh to connect; reminder consent withdrawn."
                     .into();
         }
+        self.delegation.stop();
         self.preferences.current = draft;
         self.preferences.status = "Gateway preferences saved".into();
         self.status = "Gateway preferences saved. Connecting repositories…".into();
@@ -1585,10 +1611,9 @@ impl Desktop {
             text("Connect with your gateway URL and API key. Projects are resolved automatically from each workspace’s Git remote."),
             field("Gateway URL", &draft.url, PreferenceField::Url, false),
             field("API key", &draft.api_key, PreferenceField::ApiKey, true),
-            text("Optional machine credentials").size(18),
-            text("Needed for automatic recovery on supported agents. Get these from your gateway administrator.").size(12),
-            field("Machine UUID", &draft.machine_id, PreferenceField::MachineId, false),
-            field("Machine key", &draft.machine_key, PreferenceField::MachineKey, true),
+            checkbox(draft.automatic_notifications).label("Send fresh gateway task notifications to agents in this app").on_toggle(Message::AutomaticNotifications),
+            text("Notifications wait for an empty agent prompt. Session identities are created automatically; tasks remain yours to claim.").size(12),
+            self.delegation_view(),
             text("Settings are saved on this device.").size(12),
             text(&self.preferences.status).size(13),
             text(&self.workspaces[self.active].gateway.status).size(13),
@@ -1916,6 +1941,9 @@ impl Desktop {
     }
 
     fn delivery_tick(&mut self) -> Task<Message> {
+        if self.preferences.current.automatic_notifications {
+            return Task::none();
+        }
         let Some(ledger) = &mut self.ledger else {
             return Task::none();
         };
@@ -2305,7 +2333,7 @@ impl Desktop {
                 ].spacing(3)));
             }
             if let Some(tab) = pane.tabs.get(pane.active)
-                && cfg!(target_os = "linux") && tab.provider == Some(Provider::Codex) && tab.recipient.is_some() && self.ledger.is_some() {
+                && !self.preferences.current.automatic_notifications && cfg!(target_os = "linux") && tab.provider == Some(Provider::Codex) && tab.recipient.is_some() && self.ledger.is_some() {
                     let terminal_id = tab.id;
                     tabs = tabs.push(checkbox(tab.reminders.consent).label("Allow gateway reminders + Enter")
                         .on_toggle(move |enabled| Message::Consent(terminal_id, enabled)));
@@ -2326,14 +2354,16 @@ impl Desktop {
                 },
             };
             let mut header = column![scrollable(tabs).horizontal().width(Length::Fill).height(64)].spacing(4);
-            if let Some(tab) = pane.tabs.get(pane.active) && !tab.reminders.status.is_empty() {
-                header = header.push(text(&tab.reminders.status).size(11));
+            if let Some(tab) = pane.tabs.get(pane.active) {
+                let status = if self.preferences.current.automatic_notifications { tab.delegation.status() } else { &tab.reminders.status };
+                if !status.is_empty() { header = header.push(text(status).size(11)); }
             }
             pane_grid::Content::new(body).title_bar(pane_grid::TitleBar::new(header).padding(4))
         }).spacing(5).on_click(Message::Focus).on_resize(8, Message::Resize).width(Length::Fill).height(Length::Fill);
         let tasks = column![
             text("GATEWAY TASKS").size(16),
             button("Gateway preferences").on_press(Message::Preferences(true)),
+            self.delegation_view(),
             text(if workspace.gateway.project.is_empty() {
                 "Project: resolving from repository…".to_owned()
             } else {
@@ -2453,7 +2483,7 @@ mod tests {
     use serde_json::json;
 
     // No display, provider process, network, or environment mutation is involved.
-    fn desktop() -> Desktop {
+    pub(super) fn desktop() -> Desktop {
         let mut workspaces = Vec::new();
         for id in 0..2 {
             let (panes, focused) = pane_grid::State::new(Pane {
@@ -2467,6 +2497,7 @@ mod tests {
                     provider: Some(Provider::Codex),
                     recipient: None,
                     reminders: Reminders::default(),
+                    delegation: desktop_delegation::TabState::default(),
                 }],
                 active: 0,
             });
@@ -2520,6 +2551,7 @@ mod tests {
             notify_exits: false,
             notifier: None,
             notification_status: String::new(),
+            delegation: desktop_delegation::Bridge::default(),
         }
     }
 

@@ -12,10 +12,10 @@ Portable Linux and Windows builds are available in [tagged releases](https://git
 Status: early release; the MVP is not complete.
 The provisional Rust/Iced terminal has local workspaces, tabs/splits, explicit
 Codex/Claude launches with separate session identities, layout recovery without
-automatic reruns, gateway task and message CLIs, and reminders to an explicitly
-selected task (Linux, Codex only). Automatic task routing, full lifecycle and
-ownership acceptance, and native Windows validation are pending. This is not
-complete CMUX parity or a final stack selection. See the [MVP plan](docs/mvp.md).
+automatic reruns, gateway task and message CLIs, and fresh gateway task notifications delivered
+to matching local agent sessions. Busy agents and unfinished drafts keep notifications
+queued. Full lifecycle acceptance with installed providers and native Windows review
+remain pending. See the [MVP plan](docs/mvp.md).
 
 With Rust 1.96.1 installed:
 
@@ -35,7 +35,10 @@ Open **Preferences** for a separate window with **Gateway** and **Updates** tabs
 Enter the gateway URL and API key, then save. Each workspace resolves its project
 automatically from its Git remote and the gateway’s canonical repository mapping.
 Preferences persist on this device; no project identifier or environment setup
-is required for the desktop. Optional machine credentials are needed only for supported recovery.
+is required for the desktop. Enable **Send fresh gateway task notifications to agents
+in this app** to allow terminal delivery; machine and session identity are created
+automatically. The task panel shows connection status, agents, pending notifications
+and recent delivery receipts. Offline history is never replayed into terminals.
 Each Terminal, Codex and Claude tab has its own **×** close button and a directory
 subtitle; hover the subtitle for the full path and terminal title.
 
@@ -74,7 +77,9 @@ Closing the last workspace opens a fresh **Default** terminal in your home direc
 - [MVP plan](docs/mvp.md): milestones, closing criteria, reviewer evidence, and
   remaining gates.
 - [Gateway CLI](docs/gateway-cli.md): task and inline message commands.
-- [Reminder validation](docs/reminder-validation.md): how terminal reminders are
+- [Gateway delivery](docs/gateway-delivery.md): automatic notifications, session identity
+  and native actor integration.
+- [Reminder validation](docs/reminder-validation.md): how legacy selected-task reminders are
   gated and tested.
 - [Native review](docs/windows-review.md): bundle checks for Linux and Windows
   reviewers.

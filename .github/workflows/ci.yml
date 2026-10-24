@@ -45,6 +45,8 @@ jobs:
         run: cargo test --locked --bin amux --test terminal_contract --test recipient_contract --test terminal_lifecycle_contract --test windows_terminal_lifecycle_contract
       - name: Native terminal protocol tests
         run: cargo test --locked -p iced_term amux_tests
+      - name: Portable agent prompt contracts
+        run: cargo test --locked --test delegation_readiness_contract
       - name: CLI and GUI entry tests
         run: cargo test --locked --test entry_contract
       - name: Desktop notification contracts

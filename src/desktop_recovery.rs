@@ -1252,6 +1252,7 @@ mod tests {
             ("http://LOCALHOST:80", "http://localhost/"),
         ] {
             let preferences = amux::gateway_preferences::GatewayPreferences {
+                automatic_notifications: false,
                 url: entered.into(),
                 api_key: previous.token.clone(),
                 machine_id: previous.machine_id.to_string(),

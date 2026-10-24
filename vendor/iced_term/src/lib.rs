@@ -39,3 +39,12 @@ pub struct TerminalObservation {
     pub display_offset: usize,
     pub mode: TermMode,
 }
+
+/// Live screen plus parser styling for every visible cell, captured under one
+/// parser lock so text and styles describe the same frame. No scrollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalGridObservation {
+    pub observation: TerminalObservation,
+    /// Row-major styling, one row per line and one entry per terminal column.
+    pub styles: Vec<Vec<TerminalCellStyle>>,
+}

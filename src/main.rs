@@ -42,6 +42,11 @@ enum Operation {
     Whoami,
     /// List live amux-launched agent sessions, including three in one project.
     Agents,
+    /// Local native actor context for task origin and goal routing in desktop terminals.
+    Actor {
+        #[command(subcommand)]
+        operation: ActorOperation,
+    },
     /// Use the authoritative gateway without agent-tools installed.
     Tasks {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
@@ -71,6 +76,14 @@ enum Operation {
         #[command(subcommand)]
         operation: amux::dispatch::Command,
     },
+}
+
+#[derive(Subcommand)]
+enum ActorOperation {
+    /// Read the calling invocation's versioned actor JSON from stdin.
+    Announce,
+    Context,
+    Peers,
 }
 
 #[derive(Subcommand)]
@@ -188,6 +201,32 @@ fn run(cli: Cli) -> Result<u8> {
             "{}",
             serde_json::to_string_pretty(&identity::live_agents(&identity::state_directory()?)?)?
         ),
+        Operation::Actor { operation } => {
+            use std::io::Read;
+            let directory = std::env::var_os("AMUX_DELIVERY_DIRECTORY")
+                .map(PathBuf::from)
+                .map(Ok)
+                .unwrap_or_else(|| identity::state_directory().map(|p| p.join("delegation")))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis()
+                .min(i64::MAX as u128) as i64;
+            let value = match operation {
+                ActorOperation::Announce => {
+                    let mut bytes = Vec::new();
+                    std::io::stdin().take(65_537).read_to_end(&mut bytes)?;
+                    if bytes.len() > 65_536 {
+                        bail!("Actor announcement exceeds 64 KiB");
+                    }
+                    let actor =
+                        serde_json::from_slice(&bytes).context("Invalid actor announcement")?;
+                    amux::delegation_actor::announce(&directory, actor, now)?
+                }
+                ActorOperation::Context => amux::delegation_actor::context(&directory, now)?,
+                ActorOperation::Peers => amux::delegation_actor::peers(&directory, now)?,
+            };
+            println!("{}", serde_json::to_string(&value)?);
+        }
         Operation::Messages {
             project,
             gateway_url,

@@ -22,3 +22,18 @@ pub mod terminal_lifetime;
 pub mod updates;
 
 pub mod workspace_launch;
+
+pub mod gateway_stream;
+
+pub mod delegation;
+
+pub mod delegation_process;
+
+pub mod delegation_queue;
+
+#[cfg(feature = "desktop")]
+pub mod delegation_readiness;
+
+pub mod delegation_connection;
+
+pub mod delegation_actor;

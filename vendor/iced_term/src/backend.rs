@@ -570,6 +570,14 @@ impl Backend {
         &self,
         max_cells: usize,
     ) -> Option<crate::TerminalObservation> {
+        self.grid_observation(max_cells)
+            .map(|grid| grid.observation)
+    }
+
+    pub fn grid_observation(
+        &self,
+        max_cells: usize,
+    ) -> Option<crate::TerminalGridObservation> {
         // Read the live grid under its parser lock, independently of redraws.
         // Never copy scrollback or silently truncate an observation used for readiness.
         const MAX_CELLS: usize = 32_768;
@@ -582,8 +590,10 @@ impl Backend {
         }
         let grid = term.grid();
         let mut lines = Vec::with_capacity(rows);
+        let mut styles = Vec::with_capacity(rows);
         for row in 0..rows {
             let mut line = String::new();
+            let mut row_styles = Vec::with_capacity(columns);
             for column in 0..columns {
                 let cell = &grid[Line(row as i32)][Column(column)];
                 // Do not give readiness callers an incomplete representation.
@@ -592,30 +602,29 @@ impl Backend {
                     return None;
                 }
                 line.push(cell.c);
+                row_styles.push(crate::TerminalCellStyle {
+                    foreground: cell.fg,
+                    background: cell.bg,
+                    flags: cell.flags,
+                });
             }
             lines.push(line);
+            styles.push(row_styles);
         }
         let cursor_row = grid.cursor.point.line.0;
         if cursor_row < 0 || cursor_row as usize >= rows {
             return None;
         }
-        let cursor_line_styles = (0..columns)
-            .map(|column| {
-                let cell = &grid[Line(cursor_row)][Column(column)];
-                crate::TerminalCellStyle {
-                    foreground: cell.fg,
-                    background: cell.bg,
-                    flags: cell.flags,
-                }
-            })
-            .collect();
-        Some(crate::TerminalObservation {
-            lines,
-            cursor_row,
-            cursor_column: grid.cursor.point.column.0,
-            cursor_line_styles,
-            display_offset: grid.display_offset(),
-            mode: *term.mode(),
+        Some(crate::TerminalGridObservation {
+            observation: crate::TerminalObservation {
+                lines,
+                cursor_row,
+                cursor_column: grid.cursor.point.column.0,
+                cursor_line_styles: styles[cursor_row as usize].clone(),
+                display_offset: grid.display_offset(),
+                mode: *term.mode(),
+            },
+            styles,
         })
     }
 

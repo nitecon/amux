@@ -175,7 +175,7 @@ pub(crate) fn native_provider(path: &Path) -> Option<Provider> {
     .then_some(Provider::Claude)
 }
 
-fn executor_provider(process: &sysinfo::Process) -> Option<Provider> {
+pub(crate) fn executor_provider(process: &sysinfo::Process) -> Option<Provider> {
     let basename = |s: &std::ffi::OsStr| {
         Path::new(s)
             .file_name()

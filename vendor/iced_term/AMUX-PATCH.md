@@ -33,7 +33,11 @@ check process generation, exact recipient, human input and consent separately.
 Observations also include parser styling for the cursor's row, with one entry
 per terminal column. This lets callers distinguish a dim placeholder from typed
 text with the same characters and cursor position. The existing cell budget
-bounds this row too. On Linux the adapter retains a duplicate of the owned PTY
+bounds this row too.
+`Terminal::grid_observation` returns the same observation plus parser styling
+for every visible cell (`TerminalGridObservation`), captured under one parser
+lock so text and styles describe the same frame. `observation` is derived from
+it; the legacy `TerminalObservation` fields are unchanged. On Linux the adapter retains a duplicate of the owned PTY
 master and exposes a borrowed descriptor for foreground-group verification.
 It closes with the terminal; callers do not discover a PTY by searching PIDs.
 

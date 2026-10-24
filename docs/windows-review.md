@@ -62,10 +62,14 @@ on Windows it inherits the application's data-directory access permissions.
 Saved settings take precedence over environment values for the desktop.
 The CLI continues to use its documented flags and environment variables.
 
-Machine UUID and machine key are optional for listing/creating tasks. Obtain
-provisioned values from the gateway administrator for supported recovery; saving
-these fields does not enable Windows or Claude automatic reminder input.
-Changing the connection clears old task lists and withdraws reminder consent.
+Enable **Send fresh gateway task notifications to agents in this app** to allow
+notifications through the native terminal input path. The app creates its own
+delivery identity; no machine UUID or key is entered. Matching agents are discovered
+in all open workspaces, including agents started from a shell. Busy prompts and
+unfinished drafts defer input. The task panel shows connection status, agent and
+pending counts, and the last eight receipts. An injected receipt means input was
+submitted, not that the agent read, claimed or executed the task.
+Changing the connection clears old task lists and retires queued notifications.
 Pending or unconfirmed task submissions must be resolved before changing it.
 
 Check saving and reopening preferences, authentication failures and task refresh.
