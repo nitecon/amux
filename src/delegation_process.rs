@@ -193,7 +193,11 @@ fn snapshot() -> HashMap<u32, Node> {
                         .and_then(|arg| arg.to_str())
                         .filter(|arg| arg.len() <= 4096)
                         .map(|arg| arg.replace('\\', "/")),
-                    directory: process.cwd().map(Path::to_path_buf),
+                    directory: process.cwd().map(|path| {
+                        crate::workspace_launch::external_path(
+                            path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                        )
+                    }),
                 },
             )
         })

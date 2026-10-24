@@ -6,11 +6,10 @@
 use super::super::{Reminders, tests::desktop};
 use super::*;
 use amux::delegation::{Event as Lifecycle, Kind};
-use std::{
-    io::{Read, Write},
-    path::Path,
-    sync::OnceLock,
-};
+use std::{io::Write, path::Path, sync::OnceLock};
+
+#[cfg(target_os = "linux")]
+use std::io::Read;
 
 const LOG: &str = "AMUX_DESKTOP_FIXTURE_LOG";
 const LAYOUT: &str = "AMUX_DESKTOP_FIXTURE_LAYOUT";
@@ -132,6 +131,24 @@ fn fixture_process() {
     let Some(log) = std::env::var_os(LOG) else {
         return;
     };
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE,
+            SetConsoleMode,
+        };
+        // SAFETY: this fixture owns its inherited ConPTY console output handle.
+        // Native providers enable VT processing too; otherwise ANSI is literal text.
+        unsafe {
+            let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+            let mut mode = 0;
+            assert_ne!(GetConsoleMode(handle, &mut mode), 0);
+            assert_ne!(
+                SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING),
+                0
+            );
+        }
+    }
     // Bound a leaked fixture even if its terminal never closes.
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(120));
@@ -229,7 +246,9 @@ fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layou
         Provider::Codex => "codex",
         Provider::Claude => "claude",
     };
-    let directory = fixtures().join(format!("agent-{}-{id}", Uuid::new_v4()));
+    let directory = amux::workspace_launch::external_path(
+        fixtures().join(format!("agent-{}-{id}", Uuid::new_v4())),
+    );
     std::fs::create_dir(&directory).unwrap();
     let log = directory.join("input.log");
     let mut backend = iced_term::settings::BackendSettings {

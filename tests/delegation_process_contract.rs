@@ -163,7 +163,9 @@ impl Tree {
             pid,
             generation: identity::process_generation(pid).unwrap(),
             provider,
-            directory: Some(fixtures().to_path_buf()),
+            directory: Some(amux::workspace_launch::external_path(
+                fixtures().to_path_buf(),
+            )),
         }
     }
 }
