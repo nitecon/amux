@@ -22,12 +22,14 @@ pub(super) enum View {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Filter {
     #[default]
-    All,
     Active,
     Completed,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Action {
+    ToggleTasks,
+    DetachTasks,
+    DockTasks,
     Cursor(iced::Point),
     TabMenu(pane_grid::Pane, u64),
     DismissTabMenu,
@@ -44,6 +46,8 @@ pub(super) enum Action {
 }
 #[derive(Default)]
 pub(super) struct State {
+    pub(super) task_window: Option<iced::window::Id>,
+    tasks_collapsed: bool,
     cursor: iced::Point,
     viewport: Option<iced::Size>,
     tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
@@ -250,10 +254,7 @@ fn tab_provider(tab: &Tab) -> Option<Provider> {
     tab.delegation.provider.or(tab.provider)
 }
 fn active(tab: &Tab) -> bool {
-    tab.terminal
-        .as_ref()
-        .and_then(Terminal::activity_elapsed)
-        .is_some_and(|elapsed| elapsed < Duration::from_secs(5))
+    amux::session::output_active(tab.terminal.as_ref().and_then(Terminal::activity_elapsed))
 }
 fn workspace_name(workspace: &Workspace) -> String {
     if let Some(name) = &workspace.name {
@@ -280,6 +281,27 @@ fn tabs(workspace: &Workspace) -> impl Iterator<Item = &Tab> {
 impl Desktop {
     pub(super) fn design_message(&mut self, message: Action) -> Task<Message> {
         match message {
+            Action::ToggleTasks => self.design.tasks_collapsed = !self.design.tasks_collapsed,
+            Action::DetachTasks => {
+                if self.design.task_window.is_none() {
+                    let (id, open) = iced::window::open(iced::window::Settings {
+                        size: iced::Size::new(800.0, 900.0),
+                        min_size: Some(iced::Size::new(500.0, 600.0)),
+                        exit_on_close_request: false,
+                        ..super::desktop_icon::settings()
+                    });
+                    self.design.task_window = Some(id);
+                    return open.discard();
+                } else if let Some(id) = self.design.task_window {
+                    return iced::window::gain_focus(id);
+                }
+            }
+            Action::DockTasks => {
+                self.design.tasks_collapsed = false;
+                if let Some(id) = self.design.task_window.take() {
+                    return iced::window::close(id);
+                }
+            }
             Action::Cursor(position) => self.design.cursor = position,
             Action::TabMenu(pane, tab) => {
                 let workspace = &self.workspaces[self.active];
@@ -710,7 +732,7 @@ impl Desktop {
                 column![center, toolbar]
                     .width(Length::Fill)
                     .height(Length::Fill),
-                self.design_tasks()
+                self.task_sidebar()
             ]
             .height(Length::Fill)
         ]
@@ -1021,15 +1043,82 @@ impl Desktop {
         .height(Length::Fill)
         .into()
     }
-    fn design_tasks(&self) -> Element<'_, Message> {
+    fn task_sidebar(&self) -> Element<'_, Message> {
+        if self.design.task_window.is_some() || self.design.tasks_collapsed {
+            return container(
+                column![
+                    control("back", "", action(Action::DockTasks), false),
+                    control("single", "", action(Action::DetachTasks), false),
+                ]
+                .spacing(8),
+            )
+            .padding(5)
+            .height(Length::Fill)
+            .style(|_| surface(PANEL, false))
+            .into();
+        }
+        self.design_tasks(false)
+    }
+
+    pub(super) fn design_tasks(&self, expanded: bool) -> Element<'_, Message> {
+        let width = if expanded {
+            Length::Fill
+        } else {
+            Length::Fixed(320.0)
+        };
+        let controls = row![
+            tooltip(
+                control(
+                    "",
+                    if expanded { "‹" } else { "›" },
+                    action(if expanded {
+                        Action::DockTasks
+                    } else {
+                        Action::ToggleTasks
+                    }),
+                    false
+                ),
+                text(if expanded {
+                    "Return tasks to sidebar"
+                } else {
+                    "Collapse task panel"
+                }),
+                tooltip::Position::Bottom
+            ),
+            tooltip(
+                control(
+                    "single",
+                    "",
+                    action(if expanded {
+                        Action::DockTasks
+                    } else {
+                        Action::DetachTasks
+                    }),
+                    false
+                ),
+                text(if expanded {
+                    "Return tasks to sidebar"
+                } else {
+                    "Open tasks in a separate window"
+                }),
+                tooltip::Position::Bottom
+            ),
+        ]
+        .spacing(4);
         let panel = &self.workspaces[self.active].gateway;
         if panel.detail.selected.is_some() {
-            return container(scrollable(self.task_detail_view()).height(Length::Fill))
-                .padding(12)
-                .width(320)
-                .height(Length::Fill)
-                .style(|_| surface(PANEL, false))
-                .into();
+            return container(
+                column![
+                    controls,
+                    scrollable(self.task_detail_view()).height(Length::Fill)
+                ]
+                .spacing(8),
+            )
+            .padding(12)
+            .width(width)
+            .height(Length::Fill)
+            .style(|_| surface(PANEL, false))
+            .into();
         }
         let filter = |label, kind| {
             control(
@@ -1045,6 +1134,7 @@ impl Desktop {
                 icon("server"),
                 text("GATEWAY TASKS").size(12),
                 Space::new().width(Length::Fill),
+                controls,
                 button(text("Raw Events ›").size(10).color(CYAN))
                     .style(button::text)
                     .on_press(action(Action::Events))
@@ -1076,14 +1166,17 @@ impl Desktop {
             .padding(5)
             .style(|_| surface(CARD, true)),
             row![
-                filter("All", Filter::All),
                 filter("Active", Filter::Active),
                 filter("Completed", Filter::Completed)
             ]
             .spacing(3),
         ]
         .spacing(10);
-        let mut cards = column![text(&panel.status).size(11).color(MUTED)].spacing(8);
+        let mut cards = column![
+            text(&panel.status).size(11).color(MUTED),
+            text(self.backlog_status()).size(11).color(MUTED)
+        ]
+        .spacing(8);
         let mut count = 0;
         for task in &panel.tasks {
             let status = task["status"].as_str().unwrap_or("unknown");
@@ -1106,7 +1199,17 @@ impl Desktop {
                             .style(button::text)
                             .on_press_maybe(Uuid::parse_str(id).ok().map(
                                 |id| Message::ManageTask(super::desktop_tasks::Action::Open(id))
-                            ))
+                            )),
+                        button(text("Assign").size(10))
+                            .style(button::text)
+                            .on_press_maybe(
+                                matches!(status, "todo" | "in_progress")
+                                    .then(|| Uuid::parse_str(id).ok())
+                                    .flatten()
+                                    .map(|id| Message::ManageTask(
+                                        super::desktop_tasks::Action::AssignTask(id)
+                                    ))
+                            )
                     ],
                     text(task["title"].as_str().unwrap_or("Untitled")).size(12),
                     text(format!("→ {owner}")).size(10).color(MUTED),
@@ -1176,7 +1279,7 @@ impl Desktop {
             ]
             .spacing(4),
         )
-        .width(320)
+        .width(width)
         .height(Length::Fill)
         .style(|_| surface(PANEL, false))
         .into()
@@ -1504,7 +1607,6 @@ impl Desktop {
 }
 fn matches_filter(filter: Filter, status: &str) -> bool {
     match filter {
-        Filter::All => true,
         Filter::Active => matches!(status, "todo" | "in_progress"),
         Filter::Completed => matches!(status, "done" | "cancelled"),
     }
@@ -1657,6 +1759,37 @@ fn inert<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn active_is_default_and_detached_tasks_redock_without_closing_sessions() {
+        let mut app = super::super::tests::desktop();
+        assert_eq!(app.design.filter, Filter::Active);
+        assert!(
+            matches_filter(Filter::Active, "todo") && matches_filter(Filter::Active, "in_progress")
+        );
+        let before = app
+            .workspaces
+            .iter()
+            .map(|w| tabs(w).count())
+            .collect::<Vec<_>>();
+        app.workspaces[0].gateway.draft_title = "Keep my draft".into();
+        drop(app.design_message(Action::ToggleTasks));
+        assert!(app.design.tasks_collapsed);
+        drop(app.design_message(Action::DetachTasks));
+        let window = app.design.task_window.unwrap();
+        assert_ne!(window, app.main_window);
+        drop(app.close_window(window));
+        assert!(app.design.task_window.is_none());
+        assert!(!app.design.tasks_collapsed);
+        assert_eq!(
+            before,
+            app.workspaces
+                .iter()
+                .map(|w| tabs(w).count())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(app.workspaces[0].gateway.draft_title, "Keep my draft");
+        assert!(!app.restarting);
+    }
     #[test]
     fn project_views_use_real_files_and_git_and_bound_preview() {
         let dir = tempfile::tempdir().unwrap();

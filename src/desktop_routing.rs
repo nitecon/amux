@@ -149,7 +149,7 @@ impl Desktop {
         if !panel.fresh() {
             return Vec::new();
         }
-        panel
+        let mut choices = panel
             .directory
             .as_ref()
             .unwrap()
@@ -157,6 +157,7 @@ impl Desktop {
             .iter()
             .map(|entry| {
                 let target = &entry.target;
+                let local = self.routing_name(target).is_some();
                 let name = entry
                     .display_name
                     .clone()
@@ -171,13 +172,19 @@ impl Desktop {
                 Choice::Session(
                     target.clone(),
                     format!(
-                        "{name} · {machine} · {} · {}",
+                        "{} · {name} · {machine} · {} · {}",
+                        if local { "Local" } else { "Gateway" },
                         target.origin.os,
                         &target.origin.session_id.to_string()[..8]
                     ),
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        choices.sort_by_key(|choice| match choice {
+            Choice::Session(target, name) => (self.routing_name(target).is_none(), name.clone()),
+            _ => (true, String::new()),
+        });
+        choices
     }
     pub(super) fn routing_tick(&mut self) -> Task<Message> {
         let Ok(gateway) = self.preferences.current.gateway() else {
@@ -276,18 +283,7 @@ impl Desktop {
         let mut choices = vec![Choice::Auto];
         if panel.fresh() {
             choices.extend([Choice::Unassigned, Choice::Broadcast]);
-            for entry in &panel.directory.as_ref().unwrap().targets {
-                let target = &entry.target;
-                let name = self.routing_name(target).unwrap_or_else(|| {
-                    format!(
-                        "{} · {} · {}",
-                        target.origin.provider.command(),
-                        target.origin.os,
-                        &target.origin.session_id.to_string()[..8]
-                    )
-                });
-                choices.push(Choice::Session(target.clone(), name));
-            }
+            choices.extend(self.task_agent_choices());
         }
         // Keep an unavailable selection visible; never silently retarget a user's draft.
         if !choices.contains(&panel.choice) {

@@ -9,6 +9,7 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub(super) enum Action {
     Open(Uuid),
+    AssignTask(Uuid),
     Back,
     Refresh,
     Edit,
@@ -90,7 +91,7 @@ impl Desktop {
     pub(super) fn manage_task(&mut self, action: Action) -> Task<Message> {
         let panel = &mut self.workspaces[self.active].gateway.detail;
         match action {
-            Action::Open(id) => {
+            Action::Open(id) | Action::AssignTask(id) => {
                 if panel.unresolved() {
                     panel.status =
                         "Refresh and inspect the current operation before leaving this task."
@@ -99,9 +100,19 @@ impl Desktop {
                 }
                 *panel = Panel {
                     selected: Some(id),
+                    mode: if matches!(action, Action::AssignTask(_)) {
+                        Mode::Assign
+                    } else {
+                        Mode::View
+                    },
                     ..Default::default()
                 };
-                return self.load_task_detail(self.active);
+                let detail = self.load_task_detail(self.active);
+                return if matches!(action, Action::AssignTask(_)) {
+                    Task::batch([detail, self.refresh_task_targets()])
+                } else {
+                    detail
+                };
             }
             Action::Back => {
                 if !panel.unresolved() {
@@ -426,7 +437,7 @@ impl Desktop {
             let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.workspaces[self.active].gateway.routing.available(target)));
             body = body
                 .push(text("Assign to agent").size(13))
-                .push(text("Select an agent and machine:").size(11))
+                .push(text("Local and gateway agents for this repository:").size(11))
                 .push(text(&self.workspaces[self.active].gateway.routing.status).size(10));
             for choice in &choices {
                 let selected = current.as_ref() == Some(choice);
@@ -473,7 +484,7 @@ impl Desktop {
                     control(
                         "Assign",
                         Action::ShowAgents,
-                        ready && task["status"] != "done"
+                        ready && matches!(task["status"].as_str(), Some("todo" | "in_progress"))
                     ),
                     control(
                         "Close task",

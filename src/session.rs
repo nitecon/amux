@@ -8,6 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Shared by workspace activity indicators and automatic backlog pickup.
+pub const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn output_active(elapsed: Option<std::time::Duration>) -> bool {
+    elapsed.is_some_and(|elapsed| elapsed < IDLE_AFTER)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedTab {
     pub id: u64,

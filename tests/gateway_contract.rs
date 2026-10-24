@@ -111,6 +111,98 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn backlog_claim_rechecks_repository_revision_and_owner_before_one_agent_mutation() {
+    use amux::delegation::{Origin, Target};
+    let actor = agent(Provider::Codex);
+    let target = Target {
+        workspace: uuid::Uuid::new_v4(),
+        terminal: 1,
+        session: actor.session_id,
+        agent_id: Some(actor.gateway_id()),
+        pid: 5,
+        generation: "fixture".into(),
+        directory: actor.project_directory.clone(),
+        project: "demo".into(),
+        origin: Some(Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        }),
+        goal: None,
+    };
+    let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
+    let queued = json!({"id":TASK,"project_ident":"demo","status":"todo","updated_at":10,"routing":{"mode":"unassigned"}});
+    let mut claimed = owned_by(&actor);
+    claimed["owner_origin"] = json!(target.origin);
+    let mut other = queued.clone();
+    other["owner_agent_id"] = json!("Other agent");
+    let mut changed = queued.clone();
+    changed["updated_at"] = json!(11);
+    let (url, server) = server(vec![
+        reply(200, &projects),
+        reply(200, &queued),
+        reply(200, &claimed),
+        reply(200, &projects),
+        reply(200, &other),
+        reply(200, &projects),
+        reply(200, &changed),
+        reply(200, &projects),
+        reply(200, &queued),
+        reply(409, &json!({"error":"already claimed"})),
+    ]);
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let task = uuid::Uuid::parse_str(TASK).unwrap();
+        assert!(
+            gateway
+                .claim_backlog(task, 10, &target, &actor)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            gateway
+                .claim_backlog(task, 10, &target, &actor)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            gateway
+                .claim_backlog(task, 10, &target, &actor)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            gateway
+                .claim_backlog(task, 10, &target, &actor)
+                .await
+                .is_err()
+        );
+    });
+    let requests = server.join().unwrap();
+    let mutations = requests
+        .iter()
+        .filter(|r| r.head.starts_with("patch "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mutations.len(),
+        2,
+        "one attempt per request, no retries or claims after stale reads"
+    );
+    for request in mutations {
+        assert!(
+            request
+                .head
+                .contains(&format!("x-agent-session-id: {}", actor.session_id))
+        );
+        assert_eq!(request.body["status"], "in_progress");
+    }
+}
+
+#[test]
 fn sidebar_actions_are_human_requests_and_confirm_the_requested_result() {
     use amux::{delegation::Origin, task_management::TaskEdits, task_routing::SessionTarget};
     let target = SessionTarget {

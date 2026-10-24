@@ -24,6 +24,51 @@ pub struct Attempt {
 }
 
 impl Queue {
+    pub fn begin_backlog(&mut self, receipt: crate::backlog::Receipt) -> Result<()> {
+        ensure!(
+            !self
+                .journal
+                .backlog
+                .iter()
+                .any(|r| r.task == receipt.task && r.revision == receipt.revision),
+            "Backlog task already attempted"
+        );
+        let mut next = self.journal.clone();
+        next.backlog.push(receipt);
+        self.commit(next)
+    }
+
+    pub fn finish_backlog(&mut self, task: Uuid, revision: i64, outcome: Outcome) -> Result<()> {
+        let mut next = self.journal.clone();
+        let receipt = next
+            .backlog
+            .iter_mut()
+            .find(|r| r.task == task && r.revision == revision)
+            .ok_or_else(|| anyhow::anyhow!("Backlog receipt missing"))?;
+        receipt.outcome = outcome;
+        self.commit(next)
+    }
+
+    /// Only an authoritative closure or explicit requeue can retire a backlog fence.
+    pub fn reconcile_backlog(&mut self, project: &str, tasks: &[Value]) -> Result<()> {
+        let mut next = self.journal.clone();
+        next.backlog.retain(|r| {
+            r.target.project != project
+                || !tasks.iter().any(|task| {
+                    task["id"] == r.task.to_string()
+                        && r.outcome != Outcome::Submitting
+                        && (matches!(task["status"].as_str(), Some("done" | "cancelled"))
+                            || (r.outcome != Outcome::Uncertain
+                                && task["status"] == "todo"
+                                && crate::backlog::revision(task) != r.revision))
+                })
+        });
+        if next.backlog.len() != self.journal.backlog.len() {
+            self.commit(next)?;
+        }
+        Ok(())
+    }
+
     pub fn open(path: PathBuf, namespace: &str) -> Result<Self> {
         let journal = Journal::load(&path, namespace)?;
         journal.save(&path)?;

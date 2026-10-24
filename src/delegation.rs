@@ -444,7 +444,7 @@ impl Target {
             format!("{}:{}", self.pid, self.generation).as_bytes(),
         )
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             !self.workspace.is_nil()
                 && !self.session.is_nil()
@@ -633,6 +633,8 @@ pub struct Journal {
     pub rejected: Vec<Rejected>,
     #[serde(default)]
     pub recent: Vec<Event>,
+    #[serde(default)]
+    pub backlog: Vec<crate::backlog::Receipt>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rejected {
@@ -650,6 +652,7 @@ impl Journal {
             receipts: Vec::new(),
             rejected: Vec::new(),
             recent: Vec::new(),
+            backlog: Vec::new(),
         }
     }
     fn validate(&self) -> Result<()> {
@@ -695,6 +698,18 @@ impl Journal {
             event.validate()?;
         }
         let mut events = HashSet::new();
+        ensure!(
+            self.backlog.len() <= MAX_PENDING,
+            "Backlog receipt capacity reached"
+        );
+        let mut backlog = HashSet::new();
+        for receipt in &self.backlog {
+            receipt.target.validate()?;
+            ensure!(
+                !receipt.task.is_nil() && backlog.insert((receipt.task, receipt.revision)),
+                "Invalid backlog receipt"
+            );
+        }
         for receipt in &self.receipts {
             receipt.event.validate()?;
             ensure!(
@@ -740,6 +755,15 @@ impl Journal {
             return Ok(Self::new(namespace.into()));
         }
         // A fresh app may never replay historical input. An interrupted attempt is uncertain.
+        for receipt in &mut journal.backlog {
+            if !receipt.outcome.terminal() {
+                receipt.outcome = if receipt.outcome == Outcome::Submitting {
+                    Outcome::Uncertain
+                } else {
+                    Outcome::Skipped
+                };
+            }
+        }
         for receipt in &mut journal.receipts {
             for recipient in &mut receipt.recipients {
                 if !recipient.outcome.terminal() {

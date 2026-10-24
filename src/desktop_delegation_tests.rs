@@ -269,21 +269,27 @@ fn fixtures() -> &'static Path {
 }
 
 /// One native terminal per fixture agent, in its own scratch working directory.
-struct Agent {
-    terminal: u64,
-    directory: PathBuf,
+pub(super) struct Agent {
+    pub(super) terminal: u64,
+    pub(super) directory: PathBuf,
     log: PathBuf,
 }
 
 impl Agent {
-    fn lines(&self) -> Vec<String> {
+    pub(super) fn lines(&self) -> Vec<String> {
         std::fs::read_to_string(&self.log)
             .map(|log| log.lines().map(str::to_owned).collect())
             .unwrap_or_default()
     }
 }
 
-fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layout: &str) -> Agent {
+pub(super) fn spawn(
+    app: &mut Desktop,
+    workspace: usize,
+    id: u64,
+    provider: Provider,
+    layout: &str,
+) -> Agent {
     let name = match provider {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
@@ -351,7 +357,7 @@ fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layou
     agent
 }
 
-fn find(app: &Desktop, id: u64) -> &Tab {
+pub(super) fn find(app: &Desktop, id: u64) -> &Tab {
     app.workspaces
         .iter()
         .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
@@ -381,7 +387,7 @@ fn wait(app: &Desktop, done: impl Fn(&Desktop) -> bool) {
 
 /// Human keyboard input through the desktop's own terminal message path.
 #[cfg(any(target_os = "linux", windows))]
-fn human(app: &mut Desktop, id: u64, bytes: &[u8]) {
+pub(super) fn human(app: &mut Desktop, id: u64, bytes: &[u8]) {
     drop(app.update(Message::Terminal(iced_term::Event::BackendCall(
         id,
         BackendCommand::Write(bytes.to_vec()),
@@ -389,7 +395,7 @@ fn human(app: &mut Desktop, id: u64, bytes: &[u8]) {
 }
 
 /// An approved bridge with a live (fake) subscribed connection; no gateway.
-fn bridge(app: &mut Desktop, journal: &Path) -> mpsc::Receiver<connection::Command> {
+pub(super) fn bridge(app: &mut Desktop, journal: &Path) -> mpsc::Receiver<connection::Command> {
     app.registry = Some(journal.parent().unwrap().to_path_buf());
     app.preferences.current.automatic_notifications = true;
     let (commands, frames) = mpsc::channel(64);
@@ -412,7 +418,7 @@ fn bridge(app: &mut Desktop, journal: &Path) -> mpsc::Receiver<connection::Comma
     frames
 }
 
-fn project(app: &mut Desktop, agent: &Agent, project: &str) {
+pub(super) fn project(app: &mut Desktop, agent: &Agent, project: &str) {
     app.delegation.projects.insert(
         agent.directory.clone(),
         (Instant::now(), Some(project.into())),
@@ -420,7 +426,7 @@ fn project(app: &mut Desktop, agent: &Agent, project: &str) {
 }
 
 /// The background scan, run synchronously with the same native discovery.
-fn scan(app: &mut Desktop, arrival: Option<Lifecycle>) {
+pub(super) fn scan(app: &mut Desktop, arrival: Option<Lifecycle>) {
     let found = app
         .delegation_roots()
         .into_iter()
@@ -599,7 +605,7 @@ fn deliver(
     acks
 }
 
-fn wait_lines(agent: &Agent, count: usize) -> Vec<String> {
+pub(super) fn wait_lines(agent: &Agent, count: usize) -> Vec<String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let lines = agent.lines();

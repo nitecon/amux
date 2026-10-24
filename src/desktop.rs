@@ -1270,6 +1270,10 @@ impl Desktop {
                             format!("Gateway unavailable: {error}. Queued delivery paused.");
                     }
                 }
+                if panel.loaded_at.is_some() {
+                    self.delegation
+                        .reconcile_backlog(&panel.project, &panel.tasks);
+                }
                 if std::mem::take(&mut panel.refresh_pending) {
                     return self.query(scope.workspace);
                 }
@@ -1449,6 +1453,7 @@ impl Desktop {
                 return Task::batch([
                     self.delivery_tick(),
                     self.delegation_tick(),
+                    self.backlog_tick(),
                     self.routing_tick(),
                     updates,
                 ]);
@@ -1682,6 +1687,9 @@ impl Desktop {
     }
 
     fn close_window(&mut self, window: iced::window::Id) -> Task<Message> {
+        if self.design.task_window == Some(window) {
+            return self.design_message(desktop_design::Action::DockTasks);
+        }
         if window == self.main_window {
             if self.workspace_dialog.busy {
                 self.status = "Wait for the repository clone to finish before closing amux.".into();
@@ -1698,10 +1706,26 @@ impl Desktop {
         Task::none()
     }
 
-    fn window_title(&self, _: iced::window::Id) -> String {
+    fn window_title(&self, window: iced::window::Id) -> String {
+        if self.design.task_window == Some(window) {
+            return format!(
+                "amux · Gateway tasks · {}",
+                self.workspaces[self.active].gateway.project
+            );
+        }
         "amux · agent workspaces".into()
     }
-    fn window_view(&self, _: iced::window::Id) -> Element<'_, Message> {
+    fn window_view(&self, window: iced::window::Id) -> Element<'_, Message> {
+        if self.design.task_window == Some(window) {
+            if self.preferences.open || self.workspace_dialog.open {
+                return container(text(
+                    "Finish the open dialog in the main window to manage tasks.",
+                ))
+                .padding(20)
+                .into();
+            }
+            return self.design_tasks(true);
+        }
         self.view()
     }
 
@@ -1806,7 +1830,7 @@ impl Desktop {
             text("Connect with your gateway URL and API key. Projects are resolved automatically from each workspace’s Git remote."),
             field("Gateway URL", &draft.url, PreferenceField::Url, false),
             field("API key", &draft.api_key, PreferenceField::ApiKey, true),
-            checkbox(draft.automatic_notifications).label("Send fresh gateway task notifications to agents in this app").on_toggle(Message::AutomaticNotifications),
+            checkbox(draft.automatic_notifications).label("Send gateway notifications and assign queued work to idle agents in this app").on_toggle(Message::AutomaticNotifications),
             text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12),
             text("Repository matching is required. Settings are saved on this device.").size(12),
             text(&self.workspaces[self.active].gateway.status).size(13),

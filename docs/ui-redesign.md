@@ -7,7 +7,7 @@ The desktop remains a native Rust/Iced application with native terminal panes.
 
 - Settings uses the reference's in-window modal.
 - Repository matching is required for task delivery.
-- Activity means native terminal output within five seconds. Input alone does not
+- Activity means native terminal output within 30 seconds. Input alone does not
   activate a session; output echoed by the terminal still counts. It does not
   imply that a model is reasoning. No rendered terminal text drives this metric.
 - Sample transcripts, file locks, model names, quotas and the simulation panel
@@ -26,7 +26,10 @@ controls that enter screen-based readiness are not exposed.
 Single view maximizes a pane; Restore panes brings its peers back without
 terminating their sessions. Tabs retain close controls and directory subtitles.
 
-Tasks have All, Active and Completed filters and a pinned composer. Gateway
+Tasks default to Active (queued and in-progress), with Completed as the other
+filter and a pinned composer. The task panel can collapse to a narrow arrow rail
+or detach into a larger window. Docking or closing that window restores the panel
+without closing sessions or losing drafts. Gateway
 acceptance and uncertain submission receipts remain visible, with no automatic
 POST retries or fabricated ownership. Lifecycle events refresh matching task
 lists; concurrent refreshes coalesce. The left-side Gateway messages drawer shows sender bubbles with title, 200-character
@@ -38,7 +41,10 @@ Open a task to manage it in the right-hand column. The detail view displays its
 description, specification and comment thread, with Edit, Assign and Close task
 actions. Edit changes the title, description and specification; Close task marks
 it completed. Comments are posted as the user. Assignment lists the gateway's
-available agents with their machine names and targets the selected execution.
+available local and gateway-connected agents with machine, provider and OS labels
+and targets the selected execution. Each active task card also has a direct Assign
+action. Opening assignment refreshes local presence across matching workspaces
+before reading the gateway directory.
 The gateway retains normal inactivity-based unassignment. Pending actions block
 duplicate submission, and unconfirmed results require a refresh before repeating
 the action; drafts are retained. Switching workspaces never retargets a pending
@@ -66,7 +72,15 @@ silently changed to automatic routing. Submission rechecks the actual Git
 remote and project, and explicit routing must be acknowledged by the gateway.
 Errors retain an uncertain receipt and never automatically replay a POST.
 
-Queue-only creation does not inject a notification. Broadcast creates one
+Queue-only creation does not immediately inject a lifecycle notification. With
+automatic gateway delivery enabled, an agent idle for 30 seconds without output
+and without a draft or owned active task can receive the first eligible queued
+item. The same 30-second clock drives the workspace indicators. The app confirms
+one claim for the first eligible idle session, then injects a request to evaluate
+the task, implement viable work, or discuss/close obsolete work with a reason.
+Task ownership and native idleness are checked again before input. Unconfirmed
+claims or input are fenced and never automatically repeated after restart.
+Broadcast creates one
 unclaimed task and fans out to matching local agents; agents still arbitrate
 ownership through normal claims. Exact creation targets only the selected
 execution. Later comments follow current ownership, and released tasks can route

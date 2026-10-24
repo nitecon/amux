@@ -15,6 +15,8 @@ use std::{
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
+#[path = "desktop_backlog.rs"]
+mod backlog;
 
 #[derive(Default)]
 pub(super) struct TabState {
@@ -112,6 +114,8 @@ pub(super) struct Proof {
 
 #[derive(Debug, Clone)]
 pub(super) enum Event {
+    BacklogVerified(Box<backlog::Pick>, bool),
+    BacklogClaimed(Uuid, Result<Option<serde_json::Value>, String>),
     Stream(ConnectionEvent),
     Scanned {
         serial: u64,
@@ -124,6 +128,7 @@ pub(super) enum Event {
 
 #[derive(Default)]
 pub(super) struct Bridge {
+    backlog: backlog::State,
     epoch: u64,
     clock: Option<amux::gateway_stream::GatewayClock>,
     initialized: bool,
@@ -141,6 +146,13 @@ pub(super) struct Bridge {
     verifying: bool,
 }
 impl Bridge {
+    pub(super) fn reconcile_backlog(&mut self, project: &str, tasks: &[serde_json::Value]) {
+        if let Some(queue) = &mut self.queue
+            && let Err(error) = queue.reconcile_backlog(project, tasks)
+        {
+            self.fail(error);
+        }
+    }
     fn now_ms(&self) -> i64 {
         self.clock
             .as_ref()
@@ -367,6 +379,8 @@ impl Desktop {
         let mut follow = Task::none();
         let mut refresh = Task::none();
         let result: anyhow::Result<()> = match event {
+            Event::BacklogVerified(pick, valid) => return self.backlog_verified(*pick, valid),
+            Event::BacklogClaimed(request, result) => return self.backlog_claimed(request, result),
             Event::Stream(ConnectionEvent::Clock(clock)) => {
                 self.delegation.clock = Some(clock);
                 Ok(())
@@ -740,6 +754,9 @@ impl Desktop {
 }
 
 impl Desktop {
+    pub(super) fn backlog_status(&self) -> &str {
+        &self.delegation.backlog.status
+    }
     pub(super) fn routing_actors(
         &self,
         workspace: Uuid,
@@ -754,7 +771,16 @@ impl Desktop {
         self.delegation
             .candidates
             .iter()
-            .filter(|c| c.root.workspace == workspace)
+            .filter(|c| {
+                c.root.workspace == workspace
+                    || self
+                        .workspaces
+                        .iter()
+                        .find(|w| w.id == workspace)
+                        .is_some_and(|w| {
+                            !c.target.project.is_empty() && c.target.project == w.gateway.project
+                        })
+            })
             .map(|c| {
                 (
                     c.actor.clone(),

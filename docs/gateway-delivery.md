@@ -1,6 +1,6 @@
 # Gateway task delivery
 
-Set the gateway URL and API key in Preferences, then enable **Send fresh gateway task notifications to agents in this app** and save. No project identifier, machine UUID or machine key is required. The app creates a durable consumer identity and resolves repositories from Git remotes and gateway metadata.
+Set the gateway URL and API key in Preferences, then enable **Send gateway notifications and assign queued work to idle agents in this app** and save. No project identifier, machine UUID or machine key is required. The app creates a durable consumer identity and resolves repositories from Git remotes and gateway metadata.
 
 Created tasks, comments and completed tasks produce a bounded `<gateway>` summary in a matching Claude or Codex terminal: task ID, title, event state, sender, available provenance, and the first 200 characters of the initial details or comment. Only the bounded preview is copied; complete descriptions and comment bodies are not injected. Preview text is normalized to one line and XML-escaped. Events older than five minutes and events already present when a connection is established are skipped. Freshness uses the gateway upgrade response’s HTTP Date plus monotonic elapsed time when available, so a local PC clock offset does not incorrectly expire a fresh event. Opening a later agent does not attach it to earlier notifications.
 
@@ -14,6 +14,28 @@ which can interrupt a running turn or exit the provider when a draft tee is stal
 The task panel shows connection status, agents, pending notifications and recent receipts with the reason for each delivery decision. Gateway acknowledgment
 confirms that the decision was saved, including a skip; it does not imply delivery.
 `injected` means the notification input transaction was enqueued. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
+
+## Idle backlog review
+
+Current queued tasks are checked separately from historical event replay. The
+first eligible local agent with no output for 30 seconds, no unfinished draft and
+no owned in-progress task can take the first available queued item. The workspace
+activity icons use this same output clock. Other owners, explicit recipients,
+repository boundaries and task goals are respected; an agent can also evaluate a
+queued task already assigned to it.
+
+The app rereads and claims the selected task through the gateway before sending
+anything to the terminal. It then rechecks the owner and native session and
+requests evaluation against current project state: implement viable work,
+review uncertain work with the user, or close obsolete work with a reason. The
+app does not decide viability or close tasks itself. Only one task is handed to
+an idle session at a time; another idle peer can take the next item.
+
+Claims and input attempts are saved before sending. Unknown outcomes pause the
+affected handoff for inspection rather than retrying automatically. Restart does
+not replay input. A newer explicit requeue retires a known handoff fence;
+unconfirmed attempts remain paused until the task is resolved. Completed tasks
+retire their old backlog fences. This does not replay old lifecycle events.
 
 ## Built-in agent identity
 
