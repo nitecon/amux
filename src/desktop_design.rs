@@ -580,13 +580,23 @@ impl Desktop {
         let sidebar = container(
             column![
                 scrollable(sidebar).height(Length::Fill),
-                control(
-                    "settings",
-                    "Settings & Gateway",
-                    Message::Preferences(true),
-                    false
+                button(
+                    row![
+                        icon("settings"),
+                        text("Settings & Gateway").size(11),
+                        Space::new().width(Length::Fill),
+                        text("Ctrl+,")
+                            .font(iced::Font::MONOSPACE)
+                            .size(9)
+                            .color(MUTED)
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
                 )
+                .on_press(Message::Preferences(true))
+                .padding([7, 9])
                 .width(Length::Fill)
+                .style(|theme, status| button_style(false, theme, status))
             ]
             .spacing(12),
         )

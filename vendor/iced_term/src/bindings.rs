@@ -12,6 +12,8 @@ pub enum BindingAction {
     Esc(String),
     LinkOpen,
     Ignore,
+    /// Consume a host shortcut without forwarding printable text to the PTY.
+    Suppress,
 }
 
 #[derive(Clone, Hash, Debug, PartialEq, Eq)]

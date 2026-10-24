@@ -736,7 +736,16 @@ impl Desktop {
                 ..Default::default()
             },
         ) {
-            Ok(terminal) => {
+            Ok(mut terminal) => {
+                terminal.handle(iced_term::Command::AddBindings(vec![(
+                    iced_term::bindings::Binding {
+                        target: iced_term::bindings::InputKind::Char(",".into()),
+                        modifiers: iced::keyboard::Modifiers::CTRL,
+                        terminal_mode_include: iced_term::TermMode::empty(),
+                        terminal_mode_exclude: iced_term::TermMode::empty(),
+                    },
+                    iced_term::bindings::BindingAction::Suppress,
+                )]));
                 #[cfg(any(target_os = "linux", windows))]
                 let lifetime = terminal.child_pid().and_then(|pid| {
                     match amux::terminal_lifetime::TerminalLifetime::capture(pid) {
@@ -2329,6 +2338,13 @@ impl Desktop {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::Escape),
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(key),
+                    modifiers,
+                    ..
+                }) if key.as_str() == "," && modifiers == iced::keyboard::Modifiers::CTRL => {
+                    Some(Message::Preferences(true))
+                }
                 _ => None,
             }),
             iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Save),
