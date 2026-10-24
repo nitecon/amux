@@ -8,7 +8,6 @@ use super::*;
 use amux::delegation::{Event as Lifecycle, Kind};
 use std::{io::Write, path::Path, sync::OnceLock};
 
-#[cfg(target_os = "linux")]
 use std::io::Read;
 
 const LOG: &str = "AMUX_DESKTOP_FIXTURE_LOG";
@@ -26,6 +25,8 @@ struct Fixture {
     cursor: usize,
     raw: String,
     submitted: usize,
+    last_text: Option<Instant>,
+    pending: String,
 }
 
 impl Fixture {
@@ -82,10 +83,23 @@ impl Fixture {
     /// Raw input: printable text edits the draft, Home moves the caret, Ctrl+C/U
     /// clear and Enter submits everything received since the previous submission.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn feed(&mut self, mut rest: &str) {
+    fn feed(&mut self, incoming: &str) {
+        self.pending.push_str(incoming);
+        let input = std::mem::take(&mut self.pending);
+        let mut rest = input.as_str();
         while let Some(c) = rest.chars().next() {
             let mut len = c.len_utf8();
             match c {
+                '\r' | '\n'
+                    if self.layout == "burst"
+                        && self
+                            .last_text
+                            .is_some_and(|at| at.elapsed() < Duration::from_millis(120)) =>
+                {
+                    self.draft.push('\n');
+                    self.raw.push('\n');
+                    self.cursor += 1;
+                }
                 '\r' | '\n' => self.submit(),
                 '\x03' | '\x15' => {
                     self.raw.clear();
@@ -99,13 +113,22 @@ impl Fixture {
                         self.draft.remove(self.cursor);
                     }
                 }
-                '\x1b' if rest.starts_with("\x1b[") || rest.starts_with("\x1bO") => {
-                    len = rest
+                '\x1b'
+                    if rest.len() == 1
+                        || rest.starts_with("\x1b[")
+                        || rest.starts_with("\x1bO") =>
+                {
+                    let Some(end) = rest
                         .bytes()
                         .enumerate()
                         .skip(2)
                         .find(|(_, b)| (0x40..=0x7e).contains(b))
-                        .map_or(rest.len(), |(i, _)| i + 1);
+                        .map(|(i, _)| i + 1)
+                    else {
+                        self.pending = rest.to_owned();
+                        break;
+                    };
+                    len = end;
                     let sequence = &rest[..len];
                     if matches!(sequence, "\x1b[H" | "\x1bOH") {
                         self.cursor = 0;
@@ -113,6 +136,7 @@ impl Fixture {
                     self.raw.push_str(sequence);
                 }
                 c if !c.is_control() => {
+                    self.last_text = Some(Instant::now());
                     self.raw.push(c);
                     self.draft.insert(self.cursor, c);
                     self.cursor += 1;
@@ -149,6 +173,17 @@ fn fixture_process() {
             );
         }
     }
+    #[cfg(windows)]
+    // SAFETY: this fixture exclusively owns the input side of its private ConPTY.
+    unsafe {
+        use windows_sys::Win32::System::Console::*;
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        let mut mode = 0;
+        assert_ne!(GetConsoleMode(handle, &mut mode), 0);
+        mode = (mode & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT))
+            | ENABLE_VIRTUAL_TERMINAL_INPUT;
+        assert_ne!(SetConsoleMode(handle, mode), 0);
+    }
     // Bound a leaked fixture even if its terminal never closes.
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(120));
@@ -167,6 +202,8 @@ fn fixture_process() {
         cursor: 0,
         raw: String::new(),
         submitted: 0,
+        last_text: None,
+        pending: String::new(),
     };
     #[cfg(target_os = "linux")]
     {
@@ -178,24 +215,12 @@ fn fixture_process() {
                 libc::tcsetattr(0, libc::TCSANOW, &mode);
             }
         }
-        fixture.draw();
-        let mut buffer = [0u8; 4096];
-        let mut stdin = std::io::stdin().lock();
-        while let Ok(n @ 1..) = stdin.read(&mut buffer) {
-            fixture.feed(&String::from_utf8_lossy(&buffer[..n]));
-        }
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        // Console line input: the console echoes the draft and Enter submits a line.
-        use std::io::BufRead;
-        fixture.draw();
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            fixture.raw = line.trim_end_matches(['\r', '\n']).to_owned();
-            fixture.submit();
-            fixture.draw();
-        }
+    fixture.draw();
+    let mut buffer = [0u8; 4096];
+    let mut stdin = std::io::stdin().lock();
+    while let Ok(n @ 1..) = stdin.read(&mut buffer) {
+        fixture.feed(&String::from_utf8_lossy(&buffer[..n]));
     }
 }
 
@@ -466,7 +491,13 @@ fn native_verify(proof: &Proof) -> bool {
 
 fn verified(app: &mut Desktop, proof: Proof, verified: bool) {
     let epoch = app.delegation.epoch;
+    let submit = proof.clone();
     drop(app.delegation_message(epoch, Event::Verified(Box::new(proof), verified)));
+    if app.delegation.verifying {
+        std::thread::sleep(Duration::from_millis(250));
+        let valid = native_verify(&submit);
+        drop(app.delegation_message(epoch, Event::Submit(Box::new(submit), valid)));
+    }
 }
 
 /// Acknowledgment frames sent to the (fake) connection, each recorded back as the
@@ -988,4 +1019,93 @@ fn gateway_clock_delivers_fresh_comments_despite_local_clock_skew_and_expires_ol
     assert!(expired.reason.contains("expired"));
     never_verifies(&mut app, &mut frames);
     assert_eq!(agent.lines(), [event.terminal_text()]);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn burst_paste_requires_a_separate_delayed_enter() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
+    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
+    project(&mut app, &agent, "amux");
+    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    let event = lifecycle(1, "amux");
+    scan(&mut app, Some(event.clone()));
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 1, 0) == Some(Outcome::Submitted)
+    });
+    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn human_input_between_paste_and_enter_prevents_submission() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
+    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
+    project(&mut app, &agent, "amux");
+    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    scan(&mut app, Some(lifecycle(1, "amux")));
+    until_verifying(&mut app, &mut frames);
+    let proof = fence_proof(&app);
+    let epoch = app.delegation.epoch;
+    drop(app.delegation_message(
+        epoch,
+        Event::Verified(Box::new(proof.clone()), native_verify(&proof)),
+    ));
+    assert!(app.delegation.verifying);
+    human(&mut app, 0, b"x");
+    std::thread::sleep(Duration::from_millis(250));
+    drop(app.delegation_message(epoch, Event::Submit(Box::new(proof), true)));
+    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Uncertain));
+    assert!(agent.lines().is_empty());
+}
+
+#[test]
+fn composer_fixture_reproduces_enter_inside_a_paste_as_a_newline() {
+    let mut fixture = Fixture {
+        marker: '›',
+        layout: "burst".into(),
+        log: fixtures().join("burst-unit.log"),
+        draft: Vec::new(),
+        cursor: 0,
+        raw: String::new(),
+        submitted: 0,
+        last_text: None,
+        pending: String::new(),
+    };
+    fixture.feed("gateway text\r");
+    assert_eq!(fixture.submitted, 0);
+    assert_eq!(fixture.draft.last(), Some(&'\n'));
+    std::thread::sleep(Duration::from_millis(150));
+    fixture.feed("\r");
+    assert_eq!(fixture.submitted, 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn changed_composer_text_prevents_automatic_enter_without_a_human_epoch() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
+    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
+    project(&mut app, &agent, "amux");
+    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    scan(&mut app, Some(lifecycle(1, "amux")));
+    until_verifying(&mut app, &mut frames);
+    let proof = fence_proof(&app);
+    let epoch = app.delegation.epoch;
+    drop(app.delegation_message(
+        epoch,
+        Event::Verified(Box::new(proof.clone()), native_verify(&proof)),
+    ));
+    find(&app, 0)
+        .terminal
+        .as_ref()
+        .unwrap()
+        .try_enqueue_input(b"unexpected".to_vec())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    drop(app.delegation_message(epoch, Event::Submit(Box::new(proof), true)));
+    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Uncertain));
+    assert!(agent.lines().is_empty());
 }

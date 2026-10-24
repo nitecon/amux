@@ -128,6 +128,74 @@ pub fn classify(grid: &TerminalGridObservation, provider: Provider) -> InputStat
     InputState::EmptyReady
 }
 
+/// After an amux paste, Enter is allowed only while the composer contains
+/// exactly that literal message. Human input is separately fenced by the UI epoch.
+pub fn pending_literal(grid: &TerminalGridObservation, provider: Provider, message: &str) -> bool {
+    let screen = &grid.observation;
+    let Ok(caret) = usize::try_from(screen.cursor_row) else {
+        return false;
+    };
+    if screen.lines.is_empty()
+        || screen.lines.len() > 200
+        || caret >= screen.lines.len()
+        || screen.display_offset != 0
+        || !screen.mode.contains(TermMode::SHOW_CURSOR)
+    {
+        return false;
+    }
+    let marker = match provider {
+        Provider::Codex => '›',
+        Provider::Claude => '❯',
+    };
+    let Some(start) = (0..=caret).rev().find(|&y| {
+        screen.lines[y]
+            .trim_start()
+            .starts_with(&format!("{marker} "))
+    }) else {
+        return false;
+    };
+    let Some(footer) = (caret + 1..screen.lines.len().min(caret + 6)).find(|&y| {
+        let line = screen.lines[y].trim_start();
+        line.to_lowercase().contains("for shortcuts")
+            || (provider == Provider::Claude && line.starts_with(CLAUDE_AUTO_FOOTER))
+    }) else {
+        return false;
+    };
+    let near = screen.lines[start.saturating_sub(6)..footer]
+        .join("\n")
+        .to_lowercase();
+    let input = screen.lines[start..footer].join("\n").to_lowercase();
+    if BUSY_NEAR_CARET.iter().any(|word| near.contains(word))
+        || BUSY_IN_COMPOSER.iter().any(|word| input.contains(word))
+    {
+        return false;
+    }
+    let mut end = (start + 1..footer)
+        .find(|&y| horizontal_rule(&screen.lines[y]))
+        .unwrap_or(footer);
+    if provider == Provider::Codex
+        && footer >= start + 3
+        && screen.lines[footer - 2].trim().is_empty()
+        && screen.lines[footer - 1].contains(" · ")
+    {
+        end = end.min(footer - 1);
+    }
+    let first = screen.lines[start]
+        .trim_start()
+        .strip_prefix(marker)
+        .unwrap_or_default();
+    let content = std::iter::once(first)
+        .chain(screen.lines[start + 1..end].iter().map(String::as_str))
+        .collect::<String>();
+    // Soft wrapping and provider indentation can replace spaces at a line break.
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+    !message.is_empty() && compact(&content) == compact(message)
+}
+
 /// Codex's shaded composer: contiguous full rows sharing one non-default
 /// background, independent of theme colors or footer text.
 fn shaded_composer(grid: &TerminalGridObservation, row: usize) -> Option<Range<usize>> {

@@ -139,6 +139,7 @@ pub(super) enum Event {
     },
     Project(PathBuf, Result<String, String>),
     Verified(Box<Proof>, bool),
+    Submit(Box<Proof>, bool),
 }
 
 #[derive(Default)]
@@ -577,6 +578,7 @@ impl Desktop {
                     return Task::none();
                 }
                 let mut outcome = Outcome::Skipped;
+                let mut pasted = false;
                 if verified
                     && approved
                     && proof.started.elapsed() <= Duration::from_secs(2)
@@ -611,12 +613,15 @@ impl Desktop {
                             .mode
                             .contains(iced_term::TermMode::BRACKETED_PASTE)
                         {
-                            format!("\x1b[200~{message}\x1b[201~\r").into_bytes()
+                            format!("\x1b[200~{message}\x1b[201~").into_bytes()
                         } else {
-                            format!("{message}\r").into_bytes()
+                            message.into_bytes()
                         };
                         outcome = match terminal.try_enqueue_input(bytes) {
-                            Ok(()) => Outcome::Submitted,
+                            Ok(()) => {
+                                pasted = true;
+                                Outcome::Submitting
+                            }
                             Err(_) => Outcome::Uncertain,
                         };
                         state.wait_for_output = true;
@@ -624,6 +629,86 @@ impl Desktop {
                     } else {
                         outcome = Outcome::Queued;
                     }
+                }
+                if pasted {
+                    // Keep the durable submitting fence while the provider consumes its paste.
+                    // A separate write after the paste burst is what a physical Enter produces.
+                    self.delegation.verifying = true;
+                    follow = Task::perform(
+                        async move {
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            let c = proof.candidate.clone();
+                            let valid = tokio::task::spawn_blocking(move || {
+                                delegation_process::verify(
+                                    c.root.pid,
+                                    &c.root.generation,
+                                    c.root.foreground,
+                                    &c.process,
+                                )
+                            })
+                            .await
+                            .unwrap_or(false);
+                            Event::Submit(proof, valid)
+                        },
+                        move |event| Message::Delegation(epoch, event),
+                    );
+                    Ok(())
+                } else {
+                    self.delegation
+                        .queue
+                        .as_mut()
+                        .map_or(Ok(()), |q| q.finish(&proof.attempt, outcome))
+                }
+            }
+            Event::Submit(proof, verified) => {
+                self.delegation.verifying = false;
+                if !self
+                    .delegation
+                    .queue
+                    .as_ref()
+                    .is_some_and(|q| q.submitting(&proof.attempt))
+                {
+                    return Task::none();
+                }
+                let current = self
+                    .delegation
+                    .candidates
+                    .iter()
+                    .any(|c| c.target == proof.attempt.target);
+                let approved = self.preferences.current.automatic_notifications
+                    && self.delegation.connection.is_some();
+                // Text may already be in the composer: any interruption is uncertain,
+                // never permission to replay the paste or send an unguarded Enter.
+                let mut outcome = Outcome::Uncertain;
+                if verified
+                    && approved
+                    && current
+                    && proof.started.elapsed() <= Duration::from_secs(2)
+                    && proof.attempt.event.fresh(now)
+                    && let Some(tab) = tab(self, proof.attempt.target.terminal)
+                    && let Some(terminal) = &tab.terminal
+                    && tab.delegation.revision == proof.revision
+                    && !tab.delegation.dirty
+                    && tab.delegation.root.as_ref()
+                        == Some(&(
+                            proof.candidate.root.pid,
+                            proof.candidate.root.generation.clone(),
+                        ))
+                    && foreground(terminal) == proof.candidate.root.foreground
+                    && amux::identity::process_generation(proof.candidate.process.pid)
+                        .is_ok_and(|g| g == proof.candidate.process.generation)
+                    && terminal.grid_observation(32_768).is_some_and(|grid| {
+                        delegation_readiness::pending_literal(
+                            &grid,
+                            proof.candidate.process.provider,
+                            &proof.attempt.event.terminal_text(),
+                        )
+                    })
+                {
+                    outcome = match terminal.try_enqueue_input(vec![b'\r']) {
+                        Ok(()) => Outcome::Submitted,
+                        Err(_) => Outcome::Uncertain,
+                    };
                 }
                 self.delegation
                     .queue
