@@ -45,7 +45,8 @@ Exact agent, unassigned and broadcast targets in the prototype's task composer
 require a gateway API contract. Gateway support is delegated to owning-project
 task `01a16f17-6788-7791-b5d2-a052b207c38a`; the amux tracker is
 `01a16f17-6788-7791-b5d2-a065f4979044`. Until integrated, the composer honestly
-uses automatic project routing. The redesign goal remains open.
+uses automatic project routing. The owner approved publishing v0.0.11 for
+testing while these targeting modes remain a delegated follow-up.
 
 ## Validation
 
@@ -61,5 +62,7 @@ Core, desktop, terminal protocol and notification checks run through the normal
 CI workflow on Linux and Windows. The initial review commit `ba0449c` passed both platforms, including native
 terminal tests and optimized builds ([CI run](https://github.com/nitecon/amux/actions/runs/40119844767)).
 Both artifact sets had their binary hashes, source revision, Windows executable
-subsystems and bundled Lucide notice checked. Native Windows visual review and
-the eventual release remain pending.
+subsystems and bundled Lucide notice checked. The final design commit `c1f7b0c`
+also passed both platforms ([CI run](https://github.com/nitecon/amux/actions/runs/40124785852));
+both portable bundles were verified against their hashes and source revision.
+Native Windows visual review remains an owner testing step.
