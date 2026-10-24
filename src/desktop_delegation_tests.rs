@@ -294,7 +294,7 @@ fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layou
     }
     let tab = pane.tabs.iter_mut().find(|t| t.id == id).unwrap();
     tab.provider = Some(provider);
-    tab.delegation = TabState::capture(&terminal);
+    tab.delegation = TabState::capture(&terminal, id + 1);
     tab.terminal = Some(terminal);
     let agent = Agent {
         directory: amux::workspace_launch::external_path(
@@ -347,6 +347,7 @@ fn human(app: &mut Desktop, id: u64, bytes: &[u8]) {
 
 /// An approved bridge with a live (fake) subscribed connection; no gateway.
 fn bridge(app: &mut Desktop, journal: &Path) -> mpsc::Receiver<connection::Command> {
+    app.registry = Some(journal.parent().unwrap().to_path_buf());
     app.preferences.current.automatic_notifications = true;
     let (commands, frames) = mpsc::channel(64);
     app.delegation.initialized = true;
@@ -380,11 +381,7 @@ fn scan(app: &mut Desktop, arrival: Option<Lifecycle>) {
     let found = app
         .delegation_roots()
         .into_iter()
-        .filter_map(|root| {
-            let process =
-                delegation_process::discover(root.pid, &root.generation, root.foreground)?;
-            Some(Found { root, process })
-        })
+        .filter_map(|root| discover_root(root, app.registry.as_deref()?))
         .collect();
     app.delegation.scan_serial += 1;
     let serial = app.delegation.scan_serial;
@@ -875,6 +872,29 @@ fn native_peer_agents_have_unique_sessions_and_isolated_input() {
             .count(),
         2
     );
+    // Plain-shell discovery publishes amux-owned provider/terminal identities.
+    let records = amux::identity::live_agents(app.registry.as_deref().unwrap()).unwrap();
+    assert_eq!(records.len(), 3);
+    for target in &targets {
+        let record = records.iter().find(|r| r.pid == target.pid).unwrap();
+        let name = format!(
+            "{}-{}",
+            record.identity.provider.command(),
+            target.terminal + 1
+        );
+        assert_eq!(record.identity.agent_id, name);
+        let project = amux::project_identity::resolve(&target.directory).unwrap();
+        assert_eq!(record.identity.project_id, project.id);
+        assert_eq!(target.session, project.session_id(&name));
+        assert_eq!(
+            target.origin.as_ref().unwrap().instance_id,
+            record.identity.instance_id
+        );
+        assert_eq!(
+            find(&app, target.terminal).delegation.agent_name.as_deref(),
+            Some(name.as_str())
+        );
+    }
     // Sessions are stable across rescans of the same process attachment.
     scan(&mut app, None);
     assert_eq!(app.delegation.targets(), targets);
@@ -905,4 +925,23 @@ fn native_peer_agents_have_unique_sessions_and_isolated_input() {
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(codex.lines(), [beta.terminal_text()]);
     assert_eq!(claude.lines(), [beta.terminal_text()]);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn native_plain_shell_identity_suppresses_its_own_notification() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "ready");
+    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
+    project(&mut app, &agent, "amux");
+    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    scan(&mut app, None);
+    let target = app.delegation.targets().remove(0);
+    let mut event = lifecycle(1, "amux");
+    event.origin = target.origin;
+    assert!(event.origin.is_some());
+    scan(&mut app, Some(event));
+    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Skipped));
+    never_verifies(&mut app, &mut frames);
+    assert!(agent.lines().is_empty());
 }

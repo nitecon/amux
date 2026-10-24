@@ -1,7 +1,9 @@
 //! Storage failures and ledger lock handoff; serialized fixtures do not prove live recipient identity.
+#[path = "support/identity.rs"]
+mod fixture_identity;
 use amux::{
     delivery::{DeliveryCause, DeliveryLedger},
-    identity::{AgentIdentity, Provider},
+    identity::Provider,
     recipient::RecipientAddress,
 };
 use serde_json::json;
@@ -17,7 +19,7 @@ fn fixture() -> tempfile::TempDir {
 fn address(root: &Path) -> RecipientAddress {
     serde_json::from_value(json!({
         "terminal_id":1,
-        "identity":AgentIdentity::new(Provider::Codex, root).unwrap(),
+        "identity":fixture_identity::identity(Provider::Codex, root).unwrap(),
         "launcher":{"pid":1,"generation":"storage fixture launcher"},
         "agent":{"pid":2,"generation":"storage fixture agent"}
     }))
@@ -99,7 +101,7 @@ fn failed_persistence_disables_further_delivery_mutations() {
 fn fenced(root: &Path, launcher: (u32, &str), agent: (u32, &str)) -> serde_json::Value {
     json!({
         "terminal_id":1,
-        "identity":AgentIdentity::new(Provider::Codex, root).unwrap(),
+        "identity":fixture_identity::identity(Provider::Codex, root).unwrap(),
         "launcher":{"pid":launcher.0,"generation":launcher.1},
         "agent":{"pid":agent.0,"generation":agent.1}
     })

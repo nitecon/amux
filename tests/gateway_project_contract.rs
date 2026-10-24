@@ -351,7 +351,7 @@ fn missing_project_is_registered_then_verified_by_reread() {
     assert!(seen[1].head.contains("authorization: bearer test-only"));
     assert_eq!(
         seen[1].body,
-        json!({"ident": REMOTE, "repo_url": format!("https://{REMOTE}")})
+        json!({"ident": "tool", "repo_url": format!("https://{REMOTE}")})
     );
     assert!(seen[2].head.starts_with("get /v1/projects "));
 }

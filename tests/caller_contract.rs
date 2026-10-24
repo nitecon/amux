@@ -102,3 +102,52 @@ fn task_mutation_accepts_agent_tool_ancestry_but_rejects_nested_or_unrelated_cal
         );
     }
 }
+
+#[test]
+fn plain_shell_agent_uses_desktop_registration_without_inherited_actor_fields() {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    fs::create_dir_all(&target).unwrap();
+    let fixture = tempfile::tempdir_in(target).unwrap();
+    let root = fixture.path();
+    fs::write(root.join("codex"), "#!/bin/sh\nread -r go\n\"$AMUX_TEST_CLI\" tasks --project demo claim 00000000-0000-4000-8000-000000000001\n").unwrap();
+    fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
+    amux::gateway_preferences::GatewayPreferences {
+        url: "http://127.0.0.1:9".into(),
+        api_key: "test-only".into(),
+        ..Default::default()
+    }
+    .save(&root.join("gateway-preferences.json"))
+    .unwrap();
+    let mut command = Command::new(root.join("codex"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("AMUX_AGENT_")
+            || key.to_string_lossy().starts_with("AMUX_GATEWAY_")
+        {
+            command.env_remove(key);
+        }
+    }
+    let mut child = command
+        .current_dir(root)
+        .env("AMUX_STATE_DIR", root)
+        .env("AMUX_TEST_CLI", env!("CARGO_BIN_EXE_amux"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let actor =
+        amux::identity::AgentIdentity::for_terminal(amux::identity::Provider::Codex, root, 1)
+            .unwrap();
+    amux::identity::AgentRecord::inspect(actor, child.id())
+        .unwrap()
+        .register_at(root)
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Reaching transport proves saved URL/key and the actual registered executor
+    // were accepted; no provider hook or inherited actor UUID was supplied.
+    assert!(!output.status.success());
+    assert!(stderr.contains("gateway unavailable"), "{stderr}");
+    assert!(!stderr.contains("missing AMUX_AGENT"), "{stderr}");
+}

@@ -42,17 +42,13 @@ enum Operation {
     Whoami,
     /// List live amux-launched agent sessions, including three in one project.
     Agents,
-    /// Local native actor context for task origin and goal routing in desktop terminals.
-    Actor {
-        #[command(subcommand)]
-        operation: ActorOperation,
-    },
-    /// Use the authoritative gateway without agent-tools installed.
+    /// Use the authoritative gateway without agent-tools installed. The URL and
+    /// key default to saved gateway preferences; the project resolves from Git.
     Tasks {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
-        project: String,
+        project: Option<String>,
         #[arg(long, env = "AMUX_GATEWAY_URL")]
-        gateway_url: String,
+        gateway_url: Option<String>,
         #[command(subcommand)]
         operation: TaskOperation,
     },
@@ -76,14 +72,6 @@ enum Operation {
         #[command(subcommand)]
         operation: amux::dispatch::Command,
     },
-}
-
-#[derive(Subcommand)]
-enum ActorOperation {
-    /// Read the calling invocation's versioned actor JSON from stdin.
-    Announce,
-    Context,
-    Peers,
 }
 
 #[derive(Subcommand)]
@@ -195,38 +183,15 @@ fn run(cli: Cli) -> Result<u8> {
         }
         Operation::Whoami => println!(
             "{}",
-            serde_json::to_string_pretty(&AgentIdentity::from_environment()?)?
+            serde_json::to_string_pretty(
+                &AgentIdentity::verified_from_environment()
+                    .or_else(|_| AgentIdentity::from_environment())?
+            )?
         ),
         Operation::Agents => println!(
             "{}",
             serde_json::to_string_pretty(&identity::live_agents(&identity::state_directory()?)?)?
         ),
-        Operation::Actor { operation } => {
-            use std::io::Read;
-            let directory = std::env::var_os("AMUX_DELIVERY_DIRECTORY")
-                .map(PathBuf::from)
-                .map(Ok)
-                .unwrap_or_else(|| identity::state_directory().map(|p| p.join("delegation")))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_millis()
-                .min(i64::MAX as u128) as i64;
-            let value = match operation {
-                ActorOperation::Announce => {
-                    let mut bytes = Vec::new();
-                    std::io::stdin().take(65_537).read_to_end(&mut bytes)?;
-                    if bytes.len() > 65_536 {
-                        bail!("Actor announcement exceeds 64 KiB");
-                    }
-                    let actor =
-                        serde_json::from_slice(&bytes).context("Invalid actor announcement")?;
-                    amux::delegation_actor::announce(&directory, actor, now)?
-                }
-                ActorOperation::Context => amux::delegation_actor::context(&directory, now)?,
-                ActorOperation::Peers => amux::delegation_actor::peers(&directory, now)?,
-            };
-            println!("{}", serde_json::to_string(&value)?);
-        }
         Operation::Messages {
             project,
             gateway_url,
@@ -244,7 +209,7 @@ fn run(cli: Cli) -> Result<u8> {
                     MessageOperation::Get { id } => gateway.message(&project, id).await,
                     MessageOperation::Send { body, subject } => {
                         let actor = AgentIdentity::verified_from_environment()?;
-                        if actor.project_directory != project_dir.canonicalize()? {
+                        if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory {
                             bail!("message publication project directory differs from this agent's launch; switch to its project directory");
                         }
                         gateway.send_message(&project, body, subject, &actor).await
@@ -260,7 +225,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => {
             use amux::dispatch::{Dispatcher, Executor, Machine};
             let actor = AgentIdentity::verified_from_environment()?;
-            if actor.project_directory != project_dir.canonicalize()? {
+            if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory {
                 bail!(
                     "dispatch project directory differs from this agent's launch; switch to its project directory"
                 );
@@ -287,16 +252,34 @@ fn run(cli: Cli) -> Result<u8> {
             gateway_url,
             operation,
         } => {
+            let saved = amux::gateway_preferences::GatewayPreferences::load(
+                &identity::state_directory()?.join("gateway-preferences.json"),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+            let gateway_url = gateway_url
+                .or_else(|| Some(saved.url.clone()).filter(|url| !url.trim().is_empty()))
+                .context("set --gateway-url, AMUX_GATEWAY_URL or desktop gateway preferences")?;
             let token = std::env::var("AMUX_GATEWAY_KEY")
-                .context("set AMUX_GATEWAY_KEY for gateway access")?;
-            let gateway = Gateway::new(&gateway_url, token)?;
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+                .or_else(|| Some(saved.api_key).filter(|key| !key.trim().is_empty()))
+                .context(
+                    "set AMUX_GATEWAY_KEY or desktop gateway preferences for gateway access",
+                )?;
+            let gateway = Gateway::new(gateway_url.trim(), token)?;
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
+                let project = match project {
+                    Some(project) => project,
+                    None => gateway.resolve_project(project_dir.canonicalize()?).await?,
+                };
                 if matches!(operation, TaskOperation::List) { return gateway.list(&project).await; }
                 if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::verified_from_environment()?;
-                if actor.project_directory != project_dir.canonicalize()? { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
+                if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
                     TaskOperation::Create { title, specification } => gateway.request(Method::POST, &project, &[], Some(json!({"title": title, "specification": specification})), Some(&actor)).await,
                     TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
@@ -348,12 +331,12 @@ async fn confirm_owner(
 
 fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Result<u8> {
     let actor = AgentIdentity::new(provider, &project)?;
-    let root = identity::state_directory()?.join("agents");
-    std::fs::create_dir_all(&root)?;
     let mut command = Command::new(provider.command());
     command
         .args(args)
-        .current_dir(&actor.project_directory)
+        .current_dir(amux::workspace_launch::external_path(
+            project.canonicalize()?,
+        ))
         .envs(actor.environment());
     #[cfg(target_os = "linux")]
     {
@@ -412,21 +395,7 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
             return Err(error);
         }
     };
-    let path = root.join(format!("{}.json", actor.session_id));
-    let registration = (|| -> Result<()> {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
-        file.write_all(&serde_json::to_vec(&record)?)?;
-        Ok(())
-    })();
-    if let Err(error) = registration {
+    if let Err(error) = record.register() {
         let _ = child.kill();
         let _ = child.wait();
         return Err(error);

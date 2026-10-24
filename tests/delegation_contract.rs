@@ -1,7 +1,6 @@
-use amux::{
-    gateway::Gateway,
-    identity::{AgentIdentity, Provider},
-};
+#[path = "support/identity.rs"]
+mod fixture_identity;
+use amux::{gateway::Gateway, identity::Provider};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -119,7 +118,8 @@ fn delegation_preserves_inline_context_and_requires_the_requested_linked_records
     let count = replies.len();
     let (url, server) = server(replies);
     let gateway = Gateway::new(&url, "test-only".into()).unwrap();
-    let actor = AgentIdentity::new(Provider::Codex, &std::env::current_dir().unwrap()).unwrap();
+    let actor =
+        fixture_identity::identity(Provider::Codex, &std::env::current_dir().unwrap()).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let context = "line one\n$(literal text) <b>context</b>";
     assert_eq!(
@@ -175,7 +175,8 @@ fn invalid_delegations_and_unregistered_cli_callers_send_nothing() {
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let gateway = Gateway::new(&url, "test-only".into()).unwrap();
-    let actor = AgentIdentity::new(Provider::Claude, &std::env::current_dir().unwrap()).unwrap();
+    let actor =
+        fixture_identity::identity(Provider::Claude, &std::env::current_dir().unwrap()).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     for (target, title, context) in [
         ("demo", "Review".into(), None),

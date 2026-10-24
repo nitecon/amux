@@ -30,22 +30,40 @@ pub struct AgentIdentity {
     pub provider: Provider,
     pub os: String,
     pub project_directory: PathBuf,
+    /// Deterministic local project UUID; nil for legacy records.
+    #[serde(default)]
+    pub project_id: Uuid,
+    /// Readable terminal agent name such as `codex-1`; empty for legacy records.
+    #[serde(default)]
+    pub agent_id: String,
 }
 
 impl AgentIdentity {
     /// Mutation authority requires a live launch and verified caller ancestry.
     /// The UUID is amux's execution identity, not a provider-native conversation ID.
+    /// Without a wrapper identity, a plain-shell native executor registered by the
+    /// desktop is found in the caller's ancestry instead.
     pub fn verified_from_environment() -> Result<Self> {
-        let actor = Self::from_environment()?;
-        let path = state_directory()?
-            .join("agents")
-            .join(format!("{}.json", actor.session_id));
-        let record: AgentRecord = serde_json::from_slice(
-            &std::fs::read(path).context("agent launch is not registered")?,
-        )?;
-        if record.identity != actor {
-            bail!("calling identity does not match the registered execution");
-        }
+        let directory = state_directory()?;
+        let record = match Self::from_environment() {
+            Ok(actor) => {
+                let path = directory
+                    .join("agents")
+                    .join(format!("{}.json", actor.session_id));
+                let record: AgentRecord = serde_json::from_slice(
+                    &std::fs::read(path).context("agent launch is not registered")?,
+                )?;
+                if record.identity != actor {
+                    bail!("calling identity does not match the registered execution");
+                }
+                record
+            }
+            Err(error) if environment_value("AMUX_AGENT_SESSION_ID").is_none() => {
+                registered_ancestor(&directory)?.ok_or(error)?
+            }
+            Err(error) => return Err(error),
+        };
+        let actor = record.identity.clone();
         let system = sysinfo::System::new_all();
         if !record.is_live(&system) {
             bail!("registered agent execution is no longer live");
@@ -81,15 +99,45 @@ impl AgentIdentity {
         }
         Ok(actor)
     }
+
+    /// A nested launch under another agent always gets a fresh terminal number.
     pub fn new(provider: Provider, project: &Path) -> Result<Self> {
+        let inherited = environment_value("AMUX_TERMINAL_NUMBER")
+            .filter(|_| {
+                environment_value("AMUX_AGENT_SESSION_ID").is_none()
+                    && Self::verified_from_environment().is_err()
+            })
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .context("invalid AMUX_TERMINAL_NUMBER")
+            })
+            .transpose()?;
+        let number = match inherited {
+            Some(number) => number,
+            None => next_terminal_number()?,
+        };
+        Self::for_terminal(provider, project, number)
+    }
+
+    /// The stable session for a provider in one project terminal, e.g. `codex-1`.
+    /// Each launch still receives a fresh execution (instance) identity.
+    pub fn for_terminal(provider: Provider, project: &Path, number: u64) -> Result<Self> {
+        if number == 0 {
+            bail!("terminal numbers start at 1");
+        }
+        let project = crate::project_identity::resolve(project)?;
+        let agent_id = format!("{}-{number}", provider.command());
         Ok(Self {
-            session_id: Uuid::new_v4(),
+            session_id: project.session_id(&agent_id),
             instance_id: Uuid::new_v4(),
             provider,
             os: std::env::consts::OS.to_owned(),
-            project_directory: project
-                .canonicalize()
-                .context("resolve project directory")?,
+            project_directory: project.directory,
+            project_id: project.id,
+            agent_id,
         })
     }
 
@@ -106,13 +154,15 @@ impl AgentIdentity {
                 "AMUX_AGENT_PROJECT".into(),
                 self.project_directory.to_string_lossy().into(),
             ),
+            ("AMUX_AGENT_PROJECT_ID".into(), self.project_id.to_string()),
+            ("AMUX_AGENT_ID".into(), self.agent_id.clone()),
         ])
     }
 
     pub fn from_environment() -> Result<Self> {
         Self::from_values(
             &std::env::vars()
-                .filter(|(k, _)| k.starts_with("AMUX_AGENT_"))
+                .filter(|(k, v)| k.starts_with("AMUX_AGENT_") && !v.trim().is_empty())
                 .collect(),
         )
     }
@@ -139,14 +189,81 @@ impl AgentIdentity {
         if session_id.is_nil() || instance_id.is_nil() {
             bail!("agent identity cannot be nil");
         }
+        // Legacy launches predate the project UUID and readable agent name.
+        let project_id = match values.get("AMUX_AGENT_PROJECT_ID") {
+            Some(value) => value.parse().context("invalid project identity")?,
+            None => Uuid::nil(),
+        };
         Ok(Self {
             session_id,
             instance_id,
             provider,
             os,
             project_directory: PathBuf::from(get("AMUX_AGENT_PROJECT")?),
+            project_id,
+            agent_id: values.get("AMUX_AGENT_ID").cloned().unwrap_or_default(),
         })
     }
+}
+
+fn environment_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// The nearest live registered executor among the caller's ancestors.
+fn registered_ancestor(directory: &Path) -> Result<Option<AgentRecord>> {
+    let agents = live_agents(directory)?;
+    let system = sysinfo::System::new_all();
+    let mut pid = Some(sysinfo::Pid::from_u32(std::process::id()));
+    for _ in 0..128 {
+        let Some(current) = pid else { break };
+        let mut matching = agents.iter().filter(|a| a.pid == current.as_u32());
+        if let Some(record) = matching.next() {
+            if matching.next().is_some() {
+                bail!("several registered agents claim the calling executor");
+            }
+            return Ok(Some(record.clone()));
+        }
+        pid = system.process(current).and_then(sysinfo::Process::parent);
+    }
+    Ok(None)
+}
+
+/// Allocate the next global terminal number (starting at 1), persisted before use.
+pub fn next_terminal_number() -> Result<u64> {
+    next_terminal_number_at(&state_directory()?)
+}
+
+/// Reserve a number in an explicitly selected app state directory.
+pub fn next_terminal_number_at(directory: &Path) -> Result<u64> {
+    use std::io::{Read, Seek, Write};
+    std::fs::create_dir_all(directory)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("terminal-number"))?;
+    file.lock()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    let previous: u64 = if text.trim().is_empty() {
+        0
+    } else {
+        text.trim()
+            .parse()
+            .context("invalid terminal number counter")?
+    };
+    let next = previous
+        .checked_add(1)
+        .context("terminal numbers exhausted")?;
+    file.set_len(0)?;
+    file.rewind()?;
+    file.write_all(next.to_string().as_bytes())?;
+    file.sync_all()?;
+    Ok(next)
 }
 
 /// Known native executable layouts. A numeric filename alone is not a provider.
@@ -234,6 +351,53 @@ impl AgentRecord {
             process_generation: process_generation(pid)?,
         })
     }
+    /// Publish this record. Stable session IDs reuse a path, so an existing record
+    /// is replaced only with positive proof that its process generation is gone.
+    /// Re-registering the identical record is a no-op.
+    pub fn register(&self) -> Result<()> {
+        self.register_at(&state_directory()?)
+    }
+
+    /// `register` within an explicit state directory.
+    pub fn register_at(&self, state: &Path) -> Result<()> {
+        use std::io::Write;
+        let root = state.join("agents");
+        std::fs::create_dir_all(&root)?;
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join(".lock"))?;
+        lock.lock()?;
+        let path = root.join(format!("{}.json", self.identity.session_id));
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let existing = serde_json::from_slice::<AgentRecord>(&bytes)
+                    .context("invalid existing agent registration")?;
+                if existing.identity == self.identity
+                    && existing.pid == self.pid
+                    && existing.process_start == self.process_start
+                    && existing.process_generation == self.process_generation
+                {
+                    return Ok(());
+                }
+                if !process_is_gone(existing.pid, &existing.process_generation) {
+                    bail!(
+                        "agent {} is already running in this project; its live execution is not replaced",
+                        existing.identity.agent_id
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let mut file = tempfile::NamedTempFile::new_in(&root)?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.as_file().sync_all()?;
+        file.persist(&path).map_err(|error| error.error)?;
+        Ok(())
+    }
+
     pub fn is_live(&self, system: &sysinfo::System) -> bool {
         system
             .process(sysinfo::Pid::from_u32(self.pid))

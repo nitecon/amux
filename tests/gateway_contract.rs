@@ -103,7 +103,11 @@ fn owned_by(actor: &AgentIdentity) -> Value {
 }
 
 fn agent(provider: Provider) -> AgentIdentity {
-    AgentIdentity::new(provider, Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
+    AgentIdentity::for_terminal(provider, Path::new(env!("CARGO_MANIFEST_DIR")), {
+        static NUMBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    })
+    .unwrap()
 }
 
 #[test]
@@ -127,13 +131,13 @@ fn three_same_project_agents_each_claim_with_only_their_own_identity() {
         let head = &request.head;
         assert!(head.starts_with(&format!("patch /v1/projects/demo/tasks/{TASK} ")));
         assert!(head.contains("authorization: bearer test-only"));
-        assert!(head.contains(&format!("x-agent-id: {}", actor.session_id)));
+        assert!(head.contains(&format!("x-agent-id: {}", actor.agent_id)));
         assert!(head.contains(&format!("x-agent-session-id: {}", actor.session_id)));
         assert!(head.contains(&format!("x-agent-instance-id: {}", actor.instance_id)));
         assert!(head.contains(&format!("x-agent-provider: {}", actor.provider.command())));
         assert!(head.contains(&format!("x-agent-os: {}", actor.os)));
         assert_eq!(request.body["status"], "in_progress");
-        assert_eq!(request.body["owner_agent_id"], actor.session_id.to_string());
+        assert_eq!(request.body["owner_agent_id"], actor.agent_id);
         // No request may carry a peer's identity.
         for peer in agents.iter().filter(|p| *p != actor) {
             assert!(!head.contains(&peer.session_id.to_string()));

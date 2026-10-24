@@ -4,7 +4,11 @@ use amux::identity::{AgentIdentity, AgentRecord, Provider};
 use std::{collections::HashMap, path::Path};
 
 fn agent(provider: Provider) -> AgentIdentity {
-    AgentIdentity::new(provider, Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
+    AgentIdentity::for_terminal(provider, Path::new(env!("CARGO_MANIFEST_DIR")), {
+        static NUMBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    })
+    .unwrap()
 }
 
 #[test]
@@ -43,7 +47,7 @@ fn launch_environment_round_trips_and_malformed_identity_is_refused() {
 }
 
 #[test]
-fn every_new_identity_is_distinct_even_for_one_project_and_provider() {
+fn terminal_slots_are_distinct_even_for_one_project_and_provider() {
     let agents: Vec<_> = (0..3).map(|_| agent(Provider::Claude)).collect();
     let mut ids: Vec<_> = agents
         .iter()

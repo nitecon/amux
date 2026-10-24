@@ -36,4 +36,4 @@ pub mod delegation_readiness;
 
 pub mod delegation_connection;
 
-pub mod delegation_actor;
+pub mod project_identity;

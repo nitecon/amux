@@ -1,7 +1,6 @@
-use amux::{
-    gateway::Gateway,
-    identity::{AgentIdentity, Provider},
-};
+#[path = "support/identity.rs"]
+mod fixture_identity;
+use amux::{gateway::Gateway, identity::Provider};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -98,7 +97,7 @@ fn inline_messages_preserve_text_identity_and_uncertain_publication() {
         (503, json!({"error":"notifier unavailable"})),
     ]);
     let gateway = Gateway::new(&url, "test-only".into()).unwrap();
-    let actor = AgentIdentity::new(
+    let actor = fixture_identity::identity(
         Provider::Codex,
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
     )
@@ -290,7 +289,7 @@ fn launched_agent_publishes_with_its_registered_execution_identity() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].body["body"], body);
     let headers = requests[0].headers.to_lowercase();
-    assert!(headers.contains(&format!("x-agent-id: {}", record.identity.session_id)));
+    assert!(headers.contains(&format!("x-agent-id: {}", record.identity.agent_id)));
     assert!(headers.contains(&format!(
         "x-agent-session-id: {}",
         record.identity.session_id

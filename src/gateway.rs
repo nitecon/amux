@@ -135,7 +135,14 @@ impl Gateway {
             .bearer_auth(&self.token);
         if let Some(actor) = actor {
             request = request
-                .header("X-Agent-Id", actor.session_id.to_string())
+                .header(
+                    "X-Agent-Id",
+                    if actor.agent_id.is_empty() {
+                        actor.session_id.to_string()
+                    } else {
+                        actor.agent_id.clone()
+                    },
+                )
                 .header("X-Agent-Session-Id", actor.session_id.to_string())
                 .header("X-Agent-Instance-Id", actor.instance_id.to_string())
                 .header("X-Agent-Provider", actor.provider.command())
@@ -172,7 +179,8 @@ impl Gateway {
 
     /// Resolve the gateway project for a workspace from its Git origin, as CMUX does:
     /// match canonical remotes, otherwise register the repository and match the reread.
-    /// Existing mappings (aliases) are preserved; nothing is guessed from names.
+    /// Existing mappings (aliases) are preserved; a new project is named by the
+    /// lowercase repository basename, e.g. `github.com/org/amux` registers `amux`.
     pub async fn resolve_project(&self, directory: PathBuf) -> Result<String> {
         let remote = tokio::task::spawn_blocking(move || gateway_project::origin(&directory))
             .await
@@ -184,11 +192,12 @@ impl Gateway {
         if gateway_project::repository(&repo_url).as_deref() != Some(remote.as_str()) {
             bail!("workspace origin cannot be registered as a gateway repository");
         }
+        let ident = project_slug(&remote)?;
         let registered = self
             .exchange(
                 Method::POST,
                 self.projects_url()?,
-                Some(json!({"ident": remote, "repo_url": repo_url})),
+                Some(json!({"ident": ident, "repo_url": repo_url})),
                 None,
                 &[],
             )
@@ -435,7 +444,7 @@ impl Gateway {
                 Method::PATCH,
                 project,
                 &[task],
-                Some(json!({"status":"in_progress","owner_agent_id":actor.session_id.to_string()})),
+                Some(json!({"status":"in_progress","owner_agent_id":if actor.agent_id.is_empty() {actor.session_id.to_string()} else {actor.agent_id.clone()}})),
                 Some(actor),
             )
             .await?;
@@ -493,6 +502,17 @@ pub(crate) fn validate_project(project: &str) -> Result<()> {
         bail!("gateway project must be a project identifier, not a URL or path");
     }
     Ok(())
+}
+
+/// Lowercase repository basename, matching `ProjectIdentity::gateway_project`.
+fn project_slug(remote: &str) -> Result<String> {
+    let slug = remote
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    validate_project(&slug).context("repository name is not a usable gateway project")?;
+    Ok(slug)
 }
 
 fn canonical_id(value: &Value) -> Option<uuid::Uuid> {

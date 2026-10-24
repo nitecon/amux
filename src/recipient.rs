@@ -118,7 +118,7 @@ impl TerminalRecipient {
         Ok(Self {
             launcher: ProcessFence::capture(launcher_pid)?,
             provider,
-            project: project.canonicalize()?,
+            project: crate::project_identity::resolve(project)?.directory,
             agent: None,
             input_epoch: 0,
             consent_epoch: 0,

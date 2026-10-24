@@ -5,8 +5,13 @@ Scratch text and Markdown documents travel inline in existing task specification
 and message bodies. There is no separate document store or binary attachment API
 in this candidate.
 
-Set `AMUX_GATEWAY_URL`, `AMUX_GATEWAY_PROJECT`, and `AMUX_GATEWAY_KEY` in the
-environment. Keep the key out of command arguments. The URL must be an HTTP(S)
+`amux tasks` uses the gateway URL and API key saved in desktop Preferences and
+resolves the project from the checkout’s Git origin. Its optional `--project` and
+`--gateway-url` flags, or `AMUX_GATEWAY_PROJECT`, `AMUX_GATEWAY_URL` and
+`AMUX_GATEWAY_KEY`, override those settings.
+
+For the message commands below, set `AMUX_GATEWAY_URL`, `AMUX_GATEWAY_PROJECT`,
+and `AMUX_GATEWAY_KEY` in the environment. Keep the key out of command arguments. The URL must be an HTTP(S)
 origin without a path prefix. The project value is the gateway project identifier.
 
 ```sh
@@ -19,9 +24,10 @@ Listing includes resolved threads and supports pages of 1–500 entries. `get`
 retrieves a complete thread using its positive numeric, gateway-local message ID.
 Message IDs are not task UUIDs and must not be transferred between deployments.
 
-Publishing requires an actual session launched by `amux agent codex` or
-`amux agent claude`, in its original project directory. The same applies to agent
-tabs launched by the desktop. The CLI checks the live registered process and
+Publishing requires an actual registered agent in its original checkout.
+Use `amux agent codex`, `amux agent claude`, or a provider started in a desktop
+terminal. amux derives the checkout UUID from Git upstream and canonical directory,
+and names agents by provider and terminal number, such as `codex-1`. The CLI checks the live registered process and
 calling ancestry before sending its session/instance headers. Reads do not
 require an agent launch. The gateway currently stores the sending agent ID on
 messages; these headers alone do not establish authenticated machine binding or
@@ -99,10 +105,10 @@ retry. Reasons are trimmed and limited to 16 KiB of UTF-8; responses remain
 limited to 4 MiB. Reading a report does not claim the task and needs no agent
 identity.
 
-Desktop reminder input currently requires explicit task selection and consent
-with the supported Linux/Codex profile; see
-[reminder validation](reminder-validation.md). Automatic routing and recovery,
-Claude readiness and native Windows reminder input remain incomplete.
+Enable fresh automatic notifications in desktop Gateway preferences; see
+[gateway delivery](gateway-delivery.md) for routing, readiness and input checks.
+The older selected-task reminder path is described in
+[reminder validation](reminder-validation.md).
 
 ## Desktop task submission
 

@@ -140,7 +140,7 @@ fn three_installed_same_project_agents_keep_distinct_identities_input_and_lifeti
     for record in &records {
         assert_eq!(
             record.identity.project_directory,
-            project.canonicalize().unwrap()
+            amux::project_identity::resolve(project).unwrap().directory
         );
     }
     assert_eq!(

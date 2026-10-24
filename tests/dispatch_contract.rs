@@ -1,8 +1,10 @@
 //! Exact-session dispatch client against a local mock gateway. No live gateway,
 //! credential provisioning or executor launch.
+#[path = "support/identity.rs"]
+mod fixture_identity;
 use amux::{
     dispatch::{ActionArgs, Destination, Dispatcher, Executor, Machine},
-    identity::{AgentIdentity, Provider},
+    identity::Provider,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -126,7 +128,8 @@ fn credential_id() -> String {
 }
 
 fn executor(state: &Path, provider: Provider) -> Executor {
-    let actor = AgentIdentity::new(provider, Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let actor =
+        fixture_identity::identity(provider, Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
     Executor::load(state, actor).unwrap()
 }
 

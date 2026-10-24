@@ -1,3 +1,5 @@
+#[path = "support/identity.rs"]
+mod fixture_identity;
 use amux::{
     gateway::Gateway,
     identity::{AgentIdentity, Provider},
@@ -95,7 +97,7 @@ fn acknowledgment(record: &Value) -> Value {
 
 #[test]
 fn cancellation_preserves_provenance_and_rejects_false_acknowledgments() {
-    let actor = AgentIdentity::new(
+    let actor = fixture_identity::identity(
         Provider::Codex,
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
     )
@@ -185,7 +187,7 @@ fn cancellation_preserves_provenance_and_rejects_false_acknowledgments() {
 
 #[test]
 fn cancellation_reads_reject_foreign_or_unbound_reports() {
-    let actor = AgentIdentity::new(
+    let actor = fixture_identity::identity(
         Provider::Codex,
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
     )
@@ -225,7 +227,7 @@ fn invalid_cancellation_and_unwrapped_cli_never_contact_gateway() {
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let gateway = Gateway::new(&url, "fixture-only".into()).unwrap();
-    let actor = AgentIdentity::new(
+    let actor = fixture_identity::identity(
         Provider::Codex,
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
     )
@@ -278,7 +280,7 @@ fn invalid_cancellation_and_unwrapped_cli_never_contact_gateway() {
 
 #[test]
 fn shipped_cli_reads_cancellation_without_claim_or_agent_identity() {
-    let actor = AgentIdentity::new(
+    let actor = fixture_identity::identity(
         Provider::Codex,
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
     )

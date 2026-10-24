@@ -47,8 +47,9 @@ The top-right bell shows app updates. Direct-download installs use
 package-managed installs show their own upgrade instructions.
 Restart is explicit and restores tabs stopped. See [app updates](docs/updates.md).
 
-`whoami` runs inside an amux-launched agent and prints that execution's inherited
-identity. `cargo run -- agents` lists live launches. Provider commands must already
+`whoami` prints the calling agent’s project UUID, terminal agent name and execution
+identity. The desktop registers agents started from shell tabs as well as its
+Codex and Claude buttons. `amux agents` lists live local agents. Provider commands must already
 be on PATH. See [native review instructions](docs/windows-review.md) for bundles,
 gateway configuration, platform limitations and feedback requirements.
 
@@ -78,7 +79,7 @@ Closing the last workspace opens a fresh **Default** terminal in your home direc
   remaining gates.
 - [Gateway CLI](docs/gateway-cli.md): task and inline message commands.
 - [Gateway delivery](docs/gateway-delivery.md): automatic notifications, session identity
-  and native actor integration.
+  and built-in terminal agent identity.
 - [Reminder validation](docs/reminder-validation.md): how legacy selected-task reminders are
   gated and tested.
 - [Native review](docs/windows-review.md): bundle checks for Linux and Windows

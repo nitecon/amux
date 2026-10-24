@@ -8,20 +8,33 @@ Each running agent has its own delivery session, pinned to its terminal, workspa
 
 The task panel shows connection status, agents, pending notifications and recent receipts. `injected` means native input submission only. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
 
-## Native actor integration
+## Built-in agent identity
 
-A process delivery session and a provider-native conversation are distinct. The local actor bridge binds the invoking tool's independently registered native actor to its actual terminal process. An exact origin suppresses its own echo; other sessions using the same provider and OS remain eligible. Named-goal events require an explicitly selected matching goal. Multiple logical actors on one executor are ambiguous and do not supply a goal binding.
+amux derives a local project UUID from the normalized Git upstream and canonical
+checkout directory. Subdirectories and symlink aliases resolve to the same checkout;
+separate checkouts get separate UUIDs. The gateway project name is separate and
+uses the lowercase repository basename, such as `amux` or `sre`. Existing verified
+gateway aliases remain usable.
 
-Desktop terminals inherit `AMUX_CLI_PATH` and `AMUX_DELIVERY_DIRECTORY`. Integrating tools call the executable directly with these commands:
+Each terminal receives a number when created. Its running provider uses that number
+as its agent name: `codex-1`, `codex-2`, `claude-3`, and so on. The name and project
+UUID determine its gateway session UUID. Execution instances and native process
+generations keep old launches from claiming the identity of a replacement process.
+The desktop also discovers providers started in ordinary shell tabs after `cd`.
 
-- `amux actor announce`: read one versioned actor JSON object from stdin, at most 64 KiB, and return local binding context.
-- `amux actor context`: return the calling native invocation's current local context.
-- `amux actor peers`: return current local peer metadata.
+Use the bundled `amux whoami` and `amux agents` commands to inspect identity and
+local running peers. The desktop makes the bundled CLI available on terminal PATH.
+Gateway task commands use the saved gateway preferences and resolve the project
+automatically; environment variables and flags can override those settings. amux
+owns registration and native ancestry checks. No agent-tools update, provider hook,
+or actor announcement is required. An exact origin suppresses its own notification;
+other matching terminals remain eligible. Named-goal events still require an
+explicit matching goal and are skipped when no goal is bound.
 
-The version 1 and 2 actor fields and UUID formulas match CMUX. Bound responses include `version`, `origin`, `provider_session_id`, `goal`, and either `base_id`/`session_slot`/`actor_id` or `executor_generation`. Local attachment fields are `workspace`, `terminal`, `provider` and `project`; `binding_state` is `bound`, `unbound` or `ambiguous`. No gateway key or terminal contents are exposed. Announcements validate the caller's native ancestry and process generation, not copied peer UUIDs. Context is private to the local user and expires after five seconds without desktop publication.
-
-The existing credential-bound `amux dispatch` CLI is a separate gateway protocol and retains its documented administrator-issued machine credentials. Those credentials are not used by desktop lifecycle notifications.
+The existing credential-bound `amux dispatch` CLI is a separate gateway protocol
+and retains its documented administrator-issued machine credentials. Those
+credentials are not used by desktop lifecycle notifications.
 
 ## Verification
 
-Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, native actor binding and prompt recognition. Controlled native terminal fixtures exercise exact input, drafts, busy agents, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex receipt still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.
+Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, built-in identity and prompt recognition. Controlled native terminal fixtures exercise exact input, drafts, busy agents, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex receipt still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.

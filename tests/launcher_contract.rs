@@ -82,7 +82,10 @@ fn three_live_same_project_agents_are_distinct_and_restart_does_not_reuse_a_clai
         )
         .unwrap();
         assert_eq!(captured, record.identity);
-        assert_eq!(captured.project_directory, root.canonicalize().unwrap());
+        assert_eq!(
+            captured.project_directory,
+            amux::project_identity::resolve(root).unwrap().directory
+        );
     }
     for child in &mut agents {
         child

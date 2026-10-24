@@ -912,6 +912,8 @@ mod tests {
                 .unwrap(),
         );
         let actor = AgentIdentity {
+            project_id: Uuid::nil(),
+            agent_id: String::new(),
             session_id: target.origin.session_id.parse().unwrap(),
             instance_id: target.generation.parse().unwrap(),
             provider: if target.origin.provider == "claude" {
@@ -1370,6 +1372,8 @@ mod tests {
         let state = test_state();
         c.state = state.path().into();
         let actor = AgentIdentity {
+            project_id: Uuid::nil(),
+            agent_id: String::new(),
             session_id: me.origin.session_id.parse().unwrap(),
             instance_id: me.generation.parse().unwrap(),
             provider: Provider::Codex,
@@ -1415,6 +1419,8 @@ mod tests {
         let state = test_state();
         c.state = state.path().into();
         let actor = AgentIdentity {
+            project_id: Uuid::nil(),
+            agent_id: String::new(),
             session_id: me.origin.session_id.parse().unwrap(),
             instance_id: me.generation.parse().unwrap(),
             provider: Provider::Codex,

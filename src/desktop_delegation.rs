@@ -20,6 +20,8 @@ use uuid::Uuid;
 #[derive(Default)]
 pub(super) struct TabState {
     root: Option<(u32, String)>,
+    pub terminal_number: u64,
+    pub agent_name: Option<String>,
     revision: u64,
     dirty: bool,
     grid: Option<TerminalGridObservation>,
@@ -31,8 +33,9 @@ impl TabState {
     pub fn status(&self) -> &str {
         self.status
     }
-    pub fn capture(terminal: &Terminal) -> Self {
+    pub fn capture(terminal: &Terminal, terminal_number: u64) -> Self {
         Self {
+            terminal_number,
             root: terminal
                 .child_pid()
                 .and_then(|pid| Some((pid, amux::identity::process_generation(pid).ok()?))),
@@ -94,6 +97,7 @@ impl TabState {
 struct Root {
     workspace: Uuid,
     terminal: u64,
+    number: u64,
     pid: u32,
     generation: String,
     foreground: Option<i32>,
@@ -103,13 +107,13 @@ struct Root {
 pub(super) struct Found {
     root: Root,
     process: AgentProcess,
+    actor: amux::identity::AgentIdentity,
 }
 #[derive(Debug, Clone)]
 struct Candidate {
     root: Root,
     process: AgentProcess,
     target: Target,
-    launch_origin: Option<delegation::Origin>,
 }
 #[derive(Debug, Clone)]
 pub(super) struct Proof {
@@ -193,54 +197,38 @@ fn tab(desktop: &mut Desktop, id: u64) -> Option<&mut Tab> {
         .find(|t| t.id == id)
 }
 
-fn bind_candidates(
-    registry: &std::path::Path,
-    instance: Uuid,
-    candidates: &mut [Candidate],
-    publish: bool,
-) -> anyhow::Result<()> {
-    let directory = registry.join("delegation");
-    let published = candidates
-        .iter()
-        .map(|c| amux::delegation_actor::ActorTarget {
-            target: c.target.clone(),
-            provider: c.process.provider,
-        })
-        .collect::<Vec<_>>();
-    let now = unix_ms() as i64;
-    if publish {
-        amux::delegation_actor::publish(&directory, instance, &published, now)?;
-    }
-    let bindings = amux::delegation_actor::bindings(&directory, instance, &published, now)?;
-    for candidate in candidates {
-        candidate.target.origin = None;
-        candidate.target.goal = None;
-        if let Some((_, actor)) = bindings
-            .iter()
-            .find(|(session, _)| *session == candidate.target.session)
-        {
-            candidate.target.origin = Some(actor.origin.clone());
-            candidate.target.goal = actor.goal.clone();
-        } else {
-            candidate.target.origin = candidate.launch_origin.clone();
+/// Bind a terminal number to its actual native executor, without provider hooks.
+fn discover_root(root: Root, registry: &std::path::Path) -> Option<Found> {
+    use amux::identity::{AgentIdentity, AgentRecord};
+    let process = delegation_process::discover(root.pid, &root.generation, root.foreground)?;
+    let directory = process.directory.as_deref().unwrap_or(&root.directory);
+    let mut actor = AgentIdentity::for_terminal(process.provider, directory, root.number).ok()?;
+    let path = registry
+        .join("agents")
+        .join(format!("{}.json", actor.session_id));
+    if let Ok(bytes) = std::fs::read(path)
+        && let Ok(record) = serde_json::from_slice::<AgentRecord>(&bytes)
+        && record.pid == process.pid
+        && record.process_generation == process.generation
+        && record.identity.project_id == actor.project_id
+        && record.identity.agent_id == actor.agent_id
+    {
+        actor = record.identity;
+    } else {
+        let record = AgentRecord::inspect(actor.clone(), process.pid).ok()?;
+        if record.process_generation != process.generation {
+            return None;
         }
+        record.register_at(registry).ok()?;
     }
-    Ok(())
+    Some(Found {
+        root,
+        process,
+        actor,
+    })
 }
 
 impl Desktop {
-    fn refresh_actor_bindings(&mut self) -> anyhow::Result<()> {
-        if let (Some(registry), Some(queue)) = (&self.registry, &self.delegation.queue) {
-            bind_candidates(
-                registry,
-                queue.journal.consumer,
-                &mut self.delegation.candidates,
-                false,
-            )?;
-        }
-        Ok(())
-    }
-
     fn delegation_roots(&self) -> Vec<Root> {
         let mut roots = Vec::new();
         for workspace in &self.workspaces {
@@ -255,6 +243,7 @@ impl Desktop {
                     roots.push(Root {
                         workspace: workspace.id,
                         terminal: tab.id,
+                        number: tab.delegation.terminal_number,
                         pid: *pid,
                         generation: generation.clone(),
                         foreground: foreground(terminal),
@@ -270,6 +259,7 @@ impl Desktop {
     }
     fn delegation_scan(&mut self, arrival: Option<delegation::Event>) -> Task<Message> {
         let roots = self.delegation_roots();
+        let registry = self.registry.clone();
         let epoch = self.delegation.epoch;
         self.delegation.scan_serial += 1;
         let serial = self.delegation.scan_serial;
@@ -279,14 +269,7 @@ impl Desktop {
                 let found = tokio::task::spawn_blocking(move || {
                     roots
                         .into_iter()
-                        .filter_map(|root| {
-                            let process = delegation_process::discover(
-                                root.pid,
-                                &root.generation,
-                                root.foreground,
-                            )?;
-                            Some(Found { root, process })
-                        })
+                        .filter_map(|root| discover_root(root, registry.as_deref()?))
                         .collect()
                 })
                 .await
@@ -446,9 +429,8 @@ impl Desktop {
                 found,
                 arrival,
             } => {
-                let previous = &self.delegation.candidates;
                 let roots = self.delegation_roots();
-                let mut candidates: Vec<Candidate> = found
+                let candidates: Vec<Candidate> = found
                     .into_iter()
                     .filter(|f| {
                         roots.iter().any(|r| {
@@ -465,14 +447,7 @@ impl Desktop {
                             .directory
                             .clone()
                             .unwrap_or_else(|| f.root.directory.clone());
-                        let session = previous
-                            .iter()
-                            .find(|c| {
-                                c.root.terminal == f.root.terminal
-                                    && c.root.workspace == f.root.workspace
-                                    && c.process == f.process
-                            })
-                            .map_or_else(Uuid::new_v4, |c| c.target.session);
+                        let session = f.actor.session_id;
                         let project = self
                             .delegation
                             .projects
@@ -488,45 +463,19 @@ impl Desktop {
                                 generation: f.process.generation.clone(),
                                 directory,
                                 project,
-                                origin: None,
+                                origin: Some(delegation::Origin {
+                                    session_id: f.actor.session_id,
+                                    instance_id: f.actor.instance_id,
+                                    provider: f.actor.provider,
+                                    os: f.actor.os.clone(),
+                                }),
                                 goal: None,
                             },
-                            launch_origin: previous
-                                .iter()
-                                .find(|c| {
-                                    c.root.terminal == f.root.terminal
-                                        && c.root.workspace == f.root.workspace
-                                        && c.process == f.process
-                                })
-                                .and_then(|c| c.launch_origin.clone()),
                             root: f.root,
                             process: f.process,
                         }
                     })
                     .collect();
-                if let Some(registry) = self.registry.clone() {
-                    for candidate in &mut candidates {
-                        if candidate.launch_origin.is_none()
-                            && let Some(tab) = tab(self, candidate.target.terminal)
-                            && let Some(recipient) = &mut tab.recipient
-                            && let Ok(actor) = recipient.resolve(&registry)
-                        {
-                            candidate.launch_origin = Some(delegation::Origin {
-                                session_id: actor.session_id,
-                                instance_id: actor.instance_id,
-                                provider: actor.provider,
-                                os: actor.os.clone(),
-                            });
-                        }
-                    }
-                }
-                if let (Some(registry), Some(queue)) = (&self.registry, &self.delegation.queue)
-                    && let Err(error) =
-                        bind_candidates(registry, queue.journal.consumer, &mut candidates, true)
-                {
-                    self.delegation.fail(error);
-                    return Task::none();
-                }
                 let targets = candidates
                     .iter()
                     .map(|c| c.target.clone())
@@ -544,6 +493,22 @@ impl Desktop {
                     Ok(())
                 };
                 if serial >= self.delegation.scan_applied {
+                    for workspace in &mut self.workspaces {
+                        for (_, pane) in workspace.panes.iter_mut() {
+                            for tab in &mut pane.tabs {
+                                tab.delegation.agent_name = candidates
+                                    .iter()
+                                    .find(|c| c.root.terminal == tab.id)
+                                    .map(|c| {
+                                        format!(
+                                            "{}-{}",
+                                            c.process.provider.command(),
+                                            c.root.number
+                                        )
+                                    });
+                            }
+                        }
+                    }
                     self.delegation.candidates = candidates;
                     self.delegation.scan_applied = serial;
                     self.delegation.scan_completed = Some(Instant::now());
@@ -563,10 +528,6 @@ impl Desktop {
             }
             Event::Verified(proof, verified) => {
                 self.delegation.verifying = false;
-                if let Err(error) = self.refresh_actor_bindings() {
-                    self.delegation.fail(error);
-                    return Task::none();
-                }
                 let current = self
                     .delegation
                     .candidates
@@ -650,9 +611,6 @@ impl Desktop {
         if !self.delegation.initialized {
             return self.start_delegation();
         }
-        if self.delegation.queue.is_none() || self.delegation.commands.is_none() {
-            return Task::none();
-        }
         let mut tasks = Vec::new();
         if self
             .delegation
@@ -660,6 +618,9 @@ impl Desktop {
             .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
         {
             tasks.push(self.delegation_scan(None));
+        }
+        if self.delegation.queue.is_none() || self.delegation.commands.is_none() {
+            return Task::batch(tasks);
         }
         let mut directories = HashSet::new();
         for c in &self.delegation.candidates {
@@ -693,10 +654,6 @@ impl Desktop {
                     move |e| Message::Delegation(epoch, e),
                 ));
             }
-        }
-        if let Err(error) = self.refresh_actor_bindings() {
-            self.delegation.fail(error);
-            return Task::batch(tasks);
         }
         let targets = self.delegation.targets();
         if let Some(q) = &mut self.delegation.queue

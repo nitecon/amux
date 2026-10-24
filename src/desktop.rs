@@ -519,16 +519,38 @@ impl Desktop {
             working_directory: Some(directory.into()),
             ..Default::default()
         };
-        if let Some(registry) = &self.registry {
-            backend.env.insert(
-                "AMUX_DELIVERY_DIRECTORY".into(),
-                registry.join("delegation").display().to_string(),
-            );
-        }
+        let terminal_number = match self
+            .registry
+            .as_deref()
+            .map(amux::identity::next_terminal_number_at)
+            .transpose()
+        {
+            Ok(Some(number)) => number,
+            Ok(None) => 0,
+            Err(error) => {
+                self.status = format!("Terminal identity unavailable: {error}");
+                // No agent identity is published without a reserved number.
+                0
+            }
+        };
+        backend
+            .env
+            .insert("AMUX_TERMINAL_NUMBER".into(), terminal_number.to_string());
         if let Ok(exe) = std::env::current_exe().and_then(|exe| amux::cli_path::cli_beside(&exe)) {
             backend
                 .env
                 .insert("AMUX_CLI_PATH".into(), exe.display().to_string());
+            if let Some(parent) = exe.parent() {
+                let mut paths = vec![parent.to_path_buf()];
+                paths.extend(std::env::split_paths(
+                    &std::env::var_os("PATH").unwrap_or_default(),
+                ));
+                if let Ok(path) = std::env::join_paths(paths) {
+                    backend
+                        .env
+                        .insert("PATH".into(), path.to_string_lossy().into_owned());
+                }
+            }
         }
         // Describe this terminal, independently of the process that launched amux.
         backend.env.insert("TERM".into(), "xterm-256color".into());
@@ -606,6 +628,8 @@ impl Desktop {
             "AMUX_AGENT_PROVIDER",
             "AMUX_AGENT_OS",
             "AMUX_AGENT_PROJECT",
+            "AMUX_AGENT_PROJECT_ID",
+            "AMUX_AGENT_ID",
         ] {
             backend.env.insert(name.into(), String::new());
         }
@@ -640,7 +664,7 @@ impl Desktop {
                     title,
                     #[cfg(any(target_os = "linux", windows))]
                     lifetime,
-                    delegation: desktop_delegation::TabState::capture(&terminal),
+                    delegation: desktop_delegation::TabState::capture(&terminal, terminal_number),
                     terminal: Some(terminal),
                     stopped_output: None,
                     provider,
@@ -1782,7 +1806,12 @@ impl Desktop {
         let Ok(actor) = recipient.resolve(registry).cloned() else {
             return Task::none();
         };
-        if query.directory.canonicalize().ok().as_ref() != Some(&actor.project_directory) {
+        if amux::project_identity::resolve(&query.directory)
+            .ok()
+            .map(|p| p.directory)
+            .as_ref()
+            != Some(&actor.project_directory)
+        {
             return Task::none();
         }
         let Some(terminal) = tab.terminal.as_ref() else {
@@ -2326,7 +2355,8 @@ impl Desktop {
                     .on_press(Message::SelectTab(id, i));
                 let close = button(text("×").size(14)).style(button::text).padding([4, 6])
                     .on_press(Message::CloseTab(id, tab.id));
-                let subtitle = format!("{}{}", workspace.directory.file_name().unwrap_or(workspace.directory.as_os_str()).to_string_lossy(), if tab.terminal.is_none() { " · stopped" } else { "" });
+                let number = if let Some(name) = &tab.delegation.agent_name { format!("{name} · ") } else if tab.delegation.terminal_number > 0 { format!("#{} · ", tab.delegation.terminal_number) } else { String::new() };
+                let subtitle = format!("{}{}{}", number, workspace.directory.file_name().unwrap_or(workspace.directory.as_os_str()).to_string_lossy(), if tab.terminal.is_none() { " · stopped" } else { "" });
                 tabs = tabs.push(container(column![
                     container(row![select, close].align_y(iced::Alignment::Center)).style(container::rounded_box),
                     tooltip(text(short_title(&subtitle)).size(11).wrapping(iced::widget::text::Wrapping::None), container(text(format!("{} · {}", workspace.directory.display(), short_title(&tab.title)))).padding(6), tooltip::Position::Bottom),
@@ -3033,7 +3063,7 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         };
-        let actor = AgentIdentity::new(Provider::Codex, directory.path()).unwrap();
+        let actor = AgentIdentity::for_terminal(Provider::Codex, directory.path(), 1).unwrap();
         let record = AgentRecord::inspect(actor.clone(), child).unwrap();
         std::fs::create_dir(directory.path().join("agents")).unwrap();
         std::fs::write(
