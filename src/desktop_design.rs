@@ -28,6 +28,10 @@ pub(super) enum Filter {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Action {
+    Cursor(iced::Point),
+    TabMenu(pane_grid::Pane, u64),
+    DismissTabMenu,
+    CloseMenuTab,
     View(View),
     Filter(Filter),
     Events,
@@ -40,6 +44,9 @@ pub(super) enum Action {
 }
 #[derive(Default)]
 pub(super) struct State {
+    cursor: iced::Point,
+    viewport: Option<iced::Size>,
+    tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
     mode: View,
     compact: bool,
     filter: Filter,
@@ -273,7 +280,27 @@ fn tabs(workspace: &Workspace) -> impl Iterator<Item = &Tab> {
 impl Desktop {
     pub(super) fn design_message(&mut self, message: Action) -> Task<Message> {
         match message {
+            Action::Cursor(position) => self.design.cursor = position,
+            Action::TabMenu(pane, tab) => {
+                let workspace = &self.workspaces[self.active];
+                if workspace
+                    .panes
+                    .get(pane)
+                    .is_some_and(|pane| pane.tabs.iter().any(|t| t.id == tab))
+                {
+                    self.design.tab_menu = Some((workspace.id, pane, tab, self.design.cursor));
+                }
+            }
+            Action::DismissTabMenu => self.design.tab_menu = None,
+            Action::CloseMenuTab => {
+                if let Some((workspace, pane, tab, _)) = self.design.tab_menu.take()
+                    && self.workspaces[self.active].id == workspace
+                {
+                    return self.update(Message::CloseTab(pane, tab));
+                }
+            }
             Action::View(mode) => {
+                self.design.tab_menu = None;
                 self.design.mode = mode;
                 if mode != View::Terminals {
                     return self.load_project(self.workspaces[self.active].directory.clone());
@@ -680,7 +707,7 @@ impl Desktop {
             header,
             row![
                 sidebar,
-                column![toolbar, center]
+                column![center, toolbar]
                     .width(Length::Fill)
                     .height(Length::Fill),
                 self.design_tasks()
@@ -753,6 +780,42 @@ impl Desktop {
                     ..Default::default()
                 }),
             );
+        }
+        if let Some((workspace, _, _, position)) = self.design.tab_menu
+            && self.workspaces[self.active].id == workspace
+        {
+            let viewport = self
+                .design
+                .viewport
+                .unwrap_or(iced::Size::new(1600.0, 1000.0));
+            let position = iced::Point::new(
+                position.x.clamp(0.0, (viewport.width - 180.0).max(0.0)),
+                position.y.clamp(0.0, (viewport.height - 44.0).max(0.0)),
+            );
+            layers = layers
+                .push(
+                    mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
+                        .on_press(action(Action::DismissTabMenu))
+                        .on_right_press(action(Action::DismissTabMenu)),
+                )
+                .push(
+                    container(opaque(
+                        container(
+                            button(row![icon("x"), text("Close terminal").size(12)].spacing(8))
+                                .on_press(action(Action::CloseMenuTab))
+                                .padding([8, 12])
+                                .style(|theme, status| button_style(false, theme, status)),
+                        )
+                        .padding(4)
+                        .width(180)
+                        .style(|_| surface(CARD, true)),
+                    ))
+                    .padding(iced::Padding {
+                        top: position.y,
+                        left: position.x,
+                        ..Default::default()
+                    }),
+                );
         }
         if self.workspace_dialog.open {
             let scrim = mouse_area(
@@ -827,51 +890,36 @@ impl Desktop {
                     }
                 );
                 strip = strip.push(
-                    container(
-                        column![
-                            row![
-                                control(
-                                    "terminal",
-                                    label,
-                                    Message::SelectTab(pane_id, index),
-                                    selected
-                                )
-                                .style(move |theme, status| {
-                                    if selected && tab_provider(tab) == Some(Provider::Claude) {
-                                        claude_style(theme, status)
-                                    } else {
-                                        button_style(selected, theme, status)
-                                    }
-                                }),
-                                button(icon("x"))
-                                    .on_press(Message::CloseTab(pane_id, tab.id))
-                                    .style(button::text)
-                                    .padding(4)
+                    mouse_area(
+                        button(
+                            column![
+                                row![icon("terminal"), text(label).size(12),]
+                                    .spacing(6)
+                                    .align_y(Alignment::Center),
+                                tooltip(
+                                    text(short_title(&subtitle)).size(10).color(MUTED),
+                                    container(
+                                        text(format!("{subtitle}\n{}", w.directory.display()))
+                                            .size(11)
+                                    )
+                                    .padding(8)
+                                    .style(|_| surface(CARD, true)),
+                                    tooltip::Position::Bottom
+                                ),
                             ]
-                            .align_y(Alignment::Center),
-                            tooltip(
-                                text(short_title(&subtitle)).size(10).color(MUTED),
-                                container(
-                                    text(format!("{subtitle}\n{}", w.directory.display())).size(11)
-                                )
-                                .padding(8)
-                                .style(|_| surface(CARD, true)),
-                                tooltip::Position::Bottom
-                            ),
-                        ]
-                        .spacing(2),
-                    )
-                    .padding([3, 4])
-                    .style(move |_| {
-                        surface(
-                            if selected {
-                                Color::from_rgb8(9, 42, 56)
-                            } else {
-                                PANEL
-                            },
-                            false,
+                            .spacing(2),
                         )
-                    }),
+                        .on_press(Message::SelectTab(pane_id, index))
+                        .padding([5, 8])
+                        .style(move |theme, status| {
+                            if selected && tab_provider(tab) == Some(Provider::Claude) {
+                                claude_style(theme, status)
+                            } else {
+                                button_style(selected, theme, status)
+                            }
+                        }),
+                    )
+                    .on_right_press(action(Action::TabMenu(pane_id, tab.id))),
                 );
             }
             let identity = pane
@@ -1545,8 +1593,15 @@ impl Desktop {
         self.design.mode = View::Terminals;
     }
     pub(super) fn close_design_popovers(&mut self) {
+        self.design.tab_menu = None;
         self.design.bell = false;
         self.design.events = false;
+    }
+    pub(super) fn dismiss_tab_menu(&mut self) {
+        self.design.tab_menu = None;
+    }
+    pub(super) fn design_viewport(&mut self, size: iced::Size) {
+        self.design.viewport = Some(size);
     }
 }
 
@@ -1629,6 +1684,65 @@ mod tests {
         assert!(matches_filter(Filter::Completed, "done"));
         assert!(!matches_filter(Filter::Active, "done"));
     }
+    #[test]
+    fn tab_context_closes_its_exact_target_without_selecting_it() {
+        let mut app = super::super::tests::desktop();
+        let workspace = &mut app.workspaces[0];
+        let original = workspace.focused;
+        let (other, _) = workspace
+            .panes
+            .split(
+                pane_grid::Axis::Vertical,
+                original,
+                Pane {
+                    tabs: Vec::new(),
+                    active: 0,
+                },
+            )
+            .unwrap();
+        let tab = workspace
+            .panes
+            .get_mut(original)
+            .unwrap()
+            .tabs
+            .pop()
+            .unwrap();
+        let tab_id = tab.id;
+        workspace.panes.get_mut(other).unwrap().tabs.push(tab);
+        drop(app.design_message(Action::TabMenu(other, tab_id)));
+        assert_eq!(app.workspaces[0].focused, original);
+        assert!(app.design.tab_menu.is_some());
+        drop(app.design_message(Action::CloseMenuTab));
+        assert!(app.workspaces[0].panes.get(other).is_none());
+        assert_eq!(app.workspaces[0].focused, original);
+        assert!(app.design.tab_menu.is_none());
+    }
+
+    #[test]
+    fn tab_context_is_dismissed_by_activation_escape_and_workspace_switch() {
+        let mut app = super::super::tests::desktop();
+        let pane = app.workspaces[0].focused;
+        let tab = app.workspaces[0].panes.get(pane).unwrap().tabs[0].id;
+        for message in [
+            Message::SelectTab(pane, 0),
+            Message::Escape,
+            Message::SelectWorkspace(1),
+        ] {
+            app.active = 0;
+            drop(app.design_message(Action::TabMenu(pane, tab)));
+            assert!(app.design.tab_menu.is_some());
+            drop(app.update(message));
+            assert!(app.design.tab_menu.is_none());
+        }
+        // A stale action from another workspace cannot close its matching pane id.
+        app.active = 0;
+        drop(app.design_message(Action::TabMenu(pane, tab)));
+        app.active = 1;
+        drop(app.design_message(Action::CloseMenuTab));
+        assert_eq!(app.workspaces[0].panes.get(pane).unwrap().tabs.len(), 1);
+        assert_eq!(app.workspaces[1].panes.len(), 1);
+    }
+
     #[test]
     fn maximizing_preserves_every_pane_and_clear_only_hides_events() {
         let mut app = super::super::tests::desktop();

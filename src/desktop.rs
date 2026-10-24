@@ -11,6 +11,8 @@ use amux::submission::{Submission, submit_literal};
 mod desktop_delegation;
 #[path = "desktop_design.rs"]
 mod desktop_design;
+#[path = "desktop_icon.rs"]
+mod desktop_icon;
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
 #[path = "desktop_routing.rs"]
@@ -343,8 +345,12 @@ impl Desktop {
             size: iced::Size::new(1600.0, 1000.0),
             min_size: Some(iced::Size::new(1100.0, 700.0)),
             exit_on_close_request: false,
-            ..Default::default()
+            ..desktop_icon::settings()
         });
+        #[cfg(target_os = "linux")]
+        if let Err(error) = desktop_icon::install() {
+            eprintln!("amux desktop icon: {error:#}");
+        }
         let state = amux::identity::state_directory();
         let ledger = state
             .as_ref()
@@ -874,6 +880,7 @@ impl Desktop {
                 | Message::CloseTab(..)
                 | Message::Resize(_)
         ) {
+            self.dismiss_tab_menu();
             self.dirty = true;
         }
         match message {
@@ -894,6 +901,7 @@ impl Desktop {
             }
             Message::WindowResized(id, size) => {
                 if id == self.main_window {
+                    self.design_viewport(size);
                     self.set_compact(size.width < 1400.0);
                 }
             }
@@ -2364,6 +2372,9 @@ impl Desktop {
             terminals,
             iced::window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
             iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::Design(desktop_design::Action::Cursor(position)))
+                }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
