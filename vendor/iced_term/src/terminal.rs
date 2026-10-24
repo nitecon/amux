@@ -88,6 +88,11 @@ impl Terminal {
         self.backend.try_enqueue_input(input)
     }
 
+    /// Negotiated terminal input protocol flags; does not inspect rendered text.
+    pub fn input_mode(&self) -> alacritty_terminal::term::TermMode {
+        self.backend.input_mode()
+    }
+
     /// A bounded live screen observation, never an acknowledgment or readiness proof.
     pub fn observation(
         &self,

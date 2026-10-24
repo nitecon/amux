@@ -160,7 +160,7 @@ impl Queue {
                     reason: if outcome == Outcome::Received {
                         "Waiting for repository metadata"
                     } else if outcome == Outcome::Queued {
-                        "Waiting for an empty native prompt"
+                        "Waiting for terminal input availability"
                     } else {
                         target
                             .mismatch_reason(&receipt.event)
@@ -227,7 +227,7 @@ impl Queue {
                         Outcome::Skipped
                     };
                     recipient.reason = if recipient.outcome == Outcome::Queued {
-                        "Waiting for an empty native prompt"
+                        "Waiting for terminal input availability"
                     } else {
                         current
                             .mismatch_reason(&receipt.event)
@@ -337,7 +337,7 @@ impl Queue {
             Outcome::Submitted => {
                 "Submitted to native input; agent receipt and execution remain unknown"
             }
-            Outcome::Queued => "Prompt changed before any input was sent; waiting",
+            Outcome::Queued => "Terminal input changed before any input was sent; waiting",
             Outcome::Skipped => "Agent attachment changed before input",
             _ => "Input outcome uncertain; automatic replay disabled",
         }

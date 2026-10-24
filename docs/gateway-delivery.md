@@ -4,13 +4,13 @@ Set the gateway URL and API key in Preferences, then enable **Send fresh gateway
 
 Created tasks, comments and completed tasks produce only a compact task UUID notification in a matching Claude or Codex terminal. Descriptions and comment bodies are not copied into terminal input. Events older than five minutes and events already present when a connection is established are skipped. Freshness uses the gateway upgrade response’s HTTP Date plus monotonic elapsed time when available, so a local PC clock offset does not incorrectly expire a fresh event. Opening a later agent does not attach it to earlier notifications.
 
-Each running agent has its own delivery session, pinned to its terminal, workspace and native process generation. An idle matching peer can receive a notification while another stays busy. Native prompt classification, human-input revisions, current process identity and consent are checked before input. A draft, including whitespace followed by Home, is preserved. Each attempt is saved before enqueue; interrupted or uncertain attempts are never automatically repeated. Application restart retires pending input rather than replaying it.
+Each running agent has its own delivery session, pinned to its terminal, workspace and native process generation. Automatic delivery uses the owned terminal and process identity, with no screen parsing or prompt/footer matching. amux tees typed text and subsequent editing keystrokes into an in-memory buffer. Enter resets the buffer; modifier/navigation keys alone do not count as text.
 
-The app pastes the notification first, then sends Enter separately after a short delay so the provider does not interpret it as a pasted newline. Before Enter, it checks the process again and verifies that the composer still contains its notification and no human input occurred. An interrupted paste is left for the user to review and is never automatically replayed.
+A notification does not wait for an empty prompt or for a draft to be submitted. If user text is buffered, amux clears the provider draft, sends and submits the notification, then restores the buffered input in the same ordered terminal write. A native End key separates the message from Enter so a character-paste burst is flushed without a timer. Terminal protocol flags determine bracketed-paste encoding without reading rendered content. The current process, consent and event freshness are checked before the transaction. Each attempt is saved before enqueue; interrupted or uncertain attempts are never automatically repeated. Application restart retires pending notifications rather than replaying them.
 
 The task panel shows connection status, agents, pending notifications and recent receipts with the reason for each delivery decision. Gateway acknowledgment
 confirms that the decision was saved, including a skip; it does not imply delivery.
-`injected` means the paste and separate Enter were enqueued as native input. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
+`injected` means the notification input transaction was enqueued. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
 
 ## Built-in agent identity
 
@@ -41,4 +41,4 @@ credentials are not used by desktop lifecycle notifications.
 
 ## Verification
 
-Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, built-in identity and prompt recognition. Controlled native terminal fixtures exercise exact input, drafts, busy agents, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex receipt still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.
+Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, and built-in identity. Controlled native terminal fixtures exercise exact input, immediate delivery with restored user drafts, text-versus-navigation tracking, hidden footers, unrecognized layouts, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex submission still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.

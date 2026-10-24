@@ -6,6 +6,8 @@
 use super::super::{Reminders, tests::desktop};
 use super::*;
 use amux::delegation::{Event as Lifecycle, Kind};
+use amux::delegation_readiness::{self, InputState};
+use iced_term::TerminalGridObservation;
 use std::{io::Write, path::Path, sync::OnceLock};
 
 use std::io::Read;
@@ -41,7 +43,11 @@ impl Fixture {
             } else {
                 String::new()
             },
-            format!("{} {draft}", self.marker),
+            if self.layout == "opaque" {
+                format!("custom provider UI {draft}")
+            } else {
+                format!("{} {draft}", self.marker)
+            },
         ];
         if multiline {
             rows.push("  second draft line".into());
@@ -51,7 +57,11 @@ impl Fixture {
         } else if !multiline {
             rows.push(String::new());
         }
-        rows.push("  ? for shortcuts".into());
+        if self.layout == "burst" && !self.draft.is_empty() {
+            rows.push("  GPT-6.1-Sol medium · ~/project · weekly 95% left".into());
+        } else if self.layout != "opaque" {
+            rows.push("  ? for shortcuts".into());
+        }
         let paste = if self.layout == "paste" {
             "\x1b[?2004h"
         } else {
@@ -130,10 +140,15 @@ impl Fixture {
                     };
                     len = end;
                     let sequence = &rest[..len];
+                    self.last_text = None;
                     if matches!(sequence, "\x1b[H" | "\x1bOH") {
                         self.cursor = 0;
                     }
-                    self.raw.push_str(sequence);
+                    if sequence == "\x1b[F" {
+                        self.cursor = self.draft.len();
+                    } else {
+                        self.raw.push_str(sequence);
+                    }
                 }
                 c if !c.is_control() => {
                     self.last_text = Some(Instant::now());
@@ -362,7 +377,7 @@ fn wait(app: &Desktop, done: impl Fn(&Desktop) -> bool) {
 }
 
 /// Human keyboard input through the desktop's own terminal message path.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn human(app: &mut Desktop, id: u64, bytes: &[u8]) {
     drop(app.update(Message::Terminal(iced_term::Event::BackendCall(
         id,
@@ -468,12 +483,9 @@ fn fence_proof(app: &Desktop) -> Proof {
         .find(|c| c.target == target)
         .cloned()
         .unwrap();
-    let tab = find(app, target.terminal);
     Proof {
         attempt: Attempt { event, target },
         candidate,
-        revision: tab.delegation.revision,
-        grid: tab.delegation.grid.clone().unwrap(),
         started: Instant::now(),
     }
 }
@@ -491,13 +503,7 @@ fn native_verify(proof: &Proof) -> bool {
 
 fn verified(app: &mut Desktop, proof: Proof, verified: bool) {
     let epoch = app.delegation.epoch;
-    let submit = proof.clone();
     drop(app.delegation_message(epoch, Event::Verified(Box::new(proof), verified)));
-    if app.delegation.verifying {
-        std::thread::sleep(Duration::from_millis(250));
-        let valid = native_verify(&submit);
-        drop(app.delegation_message(epoch, Event::Submit(Box::new(submit), valid)));
-    }
 }
 
 /// Acknowledgment frames sent to the (fake) connection, each recorded back as the
@@ -536,7 +542,7 @@ fn until_verifying(app: &mut Desktop, frames: &mut mpsc::Receiver<connection::Co
         }
         assert!(
             Instant::now() < deadline,
-            "native prompt never became ready"
+            "terminal input never became available"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -548,7 +554,7 @@ fn never_verifies(app: &mut Desktop, frames: &mut mpsc::Receiver<connection::Com
     while Instant::now() < deadline {
         drop(app.delegation_tick());
         drain(app, frames);
-        assert!(!app.delegation.verifying, "unready prompt began delivery");
+        assert!(!app.delegation.verifying, "owned input began delivery");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -593,27 +599,20 @@ type Change = fn(&mut Desktop, &mut Proof);
 type Restore = fn(&mut Desktop);
 
 #[test]
-fn human_writes_mark_drafts_and_navigation_never_clears_them() {
+fn typed_text_is_teed_and_navigation_alone_does_not_count() {
     let mut state = TabState::default();
-    let mut write = |bytes: &[u8]| {
+    for bytes in [b"\x1b[A".as_slice(), b"\x1b[H", b"\x1bOH", b"\x1b[1;2D"] {
         state.note_command(&BackendCommand::Write(bytes.to_vec()));
-        (state.dirty, state.wait_for_output, state.revision)
-    };
-    assert_eq!(
-        write(b"\x1b[A"),
-        (false, false, 1),
-        "navigation is not a draft"
-    );
-    assert_eq!(write(b" "), (true, false, 2), "whitespace is a draft");
-    assert_eq!(write(b"\x1b[H"), (true, false, 3), "Home keeps the draft");
-    assert_eq!(write(b"\x1bOH"), (true, false, 4));
-    assert_eq!(write(b"\x1b[D"), (true, false, 5));
-    assert_eq!(write(b"\r"), (false, true, 6), "Enter submits the draft");
-    assert_eq!(write(b"\x1b[200~pasted\x1b[201~"), (true, true, 7));
-    assert_eq!(write(b"\x15"), (false, true, 8));
-    assert_eq!(write(b"a"), (true, true, 9));
-    assert_eq!(write(b"\x03"), (false, true, 10));
-    assert_eq!(write(b"\n"), (false, true, 11));
+        assert!(state.input.is_empty());
+    }
+    state.note_command(&BackendCommand::Write(b"hello ".to_vec()));
+    state.note_command(&BackendCommand::Write(b"\x1b[D".to_vec()));
+    state.note_command(&BackendCommand::Write(b"x".to_vec()));
+    assert_eq!(state.input, b"hello \x1b[Dx");
+    state.note_command(&BackendCommand::Write(b"\r".to_vec()));
+    assert!(state.input.is_empty());
+    state.note_command(&BackendCommand::Write(b"\x1b[200~paste\x1b[201~".to_vec()));
+    assert!(!state.input.is_empty());
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -679,45 +678,44 @@ fn native_bracketed_paste_prompt_receives_the_notification_as_one_paste() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
-fn native_whitespace_home_draft_blocks_a_prompt_that_looks_empty() {
+fn native_delivery_submits_immediately_and_restores_teed_user_input() {
     let mut app = desktop();
-    let agent = spawn(&mut app, 0, 0, Provider::Claude, "ready");
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
     let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
     project(&mut app, &agent, "alpha");
-    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
-    human(&mut app, 0, b" ");
-    wait(&app, |app| {
-        grid(app, 0).is_some_and(|g| g.observation.cursor_column == 3)
-    });
-    human(&mut app, 0, b"\x1b[H");
-    wait(&app, |app| {
-        grid(app, 0).is_some_and(|g| g.observation.cursor_column == 2)
-    });
-    // The live grid is indistinguishable from an empty prompt; only the draft guard knows.
-    assert_eq!(classify(&app, 0), InputState::EmptyReady);
+    human(&mut app, 0, b"my draft ");
     let event = lifecycle(1, "alpha");
     scan(&mut app, Some(event.clone()));
-    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Queued));
-    never_verifies(&mut app, &mut frames);
-    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Queued));
-    assert!(agent.lines().is_empty(), "draft was overwritten");
-    // The human submits their own draft; the notification follows as a separate input.
-    human(&mut app, 0, b"\r");
-    assert_eq!(wait_lines(&agent, 1), [" \x1b[H"]);
-    deliver(&mut app, &mut frames, |app| {
-        outcome(app, 1, 0) == Some(Outcome::Submitted)
+    until_verifying(&mut app, &mut frames);
+    let proof = fence_proof(&app);
+    // Edits arriving during process verification are part of the restored buffer.
+    human(&mut app, 0, b"more");
+    verified(&mut app, proof.clone(), native_verify(&proof));
+    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Submitted));
+    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    wait(&app, |app| {
+        grid(app, 0).is_some_and(|g| {
+            g.observation
+                .lines
+                .iter()
+                .any(|line| line.contains("my draft more"))
+        })
     });
+    assert_eq!(find(&app, 0).delegation.input, b"my draft more");
+    human(&mut app, 0, b"\x1b[F");
+    human(&mut app, 0, b"\r");
     assert_eq!(
         wait_lines(&agent, 2),
-        [" \x1b[H".to_owned(), event.terminal_text()]
+        [event.terminal_text(), "my draft more".into()]
     );
+    assert!(find(&app, 0).delegation.input.is_empty());
 }
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn native_busy_and_multiline_prompts_never_receive_input() {
+fn provider_rendered_output_does_not_control_native_delivery() {
     let mut app = desktop();
     let busy = spawn(&mut app, 0, 0, Provider::Claude, "busy");
     let multiline = spawn(&mut app, 1, 1, Provider::Codex, "multiline");
@@ -729,10 +727,12 @@ fn native_busy_and_multiline_prompts_never_receive_input() {
     scan(&mut app, Some(lifecycle(1, "alpha")));
     assert_eq!(outcome(&app, 1, 0), Some(Outcome::Queued));
     assert_eq!(outcome(&app, 1, 1), Some(Outcome::Queued));
-    never_verifies(&mut app, &mut frames);
-    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Queued));
-    assert_eq!(outcome(&app, 1, 1), Some(Outcome::Queued));
-    assert!(busy.lines().is_empty() && multiline.lines().is_empty());
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 1, 0) == Some(Outcome::Submitted)
+            && outcome(app, 1, 1) == Some(Outcome::Submitted)
+    });
+    assert_eq!(wait_lines(&busy, 1).len(), 1);
+    assert_eq!(wait_lines(&multiline, 1).len(), 1);
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -747,9 +747,7 @@ fn stale_final_proofs_never_write_native_input() {
     scan(&mut app, Some(lifecycle(1, "alpha")));
 
     // Anything changed since the proof returns the work to the queue without input.
-    let stale: [(&str, Tamper); 5] = [
-        ("human input epoch", |p| p.revision += 1),
-        ("screen frame", |p| p.grid.observation.cursor_column += 1),
+    let stale: [(&str, Tamper); 3] = [
         ("agent process generation", |p| {
             p.candidate.process.generation = "linux:stale:1".into()
         }),
@@ -1023,7 +1021,7 @@ fn gateway_clock_delivers_fresh_comments_despite_local_clock_skew_and_expires_ol
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn burst_paste_requires_a_separate_delayed_enter() {
+fn burst_paste_submits_without_a_delay_or_footer_check() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
     let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
@@ -1037,32 +1035,8 @@ fn burst_paste_requires_a_separate_delayed_enter() {
     assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn human_input_between_paste_and_enter_prevents_submission() {
-    let mut app = desktop();
-    let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
-    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
-    project(&mut app, &agent, "amux");
-    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
-    scan(&mut app, Some(lifecycle(1, "amux")));
-    until_verifying(&mut app, &mut frames);
-    let proof = fence_proof(&app);
-    let epoch = app.delegation.epoch;
-    drop(app.delegation_message(
-        epoch,
-        Event::Verified(Box::new(proof.clone()), native_verify(&proof)),
-    ));
-    assert!(app.delegation.verifying);
-    human(&mut app, 0, b"x");
-    std::thread::sleep(Duration::from_millis(250));
-    drop(app.delegation_message(epoch, Event::Submit(Box::new(proof), true)));
-    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Uncertain));
-    assert!(agent.lines().is_empty());
-}
-
-#[test]
-fn composer_fixture_reproduces_enter_inside_a_paste_as_a_newline() {
+fn non_text_end_key_flushes_a_paste_burst_before_enter_without_waiting() {
     let mut fixture = Fixture {
         marker: '›',
         layout: "burst".into(),
@@ -1077,35 +1051,22 @@ fn composer_fixture_reproduces_enter_inside_a_paste_as_a_newline() {
     fixture.feed("gateway text\r");
     assert_eq!(fixture.submitted, 0);
     assert_eq!(fixture.draft.last(), Some(&'\n'));
-    std::thread::sleep(Duration::from_millis(150));
-    fixture.feed("\r");
+    fixture.feed("\x1b[F\r");
     assert_eq!(fixture.submitted, 1);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
-fn changed_composer_text_prevents_automatic_enter_without_a_human_epoch() {
+fn native_delivery_does_not_require_a_recognized_screen() {
     let mut app = desktop();
-    let agent = spawn(&mut app, 0, 0, Provider::Codex, "burst");
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
     let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
     project(&mut app, &agent, "amux");
-    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
-    scan(&mut app, Some(lifecycle(1, "amux")));
-    until_verifying(&mut app, &mut frames);
-    let proof = fence_proof(&app);
-    let epoch = app.delegation.epoch;
-    drop(app.delegation_message(
-        epoch,
-        Event::Verified(Box::new(proof.clone()), native_verify(&proof)),
-    ));
-    find(&app, 0)
-        .terminal
-        .as_ref()
-        .unwrap()
-        .try_enqueue_input(b"unexpected".to_vec())
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(250));
-    drop(app.delegation_message(epoch, Event::Submit(Box::new(proof), true)));
-    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Uncertain));
-    assert!(agent.lines().is_empty());
+    assert_eq!(classify(&app, 0), InputState::Unknown);
+    let event = lifecycle(1, "amux");
+    scan(&mut app, Some(event.clone()));
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 1, 0) == Some(Outcome::Submitted)
+    });
+    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
 }

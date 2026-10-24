@@ -5,9 +5,8 @@ use amux::{
     delegation_connection::{self as connection, ConnectionEvent},
     delegation_process::{self, AgentProcess},
     delegation_queue::{Attempt, Queue},
-    delegation_readiness::{self, InputState},
 };
-use iced_term::{BackendCommand, Terminal, TerminalGridObservation};
+use iced_term::{BackendCommand, Terminal};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
@@ -24,11 +23,7 @@ pub(super) struct TabState {
     pub agent_name: Option<String>,
     pub provider: Option<Provider>,
     pub directory: Option<PathBuf>,
-    revision: u64,
-    dirty: bool,
-    grid: Option<TerminalGridObservation>,
-    stable: Option<Instant>,
-    wait_for_output: bool,
+    input: Vec<u8>,
     status: &'static str,
 }
 impl TabState {
@@ -48,54 +43,40 @@ impl TabState {
         }
     }
     pub fn note_command(&mut self, command: &BackendCommand) {
-        if let BackendCommand::Write(bytes) = command {
-            self.revision = self.revision.wrapping_add(1);
-            self.stable = None;
-            // Navigation never erases our knowledge of a draft, including whitespace+Home.
-            if matches!(bytes.as_slice(), b"\r" | b"\n" | b"\x03" | b"\x15") {
-                self.dirty = false;
-                self.wait_for_output = true;
-            } else if (!bytes.starts_with(b"\x1b[") && !bytes.starts_with(b"\x1bO"))
-                || bytes.starts_with(b"\x1b[200~")
-            {
-                self.dirty = true;
+        let BackendCommand::Write(bytes) = command else {
+            return;
+        };
+        if matches!(bytes.as_slice(), b"\r" | b"\n" | b"\x03" | b"\x15") {
+            self.input.clear();
+        } else if contains_text(bytes) || !self.input.is_empty() {
+            // Tee the editing stream so restoring also repeats backspace/caret edits.
+            // Navigation alone does not establish user text.
+            self.input.extend_from_slice(bytes);
+        }
+    }
+}
+
+fn contains_text(bytes: &[u8]) -> bool {
+    let mut rest = bytes;
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = tail;
+        if byte == 0x1b {
+            if rest.first() == Some(&b'[') || rest.first() == Some(&b'O') {
+                rest = &rest[1..];
+                if let Some(end) = rest.iter().position(|b| (0x40..=0x7e).contains(b)) {
+                    rest = &rest[end + 1..];
+                } else {
+                    return false;
+                }
+            } else {
+                // Alt-modified keys are not typed text.
+                rest = rest.get(1..).unwrap_or_default();
             }
-        } else if matches!(command, BackendCommand::MouseReport(..)) {
-            self.revision = self.revision.wrapping_add(1);
-            self.stable = None;
+        } else if byte >= b' ' && byte != 0x7f {
+            return true;
         }
     }
-    fn observe(&mut self, terminal: &Terminal, provider: Provider) -> bool {
-        let Some(grid) = terminal.grid_observation(32_768) else {
-            self.stable = None;
-            self.status = "Waiting for the agent prompt";
-            return false;
-        };
-        if self.grid.as_ref() != Some(&grid) {
-            self.grid = Some(grid.clone());
-            self.stable = Some(Instant::now());
-            self.wait_for_output = false;
-        }
-        if self.stable.is_none() {
-            self.stable = Some(Instant::now());
-        }
-        let input = delegation_readiness::classify(&grid, provider);
-        self.status = if self.dirty || input == InputState::Unfinished {
-            "Draft preserved; task notifications are waiting"
-        } else if self.wait_for_output || input == InputState::Busy {
-            "Agent is busy; task notifications are waiting"
-        } else if input == InputState::Unknown {
-            "Waiting for a recognized agent prompt"
-        } else {
-            "Ready for task notifications"
-        };
-        !self.dirty
-            && !self.wait_for_output
-            && self
-                .stable
-                .is_some_and(|t| t.elapsed() >= Duration::from_millis(500))
-            && input == InputState::EmptyReady
-    }
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -124,8 +105,6 @@ struct Candidate {
 pub(super) struct Proof {
     attempt: Attempt,
     candidate: Candidate,
-    revision: u64,
-    grid: TerminalGridObservation,
     started: Instant,
 }
 
@@ -139,7 +118,6 @@ pub(super) enum Event {
     },
     Project(PathBuf, Result<String, String>),
     Verified(Box<Proof>, bool),
-    Submit(Box<Proof>, bool),
 }
 
 #[derive(Default)]
@@ -578,7 +556,6 @@ impl Desktop {
                     return Task::none();
                 }
                 let mut outcome = Outcome::Skipped;
-                let mut pasted = false;
                 if verified
                     && approved
                     && proof.started.elapsed() <= Duration::from_secs(2)
@@ -587,9 +564,7 @@ impl Desktop {
                     && let Some(tab) = tab(self, proof.attempt.target.terminal)
                     && let Some(terminal) = &tab.terminal
                 {
-                    // All checks below run synchronously on the UI owner, with no await or callback.
-                    let state = &mut tab.delegation;
-                    if state.root.as_ref()
+                    if tab.delegation.root.as_ref()
                         == Some(&(
                             proof.candidate.root.pid,
                             proof.candidate.root.generation.clone(),
@@ -597,118 +572,34 @@ impl Desktop {
                         && foreground(terminal) == proof.candidate.root.foreground
                         && amux::identity::process_generation(proof.candidate.process.pid)
                             .is_ok_and(|g| g == proof.candidate.process.generation)
-                        && state.revision == proof.revision
-                        && !state.dirty
-                        && !state.wait_for_output
-                        && terminal.grid_observation(32_768).as_ref() == Some(&proof.grid)
-                        && delegation_readiness::classify(
-                            &proof.grid,
-                            proof.candidate.process.provider,
-                        ) == InputState::EmptyReady
                     {
+                        // One ordered native input transaction, owned by this UI turn.
+                        // User edits cannot interleave with clear/send/submit/restore.
+                        let mut bytes = Vec::new();
+                        if !tab.delegation.input.is_empty() {
+                            bytes.push(0x03); // Clear the current provider draft (Ctrl+C).
+                        }
                         let message = proof.attempt.event.terminal_text();
-                        let bytes = if proof
-                            .grid
-                            .observation
-                            .mode
+                        if terminal
+                            .input_mode()
                             .contains(iced_term::TermMode::BRACKETED_PASTE)
                         {
-                            format!("\x1b[200~{message}\x1b[201~").into_bytes()
+                            bytes.extend_from_slice(b"\x1b[200~");
+                            bytes.extend_from_slice(message.as_bytes());
+                            bytes.extend_from_slice(b"\x1b[201~");
                         } else {
-                            message.into_bytes()
-                        };
+                            bytes.extend_from_slice(message.as_bytes());
+                        }
+                        // End flushes a character-paste burst before Enter, without a timer.
+                        bytes.extend_from_slice(b"\x1b[F\r");
+                        bytes.extend_from_slice(&tab.delegation.input);
                         outcome = match terminal.try_enqueue_input(bytes) {
-                            Ok(()) => {
-                                pasted = true;
-                                Outcome::Submitting
-                            }
+                            Ok(()) => Outcome::Submitted,
                             Err(_) => Outcome::Uncertain,
                         };
-                        state.wait_for_output = true;
-                        state.stable = None;
                     } else {
                         outcome = Outcome::Queued;
                     }
-                }
-                if pasted {
-                    // Keep the durable submitting fence while the provider consumes its paste.
-                    // A separate write after the paste burst is what a physical Enter produces.
-                    self.delegation.verifying = true;
-                    follow = Task::perform(
-                        async move {
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                            let c = proof.candidate.clone();
-                            let valid = tokio::task::spawn_blocking(move || {
-                                delegation_process::verify(
-                                    c.root.pid,
-                                    &c.root.generation,
-                                    c.root.foreground,
-                                    &c.process,
-                                )
-                            })
-                            .await
-                            .unwrap_or(false);
-                            Event::Submit(proof, valid)
-                        },
-                        move |event| Message::Delegation(epoch, event),
-                    );
-                    Ok(())
-                } else {
-                    self.delegation
-                        .queue
-                        .as_mut()
-                        .map_or(Ok(()), |q| q.finish(&proof.attempt, outcome))
-                }
-            }
-            Event::Submit(proof, verified) => {
-                self.delegation.verifying = false;
-                if !self
-                    .delegation
-                    .queue
-                    .as_ref()
-                    .is_some_and(|q| q.submitting(&proof.attempt))
-                {
-                    return Task::none();
-                }
-                let current = self
-                    .delegation
-                    .candidates
-                    .iter()
-                    .any(|c| c.target == proof.attempt.target);
-                let approved = self.preferences.current.automatic_notifications
-                    && self.delegation.connection.is_some();
-                // Text may already be in the composer: any interruption is uncertain,
-                // never permission to replay the paste or send an unguarded Enter.
-                let mut outcome = Outcome::Uncertain;
-                if verified
-                    && approved
-                    && current
-                    && proof.started.elapsed() <= Duration::from_secs(2)
-                    && proof.attempt.event.fresh(now)
-                    && let Some(tab) = tab(self, proof.attempt.target.terminal)
-                    && let Some(terminal) = &tab.terminal
-                    && tab.delegation.revision == proof.revision
-                    && !tab.delegation.dirty
-                    && tab.delegation.root.as_ref()
-                        == Some(&(
-                            proof.candidate.root.pid,
-                            proof.candidate.root.generation.clone(),
-                        ))
-                    && foreground(terminal) == proof.candidate.root.foreground
-                    && amux::identity::process_generation(proof.candidate.process.pid)
-                        .is_ok_and(|g| g == proof.candidate.process.generation)
-                    && terminal.grid_observation(32_768).is_some_and(|grid| {
-                        delegation_readiness::pending_literal(
-                            &grid,
-                            proof.candidate.process.provider,
-                            &proof.attempt.event.terminal_text(),
-                        )
-                    })
-                {
-                    outcome = match terminal.try_enqueue_input(vec![b'\r']) {
-                        Ok(()) => Outcome::Submitted,
-                        Err(_) => Outcome::Uncertain,
-                    };
                 }
                 self.delegation
                     .queue
@@ -795,9 +686,9 @@ impl Desktop {
         let candidates = self.delegation.candidates.clone();
         for c in &candidates {
             if let Some(tab) = tab(self, c.target.terminal)
-                && let Some(terminal) = &tab.terminal
-                && tab.delegation.observe(terminal, c.process.provider)
+                && tab.terminal.is_some()
             {
+                tab.delegation.status = "Ready for task notifications";
                 ready.insert(c.target.session);
             }
         }
@@ -807,17 +698,9 @@ impl Desktop {
             else {
                 return Task::batch(tasks);
             };
-            let Some(tab) = tab(self, attempt.target.terminal) else {
-                return Task::batch(tasks);
-            };
-            let Some(grid) = tab.delegation.grid.clone() else {
-                return Task::batch(tasks);
-            };
             let proof = Proof {
                 attempt,
                 candidate,
-                revision: tab.delegation.revision,
-                grid,
                 started: Instant::now(),
             };
             if let Some(q) = &mut self.delegation.queue

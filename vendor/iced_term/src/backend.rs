@@ -566,6 +566,10 @@ impl Backend {
         self.native_terminal.as_fd()
     }
 
+    pub fn input_mode(&self) -> TermMode {
+        *self.term.lock().mode()
+    }
+
     pub fn observation(
         &self,
         max_cells: usize,
