@@ -53,6 +53,15 @@ jobs:
         run: cargo test --locked --test notifications_contract --test native_notification_contract
       - name: Native release build
         run: cargo build --locked --release --target ${{ matrix.target }} --bin amux --bin amux-desktop
+      - name: Verify portable Windows runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/check_windows_runtime.ps1 -Binaries @('target/${{ matrix.target }}/release/amux.exe', 'target/${{ matrix.target }}/release/amux-desktop.exe')
+          & 'target/${{ matrix.target }}/release/amux.exe' --version
+          if ($LASTEXITCODE -ne 0) { throw 'Portable CLI failed to start' }
+          $desktop = Start-Process -FilePath 'target/${{ matrix.target }}/release/amux-desktop.exe' -ArgumentList '--version' -WindowStyle Hidden -Wait -PassThru
+          if ($desktop.ExitCode -ne 0) { throw 'Portable desktop failed to start' }
       - name: Prepare portable bundle
         shell: pwsh
         run: |
