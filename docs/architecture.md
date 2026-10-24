@@ -155,9 +155,10 @@ deduplication does not make arbitrary task side effects idempotent.
 
 ### Crash, reconnect, and freshness behavior
 
-Crashes and reboots never trigger automatic re-execution. Pending and previously
-claimed work returns as session-start or continuation reminders, leaving the
-claim decision to an agent. For previously claimed work, the reminder must name
+Startup reopens previously running local terminal processes and native agent
+continuations in their saved tabs. It never replays terminal input or restores
+gateway task ownership. Pending and previously claimed work returns as
+session-start or continuation reminders, leaving the claim decision to an agent. For previously claimed work, the reminder must name
 the claimant and machine and make the unknown outcome explicit. The recipient
 can then check earlier progress, with additional context supplied by the agent's
 memory, instead of blindly repeating work.
@@ -244,7 +245,7 @@ The owner recorded these decisions on October 18, 2026:
 | D1 | Rebuild amux in `nitecon/amux`, measuring against current CMUX capabilities and targets |
 | D2 | Require gateway scratch space; pass text inline in tasks and messages; keep non-repository work out of Git |
 | D3 | Require per-machine gateway credentials and server-enforced claim eligibility |
-| D4 | Never automatically re-execute after crash or reboot; remind agents of pending items at session start and let them choose whether to claim |
+| D4 | Reopen previously running local tabs using native agent continuation on startup; never replay terminal input or automatically restore gateway claims (startup behavior revised by owner on October 24) |
 | D5 | Keep authoritative tasks in the gateway, task tracking out of the desktop, and memory outside amux |
 | D6 | Have amux directly inject terminal reminders at session start or continuation without depending on provider or agent-tools hooks |
 

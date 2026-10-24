@@ -351,7 +351,7 @@ impl Desktop {
             Ok(Some(Some(saved))) => {
                 app.active = saved.active;
                 for workspace in saved.workspaces {
-                    let config = app.restore_layout(workspace.layout);
+                    let config = app.restore_layout(workspace.layout, &workspace.directory);
                     let panes = pane_grid::State::with_configuration(config);
                     let focused = *panes.iter().next().expect("validated nonempty layout").0;
                     app.workspaces.push(Workspace {
@@ -365,9 +365,9 @@ impl Desktop {
                         gateway: TaskPanel::default(),
                     });
                 }
-                app.status =
-                    "Layout restored. Start terminals and agents explicitly; no work was rerun."
-                        .into();
+                if !app.status.starts_with("Could not restore") {
+                    app.status = "Previous terminals reopened; agent tabs use their native conversation resume.".into();
+                }
             }
             Err(error) => {
                 app.status = format!(
@@ -407,13 +407,29 @@ impl Desktop {
         )
     }
 
-    fn restore_layout(&mut self, layout: Layout) -> pane_grid::Configuration<Pane> {
+    fn restore_layout(
+        &mut self,
+        layout: Layout,
+        directory: &std::path::Path,
+    ) -> pane_grid::Configuration<Pane> {
         match layout {
             Layout::Pane { tabs, active } => pane_grid::Configuration::Pane(Pane {
                 tabs: tabs
                     .into_iter()
                     .map(|tab| {
                         self.next_id = self.next_id.max(tab.id + 1);
+                        if tab.running {
+                            let cwd = tab.directory.as_deref().unwrap_or(directory);
+                            let mut reopened =
+                                self.open_terminal(tab.id, cwd, tab.provider, None, true);
+                            if reopened.terminal.is_some() {
+                                reopened.title = tab.title;
+                            } else {
+                                self.status =
+                                    format!("Could not restore {}: {}", tab.title, reopened.title);
+                            }
+                            return reopened;
+                        }
                         Tab {
                             id: tab.id,
                             title: tab.title,
@@ -442,8 +458,8 @@ impl Desktop {
                     pane_grid::Axis::Horizontal
                 },
                 ratio,
-                a: Box::new(self.restore_layout(*a)),
-                b: Box::new(self.restore_layout(*b)),
+                a: Box::new(self.restore_layout(*a, directory)),
+                b: Box::new(self.restore_layout(*b, directory)),
             },
         }
     }
@@ -464,7 +480,15 @@ impl Desktop {
                             .map(|t| SavedTab {
                                 id: t.id,
                                 title: t.title.clone(),
-                                provider: t.provider,
+                                provider: t.provider.or(t.delegation.provider),
+                                running: t.terminal.is_some(),
+                                directory: t
+                                    .terminal
+                                    .as_ref()
+                                    .and_then(|terminal| {
+                                        amux::session::working_directory(terminal.child_pid()?)
+                                    })
+                                    .or_else(|| t.delegation.directory.clone()),
                             })
                             .collect(),
                     }
@@ -515,6 +539,17 @@ impl Desktop {
     ) -> Tab {
         let id = self.next_id;
         self.next_id += 1;
+        self.open_terminal(id, directory, provider, script, false)
+    }
+
+    fn open_terminal(
+        &mut self,
+        id: u64,
+        directory: &std::path::Path,
+        provider: Option<Provider>,
+        script: Option<&std::path::Path>,
+        resume: bool,
+    ) -> Tab {
         let mut backend = iced_term::settings::BackendSettings {
             working_directory: Some(directory.into()),
             ..Default::default()
@@ -568,6 +603,14 @@ impl Desktop {
                         "agent".into(),
                         provider.command().into(),
                     ];
+                    if resume {
+                        backend.args.push("--".into());
+                        backend.args.extend(
+                            amux::session::resume_arguments(provider)
+                                .iter()
+                                .map(|s| (*s).into()),
+                        );
+                    }
                 }
                 Err(e) => {
                     return Tab {
@@ -664,7 +707,11 @@ impl Desktop {
                     title,
                     #[cfg(any(target_os = "linux", windows))]
                     lifetime,
-                    delegation: desktop_delegation::TabState::capture(&terminal, terminal_number),
+                    delegation: desktop_delegation::TabState::capture(
+                        &terminal,
+                        terminal_number,
+                        directory,
+                    ),
                     terminal: Some(terminal),
                     stopped_output: None,
                     provider,
@@ -924,6 +971,7 @@ impl Desktop {
                                         tab.title = title
                                     }
                                     iced_term::actions::Action::Shutdown => {
+                                        self.dirty = true;
                                         tab.reminders.recovery.reset();
                                         // Preserve only the bounded visible text, then release
                                         // the PTY and its subscription. This is never input-ready.
@@ -1395,7 +1443,7 @@ impl Desktop {
                     .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
                     .filter(|t| t.terminal.is_some())
                     .count();
-                content = content.push(text("Restart closes running sessions and restores the layout with all processes stopped.").size(13))
+                content = content.push(text("Restart closes running processes and reopens their tabs; agent conversations use native resume.").size(13))
                     .push(button(text(format!("Restart amux · close {live} running sessions"))).on_press(Message::RestartUpdated));
             } else {
                 content = content.push(text("Close and reopen amux to use the installed update."));
@@ -1503,8 +1551,11 @@ impl Desktop {
             } else if self.updates.installing {
                 self.status =
                     "An update is installing. Wait for it to finish before closing amux.".into();
-            } else if self.save() {
-                return iced::exit();
+            } else {
+                self.dirty = true;
+                if self.save() {
+                    return iced::exit();
+                }
             }
         }
         Task::none()
@@ -2376,7 +2427,7 @@ impl Desktop {
                         .key(id).on_show(resize).on_resize(resize).into()
                 },
                 None => {
-                    let mut stopped = column![text("Process stopped. Launch Shell, Codex or Claude explicitly; previous work is not restarted.")].spacing(12);
+                    let mut stopped = column![text("Terminal is not running. Check its title for launch errors, or start a Terminal, Codex or Claude session.")].spacing(12);
                     if let Some(output) = pane.tabs.get(pane.active).and_then(|tab| tab.stopped_output.as_ref()) {
                         stopped = stopped.push(scrollable(text(output).font(iced::Font::MONOSPACE)).height(Length::Fill));
                     }
@@ -3004,6 +3055,84 @@ mod tests {
         // Replaying a stale close must not close the remaining terminal.
         let _ = app.update(Message::CloseTab(other_pane, 1));
         assert_eq!(app.workspaces[0].panes.len(), 1);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn startup_reopens_running_tabs_in_place_and_preserves_stopped_tabs() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&base).unwrap();
+        let fixture = tempfile::tempdir_in(&base).unwrap();
+        let directory = fixture.path().join("project");
+        std::fs::create_dir(&directory).unwrap();
+        let mut app = desktop();
+        app.registry = Some(fixture.path().join("state"));
+        let layout = Layout::Pane {
+            active: 1,
+            tabs: vec![
+                SavedTab {
+                    id: 42,
+                    title: "Restored shell".into(),
+                    provider: None,
+                    running: true,
+                    directory: Some(directory.clone()),
+                },
+                SavedTab {
+                    id: 43,
+                    title: "Exited agent".into(),
+                    provider: Some(Provider::Claude),
+                    running: false,
+                    directory: None,
+                },
+            ],
+        };
+        let config = app.restore_layout(layout, fixture.path());
+        let panes = pane_grid::State::with_configuration(config);
+        let pane = panes.iter().next().unwrap().1;
+        assert_eq!(pane.active, 1);
+        assert_eq!(pane.tabs.len(), 2);
+        assert_eq!(pane.tabs[0].id, 42);
+        assert_eq!(pane.tabs[0].title, "Restored shell");
+        let terminal = pane.tabs[0]
+            .terminal
+            .as_ref()
+            .expect("restored tab must own a live terminal");
+        assert!(terminal.child_pid().is_some());
+        assert_eq!(
+            pane.tabs[0].delegation.directory.as_ref(),
+            Some(&amux::workspace_launch::external_path(directory))
+        );
+        assert_eq!(pane.tabs[1].id, 43);
+        assert!(pane.tabs[1].terminal.is_none());
+        assert!(pane.tabs.iter().all(|t| !t.reminders.consent));
+        assert_eq!(app.next_id, 44);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn saved_session_keeps_live_state_and_terminal_directory() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&base).unwrap();
+        let fixture = tempfile::tempdir_in(&base).unwrap();
+        let mut app = desktop();
+        app.registry = Some(fixture.path().join("state"));
+        app.snapshot_path = Some(fixture.path().join("layout.json"));
+        let path = app.snapshot_path.clone().unwrap();
+        let directory =
+            amux::workspace_launch::external_path(fixture.path().canonicalize().unwrap());
+        let opened = app.terminal_with_script(&directory, None, None);
+        let workspace = &mut app.workspaces[0];
+        workspace.directory = directory.clone();
+        workspace.panes.get_mut(workspace.focused).unwrap().tabs = vec![opened];
+        app.workspaces.truncate(1);
+        app.dirty = true;
+        assert!(app.save());
+        let snapshot = Snapshot::load(&path).unwrap().unwrap();
+        let Layout::Pane { tabs, .. } = &snapshot.workspaces[0].layout else {
+            panic!("expected pane")
+        };
+        assert!(tabs[0].running);
+        assert_eq!(tabs[0].directory.as_ref(), Some(&directory));
     }
 
     #[test]

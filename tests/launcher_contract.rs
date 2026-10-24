@@ -138,3 +138,62 @@ fn three_live_same_project_agents_are_distinct_and_restart_does_not_reuse_a_clai
         .unwrap();
     assert!(restarted.0.wait().unwrap().success());
 }
+
+#[test]
+fn restored_agent_launches_forward_native_continuation_arguments_without_a_prompt() {
+    use amux::identity::Provider;
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    fs::create_dir_all(&target).unwrap();
+    let fixture = tempfile::tempdir_in(target).unwrap();
+    let root = fixture.path();
+    for (provider, expected) in [
+        (Provider::Codex, "resume\n--last\n"),
+        (Provider::Claude, "--continue\n"),
+    ] {
+        let script = root.join(provider.command());
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AMUX_ARGS_FILE\"\nread -r stop\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let log = root.join(format!("{}.args", provider.command()));
+        let path = std::env::join_paths(std::iter::once(root.to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        let mut child = Agent(
+            Command::new(env!("CARGO_BIN_EXE_amux"))
+                .args(["agent", provider.command(), "--"])
+                .args(amux::session::resume_arguments(provider))
+                .current_dir(root)
+                .env("PATH", path)
+                .env("AMUX_STATE_DIR", root.join("state"))
+                .env("AMUX_ARGS_FILE", &log)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if fs::read_to_string(&log).is_ok_and(|text| text == expected) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "provider did not receive native resume arguments"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"stop\n")
+            .unwrap();
+        assert!(child.0.wait().unwrap().success());
+    }
+}

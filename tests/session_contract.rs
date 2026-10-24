@@ -16,6 +16,8 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
             id,
             title: "Agent".into(),
             provider: Some(Provider::Claude),
+            running: true,
+            directory: Some(fixture.path().into()),
         }],
     };
     let snapshot = Snapshot {
@@ -78,4 +80,21 @@ fn corrupt_or_unknown_version_is_not_replaced_by_loading() {
         assert!(Snapshot::load(&path).is_err());
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
+}
+
+#[test]
+fn legacy_tabs_reopen_and_new_snapshots_preserve_explicit_stopped_state() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let legacy = serde_json::json!({"id":7,"title":"Terminal","provider":null});
+    let tab: SavedTab = serde_json::from_value(legacy).unwrap();
+    assert!(tab.running);
+    assert!(tab.directory.is_none());
+    let stopped = SavedTab {
+        running: false,
+        directory: Some(root.into()),
+        ..tab
+    };
+    let again: SavedTab = serde_json::from_value(serde_json::to_value(&stopped).unwrap()).unwrap();
+    assert!(!again.running);
+    assert_eq!(again.directory, stopped.directory);
 }

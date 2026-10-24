@@ -1,4 +1,4 @@
-//! Only local layout is persisted. Neither task ownership nor agent execution is restored.
+//! Local tab launch state; gateway ownership and queued input are never restored.
 use crate::identity::Provider;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,38 @@ pub struct SavedTab {
     pub id: u64,
     pub title: String,
     pub provider: Option<Provider>,
+    /// Legacy layouts contained placeholders only; reopen them on the first upgrade.
+    #[serde(default = "was_running")]
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<PathBuf>,
+}
+
+fn was_running() -> bool {
+    true
+}
+
+/// Query only the owned terminal process, never a global "last used" directory.
+pub fn working_directory(pid: u32) -> Option<PathBuf> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+    );
+    let directory = system.process(pid)?.cwd()?;
+    Some(crate::workspace_launch::external_path(
+        directory.canonicalize().ok()?,
+    ))
+}
+
+pub fn resume_arguments(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Codex => &["resume", "--last"],
+        Provider::Claude => &["--continue"],
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -63,6 +95,13 @@ impl Snapshot {
                         bail!("invalid saved tab selection");
                     }
                     for tab in tabs {
+                        if tab
+                            .directory
+                            .as_ref()
+                            .is_some_and(|path| !path.is_absolute())
+                        {
+                            bail!("saved terminal directory must be absolute");
+                        }
                         if tab.id == u64::MAX || !ids.insert(tab.id) || ids.len() > 256 {
                             bail!("invalid or duplicate terminal identity");
                         }

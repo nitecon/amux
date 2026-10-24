@@ -211,13 +211,22 @@ impl Target {
             && self.directory == other.directory
     }
     pub fn accepts(&self, event: &Event) -> bool {
-        self.project == event.project
-            && (event.goal.is_none() || self.goal == event.goal)
-            && !event.origin.as_ref().is_some_and(|origin| {
-                self.origin.as_ref().is_some_and(|own| {
-                    own.session_id == origin.session_id && own.instance_id == origin.instance_id
-                })
+        self.mismatch_reason(event).is_none()
+    }
+    pub fn mismatch_reason(&self, event: &Event) -> Option<&'static str> {
+        if self.project != event.project {
+            Some("Agent repository does not match the task project")
+        } else if event.goal.is_some() && self.goal != event.goal {
+            Some("Task goal does not match this agent")
+        } else if event.origin.as_ref().is_some_and(|origin| {
+            self.origin.as_ref().is_some_and(|own| {
+                own.session_id == origin.session_id && own.instance_id == origin.instance_id
             })
+        }) {
+            Some("This agent created the event; its own notification was suppressed")
+        } else {
+            None
+        }
     }
 }
 

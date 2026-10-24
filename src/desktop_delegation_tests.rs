@@ -294,7 +294,7 @@ fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layou
     }
     let tab = pane.tabs.iter_mut().find(|t| t.id == id).unwrap();
     tab.provider = Some(provider);
-    tab.delegation = TabState::capture(&terminal, id + 1);
+    tab.delegation = TabState::capture(&terminal, id + 1, &directory);
     tab.terminal = Some(terminal);
     let agent = Agent {
         directory: amux::workspace_launch::external_path(
@@ -944,4 +944,48 @@ fn native_plain_shell_identity_suppresses_its_own_notification() {
     assert_eq!(outcome(&app, 1, 0), Some(Outcome::Skipped));
     never_verifies(&mut app, &mut frames);
     assert!(agent.lines().is_empty());
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn gateway_clock_delivers_fresh_comments_despite_local_clock_skew_and_expires_old_ones() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Claude, "ready");
+    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
+    project(&mut app, &agent, "amux");
+    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    let clock = amux::gateway_stream::GatewayClock::from_http_date("Sat, 24 Oct 2020 05:16:29 GMT")
+        .unwrap();
+    let mut event = lifecycle(1, "amux");
+    event.kind = Kind::Commented;
+    event.created_at = clock.now_ms();
+    assert!(
+        !event.fresh(unix_ms() as i64),
+        "fixture must reproduce a skewed local clock"
+    );
+    let epoch = app.delegation.epoch;
+    drop(app.delegation_message(epoch, Event::Stream(ConnectionEvent::Clock(clock))));
+    scan(&mut app, Some(event.clone()));
+    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Queued));
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 1, 0) == Some(Outcome::Submitted)
+    });
+    assert_eq!(wait_lines(&agent, 1), [event.terminal_text()]);
+    let mut expired = lifecycle(2, "amux");
+    expired.created_at = app.delegation.now_ms() - delegation::MAX_EVENT_AGE_MS - 1000;
+    scan(&mut app, Some(expired));
+    let expired = app
+        .delegation
+        .queue
+        .as_ref()
+        .unwrap()
+        .journal
+        .receipts
+        .iter()
+        .find(|receipt| receipt.event.id == 2)
+        .unwrap();
+    assert_eq!(expired.outcome, Outcome::Skipped);
+    assert!(expired.reason.contains("expired"));
+    never_verifies(&mut app, &mut frames);
+    assert_eq!(agent.lines(), [event.terminal_text()]);
 }

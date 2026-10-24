@@ -3,7 +3,7 @@
 //! State text is static and never contains the API key, raw frames or network errors.
 use crate::{
     delegation::Event,
-    gateway_stream::{Socket, connect, next_json, send_json},
+    gateway_stream::{GatewayClock, Socket, connect_with_clock, next_json, send_json},
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -39,6 +39,8 @@ pub enum ConnectionEvent {
         cursor: i64,
         replay_through: i64,
     },
+    /// Gateway time from the upgrade `Date`, sent after `Subscribed` and before any event.
+    Clock(GatewayClock),
     Event(Event),
     /// A positive event ID with no deliverable compact event; the caller still owns its receipt.
     Rejected {
@@ -74,15 +76,16 @@ pub async fn run(
             return;
         }
         let attempt = tokio::select! {
-            socket = connect(&url, &key, consumer, cursor) => socket,
+            socket = connect_with_clock(&url, &key, consumer, cursor) => socket,
             _ = discard(&mut commands) => return,
             _ = events.closed() => return,
         };
         let error = match attempt {
-            Ok(socket) => {
+            Ok((socket, clock)) => {
                 connection += 1;
                 let mut stream = Stream {
                     socket,
+                    clock,
                     consumer,
                     connection,
                     cursor: &mut cursor,
@@ -116,6 +119,7 @@ async fn discard(commands: &mut mpsc::Receiver<Command>) {
 /// One socket lifetime. `Ok` stops the worker; `Err` carries static text and reconnects.
 struct Stream<'a> {
     socket: Socket,
+    clock: Option<GatewayClock>,
     consumer: Uuid,
     connection: u64,
     cursor: &'a mut Option<i64>,
@@ -150,6 +154,11 @@ impl Stream<'_> {
                     replay_through: latest,
                 })
                 .await
+        {
+            return Ok(());
+        }
+        if let Some(clock) = self.clock.take()
+            && !self.emit(ConnectionEvent::Clock(clock)).await
         {
             return Ok(());
         }

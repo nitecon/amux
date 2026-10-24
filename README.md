@@ -11,8 +11,7 @@ machines, and that work survives the destination being offline or rebooting.
 Portable Linux and Windows builds are available in [tagged releases](https://github.com/nitecon/amux/releases/latest).
 Status: early release; the MVP is not complete.
 The provisional Rust/Iced terminal has local workspaces, tabs/splits, explicit
-Codex/Claude launches with separate session identities, layout recovery without
-automatic reruns, gateway task and message CLIs, and fresh gateway task notifications delivered
+Codex/Claude launches with separate session identities, layout recovery with automatic terminal reopening and native agent continuation, gateway task and message CLIs, and fresh gateway task notifications delivered
 to matching local agent sessions. Busy agents and unfinished drafts keep notifications
 queued. Full lifecycle acceptance with installed providers and native Windows review
 remain pending. See the [MVP plan](docs/mvp.md).
@@ -45,7 +44,7 @@ subtitle; hover the subtitle for the full path and terminal title.
 The top-right bell shows app updates. Direct-download installs use
 **Update now** in the Updates tab to download and replace both executables;
 package-managed installs show their own upgrade instructions.
-Restart is explicit and restores tabs stopped. See [app updates](docs/updates.md).
+Restart is explicit and reopens previously running tabs in place. See [app updates](docs/updates.md).
 
 `whoami` prints the calling agent’s project UUID, terminal agent name and execution
 identity. The desktop registers agents started from shell tabs as well as its

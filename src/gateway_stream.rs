@@ -3,7 +3,7 @@
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Url;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite};
 use tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig};
 use uuid::Uuid;
@@ -13,6 +13,32 @@ pub type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// Frame and message cap shared with the CMUX stream protocol.
 pub const MAX_MESSAGE: usize = 64 * 1024;
 
+/// Gateway time anchored at the upgrade response; advances by monotonic elapsed time only,
+/// so local wall-clock skew never affects event freshness.
+#[derive(Debug, Clone)]
+pub struct GatewayClock {
+    epoch_ms: i64,
+    anchor: Instant,
+}
+
+impl GatewayClock {
+    /// Anchor a positive HTTP `Date` (RFC 7231) at the current instant.
+    pub fn from_http_date(value: &str) -> Option<Self> {
+        let time = httpdate::parse_http_date(value.trim()).ok()?;
+        let epoch_ms = i64::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()?;
+        (epoch_ms > 0).then(|| Self {
+            epoch_ms,
+            anchor: Instant::now(),
+        })
+    }
+
+    /// Current gateway time in Unix milliseconds.
+    pub fn now_ms(&self) -> i64 {
+        let elapsed = i64::try_from(self.anchor.elapsed().as_millis()).unwrap_or(i64::MAX);
+        self.epoch_ms.saturating_add(elapsed)
+    }
+}
+
 /// Upgrade `/v1/tasks/stream` with a Bearer key, then subscribe as `consumer_id` after the cursor.
 /// The connection is refused on redirects or after a ten-second handshake deadline.
 pub async fn connect(
@@ -21,6 +47,18 @@ pub async fn connect(
     consumer_id: Uuid,
     after_event_id: Option<i64>,
 ) -> Result<Socket, String> {
+    connect_with_clock(url, api_key, consumer_id, after_event_id)
+        .await
+        .map(|(socket, _)| socket)
+}
+
+/// [`connect`], also returning the clock from the upgrade response `Date`, when valid.
+pub async fn connect_with_clock(
+    url: &str,
+    api_key: &str,
+    consumer_id: Uuid,
+    after_event_id: Option<i64>,
+) -> Result<(Socket, Option<GatewayClock>), String> {
     if api_key.is_empty() {
         return Err("Enter a gateway API key".into());
     }
@@ -48,20 +86,25 @@ pub async fn connect(
         ..Default::default()
     };
     // tungstenite never follows redirects: a 3xx response is a rejected upgrade.
-    let (mut socket, _) = tokio::time::timeout(
+    let (mut socket, response) = tokio::time::timeout(
         Duration::from_secs(10),
         tokio_tungstenite::connect_async_with_config(request, Some(limits), false),
     )
     .await
     .map_err(|_| "Gateway upgrade timed out")?
     .map_err(|_| "Gateway upgrade rejected or unavailable")?;
+    let clock = response
+        .headers()
+        .get("date")
+        .and_then(|value| value.to_str().ok())
+        .and_then(GatewayClock::from_http_date);
     send_json(
         &mut socket,
         json!({"type":"subscribe", "protocol_version":1,
             "consumer_id":consumer_id, "after_event_id":after_event_id}),
     )
     .await?;
-    Ok(socket)
+    Ok((socket, clock))
 }
 
 /// Send one JSON text message with a five-second deadline.

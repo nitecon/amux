@@ -22,6 +22,8 @@ pub(super) struct TabState {
     root: Option<(u32, String)>,
     pub terminal_number: u64,
     pub agent_name: Option<String>,
+    pub provider: Option<Provider>,
+    pub directory: Option<PathBuf>,
     revision: u64,
     dirty: bool,
     grid: Option<TerminalGridObservation>,
@@ -33,9 +35,12 @@ impl TabState {
     pub fn status(&self) -> &str {
         self.status
     }
-    pub fn capture(terminal: &Terminal, terminal_number: u64) -> Self {
+    pub fn capture(terminal: &Terminal, terminal_number: u64, directory: &std::path::Path) -> Self {
         Self {
             terminal_number,
+            directory: Some(amux::workspace_launch::external_path(
+                directory.to_path_buf(),
+            )),
             root: terminal
                 .child_pid()
                 .and_then(|pid| Some((pid, amux::identity::process_generation(pid).ok()?))),
@@ -139,6 +144,7 @@ pub(super) enum Event {
 #[derive(Default)]
 pub(super) struct Bridge {
     epoch: u64,
+    clock: Option<amux::gateway_stream::GatewayClock>,
     initialized: bool,
     queue: Option<Queue>,
     flight: Option<iced::task::Handle>,
@@ -154,9 +160,15 @@ pub(super) struct Bridge {
     verifying: bool,
 }
 impl Bridge {
+    fn now_ms(&self) -> i64 {
+        self.clock
+            .as_ref()
+            .map_or_else(|| unix_ms() as i64, |clock| clock.now_ms())
+    }
     pub fn stop(&mut self) {
+        let now = self.now_ms();
         if let Some(queue) = &mut self.queue {
-            let _ = queue.refresh(&[], false, unix_ms() as i64);
+            let _ = queue.refresh(&[], false, now);
         }
         self.flight.take();
         *self = Self {
@@ -370,8 +382,13 @@ impl Desktop {
         if epoch != self.delegation.epoch {
             return Task::none();
         }
+        let now = self.delegation.now_ms();
         let mut follow = Task::none();
         let result: anyhow::Result<()> = match event {
+            Event::Stream(ConnectionEvent::Clock(clock)) => {
+                self.delegation.clock = Some(clock);
+                Ok(())
+            }
             Event::Stream(ConnectionEvent::State(status)) => {
                 self.delegation.status = status;
                 self.delegation.connection = None;
@@ -408,7 +425,7 @@ impl Desktop {
                         event,
                         &targets,
                         self.preferences.current.automatic_notifications,
-                        unix_ms() as i64,
+                        now,
                     )
                 })
             }
@@ -486,7 +503,7 @@ impl Desktop {
                             event,
                             &targets,
                             self.preferences.current.automatic_notifications,
-                            unix_ms() as i64,
+                            now,
                         )
                     })
                 } else {
@@ -496,6 +513,21 @@ impl Desktop {
                     for workspace in &mut self.workspaces {
                         for (_, pane) in workspace.panes.iter_mut() {
                             for tab in &mut pane.tabs {
+                                let candidate =
+                                    candidates.iter().find(|c| c.root.terminal == tab.id);
+                                let provider = candidate.map(|c| c.process.provider);
+                                let directory = candidate.map(|c| c.target.directory.clone());
+                                if tab.delegation.provider != provider
+                                    || directory.as_ref().is_some_and(|d| {
+                                        tab.delegation.directory.as_ref() != Some(d)
+                                    })
+                                {
+                                    self.dirty = true;
+                                }
+                                tab.delegation.provider = provider;
+                                if let Some(directory) = directory {
+                                    tab.delegation.directory = Some(directory);
+                                }
                                 tab.delegation.agent_name = candidates
                                     .iter()
                                     .find(|c| c.root.terminal == tab.id)
@@ -548,7 +580,7 @@ impl Desktop {
                 if verified
                     && approved
                     && proof.started.elapsed() <= Duration::from_secs(2)
-                    && proof.attempt.event.fresh(unix_ms() as i64)
+                    && proof.attempt.event.fresh(now)
                     && current.is_some()
                     && let Some(tab) = tab(self, proof.attempt.target.terminal)
                     && let Some(terminal) = &tab.terminal
@@ -608,6 +640,7 @@ impl Desktop {
     }
 
     pub fn delegation_tick(&mut self) -> Task<Message> {
+        let now = self.delegation.now_ms();
         if !self.delegation.initialized {
             return self.start_delegation();
         }
@@ -660,7 +693,7 @@ impl Desktop {
             && let Err(error) = q.refresh(
                 &targets,
                 self.preferences.current.automatic_notifications,
-                unix_ms() as i64,
+                now,
             )
         {
             self.delegation.fail(error);
@@ -754,11 +787,31 @@ impl Desktop {
                     text(format!(
                         "{} · {}{}",
                         r.event.task,
-                        r.status(),
-                        if r.confirmed { " · recorded" } else { "" }
+                        match r.status() {
+                            "skipped" => "Not sent",
+                            "injected" => "Sent to terminal",
+                            "queued" => "Waiting for agent",
+                            "received" => "Received",
+                            "uncertain" => "Delivery uncertain",
+                            _ => "Failed",
+                        },
+                        if r.confirmed { " · saved" } else { "" }
                     ))
                     .size(12),
                 );
+                if !r.reason.is_empty() {
+                    view = view.push(text(&r.reason).size(12));
+                }
+                for recipient in &r.recipients {
+                    let name = self
+                        .delegation
+                        .candidates
+                        .iter()
+                        .find(|c| c.target.session == recipient.target.session)
+                        .map(|c| format!("{}-{}", c.process.provider.command(), c.root.number))
+                        .unwrap_or_else(|| "Previous agent".into());
+                    view = view.push(text(format!("{name} · {}", recipient.reason)).size(12));
+                }
             }
         }
         view.into()

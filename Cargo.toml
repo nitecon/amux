@@ -1,6 +1,6 @@
 [package]
 name = "amux"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -24,6 +24,7 @@ clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 getrandom = "0.3"
 futures-util = "0.3"
+httpdate = "1"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 iced = { version = "0.14", features = ["tokio", "advanced", "lazy", "svg"], optional = true }
 iced_term = { version = "=0.8.0", path = "vendor/iced_term", optional = true }

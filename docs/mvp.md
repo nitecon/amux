@@ -17,9 +17,10 @@ truth for live status; the status lines here were written on October 22, 2026.
   provider in the same project on the same machine. Tasks are claimed and delegated
   by that exact identity, never by project, provider or hostname. These are amux
   launch identities, not provider-native conversation IDs.
-- **Never replay work on restart.** Restored layouts bring back panes and tabs with
-  every process stopped. Nothing is relaunched, rerun or claimed automatically
-  (D4).
+- **Restore sessions without replaying task input.** Startup reopens previously
+  running tabs in place, with their saved directories and native agent continuation.
+  Previously exited processes remain stopped. Gateway claims, arbitrary commands
+  and queued input are not replayed (D4, revised by the owner on October 24).
 - **The gateway owns tasks (D5).** amux reports only what the gateway acknowledged.
   A claim, a reminder, or a terminal write is never treated as execution start or
   completion.

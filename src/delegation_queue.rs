@@ -162,7 +162,9 @@ impl Queue {
                     } else if outcome == Outcome::Queued {
                         "Waiting for an empty native prompt"
                     } else {
-                        "Repository, origin or goal does not match"
+                        target
+                            .mismatch_reason(&receipt.event)
+                            .unwrap_or("Recipient is not eligible")
                     }
                     .into(),
                 });
@@ -227,7 +229,9 @@ impl Queue {
                     recipient.reason = if recipient.outcome == Outcome::Queued {
                         "Waiting for an empty native prompt"
                     } else {
-                        "Repository, origin or goal does not match"
+                        current
+                            .mismatch_reason(&receipt.event)
+                            .unwrap_or("Recipient is not eligible")
                     }
                     .into();
                     receipt.confirmed = false;

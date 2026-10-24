@@ -104,9 +104,11 @@ identity. Native provider-wrapper variants still require platform verification.
 
 Linux generation uses boot identity and raw process start ticks; Windows uses
 native creation FILETIME. Layout snapshots contain workspace/split/tab metadata,
-not task state or credentials. Restored terminals and agents stay stopped until
-explicit launch; prior tasks are never automatically claimed or rerun. Scrollback,
-full window fidelity and provider-native continuation binding are not implemented.
+not task state or credentials. Previously running tabs reopen automatically in
+place; Codex uses `resume --last` and Claude uses `--continue` for the latest
+conversation in the saved directory. Previously exited processes remain stopped.
+Task claims and terminal input are never replayed. Scrollback, full window fidelity
+and exact per-tab provider conversation IDs are not persisted.
 Use a fresh AMUX_STATE_DIR to isolate a review from other candidate sessions.
 
 Gateway reads use AMUX_GATEWAY_URL, AMUX_GATEWAY_KEY and AMUX_GATEWAY_PROJECT.

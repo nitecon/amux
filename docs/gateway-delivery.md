@@ -2,11 +2,13 @@
 
 Set the gateway URL and API key in Preferences, then enable **Send fresh gateway task notifications to agents in this app** and save. No project identifier, machine UUID or machine key is required. The app creates a durable consumer identity and resolves repositories from Git remotes and gateway metadata.
 
-Created tasks, comments and completed tasks produce only a compact task UUID notification in a matching Claude or Codex terminal. Descriptions and comment bodies are not copied into terminal input. Events older than five minutes and events already present when a connection is established are skipped. Opening a later agent does not attach it to earlier notifications.
+Created tasks, comments and completed tasks produce only a compact task UUID notification in a matching Claude or Codex terminal. Descriptions and comment bodies are not copied into terminal input. Events older than five minutes and events already present when a connection is established are skipped. Freshness uses the gateway upgrade response’s HTTP Date plus monotonic elapsed time when available, so a local PC clock offset does not incorrectly expire a fresh event. Opening a later agent does not attach it to earlier notifications.
 
 Each running agent has its own delivery session, pinned to its terminal, workspace and native process generation. An idle matching peer can receive a notification while another stays busy. Native prompt classification, human-input revisions, current process identity and consent are checked before input. A draft, including whitespace followed by Home, is preserved. Each attempt is saved before enqueue; interrupted or uncertain attempts are never automatically repeated. Application restart retires pending input rather than replaying it.
 
-The task panel shows connection status, agents, pending notifications and recent receipts. `injected` means native input submission only. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
+The task panel shows connection status, agents, pending notifications and recent receipts with the reason for each delivery decision. Gateway acknowledgment
+confirms that the decision was saved, including a skip; it does not imply delivery.
+`injected` means native input submission only. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
 
 ## Built-in agent identity
 

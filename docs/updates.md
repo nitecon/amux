@@ -38,8 +38,11 @@ running app are separate steps.
 The desktop checks for an installed replacement. When one is ready, the update
 panel offers **Restart amux**, including the number of running sessions it will
 close. Restart is explicit: it saves the layout, starts the updated desktop and
-closes the current app. Restored terminal and agent tabs remain stopped; no
-previous work is automatically rerun. If saving or starting the replacement
+closes the current app. Previously running terminal tabs reopen in their saved
+directories. Agent tabs use `codex resume --last` or `claude --continue`, following
+the provider’s latest conversation in that directory. Tabs whose processes had
+already exited remain stopped. Gateway claims and queued terminal input are not
+restored, and initialization scripts are not automatically rerun. If saving or starting the replacement
 fails, the current app remains open. Some installation methods may require
 closing and reopening amux manually.
 
