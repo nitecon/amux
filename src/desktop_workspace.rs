@@ -144,7 +144,7 @@ impl Desktop {
                     )
                 })
         {
-            self.status = "This workspace has a pending or unconfirmed gateway task action. Refresh and inspect its result before closing.".into();
+            self.status = "This workspace has a pending or unconfirmed gateway task action. Inspect its receipt and refresh the task before closing.".into();
             return Task::none();
         }
         let fallback = if self.workspaces.len() == 1 {

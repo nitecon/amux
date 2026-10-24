@@ -426,19 +426,33 @@ impl Desktop {
             let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.workspaces[self.active].gateway.routing.available(target)));
             body = body
                 .push(text("Assign to agent").size(13))
-                .push(
-                    iced::widget::pick_list(choices.clone(), current, |c| {
-                        message(Action::Target(c))
-                    })
-                    .placeholder("Select an agent and machine")
-                    .width(Length::Fill),
-                )
+                .push(text("Select an agent and machine:").size(11))
                 .push(text(&self.workspaces[self.active].gateway.routing.status).size(10));
             for choice in &choices {
-                body = body.push(text(choice.to_string()).size(11));
+                let selected = current.as_ref() == Some(choice);
+                body = body.push(
+                    button(text(choice.to_string()).size(11))
+                        .width(Length::Fill)
+                        .style(move |theme, status| {
+                            if selected {
+                                button::primary(theme, status)
+                            } else {
+                                button::secondary(theme, status)
+                            }
+                        })
+                        .on_press_maybe(ready.then(|| message(Action::Target(choice.clone())))),
+                );
             }
             if choices.is_empty() {
                 body = body.push(text("No live agents available for this repository.").size(11));
+            }
+            if let Some(choice) = current.filter(|_| !available) {
+                body = body.push(
+                    text(format!(
+                        "Unavailable selection: {choice}. Refresh and select a live agent."
+                    ))
+                    .size(11),
+                );
             }
             body = body
                 .push(
