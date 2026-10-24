@@ -297,7 +297,9 @@ fn spawn(app: &mut Desktop, workspace: usize, id: u64, provider: Provider, layou
     tab.delegation = TabState::capture(&terminal);
     tab.terminal = Some(terminal);
     let agent = Agent {
-        directory: std::fs::canonicalize(&directory).unwrap(),
+        directory: amux::workspace_launch::external_path(
+            std::fs::canonicalize(&directory).unwrap(),
+        ),
         log,
     };
     wait(app, |app| {
