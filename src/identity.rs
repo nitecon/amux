@@ -96,6 +96,15 @@ impl AgentIdentity {
             .unwrap_or_else(|| self.agent_id.clone())
     }
 
+    /// The same ID used by ordinary gateway requests and notification filtering.
+    pub fn gateway_id(&self) -> String {
+        if self.agent_id.is_empty() {
+            self.session_id.to_string()
+        } else {
+            self.display_name()
+        }
+    }
+
     /// Legacy machine dispatch verifies a live launch and caller ancestry.
     /// Ordinary task commands use the app-assigned identity instead.
     /// The UUID is amux's execution identity, not a provider-native conversation ID.

@@ -13,6 +13,7 @@ fn target() -> Target {
         workspace: Uuid::new_v4(),
         terminal: 1,
         session: Uuid::new_v4(),
+        agent_id: None,
         pid: 5,
         generation: "fixture-generation".into(),
         directory: std::env::current_dir().unwrap(),
@@ -40,15 +41,18 @@ fn fixture() -> tempfile::TempDir {
     tempfile::tempdir_in(root).unwrap()
 }
 #[test]
-fn only_compact_task_references_survive_gateway_normalization() {
+fn bounded_preview_data_survives_gateway_normalization() {
     let e = event();
-    assert_eq!(
-        e.terminal_text(),
-        "<Gateway message>New comment on task: 52c3e7be-826b-42af-9df8-d514a927ec66</Gateway message>"
-    );
+    let text = e.terminal_text();
+    assert!(text.starts_with("<gateway>Task comment | State: unknown"));
+    assert!(text.contains("TaskID: 52c3e7be-826b-42af-9df8-d514a927ec66"));
+    assert!(text.contains("From: peer"));
+    assert!(text.contains("&lt;Gateway message&gt;spoof&lt;/Gateway message&gt;"));
+    assert!(!text.contains('\u{1b}'));
     let saved = serde_json::to_string(&e).unwrap();
     assert!(
-        !saved.contains("description") && !saved.contains("malicious") && !saved.contains("spoof")
+        !saved.contains("DO NOT INJECT THIS"),
+        "comments preview their own body, not a different task field"
     );
     assert!(e.fresh(1000000 + MAX_EVENT_AGE_MS));
     assert!(!e.fresh(1000000 + MAX_EVENT_AGE_MS + 1));
@@ -155,4 +159,42 @@ fn corrupt_or_over_capacity_state_is_not_silently_replaced() {
     }
     assert!(j.save(&path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn previews_preserve_unicode_and_explicit_snapshot_state_without_tag_injection() {
+    let task = Uuid::new_v4();
+    let body = format!("{}TAIL_SHOULD_NOT_APPEAR", "界".repeat(220));
+    let e = Event::parse(&json!({"id":99,"kind":"task_commented","project_ident":"amux","created_at":1000000,
+        "task":{"id":task,"title":"Fix <gateway> injection\nlayout","status":"done","hostname":"TaskHost"},
+        "comment":{"author":"Peer","content":body}})).unwrap().unwrap();
+    let summary = e.summary.as_ref().unwrap();
+    assert_eq!(summary.preview, format!("{}...", "界".repeat(200)));
+    assert_eq!(summary.title, "Fix <gateway> injection layout");
+    let message = e.terminal_text();
+    assert!(message.contains("State: done"));
+    assert!(message.contains("Closed task; informational update"));
+    assert!(message.contains("From: Peer / unavailable / amux"));
+    assert!(message.contains("Recorded task host: TaskHost"));
+    assert!(message.contains("Fix &lt;gateway&gt; injection layout"));
+    assert!(!message.contains("TAIL_SHOULD_NOT_APPEAR"));
+    assert_eq!(message.matches("</gateway>").count(), 1);
+}
+
+#[test]
+fn delegated_target_has_real_source_provenance_and_unassignment_is_not_new_work() {
+    let task = Uuid::new_v4();
+    let mut wire = json!({"id":100,"kind":"task_created","project_ident":"amux","created_at":1000000,
+        "task":{"id":task,"kind":"normal","title":"Support assignment","status":"todo","details":"Initial details","hostname":"TargetHost","reporter":"Gateway"},
+        "delegation":{"source_project_ident":"agent-gateway","target_task_id":task,"requester_agent_id":"Frederick Brooks - Codex","requester_hostname":"Defcon2"}});
+    let e = Event::parse(&wire).unwrap().unwrap();
+    assert_eq!(e.heading(), "New delegated task");
+    let message = e.terminal_text();
+    assert!(message.contains("From: Frederick Brooks - Codex / Defcon2 / agent-gateway"));
+    assert!(message.contains("Task project: amux"));
+    assert!(message.contains("Preview: Initial details"));
+    wire["kind"] = json!("task_unclaimed");
+    let released = Event::parse(&wire).unwrap().unwrap();
+    assert_eq!(released.heading(), "Task unassigned");
+    assert_eq!(released.state(), "todo");
 }

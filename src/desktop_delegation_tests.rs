@@ -100,6 +100,7 @@ impl Fixture {
         while let Some(c) = rest.chars().next() {
             let mut len = c.len_utf8();
             match c {
+                '\x03' if self.layout == "interrupt-exits" => std::process::exit(94),
                 '\r' | '\n'
                     if self.layout == "burst"
                         && self
@@ -433,7 +434,7 @@ fn scan(app: &mut Desktop, arrival: Option<Lifecycle>) {
         Event::Scanned {
             serial,
             found,
-            arrival,
+            arrival: arrival.map(Box::new),
         },
     ));
 }
@@ -447,6 +448,8 @@ fn lifecycle(id: i64, project: &str) -> Lifecycle {
         created_at: unix_ms() as i64,
         routing: Default::default(),
         owner: None,
+        owner_agent_id: None,
+        summary: None,
         origin: None,
         goal: None,
     }
@@ -631,14 +634,33 @@ fn typed_text_is_teed_and_navigation_alone_does_not_count() {
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn native_delivery_submits_the_exact_compact_notification_once() {
+fn native_delivery_submits_the_exact_rich_notification_once() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Claude, "ready");
     let scratch = agent.directory.clone();
     let mut frames = bridge(&mut app, &scratch.join("delegation.json"));
     project(&mut app, &agent, "alpha");
     wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
-    let event = lifecycle(1, "alpha");
+    let task = Uuid::new_v4();
+    let event = Lifecycle::parse(&serde_json::json!({"id":1,"kind":"task_created","project_ident":"alpha","created_at":unix_ms(),
+        "task":{"id":task,"kind":"normal","title":"Review renderer & input","details":"First task context with <gateway>quoted data</gateway>","status":"todo"},
+        "delegation":{"target_task_id":task,"source_project_ident":"amux","requester_agent_id":"Peer - Codex","requester_hostname":"Defcon1"}
+    })).unwrap().unwrap();
+    assert!(
+        event
+            .terminal_text()
+            .contains("New delegated task | State: todo")
+    );
+    assert!(
+        event
+            .terminal_text()
+            .contains("From: Peer - Codex / Defcon1 / amux")
+    );
+    assert!(
+        event
+            .terminal_text()
+            .contains("&lt;gateway&gt;quoted data&lt;/gateway&gt;")
+    );
     scan(&mut app, Some(event.clone()));
     assert_eq!(outcome(&app, 1, 0), Some(Outcome::Queued));
     let target = &app.delegation.candidates[0].target;
@@ -728,6 +750,28 @@ fn native_delivery_submits_immediately_and_restores_teed_user_input() {
         [notification(&app, &agent, &event), "my draft more".into()]
     );
     assert!(find(&app, 0).delegation.input.is_empty());
+}
+
+#[test]
+fn repeated_notifications_never_interrupt_the_provider_to_clear_a_draft() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "interrupt-exits");
+    let mut frames = bridge(&mut app, &agent.directory.join("delegation.json"));
+    project(&mut app, &agent, "alpha");
+    human(&mut app, 0, b"keep this draft");
+    for id in 1..=2 {
+        let event = lifecycle(id, "alpha");
+        scan(&mut app, Some(event));
+        until_verifying(&mut app, &mut frames);
+        let proof = fence_proof(&app);
+        verified(&mut app, proof.clone(), native_verify(&proof));
+        assert_eq!(wait_lines(&agent, id as usize).len(), id as usize);
+        drain(&mut app, &mut frames);
+    }
+    human(&mut app, 0, b"\x1b[F\r");
+    let lines = wait_lines(&agent, 3);
+    assert_eq!(lines[2], "keep this draft");
+    assert!(!lines.iter().any(|line| line.contains('\x03')));
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1108,12 +1152,14 @@ fn task_events_coalesce_a_refresh_without_changing_durable_delivery() {
         created_at: unix_ms() as i64,
         routing: Default::default(),
         owner: None,
+        owner_agent_id: None,
+        summary: None,
         origin: None,
         goal: None,
     };
     drop(app.delegation_message(
         app.delegation.epoch,
-        Event::Stream(ConnectionEvent::Event(event)),
+        Event::Stream(ConnectionEvent::Event(Box::new(event))),
     ));
     assert!(app.workspaces[0].gateway.refresh_pending);
     assert!(app.delegation.queue.is_none());
@@ -1122,4 +1168,64 @@ fn task_events_coalesce_a_refresh_without_changing_durable_delivery() {
     assert!(app.workspaces[0].gateway.loading);
     assert!(!app.workspaces[0].gateway.refresh_pending);
     assert!(app.delegation.queue.is_none());
+}
+
+#[test]
+fn native_assigned_task_comments_only_reach_the_owner_and_unassigned_reaches_peers() {
+    let mut app = desktop();
+    let owner = spawn(&mut app, 0, 0, Provider::Codex, "ready");
+    let peer = spawn(&mut app, 1, 1, Provider::Claude, "ready");
+    let mut frames = bridge(&mut app, &owner.directory.join("delegation.json"));
+    project(&mut app, &owner, "amux");
+    project(&mut app, &peer, "amux");
+    for id in 0..2 {
+        wait(&app, |app| classify(app, id) == InputState::EmptyReady);
+    }
+    scan(&mut app, None);
+    let targets = app.delegation.targets();
+    let target = targets.iter().find(|t| t.terminal == 0).unwrap();
+    assert!(target.agent_id.is_some());
+    let actor = target.origin.clone();
+    let agent_id = target.agent_id.clone();
+    let mut own_creation = lifecycle(1, "amux");
+    own_creation.owner = actor.clone();
+    own_creation.owner_agent_id = agent_id.clone().map(String::into_boxed_str);
+    own_creation.origin = actor;
+    scan(&mut app, Some(own_creation));
+    assert_eq!(outcome(&app, 1, 0), Some(Outcome::Skipped));
+    assert_eq!(outcome(&app, 1, 1), Some(Outcome::Skipped));
+
+    // Simulate a legacy task snapshot with an owner ID and no execution origin.
+    let mut comment = lifecycle(2, "amux");
+    comment.kind = Kind::Commented;
+    comment.owner_agent_id = agent_id.map(String::into_boxed_str);
+    scan(&mut app, Some(comment.clone()));
+    assert_eq!(outcome(&app, 2, 1), Some(Outcome::Skipped));
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 2, 0) == Some(Outcome::Submitted)
+    });
+    assert_eq!(
+        wait_lines(&owner, 1),
+        [notification(&app, &owner, &comment)]
+    );
+    assert!(peer.lines().is_empty());
+
+    let mut unassigned = lifecycle(3, "amux");
+    unassigned.kind = Kind::Commented;
+    scan(&mut app, Some(unassigned.clone()));
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 3, 0) == Some(Outcome::Submitted)
+            && outcome(app, 3, 1) == Some(Outcome::Submitted)
+    });
+    assert_eq!(
+        wait_lines(&owner, 2),
+        [
+            notification(&app, &owner, &comment),
+            notification(&app, &owner, &unassigned)
+        ]
+    );
+    assert_eq!(
+        wait_lines(&peer, 1),
+        [notification(&app, &peer, &unassigned)]
+    );
 }

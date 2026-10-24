@@ -2,11 +2,14 @@
 
 Set the gateway URL and API key in Preferences, then enable **Send fresh gateway task notifications to agents in this app** and save. No project identifier, machine UUID or machine key is required. The app creates a durable consumer identity and resolves repositories from Git remotes and gateway metadata.
 
-Created tasks, comments and completed tasks produce only a compact task UUID notification in a matching Claude or Codex terminal. Descriptions and comment bodies are not copied into terminal input. Events older than five minutes and events already present when a connection is established are skipped. Freshness uses the gateway upgrade response’s HTTP Date plus monotonic elapsed time when available, so a local PC clock offset does not incorrectly expire a fresh event. Opening a later agent does not attach it to earlier notifications.
+Created tasks, comments and completed tasks produce a bounded `<gateway>` summary in a matching Claude or Codex terminal: task ID, title, event state, sender, available provenance, and the first 200 characters of the initial details or comment. Only the bounded preview is copied; complete descriptions and comment bodies are not injected. Preview text is normalized to one line and XML-escaped. Events older than five minutes and events already present when a connection is established are skipped. Freshness uses the gateway upgrade response’s HTTP Date plus monotonic elapsed time when available, so a local PC clock offset does not incorrectly expire a fresh event. Opening a later agent does not attach it to earlier notifications.
 
 Each running agent has its own delivery session, pinned to its terminal, workspace and native process generation. Automatic delivery uses the owned terminal and process identity, with no screen parsing or prompt/footer matching. amux tees typed text and subsequent editing keystrokes into an in-memory buffer. Enter resets the buffer; modifier/navigation keys alone do not count as text.
 
 A notification does not wait for an empty prompt or for a draft to be submitted. If user text is buffered, amux clears the provider draft, sends and submits the notification, then restores the buffered input in the same ordered terminal write. A native End key separates the message from Enter so a character-paste burst is flushed without a timer. Terminal protocol flags determine bracketed-paste encoding without reading rendered content. The current process, consent and event freshness are checked before the transaction. Each attempt is saved before enqueue; interrupted or uncertain attempts are never automatically repeated. Application restart retires pending notifications rather than replaying them.
+
+Draft clearing uses End followed by Ctrl+U. Notifications never synthesize Ctrl+C,
+which can interrupt a running turn or exit the provider when a draft tee is stale.
 
 The task panel shows connection status, agents, pending notifications and recent receipts with the reason for each delivery decision. Gateway acknowledgment
 confirms that the decision was saved, including a skip; it does not imply delivery.
@@ -39,8 +42,13 @@ makes the bundled CLI available on terminal PATH.
 Gateway task commands use the saved gateway preferences and resolve the project
 automatically; environment variables and flags can override those settings. amux
 owns assignment and registration. No agent-tools update, provider hook,
-or actor announcement is required. An exact origin suppresses its own notification;
-other matching terminals remain eligible. Named-goal events still require an
+or actor announcement is required. Notifications are filtered per native agent: assigned task creation, comments,
+and completion go only to the owner; unassigned tasks remain eligible for
+matching peers. The exact `owner_origin` takes precedence. When a legacy snapshot
+only has `owner_agent_id`, it must match the verified agent's actual gateway ID.
+An unknown owner ID is never treated as unassigned. An exact origin suppresses
+its own notification, including an agent's own comments. Broadcast routing cannot
+override a current owner. Explicit queue-only creation still sends no notification. Named-goal events still require an
 explicit matching goal and are skipped when no goal is bound.
 
 The existing credential-bound `amux dispatch` CLI is a separate gateway protocol
@@ -50,3 +58,19 @@ credentials are not used by desktop lifecycle notifications.
 ## Verification
 
 Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, and built-in identity. Controlled native terminal fixtures exercise exact input, immediate delivery with restored user drafts, text-versus-navigation tracking, hidden footers, unrecognized layouts, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex submission still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.
+
+
+The left-side **Gateway messages** drawer presents sender bubbles with task
+title, preview, project, state at the time of the event, age, and task ID. Hover
+for delivery details, which remain separate from task state. The latest 50
+previews are saved independently of delivery receipt pruning. Clear hides the
+view without deleting delivery fences or history. Historical snapshots do not
+claim to be the task's current state, and old journal entries without summaries
+show explicit unavailable fields rather than forcing a lookup or inventing text.
+
+Delegated-task creation uses the gateway's requester name, requester hostname,
+and source project. Comments use their own author; a task's recorded hostname
+is labeled **Recorded task host**, because it may differ from the commenter's
+machine. Missing sender-machine metadata is shown as unavailable. The recipient's
+assigned amux identity remains separate from the sender and is included for task
+mutations; fetching full task details is optional when the preview suffices.

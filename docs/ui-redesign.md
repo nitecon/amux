@@ -29,8 +29,9 @@ terminating their sessions. Tabs retain close controls and directory subtitles.
 Tasks have All, Active and Completed filters and a pinned composer. Gateway
 acceptance and uncertain submission receipts remain visible, with no automatic
 POST retries or fabricated ownership. Lifecycle events refresh matching task
-lists; concurrent refreshes coalesce. The Events drawer searches real receipts
-and connection information. Clear hides entries from that view and never deletes
+lists; concurrent refreshes coalesce. The left-side Gateway messages drawer shows sender bubbles with title, 200-character
+preview, task state at the event, provenance, task ID and age. It retains the latest
+50 previews across restart and searches messages, receipts and connection information. Clear hides entries from that view and never deletes
 or acknowledges delivery records.
 
 Open a task to manage it in the right-hand column. The detail view displays its

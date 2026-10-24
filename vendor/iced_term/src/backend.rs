@@ -133,6 +133,7 @@ impl From<TerminalSize> for WindowSize {
 }
 
 pub struct Backend {
+    pub(crate) exit_code: Option<i32>,
     child_pid: Option<u32>,
     #[cfg(target_os = "linux")]
     native_terminal: std::fs::File,
@@ -152,8 +153,20 @@ impl Backend {
         settings: BackendSettings,
         font_measure: Size<f32>,
     ) -> Result<Self> {
+        // Alacritty builds a Windows command line itself. Its default is raw
+        // argument concatenation, which splits --project-dir at every space.
+        #[cfg(windows)]
+        let program = if settings.program.contains([' ', '\t']) {
+            format!("\"{}\"", settings.program)
+        } else {
+            settings.program
+        };
+        #[cfg(not(windows))]
+        let program = settings.program;
         let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(settings.program, settings.args)),
+            shell: Some(tty::Shell::new(program, settings.args)),
+            #[cfg(windows)]
+            escape_args: true,
             working_directory: settings.working_directory,
             env: settings.env,
             ..tty::Options::default()
@@ -206,6 +219,7 @@ impl Backend {
         let _ = pty_event_loop.spawn();
 
         Ok(Self {
+            exit_code: None,
             child_pid,
             #[cfg(target_os = "linux")]
             native_terminal,
@@ -233,6 +247,9 @@ impl Backend {
                     },
                     Event::Exit => {
                         action = Action::Shutdown;
+                    },
+                    Event::ChildExit(code) => {
+                        self.exit_code = Some(code);
                     },
                     Event::Title(title) => {
                         action = Action::ChangeTitle(title);

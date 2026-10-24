@@ -116,6 +116,10 @@ impl Queue {
             .flat_map(|r| &r.recipients)
             .filter(|r| !r.outcome.terminal())
             .count();
+        next.recent.push(event.clone());
+        if next.recent.len() > crate::delegation::MAX_RECENT_EVENTS {
+            next.recent.remove(0);
+        }
         let mut receipt = Receipt {
             event,
             recipients: Vec::new(),

@@ -27,10 +27,37 @@ pub fn home_directory() -> Result<PathBuf> {
 }
 
 pub fn directory(value: &str) -> Result<PathBuf> {
-    let path = Path::new(value)
-        .canonicalize()
-        .map(external_path)
-        .context("Choose an existing directory")?;
+    // Prefer literal names, including real backslashes and quotes. Only fall
+    // back to a pasted shell-style path when the literal path is absent.
+    let literal = Path::new(value).canonicalize();
+    let path = match literal {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let trimmed = value.trim();
+            let unquoted = trimmed
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| {
+                    trimmed
+                        .strip_prefix('\'')
+                        .and_then(|s| s.strip_suffix('\''))
+                });
+            let candidate = unquoted.unwrap_or(trimmed).to_owned();
+            #[cfg(unix)]
+            let candidate = if unquoted.is_none() {
+                candidate.replace("\\ ", " ")
+            } else {
+                candidate
+            };
+            Path::new(&candidate)
+                .canonicalize()
+                .with_context(|| format!("Cannot open directory {value:?}"))?
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("Cannot open directory {value:?}"));
+        }
+    };
+    let path = external_path(path);
     anyhow::ensure!(path.is_dir(), "Choose a directory, not a file");
     Ok(path)
 }
@@ -151,6 +178,31 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_accepts_spaces_and_pasted_quotes_without_changing_literal_names() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        let folder = fixture.path().join("folder with spaces");
+        std::fs::create_dir(&folder).unwrap();
+        let value = folder.to_str().unwrap();
+        let expected = external_path(folder.canonicalize().unwrap());
+        assert_eq!(directory(value).unwrap(), expected);
+        assert_eq!(directory(&format!("\"{value}\"")).unwrap(), expected);
+        assert_eq!(directory(&format!("'{value}'")).unwrap(), expected);
+        #[cfg(unix)]
+        {
+            let escaped = value.replace(' ', "\\ ");
+            assert_eq!(directory(&escaped).unwrap(), expected);
+            std::fs::create_dir(&escaped).unwrap();
+            assert_eq!(
+                directory(&escaped).unwrap(),
+                Path::new(&escaped).canonicalize().unwrap()
+            );
+        }
+    }
+
     #[test]
     fn repository_names_and_scripts_are_arguments_not_shell_code() {
         assert_eq!(

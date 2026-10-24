@@ -76,6 +76,11 @@ impl Terminal {
         self.backend.child_pid()
     }
 
+    /// Native exit code, when reported by the PTY. Signals may have no code.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.backend.exit_code
+    }
+
     /// Borrowed native PTY master for foreground input verification. Never a PID lookup.
     #[cfg(target_os = "linux")]
     pub fn native_terminal_fd(&self) -> std::os::fd::BorrowedFd<'_> {

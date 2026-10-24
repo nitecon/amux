@@ -7,6 +7,7 @@ fn target() -> Target {
         workspace: Uuid::new_v4(),
         terminal: 1,
         session: Uuid::new_v4(),
+        agent_id: None,
         pid: 5,
         generation: "fixture".into(),
         directory: std::env::current_dir().unwrap(),
@@ -24,6 +25,8 @@ fn event(id: i64) -> Event {
         created_at: 1_000_000,
         routing: Default::default(),
         owner: None,
+        owner_agent_id: None,
+        summary: None,
         origin: None,
         goal: None,
     }
@@ -277,4 +280,86 @@ fn newly_bound_self_origin_retires_only_its_own_copy_and_ungrouped_goals_can_cha
         queue.next(&HashSet::from([other.session])).unwrap().target,
         other
     );
+}
+
+#[test]
+fn wire_assignment_filters_created_comments_and_completion_by_owner() {
+    use amux::{identity::Provider, task_routing::Routing};
+    use serde_json::json;
+    let mut a = target();
+    let mut b = target();
+    for (target, name) in [
+        (&mut a, "Gene Amdahl - Codex"),
+        (&mut b, "Grace Hopper - Claude"),
+    ] {
+        target.agent_id = Some(name.into());
+        target.origin = Some(Origin {
+            session_id: target.session,
+            instance_id: Uuid::new_v4(),
+            provider: Provider::Codex,
+            os: "linux".into(),
+        });
+    }
+    let (_dir, mut queue) = fixture();
+    for (index, kind) in ["task_created", "task_commented", "task_completed"]
+        .into_iter()
+        .enumerate()
+    {
+        let id = 10 + index as i64;
+        let wire = json!({"id":id,"kind":kind,"project_ident":"amux","created_at":1_000_000,
+            "task":{"id":Uuid::new_v4(),"owner_agent_id":a.agent_id},
+            "comment":{"author":"human"}});
+        let event = Event::parse(&wire).unwrap().unwrap();
+        queue
+            .receive(event, &[a.clone(), b.clone()], true, 1_000_000)
+            .unwrap();
+        let recipients = &queue.journal.receipts[index].recipients;
+        assert_eq!(recipients[0].outcome, Outcome::Queued, "{kind}");
+        assert_eq!(recipients[1].outcome, Outcome::Skipped, "{kind}");
+    }
+    // Null/missing ownership is genuinely unassigned and still reaches peers.
+    let mut unassigned = event(13);
+    unassigned.kind = Kind::Commented;
+    assert!(a.accepts(&unassigned) && b.accepts(&unassigned));
+    // An exact execution always takes precedence over a reused display label.
+    let mut exact = unassigned.clone();
+    exact.owner = a.origin.clone();
+    exact.owner_agent_id = b.agent_id.clone().map(String::into_boxed_str);
+    assert!(a.accepts(&exact));
+    assert!(!b.accepts(&exact));
+    let mut restarted = a.clone();
+    restarted.origin.as_mut().unwrap().instance_id = Uuid::new_v4();
+    assert!(!restarted.accepts(&exact));
+    // Broadcast routing cannot override a current owner.
+    exact.kind = Kind::Created;
+    *exact.routing = Routing::Broadcast;
+    assert!(!b.accepts(&exact));
+    // The submitting owner already knows about its own creation/comment.
+    exact.origin = a.origin.clone();
+    assert!(!a.accepts(&exact));
+    // An owner label unknown locally must never be treated as unassigned.
+    let mut unknown = unassigned;
+    unknown.owner_agent_id = Some("remote-agent".into());
+    assert!(!a.accepts(&unknown) && !b.accepts(&unknown));
+    for malformed in [json!(42), json!(""), json!("bad\nidentity")] {
+        let wire = json!({"id":99,"kind":"task_commented","project_ident":"amux","created_at":1_000_000,
+            "task":{"id":Uuid::new_v4(),"owner_agent_id":malformed},"comment":{"author":"human"}});
+        assert!(Event::parse(&wire).is_err());
+    }
+}
+
+#[test]
+fn recent_event_bubbles_survive_ack_pruning_and_remain_bounded_across_restart() {
+    let (dir, mut queue) = fixture();
+    for id in 10..80 {
+        queue.receive(event(id), &[], false, 1_000_000).unwrap();
+        queue.recorded(id, "skipped").unwrap();
+    }
+    assert!(queue.journal.receipts.len() <= 1);
+    assert_eq!(queue.journal.recent.len(), MAX_RECENT_EVENTS);
+    assert_eq!(queue.journal.recent.first().unwrap().id, 30);
+    assert_eq!(queue.journal.recent.last().unwrap().id, 79);
+    drop(queue);
+    let queue = Queue::open(dir.path().join("journal.json"), "fixture").unwrap();
+    assert_eq!(queue.journal.recent.len(), MAX_RECENT_EVENTS);
 }

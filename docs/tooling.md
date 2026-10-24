@@ -147,3 +147,11 @@ Verify versions and behavior again when selecting dependencies.
 [cmux-delivery]: https://github.com/nitecon/cmux-gtk/blob/dc9bc256d9b680170124edaaed5e1d3702c4a066/src/gateway/mod.rs#L138-L208
 [ghostty-key]: https://github.com/nitecon/ghostty/blob/8481f95cd523e32f6d6416f2739066fb2226fe8c/include/ghostty.h#L1475-L1478
 [ghostty-key-impl]: https://github.com/nitecon/ghostty/blob/8481f95cd523e32f6d6416f2739066fb2226fe8c/src/Surface.zig#L4395-L4410
+
+## Workspace paths
+
+The folder field also accepts a matching pair of surrounding quotes, and on
+Unix accepts backslash-escaped spaces, when the literal path does not exist.
+Literal existing filenames always take precedence. Windows agent launches use
+native argument escaping so a workspace such as
+`C:\Users\nitec\Documents\Unreal Projects\X` stays one `--project-dir` argument.

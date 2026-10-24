@@ -11,6 +11,7 @@ use std::{
 use uuid::Uuid;
 
 pub const MAX_PENDING: usize = 64;
+pub const MAX_RECENT_EVENTS: usize = 50;
 pub const MAX_RECEIPTS: usize = 2048;
 pub const MAX_EVENT_AGE_MS: i64 = 5 * 60 * 1000;
 const MAX_JOURNAL: usize = 4 * 1024 * 1024;
@@ -43,6 +44,53 @@ pub enum Kind {
     Completed,
 }
 
+/// Bounded display data from the event snapshot, never an instruction source.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSummary {
+    pub heading: String,
+    pub state: String,
+    pub title: String,
+    pub preview: String,
+    pub sender: String,
+    pub task_host: String,
+    #[serde(default)]
+    pub sender_host: String,
+    #[serde(default)]
+    pub source_project: String,
+}
+
+impl std::fmt::Debug for EventSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventSummary")
+            .field("heading", &self.heading)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Normalize a preview to one line and count Unicode characters, not bytes.
+fn preview(value: &str, limit: usize) -> String {
+    let clean = value
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect::<String>();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = clean.chars();
+    let prefix: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        format!("{prefix}...")
+    } else {
+        prefix
+    }
+}
+
+fn xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     pub id: i64,
@@ -56,9 +104,13 @@ pub struct Event {
     pub routing: Box<crate::task_routing::Routing>,
     #[serde(default)]
     pub owner: Option<Origin>,
+    #[serde(default)]
+    pub owner_agent_id: Option<Box<str>>,
+    #[serde(default)]
+    pub summary: Option<Box<EventSummary>>,
 }
 impl Event {
-    /// Retain identifiers only. Task descriptions and comment bodies never reach input or the journal.
+    /// Retain routing identifiers and bounded presentation fields from this snapshot.
     pub fn parse(value: &Value) -> Result<Option<Self>> {
         let kind = match value["kind"].as_str() {
             Some("task_created" | "task_unclaimed") => Kind::Created,
@@ -97,6 +149,7 @@ impl Event {
             _ => bail!("Invalid task goal"),
         };
         let event = Self {
+            summary: Some(Box::new(EventSummary::from_wire(value, kind))),
             id: value["id"].as_i64().context("Event ID missing")?,
             project: value["project_ident"]
                 .as_str()
@@ -113,6 +166,11 @@ impl Event {
                 Some(value) => {
                     serde_json::from_value(value.clone()).context("Invalid task routing")?
                 }
+            },
+            owner_agent_id: match value["task"].get("owner_agent_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(id)) => Some(id.clone().into_boxed_str()),
+                _ => bail!("Invalid task owner agent ID"),
             },
             owner: match value["task"].get("owner_origin") {
                 None | Some(Value::Null) => None,
@@ -133,6 +191,12 @@ impl Event {
         if let Some(origin) = &self.origin {
             origin.validate()?;
         }
+        if let Some(summary) = &self.summary {
+            summary.validate()?;
+        }
+        if let Some(id) = &self.owner_agent_id {
+            identifier(id)?;
+        }
         if let Some(owner) = &self.owner {
             owner.validate()?;
         }
@@ -150,21 +214,188 @@ impl Event {
             && self.created_at <= now_ms.saturating_add(30_000)
             && now_ms.saturating_sub(self.created_at) <= MAX_EVENT_AGE_MS
     }
+    pub fn heading(&self) -> &str {
+        self.summary
+            .as_ref()
+            .map(|s| s.heading.as_str())
+            .unwrap_or(match self.kind {
+                Kind::Created => "New task",
+                Kind::Commented => "Task comment",
+                Kind::Completed => "Task completed",
+            })
+    }
+    pub fn state(&self) -> &str {
+        self.summary
+            .as_ref()
+            .map(|s| s.state.as_str())
+            .unwrap_or(if self.kind == Kind::Completed {
+                "done"
+            } else {
+                "unknown"
+            })
+    }
     pub fn assigned_terminal_text(&self, session: Uuid, name: &str) -> String {
         format!(
-            "{} [Amux identity: {name}. Use amux --agent {session} tasks get {} and the same --agent ID for task mutations.]",
+            "{} [Amux recipient: {}; use amux --agent {session} for task mutations. Details only if needed: amux --agent {session} tasks get {}.]",
             self.terminal_text(),
+            preview(name, 128),
             self.task
         )
     }
-
     pub fn terminal_text(&self) -> String {
-        let title = match self.kind {
-            Kind::Created => "New delegated task received",
-            Kind::Commented => "New comment on task",
-            Kind::Completed => "Task completed",
+        let summary = self.summary.as_deref();
+        let sender = summary
+            .map(|s| s.sender.as_str())
+            .unwrap_or("Unknown sender");
+        let host = summary
+            .map(|s| s.task_host.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unavailable");
+        let title = summary
+            .map(|s| s.title.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Title unavailable");
+        let body = summary.map(|s| s.preview.as_str()).unwrap_or("");
+        let sender_host = summary
+            .map(|s| s.sender_host.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unavailable");
+        let source_project = summary
+            .map(|s| s.source_project.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.project);
+        let closed = if matches!(self.state(), "done" | "cancelled") {
+            " | Closed task; informational update"
+        } else {
+            ""
         };
-        format!("<Gateway message>{title}: {}</Gateway message>", self.task)
+        format!(
+            "<gateway>{} | State: {} | From: {} / {} / {} | Task project: {} | Recorded task host: {} | TaskID: {} | Title: {} | Preview: {}{closed}</gateway>",
+            xml(self.heading()),
+            xml(self.state()),
+            xml(sender),
+            xml(sender_host),
+            xml(source_project),
+            xml(&self.project),
+            xml(host),
+            self.task,
+            xml(title),
+            xml(body)
+        )
+    }
+}
+
+impl EventSummary {
+    fn from_wire(value: &Value, kind: Kind) -> Self {
+        let task = &value["task"];
+        let comment = &value["comment"];
+        let delegated =
+            value["delegation"].is_object() && value["delegation"]["target_task_id"] == task["id"];
+        let heading = if value["kind"] == "task_unclaimed" {
+            "Task unassigned"
+        } else {
+            match kind {
+                Kind::Created if delegated || task["kind"] == "delegated" => "New delegated task",
+                Kind::Created => "New task",
+                Kind::Commented => "Task comment",
+                Kind::Completed => "Task completed",
+            }
+        };
+        let state = task["status"]
+            .as_str()
+            .filter(|s| matches!(*s, "todo" | "in_progress" | "done" | "cancelled"))
+            .unwrap_or(if kind == Kind::Completed {
+                "done"
+            } else {
+                "unknown"
+            });
+        let sender = if kind == Kind::Commented {
+            comment["author"].as_str()
+        } else if kind == Kind::Created && value["kind"] != "task_unclaimed" {
+            if delegated {
+                value["delegation"]["requester_agent_id"].as_str()
+            } else {
+                task["reporter"].as_str()
+            }
+        } else if !value["origin"].is_null() && task["owner_origin"] == value["origin"] {
+            task["owner_agent_id"].as_str()
+        } else if value["kind"] == "task_unclaimed" {
+            Some("Gateway")
+        } else {
+            None
+        };
+        let body = if kind == Kind::Commented {
+            comment["content"]
+                .as_str()
+                .or_else(|| comment["body"].as_str())
+                .unwrap_or("")
+        } else {
+            task["details"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    task["specification"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                })
+                .or_else(|| task["description"].as_str())
+                .unwrap_or("")
+        };
+        Self {
+            heading: heading.into(),
+            state: preview(state, 32),
+            title: preview(task["title"].as_str().unwrap_or(""), 160),
+            preview: preview(body, 200),
+            sender: preview(
+                sender.unwrap_or(if value["origin"].is_null() {
+                    "User / system"
+                } else {
+                    "Unknown agent"
+                }),
+                128,
+            ),
+            task_host: preview(task["hostname"].as_str().unwrap_or(""), 128),
+            sender_host: preview(
+                if kind == Kind::Created && value["kind"] != "task_unclaimed" {
+                    if delegated {
+                        value["delegation"]["requester_hostname"].as_str()
+                    } else {
+                        task["hostname"].as_str()
+                    }
+                } else {
+                    None
+                }
+                .unwrap_or(""),
+                128,
+            ),
+            source_project: preview(
+                if kind == Kind::Created && delegated {
+                    value["delegation"]["source_project_ident"].as_str()
+                } else {
+                    value["project_ident"].as_str()
+                }
+                .unwrap_or(""),
+                160,
+            ),
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        for (value, max) in [
+            (&self.heading, 48),
+            (&self.state, 35),
+            (&self.title, 163),
+            (&self.preview, 203),
+            (&self.sender, 131),
+            (&self.task_host, 131),
+            (&self.sender_host, 131),
+            (&self.source_project, 163),
+        ] {
+            ensure!(
+                value.chars().count() <= max && !value.chars().any(char::is_control),
+                "Invalid event preview"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -195,6 +426,9 @@ pub struct Target {
     pub workspace: Uuid,
     pub terminal: u64,
     pub session: Uuid,
+    /// The exact X-Agent-Id sent by this verified native actor.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     pub pid: u32,
     pub generation: String,
     pub directory: PathBuf,
@@ -229,6 +463,13 @@ impl Target {
         }
         if let Some(origin) = &self.origin {
             origin.validate()?;
+        }
+        if let Some(id) = &self.agent_id {
+            identifier(id)?;
+            ensure!(
+                self.origin.is_some(),
+                "Agent ID requires verified actor context"
+            );
         }
         ensure!(
             normalize_goal(self.goal.as_deref())? == self.goal,
@@ -265,11 +506,17 @@ impl Target {
                 || self.executor_generation() != target.generation)
         {
             Some("Task targets another agent execution")
-        } else if !(event.kind == Kind::Created && *event.routing == Routing::Broadcast)
+        } else if event
+            .owner
+            .as_ref()
+            .is_some_and(|owner| self.origin.as_ref() != Some(owner))
+        {
+            Some("Task belongs to another agent execution")
+        } else if event.owner.is_none()
             && event
-                .owner
+                .owner_agent_id
                 .as_ref()
-                .is_some_and(|owner| self.origin.as_ref() != Some(owner))
+                .is_some_and(|owner| self.agent_id.as_deref() != Some(owner.as_ref()))
         {
             Some("Task belongs to another agent")
         } else if event.origin.as_ref().is_some_and(|origin| {
@@ -384,6 +631,8 @@ pub struct Journal {
     pub receipts: Vec<Receipt>,
     #[serde(default)]
     pub rejected: Vec<Rejected>,
+    #[serde(default)]
+    pub recent: Vec<Event>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rejected {
@@ -400,6 +649,7 @@ impl Journal {
             cursor: None,
             receipts: Vec::new(),
             rejected: Vec::new(),
+            recent: Vec::new(),
         }
     }
     fn validate(&self) -> Result<()> {
@@ -437,6 +687,13 @@ impl Journal {
             })
             .sum::<usize>();
         ensure!(pending <= MAX_PENDING, "Delegation queue capacity reached");
+        ensure!(
+            self.recent.len() <= MAX_RECENT_EVENTS,
+            "Too many recent gateway events"
+        );
+        for event in &self.recent {
+            event.validate()?;
+        }
         let mut events = HashSet::new();
         for receipt in &self.receipts {
             receipt.event.validate()?;

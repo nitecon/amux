@@ -65,6 +65,7 @@ pub(super) struct EventCard {
     pub key: String,
     pub title: String,
     pub detail: String,
+    pub gateway: Option<Box<amux::delegation::Event>>,
 }
 
 pub(super) fn theme() -> Theme {
@@ -697,7 +698,7 @@ impl Desktop {
         if self.design.events {
             layers = layers.push(
                 container(opaque(self.events_view()))
-                    .align_right(Length::Fill)
+                    .align_left(Length::Fill)
                     .padding(iced::Padding {
                         top: 48.0,
                         ..Default::default()
@@ -1141,30 +1142,108 @@ impl Desktop {
                     .to_lowercase()
                     .contains(&search)
         }) {
-            entries = entries.push(
-                container(
-                    column![
-                        text(event.title).size(11).color(CYAN),
-                        text(event.detail).font(iced::Font::MONOSPACE).size(11)
+            if let Some(gateway) = &event.gateway {
+                let summary = gateway.summary.as_deref();
+                let sender = summary
+                    .map(|s| s.sender.as_str())
+                    .unwrap_or("Unknown sender");
+                let title = summary
+                    .map(|s| s.title.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Title unavailable");
+                let preview = summary.map(|s| s.preview.as_str()).unwrap_or("");
+                let host = summary
+                    .map(|s| s.task_host.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("unavailable");
+                let sender_host = summary
+                    .map(|s| s.sender_host.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("unavailable");
+                let from_project = summary
+                    .map(|s| s.source_project.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&gateway.project);
+                let initials = sender
+                    .split_whitespace()
+                    .take(2)
+                    .filter_map(|s| s.chars().next())
+                    .collect::<String>();
+                let age = (unix_ms() as i64).saturating_sub(gateway.created_at).max(0) / 60_000;
+                let bubble = column![
+                    row![
+                        text(sender.to_owned()).size(12).color(CYAN),
+                        Space::new().width(Length::Fill),
+                        text(format!("{age}m ago")).size(10).color(MUTED)
                     ]
                     .spacing(8),
-                )
-                .padding(12)
-                .width(Length::Fill)
-                .style(|_| surface(CARD, true)),
-            );
+                    row![
+                        text(gateway.heading().to_owned()).size(11),
+                        Space::new().width(Length::Fill),
+                        status_badge(gateway.state())
+                    ]
+                    .spacing(6),
+                    text(title.to_owned()).size(14),
+                    text(preview.to_owned()).size(12),
+                    text(format!("From {from_project} · Sender host: {sender_host}"))
+                        .size(10)
+                        .color(MUTED),
+                    text(format!(
+                        "Task project: {} · Recorded task host: {host}",
+                        gateway.project
+                    ))
+                    .size(10)
+                    .color(MUTED),
+                    text(format!("TaskID: {}", gateway.task))
+                        .font(iced::Font::MONOSPACE)
+                        .size(10)
+                        .color(MUTED),
+                    tooltip(
+                        text("Delivery details").size(10).color(MUTED),
+                        text(event.detail).size(11),
+                        tooltip::Position::Bottom
+                    ),
+                ]
+                .spacing(8);
+                entries = entries.push(
+                    row![
+                        container(text(initials).size(11).color(CYAN))
+                            .padding(7)
+                            .style(|_| surface(PANEL, true)),
+                        container(bubble)
+                            .padding(12)
+                            .width(Length::Fill)
+                            .style(|_| surface(CARD, true)),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Start),
+                );
+            } else {
+                entries = entries.push(
+                    container(
+                        column![
+                            text(event.title).size(11).color(CYAN),
+                            text(event.detail).size(11)
+                        ]
+                        .spacing(8),
+                    )
+                    .padding(12)
+                    .width(Length::Fill)
+                    .style(|_| surface(CARD, true)),
+                );
+            }
         }
         container(
             column![
                 row![
                     icon("activity"),
-                    text("Gateway Events Telemetry").size(14),
+                    text("Gateway messages").size(14),
                     Space::new().width(Length::Fill),
                     control("x", "", action(Action::Events), false)
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
-                text("Delivery receipts and connection status")
+                text("Task state and previews from each event; hover for delivery details.")
                     .size(11)
                     .color(MUTED),
                 row![

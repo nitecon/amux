@@ -41,7 +41,7 @@ pub enum ConnectionEvent {
     },
     /// Gateway time from the upgrade `Date`, sent after `Subscribed` and before any event.
     Clock(GatewayClock),
-    Event(Event),
+    Event(Box<Event>),
     /// A positive event ID with no deliverable compact event; the caller still owns its receipt.
     Rejected {
         event_id: i64,
@@ -233,7 +233,7 @@ impl Stream<'_> {
                     .filter(|id| *id > 0)
                     .ok_or("Invalid lifecycle event ID")?;
                 Ok(Some(match Event::parse(&value["event"]) {
-                    Ok(Some(event)) => ConnectionEvent::Event(event),
+                    Ok(Some(event)) => ConnectionEvent::Event(Box::new(event)),
                     Ok(None) => ConnectionEvent::Rejected {
                         event_id,
                         reason: "Delegated source task notification".into(),

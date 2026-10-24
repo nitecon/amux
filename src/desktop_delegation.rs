@@ -116,7 +116,7 @@ pub(super) enum Event {
     Scanned {
         serial: u64,
         found: Vec<Found>,
-        arrival: Option<delegation::Event>,
+        arrival: Option<Box<delegation::Event>>,
     },
     Project(PathBuf, Result<String, String>),
     Verified(Box<Proof>, bool),
@@ -270,7 +270,7 @@ impl Desktop {
                 Event::Scanned {
                     serial,
                     found,
-                    arrival,
+                    arrival: arrival.map(Box::new),
                 }
             },
             move |event| Message::Delegation(epoch, event),
@@ -405,7 +405,7 @@ impl Desktop {
                 };
                 self.delegation.queue.as_mut().map_or(Ok(()), |q| {
                     q.receive(
-                        event,
+                        *event,
                         &targets,
                         self.preferences.current.automatic_notifications,
                         now,
@@ -460,6 +460,7 @@ impl Desktop {
                                 workspace: f.root.workspace,
                                 terminal: f.root.terminal,
                                 session,
+                                agent_id: Some(f.actor.gateway_id()),
                                 pid: f.process.pid,
                                 generation: f.process.generation.clone(),
                                 directory,
@@ -485,7 +486,7 @@ impl Desktop {
                 let receive = if let Some(event) = arrival {
                     self.delegation.queue.as_mut().map_or(Ok(()), |q| {
                         q.receive(
-                            event,
+                            *event,
                             &targets,
                             self.preferences.current.automatic_notifications,
                             now,
@@ -577,7 +578,9 @@ impl Desktop {
                         // User edits cannot interleave with clear/send/submit/restore.
                         let mut bytes = Vec::new();
                         if !tab.delegation.input.is_empty() {
-                            bytes.push(0x03); // Clear the current provider draft (Ctrl+C).
+                            // Never synthesize Ctrl+C: it can interrupt a turn or
+                            // exit the provider when our input tee is stale.
+                            bytes.extend_from_slice(b"\x1b[F\x15"); // End, Ctrl+U.
                         }
                         let message = proof.attempt.event.assigned_terminal_text(
                             proof.attempt.target.session,
@@ -867,6 +870,7 @@ impl Desktop {
                 key: format!("app:{}", self.status),
                 title: "Application".into(),
                 detail: self.status.clone(),
+                gateway: None,
             });
         }
         if !self.notification_status.is_empty() {
@@ -874,6 +878,7 @@ impl Desktop {
                 key: format!("notifications:{}", self.notification_status),
                 title: "Notifications".into(),
                 detail: self.notification_status.clone(),
+                gateway: None,
             });
         }
         if !self.delegation.status.is_empty() {
@@ -881,31 +886,48 @@ impl Desktop {
                 key: format!("connection:{}", self.delegation.status),
                 title: "Connection".into(),
                 detail: self.delegation.status.clone(),
+                gateway: None,
             });
         }
         if let Some(queue) = &self.delegation.queue {
-            for receipt in &queue.journal.receipts {
-                let mut detail = format!(
-                    "Task {} · {}{}\n{}",
-                    receipt.event.task,
-                    receipt.status(),
-                    if receipt.confirmed { " · saved" } else { "" },
-                    receipt.reason
-                );
-                for recipient in &receipt.recipients {
-                    let name = self
-                        .delegation
-                        .candidates
-                        .iter()
-                        .find(|c| c.target.session == recipient.target.session)
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("Previous agent");
-                    detail.push_str(&format!("\n{name} · {}", recipient.reason));
+            let mut history = queue
+                .journal
+                .recent
+                .iter()
+                .chain(queue.journal.receipts.iter().map(|r| &r.event))
+                .collect::<Vec<_>>();
+            history.sort_by_key(|e| e.id);
+            history.dedup_by_key(|e| e.id);
+            for event in history {
+                let receipt = queue
+                    .journal
+                    .receipts
+                    .iter()
+                    .find(|r| r.event.id == event.id);
+                let mut detail = event.terminal_text();
+                if let Some(receipt) = receipt {
+                    detail.push_str(&format!(
+                        "\nDelivery: {}{} · {}",
+                        receipt.status(),
+                        if receipt.confirmed { " · saved" } else { "" },
+                        receipt.reason
+                    ));
+                    for recipient in &receipt.recipients {
+                        let name = self
+                            .delegation
+                            .candidates
+                            .iter()
+                            .find(|c| c.target.session == recipient.target.session)
+                            .map(|c| c.name.as_str())
+                            .unwrap_or("Previous agent");
+                        detail.push_str(&format!("\n{name} · {}", recipient.reason));
+                    }
                 }
                 events.push(super::desktop_design::EventCard {
-                    key: format!("{}:{}:{}", receipt.event.id, receipt.status(), detail),
-                    title: format!("Gateway · {}", receipt.status()),
+                    key: format!("gateway:{}", event.id),
+                    title: event.heading().into(),
                     detail,
+                    gateway: Some(Box::new(event.clone())),
                 });
             }
         }

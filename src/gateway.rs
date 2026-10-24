@@ -135,14 +135,7 @@ impl Gateway {
             .bearer_auth(&self.token);
         if let Some(actor) = actor {
             request = request
-                .header(
-                    "X-Agent-Id",
-                    if actor.agent_id.is_empty() {
-                        actor.session_id.to_string()
-                    } else {
-                        actor.display_name()
-                    },
-                )
+                .header("X-Agent-Id", actor.gateway_id())
                 .header("X-Agent-Session-Id", actor.session_id.to_string())
                 .header("X-Agent-Instance-Id", actor.instance_id.to_string())
                 .header("X-Agent-Provider", actor.provider.command())

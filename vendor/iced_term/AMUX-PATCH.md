@@ -17,6 +17,8 @@ Terminal color queries now receive the configured palette color, and text-area
 size queries receive the current native pixel dimensions. These replies use the
 existing PTY response path without scrolling or accessing the clipboard.
 The native event loop enables Alacritty's bounded final PTY read on child exit.
+`Terminal::exit_code` retains the native `ChildExit` code when available so the
+stopped tab can show it; signals may have no code. This adds no trace logging.
 Without it, exit notification can win the event ordering and discard the child's
 final reply before the parser sees it. The existing checked-input/closed-channel
 test exercises this ordering; no sleep or longer timeout substitutes for draining.
@@ -76,3 +78,9 @@ output received while redraws are coalesced. Neither widget input nor checked
 input enqueues advance it; cursor-only redraws also leave it unchanged. Native
 PTY coverage disables echo to verify input alone stays idle, then verifies new
 output advances the clock without activating another terminal.
+
+Windows PTY creation enables Alacritty's C-runtime argument escaping and quotes
+the executable path when it contains whitespace. This preserves `--project-dir`
+as a single argument when launching the CLI from folders such as Unreal Projects.
+The root `terminal_paths_contract` test exercises native PTY argv/cwd preservation
+with an executable whose own path contains spaces; it runs on Linux and Windows.

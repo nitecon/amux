@@ -48,6 +48,8 @@ struct Browser {
 }
 impl Browser {
     fn new(script: bool, directory: PathBuf) -> Self {
+        let resolved = workspace_launch::directory(&directory.to_string_lossy());
+        let directory = resolved.as_ref().cloned().unwrap_or(directory);
         let mut browser = Self {
             script,
             location: directory.display().to_string(),
@@ -55,7 +57,10 @@ impl Browser {
             entries: Vec::new(),
             error: String::new(),
         };
-        match std::fs::read_dir(&browser.directory) {
+        match resolved
+            .map_err(|error| format!("{error:#}"))
+            .and_then(|_| std::fs::read_dir(&browser.directory).map_err(|error| error.to_string()))
+        {
             Ok(entries) => {
                 for entry in entries.take(2000).flatten() {
                     let path = entry.path();
@@ -68,7 +73,9 @@ impl Browser {
                     .entries
                     .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             }
-            Err(error) => browser.error = format!("Cannot browse this folder: {error}"),
+            Err(error) => {
+                browser.error = format!("Cannot browse {}: {error}", browser.directory.display());
+            }
         }
         browser
     }
@@ -498,5 +505,48 @@ impl Desktop {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browse_and_open_workspace_preserves_spaces_in_real_shell_directory() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        let folder = fixture.path().join("workspace with spaces ' and quotes");
+        std::fs::create_dir(&folder).unwrap();
+        let expected = folder.canonicalize().unwrap();
+        let mut app = super::super::tests::desktop();
+        drop(app.open_workspace_dialog());
+        drop(app.workspace_message(WorkspaceMessage::Browse(false)));
+        drop(app.workspace_message(WorkspaceMessage::Navigate(folder)));
+        assert!(
+            app.workspace_dialog
+                .browser
+                .as_ref()
+                .unwrap()
+                .error
+                .is_empty()
+        );
+        drop(app.workspace_message(WorkspaceMessage::UseFolder));
+        assert_eq!(PathBuf::from(&app.workspace_dialog.folder), expected);
+        drop(app.workspace_message(WorkspaceMessage::Start));
+        assert!(!app.workspace_dialog.open);
+        let workspace = &app.workspaces[app.active];
+        assert_eq!(workspace.directory, expected);
+        let terminal = workspace.panes.iter().next().unwrap().1.tabs[0]
+            .terminal
+            .as_ref()
+            .expect("shell must launch");
+        let pid = terminal.child_pid().unwrap();
+        // Verify the native child actually changed directory, not just the UI label.
+        assert_eq!(
+            std::fs::read_link(format!("/proc/{pid}/cwd")).unwrap(),
+            expected
+        );
     }
 }

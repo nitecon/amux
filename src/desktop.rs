@@ -802,7 +802,7 @@ impl Desktop {
                 }
             }
             Err(error) => {
-                self.status = format!("Terminal launch failed: {error}");
+                self.status = format!("Terminal launch failed in {}: {error}", directory.display());
                 Tab {
                     id,
                     title: format!("{title} — launch failed"),
@@ -1100,6 +1100,15 @@ impl Desktop {
                                         // Preserve only the bounded visible text, then release
                                         // the PTY and its subscription. This is never input-ready.
                                         tab.stopped_output = Some(terminal.screen_text());
+                                        let exit_code = terminal.exit_code();
+                                        self.status = match exit_code {
+                                            Some(code) => format!(
+                                                "Terminal #{id}: process exited with code {code}"
+                                            ),
+                                            None => format!(
+                                                "Terminal #{id}: process exited; exit code unavailable"
+                                            ),
+                                        };
                                         if self.notify_exits
                                             && let Some(notifier) = &mut self.notifier
                                         {
@@ -1127,6 +1136,9 @@ impl Desktop {
                                                 format!("Reminder retirement failed: {error}");
                                         }
                                         tab.title.push_str(" · exited");
+                                        if let Some(code) = exit_code {
+                                            tab.title.push_str(&format!(" (code {code})"));
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -3312,7 +3324,8 @@ mod tests {
         assert!(output.chars().count() <= 32_768);
         assert!(tab.recipient.is_none());
         assert!(!tab.reminders.consent);
-        assert!(tab.title.ends_with(" · exited"));
+        assert!(tab.title.ends_with(" · exited (code 17)"));
+        assert!(app.status.contains("process exited with code 17"));
         assert!(
             app.workspaces[1]
                 .panes
