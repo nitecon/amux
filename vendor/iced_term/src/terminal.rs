@@ -428,6 +428,9 @@ mod amux_tests {
             terminal.activity_elapsed().unwrap() >= before_enqueue,
             "checked input reset output activity"
         );
+        // Output right after widget input is echo; wait out that window so the
+        // program's own output below must refresh the clock.
+        std::thread::sleep(Duration::from_millis(2_100));
         let released = std::time::Instant::now();
         terminal.try_enqueue_input(b"c".to_vec()).unwrap();
         drive_until_rendered(

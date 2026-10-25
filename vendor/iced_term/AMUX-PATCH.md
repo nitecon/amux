@@ -77,7 +77,11 @@ The per-terminal activity clock records only parser output wakeups, including
 output received while redraws are coalesced. Neither widget input nor checked
 input enqueues advance it; cursor-only redraws also leave it unchanged. Native
 PTY coverage disables echo to verify input alone stays idle, then verifies new
-output advances the clock without activating another terminal.
+output advances the clock without activating another terminal. Output within two
+seconds of widget input, scrolling, a mouse report or a real resize is treated as
+echo or repaint for the user and does not advance it, so clicking or switching to
+an agent tab never marks it active. The clock runs on the PTY reader thread, so
+background tabs are tracked the same as the visible one.
 
 PTY resize notifications are sent only when rows, columns or cell pixel size
 change. Font synchronization runs after every handled event; notifying ConPTY

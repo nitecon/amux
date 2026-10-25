@@ -144,6 +144,7 @@ pub struct Backend {
     last_content: RenderableContent,
     redraw_pending: Arc<AtomicBool>,
     activity: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    user_input: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     pub(crate) url_regex: RegexSearch,
 }
 
@@ -191,10 +192,12 @@ impl Backend {
 
         let redraw_pending = Arc::new(AtomicBool::new(false));
         let activity = Arc::new(std::sync::Mutex::new(None));
+        let user_input = Arc::new(std::sync::Mutex::new(None));
         let event_proxy = EventProxy {
             sender: pty_event_proxy_sender,
             redraw_pending: redraw_pending.clone(),
             activity: activity.clone(),
+            user_input: user_input.clone(),
         };
 
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
@@ -231,6 +234,7 @@ impl Backend {
             last_content: initial_content,
             redraw_pending,
             activity,
+            user_input,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
         })
     }
@@ -239,6 +243,12 @@ impl Backend {
         let mut action = Action::default();
         let term = self.term.clone();
         let mut term = term.lock();
+        if matches!(
+            cmd,
+            Command::Write(_) | Command::Scroll(_) | Command::MouseReport(..)
+        ) {
+            self.mark_user_input();
+        }
         match cmd {
             Command::ProcessAlacrittyEvent(event) => {
                 match event {
@@ -508,6 +518,8 @@ impl Backend {
                 || size.cell_width != self.pty_size.cell_width
                 || size.cell_height != self.pty_size.cell_height
             {
+                // A resize makes the program repaint; that is not its own work.
+                self.mark_user_input();
                 self.notifier.on_resize(size);
                 self.pty_size = size;
                 terminal.resize(TermSize::new(cols as usize, lines as usize));
@@ -517,6 +529,11 @@ impl Backend {
 
     fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
         self.notifier.notify(input);
+    }
+
+    fn mark_user_input(&self) {
+        *self.user_input.lock().expect("user input clock") =
+            Some(std::time::Instant::now());
     }
 
     pub fn activity_elapsed(&self) -> Option<std::time::Duration> {
@@ -725,12 +742,23 @@ pub struct EventProxy {
     sender: mpsc::Sender<Event>,
     redraw_pending: Arc<AtomicBool>,
     activity: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    user_input: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
+
+/// Output this soon after user input, a click or a resize is treated as the
+/// program echoing or repainting for the user, not as the program's own work.
+const USER_ECHO: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
         // Record output before redraw coalescing. Never inspect rendered text.
-        if matches!(event, Event::Wakeup) {
+        if matches!(event, Event::Wakeup)
+            && self
+                .user_input
+                .lock()
+                .expect("user input clock")
+                .is_none_or(|at| at.elapsed() >= USER_ECHO)
+        {
             *self.activity.lock().expect("activity clock") =
                 Some(std::time::Instant::now());
         }
@@ -759,6 +787,7 @@ mod amux_tests {
             sender,
             redraw_pending: Arc::new(AtomicBool::new(false)),
             activity: activity.clone(),
+            user_input: Arc::new(std::sync::Mutex::new(None)),
         };
         proxy.send_event(Event::MouseCursorDirty);
         assert!(activity.lock().unwrap().is_none());
@@ -767,5 +796,25 @@ mod amux_tests {
         let first = activity.lock().unwrap().unwrap();
         proxy.send_event(Event::Wakeup);
         assert!(activity.lock().unwrap().unwrap() >= first);
+    }
+
+    #[test]
+    fn native_output_echoing_recent_user_input_is_not_program_activity() {
+        let (sender, _receiver) = mpsc::channel(8);
+        let activity = Arc::new(std::sync::Mutex::new(None));
+        let user_input = Arc::new(std::sync::Mutex::new(Some(std::time::Instant::now())));
+        let proxy = EventProxy {
+            sender,
+            redraw_pending: Arc::new(AtomicBool::new(false)),
+            activity: activity.clone(),
+            user_input: user_input.clone(),
+        };
+        // A click, keystroke or resize just happened: the repaint is not work.
+        proxy.send_event(Event::Wakeup);
+        assert!(activity.lock().unwrap().is_none());
+        *user_input.lock().unwrap() =
+            Some(std::time::Instant::now() - USER_ECHO);
+        proxy.send_event(Event::Wakeup);
+        assert!(activity.lock().unwrap().is_some());
     }
 }
