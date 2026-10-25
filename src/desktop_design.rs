@@ -3,6 +3,9 @@ use super::*;
 use iced::widget::{Space, column, mouse_area, opaque, stack};
 use iced::{Alignment, Border, Color};
 
+#[path = "desktop_browser.rs"]
+pub(super) mod browser;
+
 const BG: Color = Color::from_rgb8(11, 15, 23);
 const PANEL: Color = Color::from_rgb8(14, 19, 29);
 const CARD: Color = Color::from_rgb8(18, 26, 39);
@@ -45,7 +48,7 @@ pub(super) enum Action {
     Search(String),
     ClearEvents,
     Single,
-    Inspect(PathBuf),
+    Browse(browser::BrowserMessage),
     Loaded(Uuid, u64, PathBuf, Result<ProjectData, String>),
 }
 #[derive(Default)]
@@ -64,12 +67,12 @@ pub(super) struct State {
     hidden_events: std::collections::HashSet<String>,
     seen_events: std::collections::HashSet<String>,
     project: Option<(Uuid, PathBuf, Result<ProjectData, String>)>,
+    files: Option<(Uuid, browser::FileBrowser)>,
     loading: bool,
     revision: u64,
 }
 #[derive(Debug, Clone)]
 pub(super) struct ProjectData {
-    entries: Vec<(PathBuf, bool)>,
     preview: Option<String>,
     branch: String,
     changes: String,
@@ -342,10 +345,23 @@ impl Desktop {
             Action::View(mode) => {
                 self.design.tab_menu = None;
                 self.design.mode = mode;
-                if mode != View::Terminals {
-                    return self.load_project(self.workspaces[self.active].directory.clone());
+                let workspace = &self.workspaces[self.active];
+                match mode {
+                    View::Files => {
+                        // The Files view uses the shared browser, confined to this workspace.
+                        self.design.project = None;
+                        self.design.files = Some((
+                            workspace.id,
+                            browser::FileBrowser::new(
+                                workspace.directory.clone(),
+                                true,
+                                Some(workspace.directory.clone()),
+                            ),
+                        ));
+                    }
+                    View::Git => return self.load_project(workspace.directory.clone()),
+                    View::Terminals => return self.focus(),
                 }
-                return self.focus();
             }
             Action::Filter(filter) => self.design.filter = filter,
             Action::Events => {
@@ -379,7 +395,26 @@ impl Desktop {
                     w.panes.maximize(w.focused);
                 }
             }
-            Action::Inspect(path) => return self.load_project(path),
+            Action::Browse(message) => {
+                let id = self.workspaces[self.active].id;
+                if let Some((owner, files)) = &mut self.design.files
+                    && *owner == id
+                {
+                    let preview = match &message {
+                        browser::BrowserMessage::Select(path) if path.is_file() => {
+                            Some(path.clone())
+                        }
+                        _ => None,
+                    };
+                    files.update(message);
+                    if let Some(path) = preview {
+                        return self.load_project(path);
+                    }
+                    if files.selected.is_none() {
+                        self.design.project = None;
+                    }
+                }
+            }
             Action::Loaded(id, revision, path, result) => {
                 if self.workspaces[self.active].id == id && self.design.revision == revision {
                     self.design.project = Some((id, path, result));
@@ -1576,10 +1611,13 @@ impl Desktop {
                 .color(MUTED)
         ]
         .spacing(14);
+        if self.design.mode == View::Files {
+            return self.files_view(content);
+        }
         if self.design.loading {
             content = content.push(text("Loading project…").size(12));
         }
-        if let Some((id, path, result)) = &self.design.project
+        if let Some((id, _, result)) = &self.design.project
             && *id == root.id
         {
             match result {
@@ -1604,55 +1642,6 @@ impl Desktop {
                             )
                             .push(text("Recent commits").size(13))
                             .push(text(&data.commits).font(iced::Font::MONOSPACE).size(12));
-                    } else {
-                        content = content
-                            .push(
-                                row![
-                                    control(
-                                        "folder",
-                                        "Project root",
-                                        action(Action::Inspect(root.directory.clone())),
-                                        false
-                                    ),
-                                    control(
-                                        "back",
-                                        "Parent",
-                                        action(Action::Inspect(
-                                            path.parent()
-                                                .filter(|p| p.starts_with(&root.directory))
-                                                .unwrap_or(&root.directory)
-                                                .to_path_buf()
-                                        )),
-                                        false
-                                    ),
-                                    control(
-                                        "refresh",
-                                        "Refresh",
-                                        action(Action::Inspect(path.clone())),
-                                        false
-                                    )
-                                ]
-                                .spacing(6),
-                            )
-                            .push(text(path.display().to_string()).size(12).color(MUTED));
-                        if let Some(preview) = &data.preview {
-                            content =
-                                content.push(text(preview).font(iced::Font::MONOSPACE).size(12));
-                        }
-                        for (path, directory) in &data.entries {
-                            content = content.push(
-                                control(
-                                    if *directory { "folder" } else { "file" },
-                                    path.file_name()
-                                        .unwrap_or(path.as_os_str())
-                                        .to_string_lossy()
-                                        .into_owned(),
-                                    action(Action::Inspect(path.clone())),
-                                    false,
-                                )
-                                .width(Length::Fill),
-                            );
-                        }
                     }
                 }
             }
@@ -1662,6 +1651,41 @@ impl Desktop {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+}
+impl Desktop {
+    fn files_view<'a>(&'a self, header: iced::widget::Column<'a, Message>) -> Element<'a, Message> {
+        let root = &self.workspaces[self.active];
+        let Some((_, files)) = self.design.files.as_ref().filter(|(id, _)| *id == root.id) else {
+            return container(header).padding(24).into();
+        };
+        // A selected file shows its bounded preview under the browser.
+        let preview: Element<'_, Message> = match &self.design.project {
+            Some((id, path, result)) if *id == root.id && files.selected.as_ref() == Some(path) => {
+                let body = match result {
+                    Ok(data) => text(data.preview.as_deref().unwrap_or(""))
+                        .font(iced::Font::MONOSPACE)
+                        .size(12),
+                    Err(error) => text(error).size(12).color(AMBER),
+                };
+                container(scrollable(body).height(240))
+                    .padding(10)
+                    .width(Length::Fill)
+                    .style(|_| surface(CARD, true))
+                    .into()
+            }
+            _ if self.design.loading => text("Loading preview…").size(12).into(),
+            _ => Space::new().height(0).into(),
+        };
+        container(
+            header
+                .push(files.view(|m| action(Action::Browse(m)), preview))
+                .height(Length::Fill),
+        )
+        .padding(24)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 }
 fn matches_filter(filter: Filter, status: &str) -> bool {
@@ -1680,16 +1704,7 @@ fn read_project(root: &std::path::Path, path: &std::path::Path) -> Result<Projec
     }
     let root = amux::workspace_launch::external_path(root);
     let path = amux::workspace_launch::external_path(path);
-    let mut entries = Vec::new();
     let preview = if path.is_dir() {
-        for entry in std::fs::read_dir(&path)
-            .map_err(|e| e.to_string())?
-            .take(1000)
-            .flatten()
-        {
-            entries.push((entry.path(), entry.path().is_dir()));
-        }
-        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         None
     } else {
         let mut bytes = Vec::new();
@@ -1739,7 +1754,6 @@ fn read_project(root: &std::path::Path, path: &std::path::Path) -> Result<Projec
             .unwrap_or_else(|e| format!("Git unavailable: {e}"))
     };
     Ok(ProjectData {
-        entries,
         preview,
         branch: git(&["branch", "--show-current"]),
         changes: git(&["status", "--short"]),
@@ -1857,8 +1871,12 @@ mod tests {
     fn project_views_use_real_files_and_git_and_bound_preview() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("hello.txt"), "hello").unwrap();
-        let data = read_project(dir.path(), dir.path()).unwrap();
-        assert_eq!(data.entries.len(), 1);
+        assert!(
+            read_project(dir.path(), dir.path())
+                .unwrap()
+                .preview
+                .is_none()
+        );
         assert_eq!(
             read_project(dir.path(), &dir.path().join("hello.txt"))
                 .unwrap()

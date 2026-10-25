@@ -1,6 +1,7 @@
 //! Workspace creation window and a portable folder/script browser.
 use super::*;
 use amux::workspace_launch;
+use desktop_design::browser::{BrowserMessage, FileBrowser};
 use iced::widget::column;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -18,8 +19,7 @@ pub(super) enum WorkspaceMessage {
     Script(String),
     Repository(String),
     Browse(bool),
-    Location(String),
-    Navigate(PathBuf),
+    Browser(BrowserMessage),
     Pick(PathBuf),
     UseFolder,
     Back,
@@ -38,48 +38,8 @@ pub(super) struct WorkspaceDialog {
     script: String,
     repository: String,
     status: String,
-    browser: Option<Browser>,
-}
-struct Browser {
-    script: bool,
-    directory: PathBuf,
-    location: String,
-    entries: Vec<(PathBuf, bool)>,
-    error: String,
-}
-impl Browser {
-    fn new(script: bool, directory: PathBuf) -> Self {
-        let resolved = workspace_launch::directory(&directory.to_string_lossy());
-        let directory = resolved.as_ref().cloned().unwrap_or(directory);
-        let mut browser = Self {
-            script,
-            location: directory.display().to_string(),
-            directory,
-            entries: Vec::new(),
-            error: String::new(),
-        };
-        match resolved
-            .map_err(|error| format!("{error:#}"))
-            .and_then(|_| std::fs::read_dir(&browser.directory).map_err(|error| error.to_string()))
-        {
-            Ok(entries) => {
-                for entry in entries.take(2000).flatten() {
-                    let path = entry.path();
-                    let is_dir = path.is_dir();
-                    if is_dir || script && path.is_file() {
-                        browser.entries.push((path, is_dir));
-                    }
-                }
-                browser
-                    .entries
-                    .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            }
-            Err(error) => {
-                browser.error = format!("Cannot browse {}: {error}", browser.directory.display());
-            }
-        }
-        browser
-    }
+    /// The shared browser; it lists files only while choosing a script.
+    browser: Option<FileBrowser>,
 }
 
 impl Desktop {
@@ -254,26 +214,30 @@ impl Desktop {
                     path.parent().filter(|p| p.is_dir()).map(PathBuf::from)
                 };
                 match directory.or_else(|| workspace_launch::home_directory().ok()) {
-                    Some(directory) => dialog.browser = Some(Browser::new(script, directory)),
+                    Some(directory) => {
+                        dialog.browser = Some(FileBrowser::new(directory, script, None))
+                    }
                     None => {
                         dialog.status =
                             "Cannot find your home directory; enter a folder path.".into()
                     }
                 }
             }
-            Location(value) => {
+            Browser(message) => {
                 if let Some(browser) = &mut dialog.browser {
-                    browser.location = value;
-                }
-            }
-            Navigate(path) => {
-                if let Some(browser) = &dialog.browser {
-                    let browser = Browser::new(browser.script, path);
-                    if !browser.script && browser.error.is_empty() {
+                    let naming = matches!(&message, BrowserMessage::NewFolder(Some(name)) if name.is_empty());
+                    browser.update(message);
+                    if naming {
+                        return iced::widget::operation::focus("browser-new-folder");
+                    }
+                    // Remember the last folder browsed for a workspace, not for scripts.
+                    if !browser.files
+                        && browser.error.is_empty()
+                        && dialog.last_directory.as_ref() != Some(&browser.directory)
+                    {
                         dialog.last_directory = Some(browser.directory.clone());
                         self.dirty = true;
                     }
-                    dialog.browser = Some(browser);
                 }
             }
             Pick(path) => {
@@ -282,8 +246,8 @@ impl Desktop {
             }
             UseFolder => {
                 if let Some(browser) = dialog.browser.take() {
-                    dialog.folder = browser.directory.display().to_string();
-                    if !browser.script && browser.error.is_empty() {
+                    dialog.folder = browser.target().display().to_string();
+                    if !browser.files && browser.error.is_empty() {
                         dialog.last_directory = Some(browser.directory);
                         self.dirty = true;
                     }
@@ -369,49 +333,57 @@ impl Desktop {
         let dialog = &self.workspace_dialog;
         let msg = Message::Workspace;
         if let Some(browser) = &dialog.browser {
-            let mut entries = column![].spacing(4);
-            for (path, is_dir) in &browser.entries {
-                let label = format!(
-                    "{} {}",
-                    if *is_dir { "▸" } else { "" },
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                );
-                entries = entries.push(
-                    button(text(label))
-                        .on_press(msg(if *is_dir {
-                            Navigate(path.clone())
+            let target = browser.target();
+            let name = target
+                .file_name()
+                .unwrap_or(target.as_os_str())
+                .to_string_lossy()
+                .into_owned();
+            // Scripts must be files; workspaces must be folders.
+            let accept = if browser.files {
+                target.is_file().then(|| msg(Pick(target.to_path_buf())))
+            } else {
+                browser.error.is_empty().then(|| msg(UseFolder))
+            };
+            let mut footer = row![].spacing(10).align_y(iced::Alignment::Center);
+            if !browser.files {
+                footer =
+                    footer
+                        .push(button(text("New folder").size(12)).on_press(msg(Browser(
+                            BrowserMessage::NewFolder(Some(String::new())),
+                        ))));
+            }
+            footer = footer
+                .push(
+                    column![
+                        text(if browser.files {
+                            "SELECTED SCRIPT"
                         } else {
-                            Pick(path.clone())
-                        }))
-                        .width(Length::Fill),
+                            "SELECTED FOLDER TO OPEN"
+                        })
+                        .size(10),
+                        text(target.display().to_string())
+                            .font(iced::Font::MONOSPACE)
+                            .size(12),
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill),
+                )
+                .push(button(text("Cancel").size(12)).on_press(msg(Back)))
+                .push(
+                    button(text(format!("Accept \"{name}\"")).size(12))
+                        .style(desktop_design::primary_action)
+                        .on_press_maybe(accept),
                 );
-            }
-            let mut navigation = row![button("Back").on_press(msg(Back))].spacing(8);
-            if let Some(parent) = browser.directory.parent() {
-                navigation =
-                    navigation.push(button("Parent folder").on_press(msg(Navigate(parent.into()))));
-            }
-            if !browser.script && browser.error.is_empty() {
-                navigation = navigation.push(button("Choose this folder").on_press(msg(UseFolder)));
-            }
             return container(
                 column![
-                    text(if browser.script {
+                    text(if browser.files {
                         "Choose initialization script"
                     } else {
                         "Choose folder"
                     })
-                    .size(24),
-                    row![
-                        text_input("Folder path", &browser.location)
-                            .on_input(|v| Message::Workspace(Location(v)))
-                            .on_submit(msg(Navigate(PathBuf::from(&browser.location)))),
-                        button("Go").on_press(msg(Navigate(PathBuf::from(&browser.location))))
-                    ]
-                    .spacing(8),
-                    navigation,
-                    text(&browser.error),
-                    scrollable(entries).height(Length::Fill),
+                    .size(22),
+                    browser.view(|m| Message::Workspace(Browser(m)), footer.into()),
                 ]
                 .spacing(12),
             )
@@ -546,7 +518,7 @@ mod tests {
         }
         drop(app.open_workspace_dialog());
         drop(app.workspace_message(WorkspaceMessage::Browse(false)));
-        drop(app.workspace_message(WorkspaceMessage::Navigate(folder)));
+        drop(app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(folder))));
         drop(app.workspace_message(WorkspaceMessage::Cancel));
         assert!(app.dirty);
         assert!(app.save());
@@ -579,11 +551,23 @@ mod tests {
         let mut app = super::super::tests::desktop();
         drop(app.open_workspace_dialog());
         drop(app.workspace_message(WorkspaceMessage::Browse(false)));
-        drop(app.workspace_message(WorkspaceMessage::Navigate(folder.clone())));
-        drop(app.workspace_message(WorkspaceMessage::Navigate(parent.join("missing"))));
+        drop(
+            app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(
+                folder.clone(),
+            ))),
+        );
+        drop(
+            app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(
+                parent.join("missing"),
+            ))),
+        );
         assert_eq!(app.workspace_dialog.last_directory.as_ref(), Some(&folder));
         drop(app.workspace_message(WorkspaceMessage::Browse(true)));
-        drop(app.workspace_message(WorkspaceMessage::Navigate(parent.clone())));
+        drop(
+            app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(
+                parent.clone(),
+            ))),
+        );
         assert_eq!(app.workspace_dialog.last_directory.as_ref(), Some(&folder));
         drop(app.close_workspace_dialog());
         std::fs::remove_dir(&folder).unwrap();
@@ -603,7 +587,7 @@ mod tests {
         let mut app = super::super::tests::desktop();
         drop(app.open_workspace_dialog());
         drop(app.workspace_message(WorkspaceMessage::Browse(false)));
-        drop(app.workspace_message(WorkspaceMessage::Navigate(folder)));
+        drop(app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(folder))));
         assert!(
             app.workspace_dialog
                 .browser
