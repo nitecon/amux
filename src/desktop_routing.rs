@@ -29,7 +29,7 @@ mod tests {
     }
     fn directory(target: SessionTarget) -> Directory {
         Directory {
-            canonical_remote: "github.com/nitecon/amux".into(),
+            canonical_remote: Some("github.com/nitecon/amux".into()),
             targets: vec![Available {
                 target,
                 seen_at: unix_ms() as i64,
@@ -211,23 +211,36 @@ impl Desktop {
                 async move {
                     let result = async {
                         let directory = scope.directory.clone();
-                        let remote = tokio::task::spawn_blocking(move || {
-                            amux::gateway_project::origin(&directory)
+                        // A local-only checkout (no origin) is compared by its exact root.
+                        let local = tokio::task::spawn_blocking(move || {
+                            Ok::<_, anyhow::Error>((
+                                amux::gateway_project::configured_origin(&directory)?,
+                                amux::project_identity::resolve(&directory)?.directory,
+                            ))
                         })
                         .await??;
+                        let remote = local.0.as_deref();
                         let results = futures_util::future::join_all(actors.into_iter().map(
                             |(actor, generation, directory)| {
                                 let gateway = &gateway;
-                                let remote = &remote;
+                                let local = &local;
                                 let project = &scope.project;
                                 async move {
                                     let actual = tokio::task::spawn_blocking(move || {
-                                        amux::gateway_project::origin(&directory)
+                                        Ok::<_, anyhow::Error>((
+                                            amux::gateway_project::configured_origin(&directory)?,
+                                            amux::project_identity::resolve(&directory)?.directory,
+                                        ))
                                     })
                                     .await?;
-                                    if actual.as_deref().ok() != Some(remote.as_str()) {
+                                    let same = actual.as_ref().is_ok_and(|actual| {
+                                        actual.0 == local.0
+                                            && (actual.0.is_some() || actual.1 == local.1)
+                                    });
+                                    if !same {
                                         return Ok::<_, anyhow::Error>(());
                                     }
+                                    let remote = local.0.as_deref();
                                     gateway
                                         .advertise_task_target(project, remote, &actor, generation)
                                         .await
@@ -239,7 +252,7 @@ impl Desktop {
                             .into_iter()
                             .find_map(|result| result.err())
                             .map(|error| format!("Agent availability not confirmed: {error}"));
-                        let directory = gateway.task_targets(&scope.project, &remote).await?;
+                        let directory = gateway.task_targets(&scope.project, remote).await?;
                         Ok::<_, anyhow::Error>((directory, warning))
                     }
                     .await

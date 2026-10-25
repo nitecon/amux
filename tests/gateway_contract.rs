@@ -475,7 +475,7 @@ fn presence_labels_fall_back_only_for_old_gateway_schema() {
         .unwrap()
         .block_on(gateway.advertise_task_target(
             "demo",
-            "github.com/nitecon/amux",
+            Some("github.com/nitecon/amux"),
             &actor,
             target.generation,
         ))
@@ -526,11 +526,16 @@ fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recip
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         gateway
-            .advertise_task_target("demo", "github.com/nitecon/amux", &actor, target.generation)
+            .advertise_task_target(
+                "demo",
+                Some("github.com/nitecon/amux"),
+                &actor,
+                target.generation,
+            )
             .await
             .unwrap();
         let directory = gateway
-            .task_targets("demo", "github.com/nitecon/amux")
+            .task_targets("demo", Some("github.com/nitecon/amux"))
             .await
             .unwrap();
         assert_eq!(directory.targets[0].target, target);
@@ -642,10 +647,87 @@ fn recipient_directory_from_another_repository_is_rejected() {
     assert!(
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(gateway.task_targets("demo", "github.com/nitecon/amux"))
+            .block_on(gateway.task_targets("demo", Some("github.com/nitecon/amux")))
             .is_err()
     );
     assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[test]
+fn local_only_project_routes_with_a_null_remote_and_never_matches_a_repository() {
+    use amux::{
+        delegation::Origin,
+        task_routing::{Routing, SessionTarget},
+    };
+    let actor = agent(Provider::Codex);
+    let target = SessionTarget {
+        origin: Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let routing = Routing::Session {
+        target: target.clone(),
+    };
+    let available =
+        json!({"target":target,"seen_at":1000000,"expires_at":1120000,"canonical_remote":null});
+    let accepted = json!({"id": TASK,"project_ident":"games","status":"todo","routing":routing,"owner_origin":target.origin});
+    let adhoc =
+        json!([{"ident":"games","kind":"adhoc","canonical_remote":null,"archived_at":null}]);
+    let (url, server) = server(vec![
+        reply(200, &available),
+        reply(200, &json!({"targets":[available],"canonical_remote":null})),
+        reply(200, &adhoc),
+        reply(200, &accepted),
+        // A repository-backed directory or acknowledgement never satisfies a local root.
+        reply(
+            200,
+            &json!({"targets":[],"canonical_remote":"github.com/nitecon/games"}),
+        ),
+        reply(
+            200,
+            &json!({"target":target,"seen_at":1000000,"expires_at":1120000,"canonical_remote":"github.com/nitecon/games"}),
+        ),
+        // Explicit routing without a remote requires an ad-hoc registry entry.
+        reply(
+            200,
+            &json!([{"ident":"games","kind":"repo","canonical_remote":"github.com/nitecon/games","archived_at":null}]),
+        ),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        gateway
+            .advertise_task_target("games", None, &actor, target.generation)
+            .await
+            .unwrap();
+        let directory = gateway.task_targets("games", None).await.unwrap();
+        assert_eq!(directory.canonical_remote, None);
+        gateway
+            .create_routed_task("games", "Local", "context", None, &routing)
+            .await
+            .unwrap();
+        assert!(gateway.task_targets("games", None).await.is_err());
+        assert!(
+            gateway
+                .advertise_task_target("games", None, &actor, target.generation)
+                .await
+                .is_err()
+        );
+        assert!(
+            gateway
+                .create_routed_task("games", "Local", "context", None, &routing)
+                .await
+                .is_err()
+        );
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 7);
+    assert!(requests[0].body["canonical_remote"].is_null());
+    assert!(requests[3].body.get("canonical_remote").is_none());
+    assert_eq!(requests[3].body["routing"]["mode"], "session");
 }
 
 #[test]

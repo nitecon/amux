@@ -676,7 +676,7 @@ mod tests {
             generation: Uuid::new_v4(),
         };
         app.workspaces[0].gateway.routing.directory = Some(Directory {
-            canonical_remote: "github.com/nitecon/amux".into(),
+            canonical_remote: Some("github.com/nitecon/amux".into()),
             targets: vec![Available {
                 target: target.clone(),
                 seen_at: unix_ms() as i64,

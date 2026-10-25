@@ -1,6 +1,6 @@
 //! The gateway owns tasks. The client never manufactures successful ownership.
 use crate::{gateway_project, identity::AgentIdentity};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
@@ -174,10 +174,30 @@ impl Gateway {
     /// match canonical remotes, otherwise register the repository and match the reread.
     /// Existing mappings (aliases) are preserved; a new project is named by the
     /// lowercase repository basename, e.g. `github.com/org/amux` registers `amux`.
+    /// A checkout with no origin resolves only through its explicit binding.
     pub async fn resolve_project(&self, directory: PathBuf) -> Result<String> {
-        let remote = tokio::task::spawn_blocking(move || gateway_project::origin(&directory))
+        let lookup = directory.clone();
+        let remote =
+            tokio::task::spawn_blocking(move || gateway_project::configured_origin(&lookup))
+                .await
+                .context("workspace origin lookup failed")??;
+        let Some(remote) = remote else {
+            let root = tokio::task::spawn_blocking(move || {
+                crate::project_identity::resolve(&directory).map(|identity| identity.directory)
+            })
             .await
-            .context("workspace origin lookup failed")??;
+            .context("workspace root lookup failed")??;
+            let project =
+                gateway_project::bound_project_at(&crate::identity::state_directory()?, &root)?
+                    .context(
+                        "workspace has no Git origin; bind it to an ad-hoc gateway project with `amux tasks bind <project>`",
+                    )?;
+            ensure!(
+                gateway_project::local_only(&project, &self.projects().await?)?,
+                "bound gateway project is not an active ad-hoc project without a repository"
+            );
+            return Ok(project);
+        };
         if let Some(project) = gateway_project::matching(&remote, &self.projects().await?)? {
             return Ok(project);
         }
@@ -207,7 +227,7 @@ impl Gateway {
         )
     }
 
-    pub(crate) async fn projects(&self) -> Result<Value> {
+    pub async fn projects(&self) -> Result<Value> {
         self.exchange(Method::GET, self.projects_url()?, None, None, &[])
             .await
     }

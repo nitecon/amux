@@ -408,3 +408,89 @@ fn workspace_without_origin_makes_no_gateway_request() {
     assert!(resolve(&gateway, repo.path().into()).is_err());
     assert!(server.join().unwrap().is_empty());
 }
+
+/// Run the real CLI against the fixture with a private state directory.
+fn cli(url: &str, state: &Path, directory: &Path, args: &[&str]) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_amux"));
+    command
+        .args(["tasks"])
+        .args(args)
+        .arg("--project-dir")
+        .arg(directory)
+        .env("AMUX_STATE_DIR", state)
+        .env("AMUX_GATEWAY_URL", url)
+        .env("AMUX_GATEWAY_KEY", "test-only")
+        .env_remove("AMUX_GATEWAY_PROJECT");
+    command.output().unwrap()
+}
+
+#[test]
+fn local_only_checkout_resolves_only_through_its_explicit_binding() {
+    let state = tempfile::tempdir().unwrap();
+    let listing = |kind: &str| {
+        reply(
+            200,
+            &json!([
+                {"ident": "games", "kind": kind, "canonical_remote": null, "archived_at": null},
+                {"ident": "tool", "kind": "repo", "canonical_remote": REMOTE, "archived_at": null},
+            ]),
+        )
+    };
+    let parent = fixture_dir();
+    let root = parent.path().join("games");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    git(&root, &["init", "--quiet"]);
+
+    // Unbound: no basename guess and no gateway request.
+    let (url, fixture) = server(vec![]);
+    assert!(!cli(&url, state.path(), &root, &["list"]).status.success());
+    assert!(fixture.join().unwrap().is_empty());
+
+    // Only an active ad-hoc project without a repository can be bound.
+    let (url, fixture) = server(vec![listing("adhoc")]);
+    assert!(
+        !cli(&url, state.path(), &root, &["bind", "tool"])
+            .status
+            .success()
+    );
+    assert_eq!(fixture.join().unwrap().len(), 1);
+    let (url, fixture) = server(vec![listing("adhoc")]);
+    let bound = cli(&url, state.path(), &root, &["bind", "games"]);
+    assert!(bound.status.success(), "{bound:?}");
+    assert_eq!(fixture.join().unwrap().len(), 1);
+
+    // The binding covers subdirectories of the exact root.
+    let (url, fixture) = server(vec![listing("adhoc"), reply(200, &json!([]))]);
+    let listed = cli(&url, state.path(), &root.join("src"), &["list"]);
+    assert!(listed.status.success(), "{listed:?}");
+    let seen = fixture.join().unwrap();
+    assert!(
+        seen[1].head.contains("/v1/projects/games/"),
+        "{}",
+        seen[1].head
+    );
+
+    // A different checkout with the same folder name stays unbound.
+    let other = fixture_dir();
+    let twin = other.path().join("games");
+    std::fs::create_dir_all(&twin).unwrap();
+    git(&twin, &["init", "--quiet"]);
+    let (url, fixture) = server(vec![]);
+    assert!(!cli(&url, state.path(), &twin, &["list"]).status.success());
+    assert!(fixture.join().unwrap().is_empty());
+
+    // A binding is re-verified: a project that gained a repository no longer matches.
+    let (url, fixture) = server(vec![listing("repo")]);
+    assert!(!cli(&url, state.path(), &root, &["list"]).status.success());
+    assert_eq!(fixture.join().unwrap().len(), 1);
+
+    // Remote-backed checkouts resolve by repository and cannot be bound.
+    let repo = workspace(Some(&format!("https://{REMOTE}")));
+    let (url, fixture) = server(vec![]);
+    assert!(
+        !cli(&url, state.path(), repo.path(), &["bind", "games"])
+            .status
+            .success()
+    );
+    assert!(fixture.join().unwrap().is_empty());
+}

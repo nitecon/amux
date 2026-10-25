@@ -727,7 +727,7 @@ mod tests {
         app.workspaces[0].gateway.routing.checked = Some(Instant::now());
         app.workspaces[0].gateway.routing.directory = Some(Directory {
             targets,
-            canonical_remote: "github.com/nitecon/amux".into(),
+            canonical_remote: Some("github.com/nitecon/amux".into()),
         });
         let labels = app
             .task_agent_choices()

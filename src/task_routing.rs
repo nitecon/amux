@@ -38,7 +38,8 @@ pub struct Available {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Directory {
     pub targets: Vec<Available>,
-    pub canonical_remote: String,
+    /// `None` only for an explicitly bound ad-hoc project without a repository.
+    pub canonical_remote: Option<String>,
 }
 
 impl SessionTarget {
@@ -72,7 +73,12 @@ impl Gateway {
             );
         }
         if *routing != Routing::Auto {
-            remote.context("Repository required for explicit task routing")?;
+            if remote.is_none() {
+                ensure!(
+                    gateway_project::local_only(project, &self.projects().await?)?,
+                    "Repository required for explicit task routing"
+                );
+            }
             if let Routing::Session { target } = routing {
                 target.validate()?;
             }
@@ -107,14 +113,19 @@ impl Gateway {
         serde_json::from_value(task["id"].clone()).map_err(Into::into)
     }
 
-    pub async fn task_targets(&self, project: &str, remote: &str) -> Result<Directory> {
+    /// `remote` is `None` only for a local-only checkout bound to an ad-hoc project.
+    pub async fn task_targets(&self, project: &str, remote: Option<&str>) -> Result<Directory> {
         let value = self
             .project_request(Method::GET, project, &["task-targets"], None, None, &[])
             .await?;
         let directory: Directory = serde_json::from_value(value)
             .context("Gateway does not provide a valid task recipient directory")?;
         ensure!(
-            gateway_project::repository(&directory.canonical_remote).as_deref() == Some(remote),
+            directory
+                .canonical_remote
+                .as_deref()
+                .map(gateway_project::repository)
+                == remote.map(|remote| Some(remote.to_string())),
             "Task recipients belong to a different repository"
         );
         ensure!(directory.targets.len() <= 4096, "Too many task recipients");
@@ -133,7 +144,7 @@ impl Gateway {
     pub async fn advertise_task_target(
         &self,
         project: &str,
-        remote: &str,
+        remote: Option<&str>,
         actor: &AgentIdentity,
         generation: Uuid,
     ) -> Result<()> {
@@ -174,11 +185,16 @@ impl Gateway {
                 && advertised.target.origin.provider == actor.provider
                 && advertised.target.origin.os == actor.os
                 && advertised.target.generation == generation
-                && value["canonical_remote"]
-                    .as_str()
-                    .and_then(gateway_project::repository)
-                    .as_deref()
-                    == Some(remote),
+                && match remote {
+                    Some(remote) => {
+                        value["canonical_remote"]
+                            .as_str()
+                            .and_then(gateway_project::repository)
+                            .as_deref()
+                            == Some(remote)
+                    }
+                    None => value["canonical_remote"].is_null(),
+                },
             "Gateway did not acknowledge this agent in this repository"
         );
         Ok(())

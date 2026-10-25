@@ -1,11 +1,12 @@
 //! CMUX-compatible project resolution: a workspace's Git origin selects exactly one
-//! gateway project by its canonical remote. Identities are never guessed from names.
+//! gateway project by its canonical remote. Identities are never guessed from names;
+//! a Git checkout without any origin uses only an explicit persisted binding.
 use anyhow::{Context, Result, bail};
 use reqwest::Url;
 use serde_json::Value;
 use std::{
-    collections::HashSet,
-    io::Read,
+    collections::{BTreeMap, HashSet},
+    io::{Read, Write},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -64,6 +65,12 @@ pub fn repository(value: &str) -> Option<String> {
 /// with a bounded Git call that ignores inherited Git overrides, prompts and hooks.
 /// Errors never echo the remote, which may embed credentials.
 pub fn origin(directory: &Path) -> Result<String> {
+    configured_origin(directory)?.context("workspace is not a Git repository with an origin remote")
+}
+
+/// Like [`origin`], but `None` only when a Git checkout has no `origin` configured
+/// at all. Unsupported origins, non-repositories and Git failures stay errors.
+pub fn configured_origin(directory: &Path) -> Result<Option<String>> {
     let mut command = Command::new("git");
     command
         .args([
@@ -110,11 +117,64 @@ pub fn origin(directory: &Path) -> Result<String> {
             .read_to_string(&mut text)
             .context("git returned an unreadable workspace origin")?;
     }
+    // `git config --get` exits 1 for a missing key; outside a repository it exits 128.
+    if status.code() == Some(1) {
+        return Ok(None);
+    }
     if !status.success() {
         bail!("workspace is not a Git repository with an origin remote");
     }
     repository(text.trim_end_matches(['\r', '\n']))
         .context("workspace origin is not a supported Git remote URL")
+        .map(Some)
+}
+
+/// True when `ident` is listed as an active ad-hoc project without a repository,
+/// the only kind of project a local-only checkout may be bound to.
+pub fn local_only(ident: &str, projects: &Value) -> Result<bool> {
+    let entries = projects
+        .as_array()
+        .filter(|entries| entries.len() <= 4096)
+        .context("gateway returned an invalid project list")?;
+    let mut found = entries.iter().filter(|entry| entry["ident"] == ident);
+    let Some(entry) = found.next() else {
+        return Ok(false);
+    };
+    if found.next().is_some() {
+        bail!("gateway project list contains a duplicate project identity");
+    }
+    Ok(entry["kind"] == "adhoc"
+        && entry["canonical_remote"].is_null()
+        && entry["archived_at"].is_null())
+}
+
+/// The gateway project explicitly bound to a local-only checkout root, if any.
+/// Bindings are keyed by the exact canonical root, never by folder name.
+pub fn bound_project_at(state: &Path, root: &Path) -> Result<Option<String>> {
+    Ok(bindings_at(state)?.remove(&root.to_string_lossy().into_owned()))
+}
+
+pub fn bind_project_at(state: &Path, root: &Path, ident: &str) -> Result<()> {
+    crate::gateway::validate_project(ident)?;
+    let mut bindings = bindings_at(state)?;
+    bindings.insert(root.to_string_lossy().into_owned(), ident.to_string());
+    std::fs::create_dir_all(state)?;
+    let mut file = tempfile::NamedTempFile::new_in(state)?;
+    file.write_all(&serde_json::to_vec_pretty(&bindings)?)?;
+    file.as_file().sync_all()?;
+    file.persist(state.join(BINDINGS))
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
+const BINDINGS: &str = "project-bindings.json";
+
+fn bindings_at(state: &Path) -> Result<BTreeMap<String, String>> {
+    match std::fs::read(state.join(BINDINGS)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("invalid project bindings file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Select the single project whose canonical remote equals `remote` from a

@@ -170,6 +170,11 @@ enum TaskOperation {
     Cancellation {
         id: Uuid,
     },
+    /// Bind this Git checkout, which has no origin remote, to an existing ad-hoc
+    /// gateway project. Only this exact checkout root uses the binding.
+    Bind {
+        ident: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -319,6 +324,14 @@ fn run(cli: Cli) -> Result<u8> {
             let gateway = Gateway::new(gateway_url.trim(), token)?;
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
+                if let TaskOperation::Bind { ident } = &operation {
+                    let directory = project_dir.canonicalize()?;
+                    anyhow::ensure!(amux::gateway_project::configured_origin(&directory)?.is_none(), "workspace has a Git origin; it resolves by repository and cannot be bound");
+                    let root = amux::project_identity::resolve(&directory)?.directory;
+                    anyhow::ensure!(amux::gateway_project::local_only(ident, &gateway.projects().await?)?, "gateway project is not an active ad-hoc project without a repository");
+                    amux::gateway_project::bind_project_at(&identity::state_directory()?, &root, ident)?;
+                    return Ok(json!({"project": ident, "root": root}));
+                }
                 let project = match project {
                     Some(project) => project,
                     None => gateway.resolve_project(project_dir.canonicalize()?).await?,

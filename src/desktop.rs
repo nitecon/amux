@@ -1973,17 +1973,18 @@ impl Desktop {
                 // The shared client validates the accepted task UUID/project/status.
                 let result = async {
                     let directory = scope.directory.clone();
+                    // A local-only checkout has no origin; its recipients must say so too.
                     let actual = tokio::task::spawn_blocking(move || {
-                        amux::gateway_project::origin(&directory)
+                        amux::gateway_project::configured_origin(&directory)
                     })
                     .await??;
                     if routing != amux::task_routing::Routing::Auto {
                         anyhow::ensure!(
-                            remote
-                                .as_deref()
-                                .and_then(amux::gateway_project::repository)
-                                .as_deref()
-                                == Some(actual.as_str()),
+                            remote.map(|remote| {
+                                remote
+                                    .as_deref()
+                                    .and_then(amux::gateway_project::repository)
+                            }) == Some(actual.clone()),
                             "Repository changed; refresh recipients before submitting"
                         );
                     }
@@ -1992,7 +1993,7 @@ impl Desktop {
                             &scope.project,
                             &title,
                             &context,
-                            Some(&actual),
+                            actual.as_deref(),
                             &routing,
                         )
                         .await
