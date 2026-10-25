@@ -79,6 +79,13 @@ input enqueues advance it; cursor-only redraws also leave it unchanged. Native
 PTY coverage disables echo to verify input alone stays idle, then verifies new
 output advances the clock without activating another terminal.
 
+PTY resize notifications are sent only when rows, columns or cell pixel size
+change. Font synchronization runs after every handled event; notifying ConPTY
+again for the same size can trigger repaint output and keep the activity clock
+active. The native Windows lifecycle suite checks that repeated layout/redraw
+syncs settle past the shared 30-second idle boundary and real output reactivates
+the terminal.
+
 Windows PTY creation enables Alacritty's C-runtime argument escaping and quotes
 the executable path when it contains whitespace. This preserves `--project-dir`
 as a single argument when launching the CLI from folders such as Unreal Projects.

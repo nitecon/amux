@@ -139,6 +139,7 @@ pub struct Backend {
     native_terminal: std::fs::File,
     term: Arc<FairMutex<Term<EventProxy>>>,
     size: TerminalSize,
+    pty_size: WindowSize,
     notifier: Notifier,
     last_content: RenderableContent,
     redraw_pending: Arc<AtomicBool>,
@@ -225,6 +226,7 @@ impl Backend {
             native_terminal,
             term: term.clone(),
             size: terminal_size,
+            pty_size: terminal_size.into(),
             notifier,
             last_content: initial_content,
             redraw_pending,
@@ -498,11 +500,18 @@ impl Backend {
         if lines > 0 && cols > 0 {
             self.size.num_lines = lines;
             self.size.num_cols = cols;
-            self.notifier.on_resize(self.size.into());
-            terminal.resize(TermSize::new(
-                self.size.num_cols as usize,
-                self.size.num_lines as usize,
-            ));
+            let size: WindowSize = self.size.into();
+            // Every handled event syncs the font. Resending an unchanged size
+            // can make ConPTY repaint, producing another output event and resize.
+            if size.num_lines != self.pty_size.num_lines
+                || size.num_cols != self.pty_size.num_cols
+                || size.cell_width != self.pty_size.cell_width
+                || size.cell_height != self.pty_size.cell_height
+            {
+                self.notifier.on_resize(size);
+                self.pty_size = size;
+                terminal.resize(TermSize::new(cols as usize, lines as usize));
+            }
         }
     }
 

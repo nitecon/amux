@@ -1,9 +1,11 @@
 #![cfg(all(feature = "desktop", windows))]
 use amux::{identity, terminal_lifetime::TerminalLifetime};
+use iced::futures::{StreamExt, stream::BoxStream};
 use iced_term::{Terminal, settings};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::Write,
     os::windows::{
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
         process::CommandExt,
@@ -24,6 +26,107 @@ use windows_sys::Win32::{
 struct Record {
     pid: u32,
     generation: String,
+}
+
+#[test]
+#[ignore = "private native Windows activity fixture"]
+fn windows_activity_fixture() {
+    let Some(directory) = std::env::var_os("AMUX_WINDOWS_ACTIVITY_DIRECTORY") else {
+        return;
+    };
+    let directory = Path::new(&directory);
+    println!("ACTIVITY_READY");
+    std::io::stdout().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut emitted = false;
+    while !directory.join("stop").exists() {
+        assert!(Instant::now() < deadline, "activity fixture timed out");
+        if !emitted && directory.join("emit").exists() {
+            println!("ACTIVITY_AFTER_IDLE");
+            std::io::stdout().flush().unwrap();
+            emitted = true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn pump_activity(
+    terminal: &mut Terminal,
+    events: &mut BoxStream<'static, iced_term::Event>,
+    runtime: &tokio::runtime::Runtime,
+) {
+    if let Ok(event) = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_millis(100), events.next()).await })
+    {
+        let iced_term::Event::BackendCall(id, command) = event.expect("activity stream closed");
+        assert_eq!(id, terminal.id);
+        terminal.handle(iced_term::Command::ProxyToBackend(command));
+    }
+}
+
+#[test]
+fn native_windows_redraws_settle_to_idle_and_new_output_reactivates() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let state = tempfile::tempdir_in(fixtures).unwrap();
+    let mut terminal = Terminal::new(
+        980_451,
+        settings::Settings {
+            backend: settings::BackendSettings {
+                program: std::env::current_exe().unwrap().display().to_string(),
+                args: vec![
+                    "--exact".into(),
+                    "windows_activity_fixture".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+                working_directory: Some(state.path().into()),
+                env: [(
+                    "AMUX_WINDOWS_ACTIVITY_DIRECTORY".into(),
+                    state.path().display().to_string(),
+                )]
+                .into(),
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let _lifetime = TerminalLifetime::capture(terminal.child_pid().unwrap()).unwrap();
+    let layout = iced::Size::new(800.0, 480.0);
+    terminal.handle(iced_term::Command::ProxyToBackend(
+        iced_term::BackendCommand::Resize(Some(layout), None),
+    ));
+    let mut events = iced::advanced::subscription::into_recipes(terminal.subscription())
+        .pop()
+        .unwrap()
+        .stream(iced::futures::stream::empty().boxed());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !terminal.screen_text().contains("ACTIVITY_READY") {
+        assert!(Instant::now() < deadline, "activity fixture did not render");
+        pump_activity(&mut terminal, &mut events, &runtime);
+    }
+    // Exercise the real ConPTY and the same font/layout sync path as redraws.
+    // No screen contents or synthetic activity timestamp determine readiness.
+    let deadline = Instant::now() + amux::session::IDLE_AFTER + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        terminal.handle(iced_term::Command::ProxyToBackend(
+            iced_term::BackendCommand::Resize(Some(layout), None),
+        ));
+        pump_activity(&mut terminal, &mut events, &runtime);
+    }
+    assert!(
+        !amux::session::output_active(terminal.activity_elapsed()),
+        "unchanged layout/redraws kept the Windows terminal active"
+    );
+    fs::write(state.path().join("emit"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !terminal.screen_text().contains("ACTIVITY_AFTER_IDLE") {
+        assert!(Instant::now() < deadline, "new output did not render");
+        pump_activity(&mut terminal, &mut events, &runtime);
+    }
+    assert!(amux::session::output_active(terminal.activity_elapsed()));
+    fs::write(state.path().join("stop"), "").unwrap();
 }
 
 #[test]
