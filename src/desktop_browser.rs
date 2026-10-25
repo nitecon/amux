@@ -594,6 +594,44 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn windows_hidden_attributes_follow_the_toggle_in_folder_and_file_modes() {
+        use std::os::windows::{fs::MetadataExt, process::CommandExt};
+        let (_fixture, base) = fixture();
+        let directory = base.join("Hidden folder with spaces");
+        let file = base.join("hidden-file.txt");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let attrib =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/attrib.exe");
+        for path in [&directory, &file] {
+            let status = std::process::Command::new(&attrib)
+                .arg("+H")
+                .arg(path)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .status()
+                .unwrap();
+            assert!(status.success());
+            assert_ne!(std::fs::metadata(path).unwrap().file_attributes() & 0x2, 0);
+        }
+        for files in [false, true] {
+            let mut browser = FileBrowser::new(base.clone(), files, None);
+            assert!(names(&browser).contains(&"Hidden folder with spaces"));
+            assert_eq!(names(&browser).contains(&"hidden-file.txt"), files);
+            browser.update(BrowserMessage::ToggleHidden);
+            let visible = names(&browser);
+            assert!(!visible.contains(&"Hidden folder with spaces"));
+            assert!(!visible.contains(&"hidden-file.txt"));
+            assert!(!visible.contains(&".hidden"));
+            assert!(visible.contains(&"Alpha project"));
+            assert_eq!(visible.contains(&"notes.txt"), files);
+            browser.update(BrowserMessage::ToggleHidden);
+            assert!(names(&browser).contains(&"Hidden folder with spaces"));
+            assert_eq!(names(&browser).contains(&"hidden-file.txt"), files);
+        }
+    }
+
+    #[test]
     fn history_up_typed_paths_and_failed_navigation_keep_the_current_folder() {
         let (_fixture, base) = fixture();
         let mut browser = FileBrowser::new(base.clone(), false, None);
