@@ -53,6 +53,26 @@ not replay input. A newer explicit requeue retires a known handoff fence;
 unconfirmed attempts remain paused until the task is resolved. Completed tasks
 retire their old backlog fences. This does not replay old lifecycle events.
 
+## User review
+
+Tasks awaiting a human decision use the gateway's `user_review` status (gateway
+v1.27.0 or newer). An agent can record its question in a task comment and run
+`amux --agent <assigned-id> tasks user-review <task-id>`; `review` is an alias.
+Only the exact owning agent can request this transition. The acknowledgment must
+confirm that ownership and execution timestamps were cleared. An uncertain
+response requires inspection before any retry.
+
+The task panel has Active (the default), User review and Completed filters.
+Users can inspect parked tasks and their comments, return them to the queue, or
+close them. Returning a task uses the human connection without agent headers.
+Agents cannot resume parked work themselves.
+
+Parked tasks never enter idle assignment, in-progress reminders or terminal
+notification delivery. Review events remain visible in user event bubbles.
+Authoritative review snapshots also retire older queued notifications and
+handoffs; input already in flight retains an uncertain outcome. When the user
+returns work to TODO, normal eligibility resumes.
+
 ## Autoreview
 
 Enable **Autoreview** in Gateway preferences to review committed code when a

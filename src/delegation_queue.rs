@@ -27,6 +27,36 @@ fn awaits_assignment(event: &Event) -> bool {
     event.state() == "todo" && event.owner.is_none() && event.owner_agent_id.is_none()
 }
 
+fn retire_review_notifications(
+    journal: &mut Journal,
+    project: &str,
+    task: Uuid,
+    through: Option<i64>,
+) -> bool {
+    let mut changed = false;
+    for receipt in &mut journal.receipts {
+        if receipt.event.project != project
+            || receipt.event.task != task
+            || through.is_some_and(|id| receipt.event.id > id)
+        {
+            continue;
+        }
+        for recipient in &mut receipt.recipients {
+            if !recipient.outcome.terminal() {
+                recipient.outcome = if recipient.outcome == Outcome::Submitting {
+                    Outcome::Uncertain
+                } else {
+                    Outcome::Skipped
+                };
+                recipient.reason = "Task awaits a user decision".into();
+                receipt.confirmed = false;
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 impl Queue {
     pub fn begin_backlog(&mut self, receipt: crate::backlog::Receipt) -> Result<()> {
         ensure!(
@@ -53,21 +83,30 @@ impl Queue {
         self.commit(next)
     }
 
-    /// Only an authoritative closure or explicit requeue can retire a backlog fence.
+    /// Reconcile authoritative task snapshots with notification and handoff fences.
+    /// Parking for user review retires pending work without replaying input.
     pub fn reconcile_backlog(&mut self, project: &str, tasks: &[Value]) -> Result<()> {
         let mut next = self.journal.clone();
+        let mut changed = false;
+        for task in tasks.iter().filter(|t| t["status"] == "user_review") {
+            if let Some(id) = task["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()) {
+                changed |= retire_review_notifications(&mut next, project, id, None);
+            }
+        }
         next.backlog.retain(|r| {
             r.target.project != project
                 || !tasks.iter().any(|task| {
                     task["id"] == r.task.to_string()
                         && r.outcome != Outcome::Submitting
-                        && (matches!(task["status"].as_str(), Some("done" | "cancelled"))
-                            || (r.outcome != Outcome::Uncertain
-                                && task["status"] == "todo"
-                                && crate::backlog::revision(task) != r.revision))
+                        && (matches!(
+                            task["status"].as_str(),
+                            Some("done" | "cancelled" | "user_review")
+                        ) || (r.outcome != Outcome::Uncertain
+                            && task["status"] == "todo"
+                            && crate::backlog::revision(task) != r.revision))
                 })
         });
-        if next.backlog.len() != self.journal.backlog.len() {
+        if changed || next.backlog.len() != self.journal.backlog.len() {
             self.commit(next)?;
         }
         Ok(())
@@ -143,6 +182,9 @@ impl Queue {
             return Ok(());
         }
         let mut next = self.journal.clone();
+        if event.state() == "user_review" && event.id > self.replay_through && event.fresh(now) {
+            retire_review_notifications(&mut next, &event.project, event.task, Some(event.id));
+        }
         // Never evict a pending or unconfirmed fence to make room for input.
         next.receipts.retain(|r| {
             !(r.confirmed && r.terminal() && next.cursor.is_some_and(|c| c >= r.event.id))
@@ -182,6 +224,8 @@ impl Queue {
             Some("Event expired or has no valid timestamp")
         } else if !approved {
             Some("Automatic terminal notifications are disabled")
+        } else if receipt.event.state() == "user_review" {
+            Some("Task awaits a user decision")
         } else if awaits_assignment(&receipt.event) {
             Some("Queued for idle-agent assignment; only the claimed agent receives work")
         } else if candidates.is_empty() {

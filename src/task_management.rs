@@ -25,6 +25,71 @@ impl TaskEdits {
 }
 
 impl Gateway {
+    /// An owning agent parks work for a human; it cannot resume the review itself.
+    pub async fn request_user_review(
+        &self,
+        project: &str,
+        task: Uuid,
+        actor: &crate::identity::AgentIdentity,
+    ) -> Result<Value> {
+        let current = self
+            .request(Method::GET, project, &[&task.to_string()], None, None)
+            .await?;
+        let expected = crate::delegation::Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        };
+        ensure!(
+            matches!(current["status"].as_str(), Some("todo" | "in_progress"))
+                && serde_json::from_value::<crate::delegation::Origin>(
+                    current["owner_origin"].clone()
+                )
+                .is_ok_and(|owner| owner == expected),
+            "Only the exact owning agent may request user review"
+        );
+        let result = self
+            .request(
+                Method::PATCH,
+                project,
+                &[&task.to_string()],
+                Some(json!({"status":"user_review"})),
+                Some(actor),
+            )
+            .await?;
+        ensure!(
+            ownership_cleared(&result),
+            "User review is unconfirmed; inspect the task before retrying"
+        );
+        Ok(result)
+    }
+
+    /// The desktop user, without agent headers, returns parked work to the queue.
+    pub async fn resume_desktop_task(&self, project: &str, task: Uuid) -> Result<Value> {
+        let current = self
+            .request(Method::GET, project, &[&task.to_string()], None, None)
+            .await?;
+        ensure!(
+            current["status"] == "user_review",
+            "Only a task in User review can be returned to the queue"
+        );
+        let result = self
+            .request(
+                Method::PATCH,
+                project,
+                &[&task.to_string()],
+                Some(json!({"status":"todo"})),
+                None,
+            )
+            .await?;
+        ensure!(
+            ownership_cleared(&result),
+            "Task return is unconfirmed; inspect it before retrying"
+        );
+        Ok(result)
+    }
+
     pub async fn edit_desktop_task(
         &self,
         project: &str,
@@ -114,4 +179,10 @@ impl Gateway {
         );
         Ok(value)
     }
+}
+
+fn ownership_cleared(task: &Value) -> bool {
+    ["owner_agent_id", "owner_origin", "started_at", "done_at"]
+        .into_iter()
+        .all(|field| task.get(field).is_some_and(Value::is_null))
 }

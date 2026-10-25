@@ -111,6 +111,128 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn user_review_requires_exact_owner_and_cleared_ack_then_only_a_human_requeues() {
+    let actor = agent(Provider::Codex);
+    let origin = json!({"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os});
+    let owned =
+        json!({"id":TASK,"project_ident":"demo","status":"in_progress","owner_origin":origin});
+    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","owner_origin":null,"owner_agent_id":null,"started_at":null,"done_at":null});
+    let mut returned = parked.clone();
+    returned["status"] = json!("todo");
+    let mut wrong = owned.clone();
+    wrong["owner_origin"]["instance_id"] = json!(uuid::Uuid::new_v4());
+    let mut malformed = parked.clone();
+    malformed.as_object_mut().unwrap().remove("owner_origin");
+    let (url, server) = server(vec![
+        reply(200, &wrong),
+        reply(200, &owned),
+        reply(200, &parked),
+        reply(200, &parked),
+        reply(200, &returned),
+        reply(200, &owned),
+        reply(200, &malformed),
+    ]);
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let id = uuid::Uuid::parse_str(TASK).unwrap();
+        assert!(
+            gateway
+                .request_user_review("demo", id, &actor)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            gateway
+                .request_user_review("demo", id, &actor)
+                .await
+                .unwrap(),
+            parked
+        );
+        assert_eq!(
+            gateway.resume_desktop_task("demo", id).await.unwrap(),
+            returned
+        );
+        assert!(
+            gateway
+                .request_user_review("demo", id, &actor)
+                .await
+                .is_err(),
+            "missing ownership fields cannot acknowledge release"
+        );
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 7, "no blind retries");
+    assert_eq!(requests[2].body, json!({"status":"user_review"}));
+    assert!(
+        requests[2]
+            .head
+            .contains(&format!("x-agent-instance-id: {}", actor.instance_id))
+    );
+    assert_eq!(requests[4].body, json!({"status":"todo"}));
+    assert!(
+        !requests[4].head.contains("x-agent-"),
+        "user returns work without impersonating an agent"
+    );
+}
+
+#[test]
+fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("review-gateway");
+    std::fs::create_dir_all(&base).unwrap();
+    let state = tempfile::tempdir_in(base).unwrap();
+    let actor = agent(Provider::Codex);
+    let record = amux::identity::AgentRecord {
+        identity: actor.clone(),
+        pid: 0,
+        process_start: 0,
+        process_generation: "unavailable".into(),
+    };
+    std::fs::create_dir(state.path().join("agents")).unwrap();
+    std::fs::write(
+        state
+            .path()
+            .join("agents")
+            .join(format!("{}.json", actor.session_id)),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
+    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null});
+    let (url, server) = server(vec![reply(200, &owned), reply(200, &parked)]);
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
+    for name in actor.environment().keys() {
+        command.env_remove(name);
+    }
+    let output = command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("AMUX_STATE_DIR", state.path())
+        .env("AMUX_GATEWAY_KEY", "fixture")
+        .args([
+            "--agent",
+            &actor.session_id.to_string(),
+            "tasks",
+            "--project",
+            "demo",
+            "--gateway-url",
+            &url,
+            "user-review",
+            TASK,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["status"],
+        "user_review"
+    );
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[test]
 fn desktop_backlog_accepts_project_scoped_summary_rows_without_detail_only_fields() {
     use amux::delegation::{Origin, Target};
     let actor = agent(Provider::Codex);

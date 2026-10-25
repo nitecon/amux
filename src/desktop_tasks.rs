@@ -24,6 +24,7 @@ pub(super) enum Action {
     PostComment,
     Assign,
     Close,
+    Resume,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +33,7 @@ pub(super) enum Change {
     Comment,
     Assign,
     Close,
+    Resume,
 }
 
 #[derive(Default, PartialEq)]
@@ -78,6 +80,7 @@ enum Mutation {
     Comment(String),
     Assign(amux::task_routing::SessionTarget),
     Close,
+    Resume,
 }
 
 fn message(action: Action) -> Message {
@@ -158,11 +161,16 @@ impl Desktop {
                 panel.mode = Mode::Assign;
                 return self.refresh_task_targets();
             }
-            Action::Save | Action::PostComment | Action::Assign | Action::Close => {
+            Action::Save
+            | Action::PostComment
+            | Action::Assign
+            | Action::Close
+            | Action::Resume => {
                 let change = match action {
                     Action::Save => Change::Edit,
                     Action::PostComment => Change::Comment,
                     Action::Assign => Change::Assign,
+                    Action::Resume => Change::Resume,
                     _ => Change::Close,
                 };
                 return self.change_task(change);
@@ -245,7 +253,13 @@ impl Desktop {
                 specification: panel.specification.text(),
             }),
             Change::Comment => Mutation::Comment(panel.comment.text()),
-            Change::Assign if panel.mode == Mode::Assign => {
+            Change::Assign
+                if panel.mode == Mode::Assign
+                    && matches!(
+                        panel.task.as_ref().unwrap()["status"].as_str(),
+                        Some("todo" | "in_progress")
+                    ) =>
+            {
                 let Some(Choice::Session(target, _)) = &panel.recipient else {
                     return Task::none();
                 };
@@ -260,6 +274,9 @@ impl Desktop {
                 Mutation::Assign(target.clone())
             }
             Change::Close if panel.task.as_ref().unwrap()["status"] != "done" => Mutation::Close,
+            Change::Resume if panel.task.as_ref().unwrap()["status"] == "user_review" => {
+                Mutation::Resume
+            }
             _ => return Task::none(),
         };
         let validation = match &mutation {
@@ -306,6 +323,7 @@ impl Desktop {
                                 .await
                         }
                         Mutation::Close => gateway.close_desktop_task(&scope.project, id).await,
+                        Mutation::Resume => gateway.resume_desktop_task(&scope.project, id).await,
                     }
                 }
                 .await
@@ -353,6 +371,7 @@ impl Desktop {
                     Change::Comment => "Comment posted",
                     Change::Assign => "Task assigned",
                     Change::Close => "Task closed",
+                    Change::Resume => "Task returned to queue",
                 }
                 .into();
                 Task::batch([
@@ -403,7 +422,11 @@ impl Desktop {
             .push(
                 text(format!(
                     "{} · {}",
-                    task["status"].as_str().unwrap_or("unknown"),
+                    if task["status"] == "user_review" {
+                        "User review"
+                    } else {
+                        task["status"].as_str().unwrap_or("unknown")
+                    },
                     self.design_task_owner(task)
                 ))
                 .size(11),
@@ -478,6 +501,14 @@ impl Desktop {
                     text("Assignments expire through the gateway's inactivity timeout.").size(10),
                 );
         } else {
+            if task["status"] == "user_review" {
+                body = body
+                    .push(
+                        text("Waiting for your decision. Agents will not pick up this task.")
+                            .size(11),
+                    )
+                    .push(control("Return to queue", Action::Resume, ready));
+            }
             body = body.push(
                 row![
                     control("Edit", Action::Edit, ready),

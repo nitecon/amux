@@ -23,6 +23,7 @@ pub(super) enum View {
 pub(super) enum Filter {
     #[default]
     Active,
+    UserReview,
     Completed,
 }
 #[derive(Debug, Clone)]
@@ -134,6 +135,7 @@ fn status_badge(status: &str) -> Element<'static, Message> {
         "done" => ("COMPLETED", GREEN),
         "todo" => ("QUEUED", AMBER),
         "in_progress" => ("IN PROGRESS", CYAN),
+        "user_review" => ("USER REVIEW", AMBER),
         "cancelled" => ("CANCELLED", MUTED),
         _ => ("UNKNOWN", MUTED),
     };
@@ -1193,6 +1195,7 @@ impl Desktop {
             .style(|_| surface(CARD, true)),
             row![
                 filter("Active", Filter::Active),
+                filter("User review", Filter::UserReview),
                 filter("Completed", Filter::Completed)
             ]
             .spacing(3),
@@ -1635,6 +1638,7 @@ impl Desktop {
 fn matches_filter(filter: Filter, status: &str) -> bool {
     match filter {
         Filter::Active => matches!(status, "todo" | "in_progress"),
+        Filter::UserReview => status == "user_review",
         Filter::Completed => matches!(status, "done" | "cancelled"),
     }
 }
@@ -1790,6 +1794,9 @@ mod tests {
     fn active_is_default_and_detached_tasks_redock_without_closing_sessions() {
         let mut app = super::super::tests::desktop();
         assert_eq!(app.design.filter, Filter::Active);
+        assert!(matches_filter(Filter::UserReview, "user_review"));
+        assert!(!matches_filter(Filter::Active, "user_review"));
+        assert!(!matches_filter(Filter::Completed, "user_review"));
         assert!(
             matches_filter(Filter::Active, "todo") && matches_filter(Filter::Active, "in_progress")
         );

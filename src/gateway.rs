@@ -244,7 +244,7 @@ impl Gateway {
         self.request(Method::GET, project, &[], None, None).await
     }
 
-    /// Desktop task filters need completed work as well as the active queue.
+    /// Include parked user decisions and completed work for the desktop lanes.
     pub async fn list_all(&self, project: &str) -> Result<Value> {
         let mut result = self
             .project_request(
@@ -253,7 +253,10 @@ impl Gateway {
                 &["tasks"],
                 None,
                 None,
-                &[("status", "todo,in_progress,done,cancelled".into())],
+                &[(
+                    "status",
+                    "todo,in_progress,user_review,done,cancelled".into(),
+                )],
             )
             .await?;
         // Lists contain summary rows without the detail endpoint's project_ident.

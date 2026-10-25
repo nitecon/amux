@@ -26,8 +26,12 @@ controls that enter screen-based readiness are not exposed.
 Single view maximizes a pane; Restore panes brings its peers back without
 terminating their sessions. Tabs retain close controls and directory subtitles.
 
-Tasks default to Active (queued and in-progress), with Completed as the other
-filter and a pinned composer. The task panel can collapse to a narrow arrow rail
+Tasks default to Active (queued and in-progress), with User review and Completed
+as the other filters and a pinned composer. Parked review tasks show their details
+and comments, with human actions to return them to the queue or close them.
+Agents request review through `amux tasks user-review` using their assigned
+identity; parked tasks are excluded from agent reminders, pickup and injection.
+The task panel can collapse to a narrow arrow rail
 or detach into a larger window. Docking or closing that window restores the panel
 without closing sessions or losing drafts. Gateway
 acceptance and uncertain submission receipts remain visible, with no automatic

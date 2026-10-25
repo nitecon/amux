@@ -146,6 +146,11 @@ enum TaskOperation {
     Claim {
         id: Uuid,
     },
+    /// Park an owned task for a human decision and release agent ownership.
+    #[command(name = "user-review", alias = "review")]
+    UserReview {
+        id: Uuid,
+    },
     Comment {
         id: Uuid,
         body: String,
@@ -349,6 +354,7 @@ fn run(cli: Cli) -> Result<u8> {
                     },
                     TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
                     TaskOperation::Claim { id } => gateway.claim(&project, &id.to_string(), &actor).await,
+                    TaskOperation::UserReview { id } => gateway.request_user_review(&project, id, &actor).await,
                     TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {

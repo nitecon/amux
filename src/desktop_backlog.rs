@@ -688,6 +688,41 @@ mod tests {
     }
 
     #[test]
+    fn user_review_never_dispatches_or_reminds_and_parking_cancels_a_pending_handoff() {
+        let (mut app, first, second, tasks) = fixture();
+        let mut parked = tasks[0].clone();
+        parked["status"] = json!("user_review");
+        app.workspaces[0].gateway.tasks = vec![parked.clone()];
+        for _ in 0..3 {
+            refreshed(&mut app);
+            drop(app.backlog_tick_after(Duration::ZERO));
+            assert!(app.delegation.backlog.flight.is_none());
+        }
+        let mut returned = parked.clone();
+        returned["status"] = json!("todo");
+        returned["updated_at"] = json!(11);
+        app.workspaces[0].gateway.tasks = vec![returned.clone()];
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        let pick = app.delegation.backlog.flight.clone().unwrap();
+        verified(&mut app, None);
+        let mut claimed = returned;
+        claimed["status"] = json!("in_progress");
+        claimed["owner_origin"] = json!(pick.candidate.target.origin);
+        drop(app.backlog_claimed(pick.request, Ok(Some(claimed))));
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        // The final authoritative GET sees User review after the claim completed.
+        verified(&mut app, Some(parked));
+        assert!(first.lines().is_empty() && second.lines().is_empty());
+        assert!(app.delegation.backlog.pending.is_empty());
+        assert_eq!(
+            app.delegation.queue.as_ref().unwrap().journal.backlog[0].outcome,
+            Outcome::Skipped
+        );
+    }
+
+    #[test]
     fn idle_assignments_rotate_after_completion_and_failed_claims_do_not_advance() {
         let (mut app, first, second, tasks) = fixture();
         drop(app.backlog_tick_after(Duration::ZERO));
@@ -770,6 +805,10 @@ mod tests {
             lines[0].contains("already claimed")
                 && lines[0].contains("close it with a reason if obsolete")
         );
+        assert!(lines[0].contains(&format!(
+            "amux --agent {} tasks user-review {}",
+            pick.candidate.target.session, pick.task
+        )));
         assert!(second.lines().is_empty());
         assert_eq!(
             app.delegation.queue.as_ref().unwrap().journal.backlog[0].outcome,
@@ -823,6 +862,7 @@ mod tests {
             lines[0].contains("In-progress task reminder") && lines[0].contains("Queued item 0")
         );
         assert!(lines[0].contains("mark it done if complete"));
+        assert!(lines[0].contains("tasks user-review"));
         assert!(second.lines().is_empty());
         refreshed(&mut app);
         drop(app.backlog_tick_after(Duration::ZERO));

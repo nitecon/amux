@@ -41,6 +41,82 @@ fn fixture() -> (tempfile::TempDir, Queue) {
 }
 
 #[test]
+fn user_review_keeps_bubbles_but_retires_old_input_and_allows_new_todo_work() {
+    let (_dir, mut queue) = fixture();
+    let t = target();
+    let original = event(10);
+    queue
+        .receive(original.clone(), std::slice::from_ref(&t), true, 1_000_000)
+        .unwrap();
+    let ready = HashSet::from([t.session]);
+    assert!(queue.next(&ready).is_some());
+    let review = Event::parse(&serde_json::json!({"id":11,"kind":"task_commented","project_ident":"amux","created_at":1_000_000,
+        "task":{"id":original.task,"status":"user_review","title":"Needs user decision"},
+        "comment":{"author":"User","content":"I will decide later"}})).unwrap().unwrap();
+    assert_eq!(review.state(), "user_review");
+    assert!(!t.accepts(&review));
+    queue
+        .receive(review.clone(), std::slice::from_ref(&t), true, 1_000_000)
+        .unwrap();
+    assert!(queue.next(&ready).is_none());
+    assert!(
+        queue
+            .journal
+            .recent
+            .last()
+            .unwrap()
+            .terminal_text()
+            .contains("State: user_review")
+    );
+    for _ in 0..3 {
+        queue
+            .refresh(std::slice::from_ref(&t), true, 1_000_000)
+            .unwrap();
+        queue
+            .reconcile_backlog(
+                "amux",
+                &[serde_json::json!({"id":original.task,"status":"user_review"})],
+            )
+            .unwrap();
+        assert!(queue.next(&ready).is_none());
+    }
+    let mut returned = event(12);
+    returned.task = original.task;
+    queue
+        .receive(returned, std::slice::from_ref(&t), true, 1_000_000)
+        .unwrap();
+    // A duplicate/delayed old review event cannot retire newer task events.
+    queue
+        .receive(review, std::slice::from_ref(&t), true, 1_000_000)
+        .unwrap();
+    assert_eq!(queue.next(&ready).unwrap().event.id, 12);
+}
+
+#[test]
+fn a_review_snapshot_cancels_an_already_verifying_notification() {
+    let (_dir, mut queue) = fixture();
+    let t = target();
+    let original = event(10);
+    queue
+        .receive(original.clone(), std::slice::from_ref(&t), true, 1_000_000)
+        .unwrap();
+    let attempt = queue.next(&HashSet::from([t.session])).unwrap();
+    queue.begin(&attempt).unwrap();
+    queue
+        .reconcile_backlog(
+            "amux",
+            &[serde_json::json!({"id":original.task,"status":"user_review"})],
+        )
+        .unwrap();
+    assert!(!queue.submitting(&attempt));
+    assert_eq!(
+        queue.journal.receipts[0].recipients[0].outcome,
+        Outcome::Uncertain
+    );
+    assert!(queue.next(&HashSet::from([t.session])).is_none());
+}
+
+#[test]
 fn unassigned_todo_events_wait_for_idle_assignment_instead_of_notifying_peers() {
     let (_dir, mut queue) = fixture();
     let a = target();

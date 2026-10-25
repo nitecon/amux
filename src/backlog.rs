@@ -77,8 +77,10 @@ pub fn review_text(task: &Value, target: &Target, name: &str, now: i64) -> Resul
     .ok_or_else(|| anyhow::anyhow!("Not an executable task"))?;
     event.summary.as_mut().unwrap().heading = "Queued task review".into();
     Ok(format!(
-        "{} Review this queued task against the current project state and its comments. Implement it if still viable; otherwise review it with the user, or close it with a reason if obsolete. Respect platform requirements. This task is already claimed by your amux identity.",
-        event.assigned_terminal_text(target.session, name)
+        "{} This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {}.",
+        event.assigned_terminal_text(target.session, name),
+        target.session,
+        event.task
     ))
 }
 
@@ -91,12 +93,14 @@ pub fn reminder_text(task: &Value, target: &Target, name: &str, now: i64) -> Res
     .ok_or_else(|| anyhow::anyhow!("Not an executable task"))?;
     event.summary.as_mut().unwrap().heading = "In-progress task reminder".into();
     Ok(format!(
-        "{} You still own this in-progress task and your terminal has been idle. Continue it, comment on progress, mark it done if complete, or release it if you cannot continue.",
-        event.assigned_terminal_text(target.session, name)
+        "{} You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {}.",
+        event.assigned_terminal_text(target.session, name),
+        target.session,
+        event.task
     ))
 }
 
-pub const REVIEW_COMMENT: &str = "Automatically assigned by amux after 30 seconds without output from this agent's terminal. Evaluate whether this backlog task is still required against the current project and its comments. If uncertain, ask the user. If no longer valid, close it with a reason; otherwise start execution. Respect the task's platform requirements.";
+pub const REVIEW_COMMENT: &str = "Automatically assigned by amux after 30 seconds without output from this agent's terminal. Evaluate whether this task is still required. If a user decision is needed, record the question and move the task to User review. Close obsolete work with a reason; otherwise start execution. Respect platform requirements.";
 
 impl Gateway {
     /// A fresh read prevents taking a changed/assigned item; the gateway arbitrates claims.

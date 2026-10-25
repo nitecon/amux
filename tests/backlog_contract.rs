@@ -30,6 +30,33 @@ fn target() -> Target {
 }
 
 #[test]
+fn review_tasks_never_become_eligible_and_clear_old_handoffs_before_user_requeue() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    let dir = tempfile::tempdir_in(root).unwrap();
+    let mut queue = Queue::open(dir.path().join("review.json"), "fixture").unwrap();
+    let target = target();
+    let id = Uuid::new_v4();
+    queue
+        .begin_backlog(backlog::Receipt {
+            task: id,
+            revision: 10,
+            target: target.clone(),
+            outcome: Outcome::Submitting,
+        })
+        .unwrap();
+    queue.finish_backlog(id, 10, Outcome::Uncertain).unwrap();
+    let mut task = json!({"id":id,"project_ident":"amux","status":"user_review","updated_at":11});
+    for _ in 0..3 {
+        assert!(!backlog::eligible(&task, &target));
+        queue.reconcile_backlog("amux", &[task.clone()]).unwrap();
+        assert!(queue.journal.backlog.is_empty());
+    }
+    task["status"] = json!("todo");
+    task["updated_at"] = json!(12);
+    assert!(backlog::eligible(&task, &target));
+}
+
+#[test]
 fn workspace_activity_and_backlog_share_the_exact_thirty_second_boundary() {
     assert!(amux::session::output_active(Some(Duration::from_millis(
         29_999

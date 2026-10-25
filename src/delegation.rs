@@ -267,7 +267,9 @@ impl Event {
             .map(|s| s.source_project.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or(&self.project);
-        let closed = if matches!(self.state(), "done" | "cancelled") {
+        let closed = if self.state() == "user_review" {
+            " | Awaiting user decision; do not claim or execute"
+        } else if matches!(self.state(), "done" | "cancelled") {
             " | Closed task; informational update"
         } else {
             ""
@@ -306,7 +308,12 @@ impl EventSummary {
         };
         let state = task["status"]
             .as_str()
-            .filter(|s| matches!(*s, "todo" | "in_progress" | "done" | "cancelled"))
+            .filter(|s| {
+                matches!(
+                    *s,
+                    "todo" | "in_progress" | "user_review" | "done" | "cancelled"
+                )
+            })
             .unwrap_or(if kind == Kind::Completed {
                 "done"
             } else {
@@ -499,6 +506,8 @@ impl Target {
         use crate::task_routing::Routing;
         if self.project != event.project {
             Some("Agent repository does not match the task project")
+        } else if event.state() == "user_review" {
+            Some("Task awaits a user decision")
         } else if event.goal.is_some() && self.goal != event.goal {
             Some("Task goal does not match this agent")
         } else if event.kind == Kind::Created && *event.routing == Routing::Unassigned {
