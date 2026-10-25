@@ -655,6 +655,36 @@ mod tests {
     }
 
     #[test]
+    fn in_progress_work_is_flagged_only_when_its_owner_is_not_a_local_agent() {
+        let (app, _, _, tasks) = fixture();
+        let local = app.delegation.candidates[0].target.origin.clone().unwrap();
+        let mut remote = local.clone();
+        remote.session_id = Uuid::new_v4();
+        remote.instance_id = Uuid::new_v4();
+        let task = |status: &str, origin: &amux::delegation::Origin| {
+            let mut task = tasks[0].clone();
+            task["status"] = json!(status);
+            task["owner_agent_id"] = json!("Peer - Codex");
+            task["owner_origin"] = json!(origin);
+            task
+        };
+        assert!(app.task_owned_elsewhere(&task("in_progress", &remote)));
+        assert!(!app.task_owned_elsewhere(&task("in_progress", &local)));
+        assert!(!app.task_owned_elsewhere(&task("todo", &remote)));
+        assert!(!app.task_owned_elsewhere(&tasks[0]));
+        let mut legacy = task("in_progress", &local);
+        legacy["owner_origin"] = Value::Null;
+        legacy["owner_agent_id"] = json!(local.session_id.to_string());
+        assert!(!app.task_owned_elsewhere(&legacy));
+        legacy["owner_agent_id"] = json!("Peer - Codex");
+        assert!(app.task_owned_elsewhere(&legacy));
+        if let Some(id) = &app.delegation.candidates[0].target.agent_id {
+            legacy["owner_agent_id"] = json!(id);
+            assert!(!app.task_owned_elsewhere(&legacy));
+        }
+    }
+
+    #[test]
     fn unresolved_workspace_is_polled_without_stalling_another_idle_workspace() {
         let (mut app, _, _, tasks) = fixture();
         let peer = spawn(&mut app, 1, 1, Provider::Codex, "opaque");

@@ -883,6 +883,31 @@ impl Desktop {
             .map(|candidate| candidate.name.clone())
             .unwrap_or_else(|| owner.to_owned())
     }
+    /// An in-progress task owned by an agent that is not running in this app,
+    /// e.g. a teammate on another machine.
+    pub(super) fn task_owned_elsewhere(&self, task: &serde_json::Value) -> bool {
+        if task["status"] != "in_progress" {
+            return false;
+        }
+        let owner =
+            serde_json::from_value::<amux::delegation::Origin>(task["owner_origin"].clone()).ok();
+        let agent = task["owner_agent_id"].as_str();
+        (owner.is_some() || agent.is_some())
+            && !self.delegation.candidates.iter().any(|candidate| {
+                candidate
+                    .target
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| match &owner {
+                        Some(owner) => origin == owner,
+                        None => {
+                            agent.is_some()
+                                && (agent == candidate.target.agent_id.as_deref()
+                                    || agent == Some(origin.session_id.to_string().as_str()))
+                        }
+                    })
+            })
+    }
     pub(super) fn design_owned_tasks(
         &self,
         terminal: u64,

@@ -11,6 +11,8 @@ const MUTED: Color = Color::from_rgb8(148, 163, 184);
 const CYAN: Color = Color::from_rgb8(34, 211, 238);
 const GREEN: Color = Color::from_rgb8(16, 185, 129);
 const AMBER: Color = Color::from_rgb8(251, 191, 36);
+const ORANGE: Color = Color::from_rgb8(249, 115, 22);
+const RED: Color = Color::from_rgb8(248, 113, 113);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum View {
@@ -1214,6 +1216,8 @@ impl Desktop {
             count += 1;
             let id = task["id"].as_str().unwrap_or("?");
             let owner = self.design_task_owner(task);
+            // Work in progress by an agent outside this app stays visible at a glance.
+            let elsewhere = self.task_owned_elsewhere(task);
             let item =
                 column![
                     row![
@@ -1240,7 +1244,13 @@ impl Desktop {
                             )
                     ],
                     text(task["title"].as_str().unwrap_or("Untitled")).size(12),
-                    text(format!("→ {owner}")).size(10).color(MUTED),
+                    if elsewhere {
+                        text(format!("→ {owner} · working outside this app"))
+                            .size(10)
+                            .color(RED)
+                    } else {
+                        text(format!("→ {owner}")).size(10).color(MUTED)
+                    },
                     text(format!(
                         "Project: {}{}",
                         panel.project,
@@ -1261,7 +1271,13 @@ impl Desktop {
                 container(item)
                     .padding(11)
                     .width(Length::Fill)
-                    .style(|_| surface(CARD, true)),
+                    .style(move |_| {
+                        let mut style = surface(CARD, true);
+                        if elsewhere {
+                            style.border.color = ORANGE;
+                        }
+                        style
+                    }),
             );
         }
         if count == 0 {
