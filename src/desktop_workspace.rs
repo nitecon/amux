@@ -30,6 +30,7 @@ pub(super) enum WorkspaceMessage {
 #[derive(Default)]
 pub(super) struct WorkspaceDialog {
     pub open: bool,
+    pub last_directory: Option<PathBuf>,
     name: String,
     pub busy: bool,
     tab: Kind,
@@ -198,9 +199,17 @@ impl Desktop {
         }
         self.close_design_popovers();
         self.preferences.open = false;
+        let last_directory = self.workspace_dialog.last_directory.clone();
+        let directory = last_directory
+            .as_deref()
+            .filter(|path| path.is_absolute())
+            .and_then(|path| path.ancestors().find(|ancestor| ancestor.is_dir()))
+            .map(PathBuf::from)
+            .or_else(|| workspace_launch::home_directory().ok());
         self.workspace_dialog = WorkspaceDialog {
             open: true,
-            folder: workspace_launch::home_directory()
+            last_directory,
+            folder: directory
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
             ..Default::default()
@@ -259,7 +268,12 @@ impl Desktop {
             }
             Navigate(path) => {
                 if let Some(browser) = &dialog.browser {
-                    dialog.browser = Some(Browser::new(browser.script, path));
+                    let browser = Browser::new(browser.script, path);
+                    if !browser.script && browser.error.is_empty() {
+                        dialog.last_directory = Some(browser.directory.clone());
+                        self.dirty = true;
+                    }
+                    dialog.browser = Some(browser);
                 }
             }
             Pick(path) => {
@@ -269,6 +283,10 @@ impl Desktop {
             UseFolder => {
                 if let Some(browser) = dialog.browser.take() {
                     dialog.folder = browser.directory.display().to_string();
+                    if !browser.script && browser.error.is_empty() {
+                        dialog.last_directory = Some(browser.directory);
+                        self.dirty = true;
+                    }
                 }
             }
             Back => dialog.browser = None,
@@ -508,11 +526,73 @@ impl Desktop {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn browsed_folder_survives_cancel_and_saved_session_reload() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        let folder = fixture.path().join("projects with spaces");
+        std::fs::create_dir(&folder).unwrap();
+        let expected = workspace_launch::directory(&folder.to_string_lossy()).unwrap();
+        let mut app = super::super::tests::desktop();
+        let snapshot = fixture.path().join("layout.json");
+        app.snapshot_path = Some(snapshot.clone());
+        for workspace in &mut app.workspaces {
+            workspace.directory = fixture.path().to_path_buf();
+        }
+        drop(app.open_workspace_dialog());
+        drop(app.workspace_message(WorkspaceMessage::Browse(false)));
+        drop(app.workspace_message(WorkspaceMessage::Navigate(folder)));
+        drop(app.workspace_message(WorkspaceMessage::Cancel));
+        assert!(app.dirty);
+        assert!(app.save());
+        let saved = Snapshot::load(&snapshot).unwrap().unwrap();
+        assert_eq!(saved.workspace_browser_directory.as_ref(), Some(&expected));
+        let mut reopened = super::super::tests::desktop();
+        reopened.workspace_dialog.last_directory = saved.workspace_browser_directory;
+        drop(reopened.open_workspace_dialog());
+        drop(reopened.workspace_message(WorkspaceMessage::Browse(false)));
+        assert_eq!(
+            reopened
+                .workspace_dialog
+                .browser
+                .as_ref()
+                .unwrap()
+                .directory,
+            expected
+        );
+        assert_eq!(reopened.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn bad_navigation_and_script_browsing_keep_workspace_location_and_missing_folder_uses_parent() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        let parent = workspace_launch::directory(&fixture.path().to_string_lossy()).unwrap();
+        let folder = parent.join("project");
+        std::fs::create_dir(&folder).unwrap();
+        let mut app = super::super::tests::desktop();
+        drop(app.open_workspace_dialog());
+        drop(app.workspace_message(WorkspaceMessage::Browse(false)));
+        drop(app.workspace_message(WorkspaceMessage::Navigate(folder.clone())));
+        drop(app.workspace_message(WorkspaceMessage::Navigate(parent.join("missing"))));
+        assert_eq!(app.workspace_dialog.last_directory.as_ref(), Some(&folder));
+        drop(app.workspace_message(WorkspaceMessage::Browse(true)));
+        drop(app.workspace_message(WorkspaceMessage::Navigate(parent.clone())));
+        assert_eq!(app.workspace_dialog.last_directory.as_ref(), Some(&folder));
+        drop(app.close_workspace_dialog());
+        std::fs::remove_dir(&folder).unwrap();
+        drop(app.open_workspace_dialog());
+        assert_eq!(PathBuf::from(&app.workspace_dialog.folder), parent);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn browse_and_open_workspace_preserves_spaces_in_real_shell_directory() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
         std::fs::create_dir_all(&root).unwrap();

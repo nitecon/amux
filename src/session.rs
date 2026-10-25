@@ -83,6 +83,8 @@ pub struct SavedWorkspace {
 pub struct Snapshot {
     pub version: u32,
     pub active: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_browser_directory: Option<PathBuf>,
     pub workspaces: Vec<SavedWorkspace>,
 }
 

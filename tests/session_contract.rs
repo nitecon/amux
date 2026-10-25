@@ -24,6 +24,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
     let snapshot = Snapshot {
         version: 1,
         active: 0,
+        workspace_browser_directory: Some(fixture.path().into()),
         workspaces: vec![SavedWorkspace {
             name: None,
             init_script: Some(fixture.path().join("not-executed.sh")),
@@ -38,6 +39,13 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
     };
     snapshot.save(&path).unwrap();
     let restored = Snapshot::load(&path).unwrap().unwrap();
+    let mut legacy = serde_json::to_value(&snapshot).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_browser_directory");
+    let legacy: Snapshot = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.workspace_browser_directory.is_none());
     assert_eq!(
         serde_json::to_value(&restored).unwrap(),
         serde_json::to_value(&snapshot).unwrap()
@@ -48,6 +56,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
     let bad = Snapshot {
         version: 1,
         active: 0,
+        workspace_browser_directory: None,
         workspaces: vec![SavedWorkspace {
             name: None,
             init_script: None,

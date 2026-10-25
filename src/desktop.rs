@@ -402,6 +402,7 @@ impl Desktop {
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
             Ok(Some(Some(saved))) => {
                 app.active = saved.active;
+                app.workspace_dialog.last_directory = saved.workspace_browser_directory;
                 for workspace in saved.workspaces {
                     let config = app.restore_layout(workspace.layout, &workspace.directory);
                     let panes = pane_grid::State::with_configuration(config);
@@ -576,6 +577,7 @@ impl Desktop {
         let snapshot = Snapshot {
             version: 1,
             active: self.active,
+            workspace_browser_directory: self.workspace_dialog.last_directory.clone(),
             workspaces: self
                 .workspaces
                 .iter()
