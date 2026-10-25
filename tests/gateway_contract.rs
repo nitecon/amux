@@ -111,6 +111,88 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn desktop_backlog_accepts_project_scoped_summary_rows_without_detail_only_fields() {
+    use amux::delegation::{Origin, Target};
+    let actor = agent(Provider::Codex);
+    let target = Target {
+        workspace: uuid::Uuid::new_v4(),
+        terminal: 1,
+        session: actor.session_id,
+        agent_id: Some(actor.gateway_id()),
+        pid: 5,
+        generation: "fixture".into(),
+        directory: actor.project_directory.clone(),
+        project: "demo".into(),
+        origin: Some(Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        }),
+        goal: None,
+    };
+    // The live gateway list contains summaries, not GET /tasks/{id} details:
+    // project_ident and owner_origin are absent, even for visible queued tasks.
+    let summary = json!({"id":TASK, "title":"Queued gateway work", "status":"todo",
+        "owner_agent_id":null, "goal":null, "kind":"normal", "rank":1,
+        "updated_at":10, "routing":{"mode":"auto"}, "comment_count":1});
+    let mut foreign = summary.clone();
+    foreign["project_ident"] = json!("other-repository");
+    let mut detail = summary.clone();
+    detail["project_ident"] = json!("demo");
+    let mut claimed = detail.clone();
+    claimed["status"] = json!("in_progress");
+    claimed["owner_origin"] = json!(target.origin);
+    let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
+    let (url, server) = server(vec![
+        reply(200, &json!([summary])),
+        reply(200, &projects),
+        reply(200, &detail),
+        reply(200, &claimed),
+        reply(200, &json!({"id":uuid::Uuid::new_v4(),"task_id":TASK})),
+        reply(200, &json!([foreign])),
+    ]);
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let tasks = gateway.list_all("demo").await.unwrap();
+        assert!(
+            amux::backlog::eligible(&tasks[0], &target),
+            "visible unassigned summary must enter dispatch"
+        );
+        assert_eq!(tasks[0]["project_ident"], "demo");
+        assert!(
+            gateway
+                .claim_backlog(uuid::Uuid::parse_str(TASK).unwrap(), 10, &target, &actor)
+                .await
+                .unwrap()
+                .is_some(),
+            "summary must proceed through fresh detail, exact claim and viability comment"
+        );
+        assert!(
+            gateway.list_all("demo").await.is_err(),
+            "never replace an explicit foreign project"
+        );
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    assert!(
+        requests[0]
+            .head
+            .starts_with("get /v1/projects/demo/tasks?status=")
+            && requests[5]
+                .head
+                .starts_with("get /v1/projects/demo/tasks?status=")
+    );
+    assert!(
+        requests[2]
+            .head
+            .starts_with(&format!("get /v1/projects/demo/tasks/{TASK} "))
+    );
+    assert!(requests[3].head.starts_with("patch "));
+    assert_eq!(requests[4].body["content"], amux::backlog::REVIEW_COMMENT);
+}
+
+#[test]
 fn backlog_claim_rechecks_repository_revision_and_owner_before_one_agent_mutation() {
     use amux::delegation::{Origin, Target};
     let actor = agent(Provider::Codex);

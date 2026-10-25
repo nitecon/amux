@@ -226,15 +226,35 @@ impl Gateway {
 
     /// Desktop task filters need completed work as well as the active queue.
     pub async fn list_all(&self, project: &str) -> Result<Value> {
-        self.project_request(
-            Method::GET,
-            project,
-            &["tasks"],
-            None,
-            None,
-            &[("status", "todo,in_progress,done,cancelled".into())],
-        )
-        .await
+        let mut result = self
+            .project_request(
+                Method::GET,
+                project,
+                &["tasks"],
+                None,
+                None,
+                &[("status", "todo,in_progress,done,cancelled".into())],
+            )
+            .await?;
+        // Lists contain summary rows without the detail endpoint's project_ident.
+        // Bind only omitted fields to this authenticated, project-scoped request;
+        // an explicit different project is still an invalid response.
+        let tasks = result
+            .as_array_mut()
+            .context("Gateway task list is incomplete")?;
+        for task in tasks {
+            let row = task
+                .as_object_mut()
+                .context("Invalid gateway task summary")?;
+            match row.get("project_ident") {
+                None => {
+                    row.insert("project_ident".into(), json!(project));
+                }
+                Some(value) if value == project => {}
+                Some(_) => bail!("Gateway task summary belongs to a different project"),
+            }
+        }
+        Ok(result)
     }
 
     /// Record cancellation without inferring that an executor has stopped.

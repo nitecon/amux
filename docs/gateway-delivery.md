@@ -27,6 +27,9 @@ queued task already assigned to it.
 Polling follows each native agent's workspace, including workspaces whose initial
 project lookup failed. Resolving or refreshing one workspace does not prevent a
 different workspace with current tasks from handing off queued work.
+Gateway list summaries omit `project_ident`; the client binds missing project
+fields to the requested workspace project. Explicit foreign projects are rejected,
+and a fresh task-detail read still confirms the project before a claim.
 
 The app rereads and claims the selected task through the gateway and posts a
 comment asking the agent to check whether it remains required, ask the user if
