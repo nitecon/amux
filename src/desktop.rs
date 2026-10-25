@@ -46,6 +46,8 @@ enum Message {
     ),
     Design(desktop_design::Action),
     Escape,
+    /// Tab not consumed by a widget moves focus; `true` goes backwards.
+    FocusNext(bool),
     WindowResized(iced::window::Id, iced::Size),
     NewWorkspace,
     SelectWorkspace(usize),
@@ -910,6 +912,13 @@ impl Desktop {
                     self.design_viewport(size);
                     self.set_compact(size.width < 1400.0);
                 }
+            }
+            Message::FocusNext(back) => {
+                return if back {
+                    iced::widget::operation::focus_previous()
+                } else {
+                    iced::widget::operation::focus_next()
+                };
             }
             Message::Escape => {
                 if self.workspace_dialog.open {
@@ -2452,7 +2461,7 @@ impl Desktop {
         Subscription::batch([
             terminals,
             iced::window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
-            iced::event::listen_with(|event, _, _| match event {
+            iced::event::listen_with(|event, status, _| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::Design(desktop_design::Action::Cursor(position)))
                 }
@@ -2460,6 +2469,14 @@ impl Desktop {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::Escape),
+                // Terminals capture Tab for the shell; text fields leave it for focus.
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+                    modifiers,
+                    ..
+                }) if status == iced::event::Status::Ignored => {
+                    Some(Message::FocusNext(modifiers.shift()))
+                }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(key),
                     modifiers,
