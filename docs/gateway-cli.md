@@ -106,7 +106,7 @@ to the queue and clears stale session routing. If no compatible agent is
 available, it remains queued. User review and closed tasks cannot be handed off.
 
 Enforced OS creation, claim, retagging and reassignment require the gateway OS
-contract implemented for v1.28.0 (release/deployment pending). Older gateways
+contract available in gateway v1.28.0 and later. Older gateways
 cannot enforce the requirement for all clients; an unconfirmed ownership release
 is an error, never permission to retry or silently fall back to another OS.
 Amux also filters notification input, idle pickup, reminders and human assignment
