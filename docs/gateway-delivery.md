@@ -53,6 +53,12 @@ not replay input. A newer explicit requeue retires a known handoff fence;
 unconfirmed attempts remain paused until the task is resolved. Completed tasks
 retire their old backlog fences. This does not replay old lifecycle events.
 
+OS-restricted tasks use one explicit `os:windows`, `os:linux` or `os:macos`
+label. Pickup and notification delivery require a matching verified native OS;
+unavailable platforms leave their work queued. Retagging cancels incompatible
+pending input without replaying uncertain attempts. See the project-agent and
+OS-routing commands in [gateway-cli.md](gateway-cli.md#project-agents-and-os-routing).
+
 ## User review
 
 Tasks awaiting a human decision use the gateway's `user_review` status (gateway

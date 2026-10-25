@@ -37,7 +37,9 @@ pub fn owns(task: &Value, target: &Target) -> bool {
 }
 
 pub fn eligible(task: &Value, target: &Target) -> bool {
-    if crate::autoreview::held_finding(task) {
+    if crate::autoreview::held_finding(task)
+        || !crate::task_platform::matches(task, target.origin.as_ref().map(|o| o.os.as_str()))
+    {
         return false;
     }
     if task["id"]

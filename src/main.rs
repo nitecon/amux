@@ -123,6 +123,11 @@ enum MessageOperation {
 #[derive(Subcommand)]
 enum TaskOperation {
     List,
+    /// List connected project agents across machines, including OS and execution identity.
+    Agents {
+        #[arg(long, value_enum)]
+        os: Option<amux::task_platform::TaskOs>,
+    },
     Get {
         id: Uuid,
     },
@@ -133,6 +138,8 @@ enum TaskOperation {
         /// Record a review finding for human triage; do not auto-execute it.
         #[arg(long)]
         review_finding: bool,
+        #[arg(long, value_enum)]
+        os: Option<amux::task_platform::TaskOs>,
     },
     /// Create linked tasks in different projects, not an exact-session assignment.
     /// A lost reply is uncertain: inspect both projects before manually retrying.
@@ -145,6 +152,20 @@ enum TaskOperation {
     },
     Claim {
         id: Uuid,
+    },
+    /// Hand an active task to one exact, currently connected project agent.
+    Reassign {
+        id: Uuid,
+        #[arg(long)]
+        to_agent: Uuid,
+    },
+    /// Change the OS requirement of owned work; incompatible work returns to the queue.
+    SetOs {
+        id: Uuid,
+        #[arg(long, value_enum, required_unless_present = "clear")]
+        os: Option<amux::task_platform::TaskOs>,
+        #[arg(long, conflicts_with = "os")]
+        clear: bool,
     },
     /// Park an owned task for a human decision and release agent ownership.
     #[command(name = "user-review", alias = "review")]
@@ -342,18 +363,38 @@ fn run(cli: Cli) -> Result<u8> {
                     None => gateway.resolve_project(project_dir.canonicalize()?).await?,
                 };
                 if matches!(operation, TaskOperation::List) { return gateway.list(&project).await; }
+                if let TaskOperation::Agents { os } = operation { return Ok(serde_json::to_value(gateway.task_agents(&project, &project_dir, os).await?)?); }
                 if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
-                    TaskOperation::Create { title, specification, review_finding } => {
+                    TaskOperation::Create { title, specification, review_finding, os } => {
                         let mut body = json!({"title": title, "specification": specification});
-                        if review_finding { body["labels"] = json!(["autoreview-finding"]); }
-                        gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await
+                        let mut labels = Vec::new();
+                        if review_finding { labels.push("autoreview-finding".to_owned()); }
+                        if let Some(os) = os {
+                            anyhow::ensure!(gateway.resolve_project(actor.project_directory.clone()).await? == project, "Workspace project changed");
+                            labels.push(format!("os:{}", os.as_str()));
+                        }
+                        if !labels.is_empty() { body["labels"] = json!(labels); }
+                        let task = gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?;
+                        if let Some(os) = os {
+                            anyhow::ensure!(amux::task_platform::required_os(&task)? == Some(os), "OS requirement unconfirmed; inspect task before retrying");
+                            if actor.os != os.as_str() {
+                                anyhow::ensure!(task["status"] == "todo" && task.get("owner_origin").is_some_and(serde_json::Value::is_null) && task.get("owner_agent_id").is_some_and(serde_json::Value::is_null), "Gateway retained an incompatible owner; inspect task before retrying");
+                            }
+                        }
+                        Ok(task)
                     },
                     TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
-                    TaskOperation::Claim { id } => gateway.claim(&project, &id.to_string(), &actor).await,
+                    TaskOperation::Claim { id } => {
+                        let task = gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await?;
+                        anyhow::ensure!(amux::task_platform::matches(&task, Some(&actor.os)), "Task requires another operating system");
+                        gateway.claim(&project, &id.to_string(), &actor).await
+                    },
+                    TaskOperation::Reassign { id, to_agent } => gateway.reassign_agent_task(&project, id, to_agent, &actor).await,
+                    TaskOperation::SetOs { id, os, .. } => gateway.set_task_os(&project, id, os, &actor).await,
                     TaskOperation::UserReview { id } => gateway.request_user_review(&project, id, &actor).await,
                     TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,

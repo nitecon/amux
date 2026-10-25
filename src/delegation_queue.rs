@@ -93,6 +93,37 @@ impl Queue {
                 changed |= retire_review_notifications(&mut next, project, id, None);
             }
         }
+        for task in tasks {
+            let required = crate::task_platform::required_os(task);
+            if matches!(&required, Ok(None)) {
+                continue;
+            }
+            for receipt in &mut next.receipts {
+                if receipt.event.project != project || task["id"] != receipt.event.task.to_string()
+                {
+                    continue;
+                }
+                for recipient in &mut receipt.recipients {
+                    if !recipient.outcome.terminal()
+                        && !required.as_ref().is_ok_and(|required| {
+                            crate::task_platform::compatible(
+                                *required,
+                                recipient.target.origin.as_ref().map(|o| o.os.as_str()),
+                            )
+                        })
+                    {
+                        recipient.outcome = if recipient.outcome == Outcome::Submitting {
+                            Outcome::Uncertain
+                        } else {
+                            Outcome::Skipped
+                        };
+                        recipient.reason = "Task OS requirement changed".into();
+                        receipt.confirmed = false;
+                        changed = true;
+                    }
+                }
+            }
+        }
         next.backlog.retain(|r| {
             r.target.project != project
                 || !tasks.iter().any(|task| {
@@ -102,8 +133,13 @@ impl Queue {
                             task["status"].as_str(),
                             Some("done" | "cancelled" | "user_review")
                         ) || (r.outcome != Outcome::Uncertain
-                            && task["status"] == "todo"
-                            && crate::backlog::revision(task) != r.revision))
+                            && !crate::task_platform::matches(
+                                task,
+                                r.target.origin.as_ref().map(|o| o.os.as_str()),
+                            ))
+                            || (r.outcome != Outcome::Uncertain
+                                && task["status"] == "todo"
+                                && crate::backlog::revision(task) != r.revision))
                 })
         });
         if changed || next.backlog.len() != self.journal.backlog.len() {

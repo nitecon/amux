@@ -55,8 +55,8 @@ control characters; context is limited to 64 KiB of UTF-8 and stays literal.
 
 This creates shared tasks, not a claim, execution start, destination receipt or
 exact-session assignment. The endpoint requires different projects and has no
-machine, platform or session target. Same-project and exact-session delegation
-remain pending the gateway contract. An error or lost reply can leave accepted
+machine, platform or session target. Use ordinary-task reassignment below for
+a connected agent in this project. An error or lost reply can leave accepted
 tasks behind: inspect both projects before manually retrying. The client makes
 one request and does not establish server deduplication. The gateway may notify
 the destination project's configured channel.
@@ -76,6 +76,42 @@ session and instance. This read is a client check, not server authorization. The
 gateway already guards claims with a bound owner origin, but until it enforces
 the exact owner atomically for every claim type, ownership can change between
 the read and the update.
+
+## Project agents and OS routing
+
+`amux agents` lists local registrations. For the current project's connected
+agents across machines, including name, host, provider, OS and exact execution
+identity, use:
+
+```sh
+amux tasks agents
+amux tasks agents --os windows
+amux --agent <calling-id> tasks reassign <task-id> --to-agent <recipient-session-uuid>
+amux --agent <calling-id> tasks create 'Verify Windows behavior' --os windows
+amux --agent <calling-id> tasks set-os <owned-task-id> --os windows
+amux --agent <calling-id> tasks set-os <owned-task-id> --clear
+```
+
+Discovery verifies the checkout's project/repository and excludes expired
+entries. Reassignment resolves one fresh compatible execution and sends the
+calling agent's identity, never the recipient's credentials. Ambiguous, stale
+or incompatible recipients fail without a fallback. After a confirmed handoff,
+stop working on that task. Unknown replies require inspection before retrying.
+
+OS requirements use one explicit label: `os:windows`, `os:linux` or `os:macos`.
+No OS label means unrestricted; titles such as “WINDOWS ONLY” are not parsed.
+Other labels are preserved. `set-os` requires the exact owner of active work;
+when the new OS excludes that owner, the gateway atomically releases the task
+to the queue and clears stale session routing. If no compatible agent is
+available, it remains queued. User review and closed tasks cannot be handed off.
+
+Enforced OS creation, claim, retagging and reassignment require the gateway OS
+contract implemented for v1.28.0 (release/deployment pending). Older gateways
+cannot enforce the requirement for all clients; an unconfirmed ownership release
+is an error, never permission to retry or silently fall back to another OS.
+Amux also filters notification input, idle pickup, reminders and human assignment
+by the OS requirement. Work for a different OS does not block an eligible agent's
+Autoreview.
 
 ## Task cancellation reports
 

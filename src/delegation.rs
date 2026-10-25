@@ -106,6 +106,8 @@ pub struct Event {
     pub owner: Option<Origin>,
     #[serde(default)]
     pub owner_agent_id: Option<Box<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_os: Option<crate::task_platform::TaskOs>,
     #[serde(default)]
     pub summary: Option<Box<EventSummary>>,
 }
@@ -181,6 +183,7 @@ impl Event {
                     Some(serde_json::from_value(value.clone()).context("Invalid task owner")?)
                 }
             },
+            required_os: crate::task_platform::required_os(&value["task"])?,
         };
         event.validate()?;
         Ok(Some(event))
@@ -274,8 +277,12 @@ impl Event {
         } else {
             ""
         };
+        let platform = self
+            .required_os
+            .map(|os| format!(" | OS: {}", os.as_str()))
+            .unwrap_or_default();
         format!(
-            "<gateway>{} | State: {} | From: {} / {} / {} | Task project: {} | Recorded task host: {} | TaskID: {} | Title: {} | Preview: {}{closed}</gateway>",
+            "<gateway>{} | State: {}{platform} | From: {} / {} / {} | Task project: {} | Recorded task host: {} | TaskID: {} | Title: {} | Preview: {}{closed}</gateway>",
             xml(self.heading()),
             xml(self.state()),
             xml(sender),
@@ -508,6 +515,11 @@ impl Target {
             Some("Agent repository does not match the task project")
         } else if event.state() == "user_review" {
             Some("Task awaits a user decision")
+        } else if !crate::task_platform::compatible(
+            event.required_os,
+            self.origin.as_ref().map(|origin| origin.os.as_str()),
+        ) {
+            Some("Task requires a different operating system")
         } else if event.goal.is_some() && self.goal != event.goal {
             Some("Task goal does not match this agent")
         } else if event.kind == Kind::Created && *event.routing == Routing::Unassigned {

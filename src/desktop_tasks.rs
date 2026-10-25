@@ -271,6 +271,14 @@ impl Desktop {
                     self.workspaces[self.active].gateway.detail.status = "Selected agent is unavailable. Refresh agents and select a live execution.".into();
                     return Task::none();
                 }
+                if !amux::task_platform::matches(
+                    panel.task.as_ref().unwrap(),
+                    Some(&target.origin.os),
+                ) {
+                    self.workspaces[self.active].gateway.detail.status =
+                        "Selected agent does not match this task's OS requirement.".into();
+                    return Task::none();
+                }
                 Mutation::Assign(target.clone())
             }
             Change::Close if panel.task.as_ref().unwrap()["status"] != "done" => Mutation::Close,
@@ -432,6 +440,16 @@ impl Desktop {
                 .size(11),
             )
             .push(text(format!("#{}", panel.selected.unwrap())).size(10));
+        match amux::task_platform::required_os(task) {
+            Ok(Some(os)) => body = body.push(text(format!("Requires {}", os.as_str())).size(11)),
+            Err(_) => {
+                body = body.push(
+                    text("Invalid OS requirement; correct the task labels before assignment.")
+                        .size(11),
+                )
+            }
+            _ => {}
+        }
         if panel.mode == Mode::Edit {
             body = body
                 .push(text_input("Title", &panel.title).on_input(|s| message(Action::Title(s))))
@@ -455,9 +473,9 @@ impl Desktop {
                     .spacing(6),
                 );
         } else if panel.mode == Mode::Assign {
-            let choices = self.task_agent_choices();
+            let choices: Vec<_> = self.task_agent_choices().into_iter().filter(|choice| matches!(choice, Choice::Session(target, _) if amux::task_platform::matches(task, Some(&target.origin.os)))).collect();
             let current = panel.recipient.clone();
-            let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.workspaces[self.active].gateway.routing.available(target)));
+            let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.workspaces[self.active].gateway.routing.available(target) && amux::task_platform::matches(task, Some(&target.origin.os))));
             body = body
                 .push(text("Assign to agent").size(13))
                 .push(text("Local and gateway agents for this repository:").size(11))

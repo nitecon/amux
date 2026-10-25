@@ -447,6 +447,7 @@ pub(super) fn scan(app: &mut Desktop, arrival: Option<Lifecycle>) {
 
 fn lifecycle(id: i64, project: &str) -> Lifecycle {
     Lifecycle {
+        required_os: None,
         id,
         project: project.into(),
         task: Uuid::new_v4(),
@@ -1152,6 +1153,7 @@ fn task_events_coalesce_a_refresh_without_changing_durable_delivery() {
     app.preferences.current.api_key = "fixture-only".into();
     app.workspaces[0].gateway.loading = true;
     let event = Lifecycle {
+        required_os: None,
         id: 100,
         project: "project-0".into(),
         task: Uuid::new_v4(),

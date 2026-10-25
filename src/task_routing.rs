@@ -35,7 +35,7 @@ pub struct Available {
     pub hostname: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Directory {
     pub targets: Vec<Available>,
     /// `None` only for an explicitly bound ad-hoc project without a repository.
@@ -51,6 +51,149 @@ impl SessionTarget {
 }
 
 impl Gateway {
+    /// Fresh, repository-scoped discovery; this does not assign or claim work.
+    pub async fn task_agents(
+        &self,
+        project: &str,
+        directory: &std::path::Path,
+        os: Option<crate::task_platform::TaskOs>,
+    ) -> Result<Directory> {
+        let root = crate::project_identity::resolve(directory)?;
+        ensure!(
+            self.resolve_project(root.directory).await? == project,
+            "Workspace project changed"
+        );
+        let mut agents = self.task_targets(project, root.upstream.as_deref()).await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64;
+        agents.targets.retain(|entry| {
+            entry.expires_at > now
+                && crate::task_platform::compatible(os, Some(&entry.target.origin.os))
+        });
+        Ok(agents)
+    }
+
+    pub async fn reassign_agent_task(
+        &self,
+        project: &str,
+        task: Uuid,
+        session: Uuid,
+        actor: &AgentIdentity,
+    ) -> Result<serde_json::Value> {
+        let current = self
+            .request(Method::GET, project, &[&task.to_string()], None, None)
+            .await?;
+        ensure!(
+            matches!(current["status"].as_str(), Some("todo" | "in_progress")),
+            "Only active tasks can be reassigned"
+        );
+        let required = crate::task_platform::required_os(&current)?;
+        let agents = self
+            .task_agents(project, &actor.project_directory, required)
+            .await?;
+        let matching: Vec<_> = agents
+            .targets
+            .iter()
+            .filter(|entry| entry.target.origin.session_id == session)
+            .collect();
+        ensure!(
+            matching.len() == 1,
+            "Recipient is unavailable, incompatible or has multiple live executions; refresh agents"
+        );
+        let target = &matching[0].target;
+        let value = self
+            .request(
+                Method::POST,
+                project,
+                &[&task.to_string(), "reassign"],
+                Some(json!({"target":target})),
+                Some(actor),
+            )
+            .await?;
+        ensure!(
+            value["id"] == task.to_string()
+                && value["project_ident"] == project
+                && value["status"] == "todo"
+                && serde_json::from_value::<Origin>(value["owner_origin"].clone())
+                    .is_ok_and(|o| o == target.origin)
+                && crate::task_platform::required_os(&value)? == required,
+            "Reassignment unconfirmed; inspect the task before retrying"
+        );
+        let routing: Routing = serde_json::from_value(value["routing"].clone())
+            .context("Reassignment routing unconfirmed; inspect before retrying")?;
+        if let Routing::Session {
+            target: acknowledged,
+        } = routing
+        {
+            ensure!(
+                acknowledged == *target,
+                "Reassignment retained another execution's routing; inspect before continuing"
+            );
+        }
+        Ok(value)
+    }
+
+    /// Retag only this actor's active work. The gateway atomically releases an
+    /// incompatible owner; the client never emulates that with a second PATCH.
+    pub async fn set_task_os(
+        &self,
+        project: &str,
+        task: Uuid,
+        os: Option<crate::task_platform::TaskOs>,
+        actor: &AgentIdentity,
+    ) -> Result<serde_json::Value> {
+        ensure!(
+            self.resolve_project(actor.project_directory.clone())
+                .await?
+                == project,
+            "Workspace project changed"
+        );
+        let current = self
+            .request(Method::GET, project, &[&task.to_string()], None, None)
+            .await?;
+        let origin = Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        };
+        ensure!(
+            matches!(current["status"].as_str(), Some("todo" | "in_progress"))
+                && serde_json::from_value::<Origin>(current["owner_origin"].clone())
+                    .is_ok_and(|o| o == origin),
+            "Only the exact owning agent may change this task's OS requirement"
+        );
+        let labels = crate::task_platform::labels_with_os(&current, os)?;
+        let value = self
+            .request(
+                Method::PATCH,
+                project,
+                &[&task.to_string()],
+                Some(json!({"labels":labels})),
+                Some(actor),
+            )
+            .await?;
+        ensure!(
+            value["labels"] == json!(labels) && crate::task_platform::required_os(&value)? == os,
+            "OS requirement unconfirmed; inspect before retrying"
+        );
+        if !crate::task_platform::compatible(os, Some(&actor.os)) {
+            ensure!(
+                value["status"] == "todo"
+                    && ["owner_agent_id", "owner_origin", "started_at", "done_at"]
+                        .iter()
+                        .all(|key| value.get(*key).is_some_and(serde_json::Value::is_null))
+                    && !matches!(
+                        serde_json::from_value::<Routing>(value["routing"].clone()),
+                        Ok(Routing::Session { .. })
+                    ),
+                "OS handoff unconfirmed; gateway must release the incompatible owner and route atomically. Inspect before retrying"
+            );
+        }
+        Ok(value)
+    }
+
     pub async fn create_routed_task(
         &self,
         project: &str,

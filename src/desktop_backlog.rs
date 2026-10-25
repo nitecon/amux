@@ -281,6 +281,10 @@ impl Desktop {
                 .find(|task| {
                     task["status"] == "in_progress"
                         && backlog::owns(task, &candidate.target)
+                        && amux::task_platform::matches(
+                            task,
+                            candidate.target.origin.as_ref().map(|o| o.os.as_str()),
+                        )
                         && !journaled(task)
                 })
                 .and_then(|task| {
@@ -393,7 +397,12 @@ impl Desktop {
         }
         if pick.delivery
             && pick.current_task.as_ref().is_some_and(|task| {
-                task["status"] != "in_progress" || !backlog::owns(task, &pick.candidate.target)
+                task["status"] != "in_progress"
+                    || !backlog::owns(task, &pick.candidate.target)
+                    || !amux::task_platform::matches(
+                        task,
+                        pick.candidate.target.origin.as_ref().map(|o| o.os.as_str()),
+                    )
             })
         {
             self.delegation

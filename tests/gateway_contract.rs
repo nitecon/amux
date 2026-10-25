@@ -111,6 +111,283 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("os-gateway");
+    std::fs::create_dir_all(&base).unwrap();
+    let state = tempfile::tempdir_in(base).unwrap();
+    let actor = agent(Provider::Codex);
+    let record = amux::identity::AgentRecord {
+        identity: actor.clone(),
+        pid: 0,
+        process_start: 0,
+        process_generation: "unavailable".into(),
+    };
+    std::fs::create_dir(state.path().join("agents")).unwrap();
+    std::fs::write(
+        state
+            .path()
+            .join("agents")
+            .join(format!("{}.json", actor.session_id)),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let other = if actor.os == "windows" {
+        "linux"
+    } else {
+        "windows"
+    };
+    let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
+    let queued = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["autoreview-finding",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null});
+    let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","labels":["keep"],"owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
+    let released = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["keep",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null,"routing":{"mode":"auto"}});
+    let (url, server) = server(vec![
+        reply(200, &projects),
+        reply(200, &queued),
+        reply(200, &projects),
+        reply(200, &owned),
+        reply(200, &released),
+        reply(200, &queued),
+    ]);
+    let run = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
+        for name in actor.environment().keys() {
+            cmd.env_remove(name);
+        }
+        cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("AMUX_STATE_DIR", state.path())
+            .env("AMUX_GATEWAY_KEY", "fixture")
+            .args([
+                "--agent",
+                &actor.session_id.to_string(),
+                "tasks",
+                "--project",
+                "demo",
+                "--gateway-url",
+                &url,
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    for args in [
+        vec![
+            "create",
+            "Cross platform",
+            "--os",
+            other,
+            "--review-finding",
+        ],
+        vec!["set-os", TASK, "--os", other],
+    ] {
+        let output = run(&args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let refused = run(&["claim", TASK]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another operating system"));
+    assert!(
+        !run(&["set-os", TASK, "--os", other, "--clear"])
+            .status
+            .success()
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(
+        requests.len(),
+        6,
+        "wrong-OS claim and invalid flags never mutate or retry"
+    );
+    assert_eq!(requests[1].body["labels"], queued["labels"]);
+    assert_eq!(requests[4].body["labels"], released["labels"]);
+}
+
+#[test]
+fn project_agents_reassignment_and_os_retag_keep_exact_actor_and_platform() {
+    use amux::{delegation::Origin, task_platform::TaskOs, task_routing::SessionTarget};
+    let actor = agent(Provider::Codex);
+    let origin = Origin {
+        session_id: actor.session_id,
+        instance_id: actor.instance_id,
+        provider: actor.provider,
+        os: actor.os.clone(),
+    };
+    let windows = SessionTarget {
+        origin: Origin {
+            session_id: uuid::Uuid::new_v4(),
+            instance_id: uuid::Uuid::new_v4(),
+            provider: Provider::Claude,
+            os: "windows".into(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let mut linux = windows.clone();
+    linux.origin.session_id = uuid::Uuid::new_v4();
+    linux.origin.os = "linux".into();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let directory = json!({"canonical_remote":"github.com/nitecon/amux","targets":[
+        {"target":windows,"seen_at":now,"expires_at":now+120_000,"display_name":"Windows peer","hostname":"remote"},
+        {"target":linux,"seen_at":now,"expires_at":now+120_000},
+        {"target":windows,"seen_at":now-120_001,"expires_at":now-1}
+    ]});
+    let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
+    let task = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["os:windows"]});
+    let assigned = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["os:windows"],"owner_origin":windows.origin,"routing":{"mode":"session","target":windows}});
+    let next_os = if actor.os == "windows" {
+        TaskOs::Linux
+    } else {
+        TaskOs::Windows
+    };
+    let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","labels":["keep",format!("os:{}",actor.os)],"owner_origin":origin});
+    let released = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["keep",format!("os:{}",next_os.as_str())],"owner_origin":null,"owner_agent_id":null,"started_at":null,"done_at":null,"routing":{"mode":"unassigned"}});
+    let mut stale_route = assigned.clone();
+    stale_route["routing"]["target"]["generation"] = json!(uuid::Uuid::new_v4());
+    let mut retained_owner = released.clone();
+    retained_owner["owner_origin"] = json!(origin);
+    let (url, server) = server(vec![
+        reply(200, &projects),
+        reply(200, &directory),
+        reply(200, &task),
+        reply(200, &projects),
+        reply(200, &directory),
+        reply(200, &assigned),
+        reply(200, &task),
+        reply(200, &projects),
+        reply(200, &directory),
+        reply(200, &projects),
+        reply(200, &owned),
+        reply(200, &released),
+        reply(200, &task),
+        reply(200, &projects),
+        reply(200, &directory),
+        reply(200, &stale_route),
+        reply(200, &projects),
+        reply(200, &owned),
+        reply(200, &retained_owner),
+    ]);
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let agents = gateway
+            .task_agents("demo", &actor.project_directory, Some(TaskOs::Windows))
+            .await
+            .unwrap();
+        assert_eq!(
+            agents.targets.len(),
+            1,
+            "stale and wrong-OS targets are excluded"
+        );
+        assert_eq!(agents.targets[0].target, windows);
+        let id = uuid::Uuid::parse_str(TASK).unwrap();
+        assert_eq!(
+            gateway
+                .reassign_agent_task("demo", id, windows.origin.session_id, &actor)
+                .await
+                .unwrap(),
+            assigned
+        );
+        assert!(
+            gateway
+                .reassign_agent_task("demo", id, linux.origin.session_id, &actor)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            gateway
+                .set_task_os("demo", id, Some(next_os), &actor)
+                .await
+                .unwrap(),
+            released
+        );
+        assert!(
+            gateway
+                .reassign_agent_task("demo", id, windows.origin.session_id, &actor)
+                .await
+                .is_err(),
+            "stale exact routing is not an acknowledged handoff"
+        );
+        assert!(
+            gateway
+                .set_task_os("demo", id, Some(next_os), &actor)
+                .await
+                .is_err(),
+            "retained incompatible ownership cannot acknowledge OS handoff"
+        );
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(
+        requests.len(),
+        19,
+        "wrong OS does not POST and mutations are never retried"
+    );
+    assert!(
+        requests[5]
+            .head
+            .starts_with(&format!("post /v1/projects/demo/tasks/{TASK}/reassign "))
+    );
+    assert_eq!(requests[5].body, json!({"target":windows}));
+    assert!(
+        requests[5]
+            .head
+            .contains(&format!("x-agent-session-id: {}", actor.session_id))
+    );
+    assert_eq!(requests[11].body["labels"], released["labels"]);
+    assert!(
+        requests[11]
+            .head
+            .contains(&format!("x-agent-instance-id: {}", actor.instance_id))
+    );
+}
+
+#[test]
+fn cli_project_agent_discovery_is_read_only_and_reports_remote_os() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let directory = json!({"canonical_remote":"github.com/nitecon/amux","targets":[{"target":{"origin":{"session_id":uuid::Uuid::new_v4(),"instance_id":uuid::Uuid::new_v4(),"provider":"codex","os":"windows"},"generation":uuid::Uuid::new_v4()},"seen_at":now,"expires_at":now+120_000,"display_name":"Remote agent","hostname":"Windows host"}]});
+    let (url, server) = server(vec![
+        reply(
+            200,
+            &json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]),
+        ),
+        reply(200, &directory),
+    ]);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_amux"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("AMUX_GATEWAY_KEY", "fixture")
+        .args([
+            "tasks",
+            "--project",
+            "demo",
+            "--gateway-url",
+            &url,
+            "agents",
+            "--os",
+            "windows",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        directory
+    );
+    for request in server.join().unwrap() {
+        assert!(request.head.starts_with("get "));
+        assert!(!request.head.contains("x-agent-"));
+    }
+}
+
+#[test]
 fn user_review_requires_exact_owner_and_cleared_ack_then_only_a_human_requeues() {
     let actor = agent(Provider::Codex);
     let origin = json!({"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os});
@@ -936,7 +1213,10 @@ fn assigned_cli_claim_works_when_provider_environment_and_ancestry_are_unavailab
         serde_json::to_vec(&record).unwrap(),
     )
     .unwrap();
-    let (url, server) = server(vec![reply(200, &owned_by(&actor))]);
+    let (url, server) = server(vec![
+        reply(200, &owned_by(&actor)),
+        reply(200, &owned_by(&actor)),
+    ]);
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
     for name in actor.environment().keys() {
         command.env_remove(name);
@@ -964,9 +1244,10 @@ fn assigned_cli_claim_works_when_provider_environment_and_ancestry_are_unavailab
         String::from_utf8_lossy(&output.stderr)
     );
     let requests = server.join().unwrap();
-    assert_eq!(requests[0].body["owner_agent_id"], actor.display_name());
+    assert!(requests[0].head.starts_with("get "));
+    assert_eq!(requests[1].body["owner_agent_id"], actor.display_name());
     assert!(
-        requests[0]
+        requests[1]
             .head
             .contains(&format!("x-agent-session-id: {}", actor.session_id))
     );

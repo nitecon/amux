@@ -30,6 +30,18 @@ fn target() -> Target {
 }
 
 #[test]
+fn platform_requirement_limits_pickup_to_matching_native_os() {
+    let mut target = target();
+    let task =
+        json!({"id":Uuid::new_v4(),"project_ident":"amux","status":"todo","labels":["os:windows"]});
+    assert!(!backlog::eligible(&task, &target));
+    target.origin.as_mut().unwrap().os = "windows".into();
+    assert!(backlog::eligible(&task, &target));
+    target.origin = None;
+    assert!(!backlog::eligible(&task, &target));
+}
+
+#[test]
 fn review_tasks_never_become_eligible_and_clear_old_handoffs_before_user_requeue() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
     let dir = tempfile::tempdir_in(root).unwrap();

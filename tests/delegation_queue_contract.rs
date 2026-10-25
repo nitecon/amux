@@ -26,6 +26,7 @@ fn event(id: i64) -> Event {
         routing: Default::default(),
         owner: None,
         owner_agent_id: None,
+        required_os: None,
         summary: None,
         origin: None,
         goal: None,
@@ -38,6 +39,35 @@ fn fixture() -> (tempfile::TempDir, Queue) {
     let mut queue = Queue::open(dir.path().join("journal.json"), "fixture").unwrap();
     queue.subscribed(0, 9).unwrap();
     (dir, queue)
+}
+
+#[test]
+fn os_retag_retires_pending_notification_before_native_input() {
+    let (_dir, mut queue) = fixture();
+    let t = target();
+    let original = event(10);
+    queue
+        .receive(original.clone(), std::slice::from_ref(&t), true, 1_000_000)
+        .unwrap();
+    let attempt = queue.next(&HashSet::from([t.session])).unwrap();
+    queue.begin(&attempt).unwrap();
+    queue
+        .reconcile_backlog(
+            "amux",
+            &[serde_json::json!({"id":original.task,"labels":["os:windows"]})],
+        )
+        .unwrap();
+    assert!(!queue.submitting(&attempt));
+    assert_eq!(
+        queue.journal.receipts[0].recipients[0].outcome,
+        Outcome::Uncertain
+    );
+    let windows = Event::parse(&serde_json::json!({"id":11,"kind":"task_created","project_ident":"amux","created_at":1_000_000,"task":{"id":Uuid::new_v4(),"labels":["os:windows"]}})).unwrap().unwrap();
+    assert!(
+        !t.accepts(&windows),
+        "unknown OS cannot receive OS-restricted work"
+    );
+    assert!(windows.terminal_text().contains("OS: windows"));
 }
 
 #[test]

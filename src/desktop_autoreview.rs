@@ -20,10 +20,11 @@ pub(in super::super) struct Prepared {
     verified: Instant,
 }
 
-fn queued(tasks: &[serde_json::Value]) -> bool {
-    tasks
-        .iter()
-        .any(|task| matches!(task["status"].as_str(), Some("todo" | "queued")))
+fn queued(tasks: &[serde_json::Value], os: &str) -> bool {
+    tasks.iter().any(|task| {
+        matches!(task["status"].as_str(), Some("todo" | "queued"))
+            && amux::task_platform::matches(task, Some(os))
+    })
 }
 
 impl Desktop {
@@ -63,7 +64,7 @@ impl Desktop {
                     .is_none_or(|at| at.elapsed() > Duration::from_secs(10))
                 || w.gateway.request.is_some()
                 || w.gateway.detail.unresolved()
-                || queued(&w.gateway.tasks)
+                || queued(&w.gateway.tasks, &candidate.actor.os)
                 || w.gateway.tasks.iter().any(|task| {
                     task["status"] == "in_progress" && amux::backlog::owns(task, &candidate.target)
                 })
@@ -183,14 +184,13 @@ impl Desktop {
                         let tasks = tasks
                             .as_array()
                             .ok_or_else(|| anyhow::anyhow!("Gateway task list is incomplete"))?;
-                        if queued(tasks) {
-                            return Ok(None);
-                        }
                         for candidate in candidates {
-                            if tasks.iter().any(|t| {
-                                t["status"] == "in_progress"
-                                    && amux::backlog::owns(t, &candidate.target)
-                            }) {
+                            if queued(tasks, &candidate.actor.os)
+                                || tasks.iter().any(|t| {
+                                    t["status"] == "in_progress"
+                                        && amux::backlog::owns(t, &candidate.target)
+                                })
+                            {
                                 continue;
                             }
                             let c = candidate.clone();
@@ -386,6 +386,23 @@ mod tests {
         assert!(history.reviewed.is_empty() && history.pending.is_some());
         drop(app.autoreview_prepared_after(request, Ok(Some(Box::new(work))), Duration::ZERO));
         assert_eq!(claude.lines().len(), 1);
+    }
+
+    #[test]
+    fn another_os_queue_does_not_block_reviews_but_matching_work_does() {
+        let (mut app, _, claude) = fixture();
+        let work = prepared(&mut app, claude.directory.join("platform-review.json"));
+        let own_os = work.candidate.actor.os.clone();
+        let other_os = if own_os == "windows" {
+            "linux"
+        } else {
+            "windows"
+        };
+        app.workspaces[0].gateway.tasks =
+            vec![json!({"status":"todo","labels":[format!("os:{other_os}")]})];
+        assert!(app.review_ready(&work.scope, &work.candidate, Duration::ZERO));
+        app.workspaces[0].gateway.tasks[0]["labels"] = json!([format!("os:{own_os}")]);
+        assert!(!app.review_ready(&work.scope, &work.candidate, Duration::ZERO));
     }
 
     #[test]
