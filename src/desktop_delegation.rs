@@ -15,6 +15,8 @@ use std::{
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
+#[path = "desktop_autoreview.rs"]
+mod autoreview;
 #[path = "desktop_backlog.rs"]
 mod backlog;
 
@@ -114,6 +116,7 @@ pub(super) struct Proof {
 
 #[derive(Debug, Clone)]
 pub(super) enum Event {
+    AutoreviewPrepared(Uuid, Result<Option<Box<autoreview::Prepared>>, String>),
     BacklogVerified(Box<backlog::Pick>, bool),
     BacklogClaimed(Uuid, Result<Option<serde_json::Value>, String>),
     Stream(ConnectionEvent),
@@ -128,6 +131,7 @@ pub(super) enum Event {
 
 #[derive(Default)]
 pub(super) struct Bridge {
+    autoreview: autoreview::State,
     backlog: backlog::State,
     epoch: u64,
     clock: Option<amux::gateway_stream::GatewayClock>,
@@ -379,6 +383,9 @@ impl Desktop {
         let mut follow = Task::none();
         let mut refresh = Task::none();
         let result: anyhow::Result<()> = match event {
+            Event::AutoreviewPrepared(request, result) => {
+                return self.autoreview_prepared(request, result);
+            }
             Event::BacklogVerified(pick, valid) => return self.backlog_verified(*pick, valid),
             Event::BacklogClaimed(request, result) => return self.backlog_claimed(request, result),
             Event::Stream(ConnectionEvent::Clock(clock)) => {
@@ -654,7 +661,8 @@ impl Desktop {
         let mut directories = HashSet::new();
         for c in &self.delegation.candidates {
             let directory = c.target.directory.clone();
-            if self.preferences.current.automatic_notifications
+            if (self.preferences.current.automatic_notifications
+                || self.preferences.current.autoreview)
                 && directories.insert(directory.clone())
                 && self
                     .delegation
@@ -705,6 +713,9 @@ impl Desktop {
         let mut ready = HashSet::new();
         let candidates = self.delegation.candidates.clone();
         for c in &candidates {
+            if amux::autoreview::reviewing(&c.target.directory, &c.actor) {
+                continue;
+            }
             if let Some(tab) = tab(self, c.target.terminal)
                 && tab.terminal.is_some()
             {
@@ -756,6 +767,9 @@ impl Desktop {
 impl Desktop {
     pub(super) fn backlog_status(&self) -> &str {
         &self.delegation.backlog.status
+    }
+    pub(super) fn autoreview_status(&self) -> &str {
+        &self.delegation.autoreview.status
     }
     pub(super) fn routing_actors(
         &self,

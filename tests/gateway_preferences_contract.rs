@@ -14,6 +14,7 @@ fn gateway_origin_and_api_key_save_without_a_manual_project() {
     let settings = GatewayPreferences {
         url: "https://gateway.nitecon.org".into(),
         api_key: "fixture-key-not-a-live-credential".into(),
+        autoreview: true,
         ..Default::default()
     };
     settings.save(&path).unwrap();
@@ -27,6 +28,7 @@ fn gateway_origin_and_api_key_save_without_a_manual_project() {
     legacy["project"] = serde_json::json!("old-manual-identifier");
     std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let loaded = GatewayPreferences::load(&path).unwrap().unwrap();
+    assert!(loaded.autoreview);
     assert_eq!(loaded.api_key, settings.api_key);
     assert!(
         serde_json::to_value(loaded)

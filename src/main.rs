@@ -26,12 +26,20 @@ struct Cli {
     /// Update a direct-download install; managed installs show their update command.
     #[arg(long, exclusive = true)]
     update: bool,
+    /// Print the bundled general coding guidelines without opening the desktop.
+    #[arg(long, exclusive = true)]
+    get_guidelines: bool,
     #[command(subcommand)]
     command: Option<Operation>,
 }
 
 #[derive(Subcommand)]
 enum Operation {
+    /// Inspect or finish a local Autoreview receipt.
+    Reviews {
+        #[command(subcommand)]
+        operation: ReviewOperation,
+    },
     /// Launch the desktop (also the default).
     Desktop,
     /// Run a native agent with its own session and execution identity.
@@ -78,6 +86,18 @@ enum Operation {
 }
 
 #[derive(Subcommand)]
+enum ReviewOperation {
+    Status,
+    Complete {
+        id: Uuid,
+    },
+    /// Allow retry only after explicitly confirming the prior review has stopped.
+    Release {
+        id: Uuid,
+    },
+}
+
+#[derive(Subcommand)]
 enum MessageOperation {
     /// Include resolved threads; use offset to retrieve subsequent pages.
     List {
@@ -110,6 +130,9 @@ enum TaskOperation {
         title: String,
         #[arg(long)]
         specification: Option<String>,
+        /// Record a review finding for human triage; do not auto-execute it.
+        #[arg(long)]
+        review_finding: bool,
     },
     /// Create linked tasks in different projects, not an exact-session assignment.
     /// A lost reply is uncertain: inspect both projects before manually retrying.
@@ -160,6 +183,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<u8> {
+    if cli.get_guidelines {
+        print!("{}", amux::autoreview::GUIDELINES);
+        return Ok(0);
+    }
     if cli.update {
         println!("{}", amux::updates::cli_update()?);
         return Ok(0);
@@ -169,6 +196,24 @@ fn run(cli: Cli) -> Result<u8> {
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
     match cli.command.unwrap_or(Operation::Desktop) {
+        Operation::Reviews { operation } => {
+            let path = amux::autoreview::path(&project_dir)?;
+            match operation {
+                ReviewOperation::Status => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&amux::autoreview::load(&path)?)?
+                ),
+                ReviewOperation::Complete { id } => {
+                    let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
+                    amux::autoreview::complete(&path, id, &actor)?;
+                    println!("Review {id} completed");
+                }
+                ReviewOperation::Release { id } => {
+                    amux::autoreview::release(&path, id)?;
+                    println!("Review {id} released without marking commits reviewed");
+                }
+            }
+        }
         Operation::Desktop => {
             #[cfg(feature = "desktop")]
             {
@@ -284,7 +329,11 @@ fn run(cli: Cli) -> Result<u8> {
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
-                    TaskOperation::Create { title, specification } => gateway.request(Method::POST, &project, &[], Some(json!({"title": title, "specification": specification})), Some(&actor)).await,
+                    TaskOperation::Create { title, specification, review_finding } => {
+                        let mut body = json!({"title": title, "specification": specification});
+                        if review_finding { body["labels"] = json!(["autoreview-finding"]); }
+                        gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await
+                    },
                     TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
                     TaskOperation::Claim { id } => gateway.claim(&project, &id.to_string(), &actor).await,
                     TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,

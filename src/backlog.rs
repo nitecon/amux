@@ -37,6 +37,9 @@ pub fn owns(task: &Value, target: &Target) -> bool {
 }
 
 pub fn eligible(task: &Value, target: &Target) -> bool {
+    if crate::autoreview::held_finding(task) {
+        return false;
+    }
     if task["id"]
         .as_str()
         .is_none_or(|id| Uuid::parse_str(id).is_err() || id == Uuid::nil().to_string())

@@ -1174,7 +1174,8 @@ impl Desktop {
         .spacing(10);
         let mut cards = column![
             text(&panel.status).size(11).color(MUTED),
-            text(self.backlog_status()).size(11).color(MUTED)
+            text(self.backlog_status()).size(11).color(MUTED),
+            text(self.autoreview_status()).size(11).color(MUTED)
         ]
         .spacing(8);
         let mut count = 0;

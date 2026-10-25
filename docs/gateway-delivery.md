@@ -37,6 +37,35 @@ not replay input. A newer explicit requeue retires a known handoff fence;
 unconfirmed attempts remain paused until the task is resolved. Completed tasks
 retire their old backlog fences. This does not replay old lifecycle events.
 
+## Autoreview
+
+Enable **Autoreview** in Gateway preferences to review committed code when a
+verified local agent has had no output for 30 seconds and the project's queued
+or TODO list is empty. This setting is off by default and is independent of
+ordinary gateway notifications. Pending task actions, owned work, unfinished
+input, stale task lists and uncertain deliveries prevent a review from starting.
+
+Each review covers at most five of the newest unreviewed commits. When available,
+amux prefers a different provider from the latest commit's author/coauthor or
+the previous reviewer. Eligible tabs in the same local checkout can be selected
+across workspaces. The agent reads project coding guidelines first; if none exist,
+`amux --get-guidelines` prints the bundled general guidelines.
+
+The injected instruction permits review and finding-task creation only, not code
+changes, commits, pushes or PRs. Findings use `amux tasks create --review-finding`
+and the `autoreview-finding` label. Unassigned findings stay available for human
+triage and are excluded from automatic notification injection and task pickup;
+explicit assignment permits normal delivery.
+
+Review receipts are saved per checkout on this device before terminal input.
+Commits are marked reviewed only when the assigned agent runs the supplied
+`amux --agent <id> reviews complete <review-id>` command after completing the
+review and confirming any finding tasks. Sending input alone is not completion.
+`amux reviews status` shows the receipt. Interrupted or uncertain reviews are not
+automatically replayed; after confirming the old review has stopped, an operator
+can run `amux reviews release <review-id>` to permit another attempt. Different
+devices keep independent review histories.
+
 ## Built-in agent identity
 
 amux derives a local project UUID from the normalized Git upstream and canonical

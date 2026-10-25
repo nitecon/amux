@@ -64,6 +64,7 @@ enum Message {
     Preference(PreferenceField, Secret),
     SavePreferences,
     AutomaticNotifications(bool),
+    Autoreview(bool),
     AutoResume(bool),
     ExitNotifications(bool),
     Delegation(u64, desktop_delegation::Event),
@@ -923,6 +924,7 @@ impl Desktop {
             Message::AutomaticNotifications(value) => {
                 self.preferences.draft.automatic_notifications = value
             }
+            Message::Autoreview(value) => self.preferences.draft.autoreview = value,
             Message::Delegation(epoch, event) => return self.delegation_message(epoch, event),
             Message::Save => {
                 self.save();
@@ -1456,6 +1458,7 @@ impl Desktop {
                     self.delivery_tick(),
                     self.delegation_tick(),
                     self.backlog_tick(),
+                    self.autoreview_tick(),
                     self.routing_tick(),
                     updates,
                 ]);
@@ -1833,6 +1836,8 @@ impl Desktop {
             field("Gateway URL", &draft.url, PreferenceField::Url, false),
             field("API key", &draft.api_key, PreferenceField::ApiKey, true),
             checkbox(draft.automatic_notifications).label("Send gateway notifications and assign queued work to idle agents in this app").on_toggle(Message::AutomaticNotifications),
+            checkbox(draft.autoreview).label("Autoreview").on_toggle(Message::Autoreview),
+            text("When no tasks are queued, idle agents review up to five unreviewed commits. Findings wait for human triage; reviews must not change code. A different provider is preferred when available. Review history is saved on this device.").size(12),
             text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12),
             text("Repository matching is required. Settings are saved on this device.").size(12),
             text(&self.workspaces[self.active].gateway.status).size(13),

@@ -112,6 +112,9 @@ pub struct Event {
 impl Event {
     /// Retain routing identifiers and bounded presentation fields from this snapshot.
     pub fn parse(value: &Value) -> Result<Option<Self>> {
+        if crate::autoreview::held_finding(&value["task"]) {
+            return Ok(None);
+        }
         let kind = match value["kind"].as_str() {
             Some("task_created" | "task_unclaimed") => Kind::Created,
             Some("task_commented") => Kind::Commented,

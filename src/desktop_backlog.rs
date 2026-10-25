@@ -18,7 +18,7 @@ pub(in super::super) struct Pick {
 
 #[derive(Default)]
 pub(super) struct State {
-    flight: Option<Pick>,
+    pub(super) flight: Option<Pick>,
     pending: Vec<Pick>,
     pub status: String,
 }
@@ -37,6 +37,9 @@ impl Desktop {
     }
 
     fn backlog_ready(&mut self, pick: &Pick, idle_after: Duration) -> bool {
+        if amux::autoreview::reviewing(&pick.candidate.target.directory, &pick.candidate.actor) {
+            return false;
+        }
         if self.backlog_scope(pick).is_none()
             || !self
                 .delegation
@@ -128,6 +131,7 @@ impl Desktop {
             || self.delegation.queue.is_none()
             || self.delegation.verifying
             || self.delegation.backlog.flight.is_some()
+            || self.delegation.autoreview.flight.is_some()
             || self
                 .delegation
                 .scan_completed
