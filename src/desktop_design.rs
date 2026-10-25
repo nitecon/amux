@@ -1094,50 +1094,48 @@ impl Desktop {
         } else {
             Length::Fixed(320.0)
         };
-        let controls = row![
-            tooltip(
-                control(
-                    "",
-                    if expanded { "‹" } else { "›" },
-                    action(if expanded {
-                        Action::DockTasks
-                    } else {
-                        Action::ToggleTasks
-                    }),
-                    false
-                ),
-                text(if expanded {
-                    "Return tasks to sidebar"
+        let collapse = tooltip(
+            control(
+                "",
+                if expanded { "‹" } else { "›" },
+                action(if expanded {
+                    Action::DockTasks
                 } else {
-                    "Collapse task panel"
+                    Action::ToggleTasks
                 }),
-                tooltip::Position::Bottom
+                false,
             ),
-            tooltip(
-                control(
-                    "single",
-                    "",
-                    action(if expanded {
-                        Action::DockTasks
-                    } else {
-                        Action::DetachTasks
-                    }),
-                    false
-                ),
-                text(if expanded {
-                    "Return tasks to sidebar"
+            text(if expanded {
+                "Return tasks to sidebar"
+            } else {
+                "Collapse task panel"
+            }),
+            tooltip::Position::Bottom,
+        );
+        let detach = tooltip(
+            control(
+                "single",
+                "",
+                action(if expanded {
+                    Action::DockTasks
                 } else {
-                    "Open tasks in a separate window"
+                    Action::DetachTasks
                 }),
-                tooltip::Position::Bottom
+                false,
             ),
-        ]
-        .spacing(4);
+            text(if expanded {
+                "Return tasks to sidebar"
+            } else {
+                "Open tasks in a separate window"
+            }),
+            tooltip::Position::Bottom,
+        );
         let panel = &self.workspaces[self.active].gateway;
         if panel.detail.selected.is_some() {
+            // The detail view's own back button returns to the list, so the collapse arrow is hidden.
             return container(
                 column![
-                    controls,
+                    row![detach],
                     scrollable(self.task_detail_view()).height(Length::Fill)
                 ]
                 .spacing(8),
@@ -1162,7 +1160,7 @@ impl Desktop {
                 icon("server"),
                 text("GATEWAY TASKS").size(12),
                 Space::new().width(Length::Fill),
-                controls,
+                row![collapse, detach].spacing(4),
                 button(text("Raw Events ›").size(10).color(CYAN))
                     .style(button::text)
                     .on_press(action(Action::Events))

@@ -397,7 +397,7 @@ impl Desktop {
         };
         let mut body = column![
             row![
-                control("‹ Tasks", Action::Back, !panel.unresolved()),
+                control("‹ Go back", Action::Back, !panel.unresolved()),
                 control(
                     "Refresh",
                     Action::Refresh,
