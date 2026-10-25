@@ -802,7 +802,8 @@ mod amux_tests {
     fn native_output_echoing_recent_user_input_is_not_program_activity() {
         let (sender, _receiver) = mpsc::channel(8);
         let activity = Arc::new(std::sync::Mutex::new(None));
-        let user_input = Arc::new(std::sync::Mutex::new(Some(std::time::Instant::now())));
+        let user_input =
+            Arc::new(std::sync::Mutex::new(Some(std::time::Instant::now())));
         let proxy = EventProxy {
             sender,
             redraw_pending: Arc::new(AtomicBool::new(false)),
