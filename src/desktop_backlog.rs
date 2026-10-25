@@ -13,6 +13,8 @@ pub(in super::super) struct Pick {
     candidate: Candidate,
     started: Instant,
     delivery: bool,
+    /// Nudges the owner of in-progress work; never claims anything.
+    reminder: bool,
     current_task: Option<Box<Value>>,
 }
 
@@ -51,16 +53,24 @@ impl Desktop {
             return false;
         }
         let target = &pick.candidate.target;
-        if self
-            .workspaces
-            .iter()
-            .filter(|w| w.gateway.project == target.project)
-            .flat_map(|w| &w.gateway.tasks)
-            .any(|task| {
-                task["status"] == "in_progress"
-                    && backlog::owns(task, target)
-                    && (!pick.delivery || task["id"] != pick.task.to_string())
-            })
+        // Ten minutes at the default idle threshold, so a turn waiting on a human
+        // answer is not nudged at once.
+        let idle_after = if pick.reminder {
+            idle_after * 20
+        } else {
+            idle_after
+        };
+        if !pick.reminder
+            && self
+                .workspaces
+                .iter()
+                .filter(|w| w.gateway.project == target.project)
+                .flat_map(|w| &w.gateway.tasks)
+                .any(|task| {
+                    task["status"] == "in_progress"
+                        && backlog::owns(task, target)
+                        && (!pick.delivery || task["id"] != pick.task.to_string())
+                })
         {
             return false;
         }
@@ -252,6 +262,61 @@ impl Desktop {
             {
                 continue;
             }
+            let journaled = |task: &Value| {
+                self.delegation
+                    .queue
+                    .as_ref()
+                    .unwrap()
+                    .journal
+                    .backlog
+                    .iter()
+                    .any(|r| {
+                        task["id"] == r.task.to_string() && backlog::revision(task) == r.revision
+                    })
+            };
+            // Owned in-progress work gets one reminder per task revision instead of more work.
+            if let Some((id, revision)) = panel
+                .tasks
+                .iter()
+                .find(|task| {
+                    task["status"] == "in_progress"
+                        && backlog::owns(task, &candidate.target)
+                        && !journaled(task)
+                })
+                .and_then(|task| {
+                    let id = Uuid::parse_str(task["id"].as_str()?).ok()?;
+                    Some((id, backlog::revision(task)))
+                })
+            {
+                let pick = Pick {
+                    request: Uuid::new_v4(),
+                    task: id,
+                    revision,
+                    scope: self.scope(index),
+                    candidate: candidate.clone(),
+                    started: Instant::now(),
+                    delivery: true,
+                    reminder: true,
+                    current_task: None,
+                };
+                if let Err(error) =
+                    self.delegation
+                        .queue
+                        .as_mut()
+                        .unwrap()
+                        .begin_backlog(backlog::Receipt {
+                            task: id,
+                            revision,
+                            target: candidate.target.clone(),
+                            outcome: Outcome::Queued,
+                        })
+                {
+                    self.delegation.fail(error);
+                    return Task::none();
+                }
+                self.delegation.backlog.pending.push(pick);
+                continue;
+            }
             let task = panel.tasks.iter().find(|task| {
                 backlog::eligible(task, &candidate.target)
                     && !self
@@ -281,6 +346,7 @@ impl Desktop {
                 candidate,
                 started: Instant::now(),
                 delivery: false,
+                reminder: false,
                 current_task: None,
             };
             if self.backlog_ready(&pick, idle_after) {
@@ -365,7 +431,12 @@ impl Desktop {
             let Some(task) = &pick.current_task else {
                 return Task::none();
             };
-            let message = match backlog::review_text(
+            let text = if pick.reminder {
+                backlog::reminder_text
+            } else {
+                backlog::review_text
+            };
+            let message = match text(
                 task,
                 &pick.candidate.target,
                 &pick.candidate.name,
@@ -415,7 +486,12 @@ impl Desktop {
             ) {
                 self.delegation.fail(error);
             }
-            self.delegation.backlog.status = if outcome == Outcome::Submitted {
+            self.delegation.backlog.status = if outcome == Outcome::Submitted && pick.reminder {
+                format!(
+                    "Queue: reminded {} of in-progress task",
+                    pick.candidate.name
+                )
+            } else if outcome == Outcome::Submitted {
                 format!("Queue: sent task to {} for review", pick.candidate.name)
             } else {
                 "Queue delivery unconfirmed. Inspect the task before assigning it again.".into()
@@ -709,6 +785,53 @@ mod tests {
             1,
             "owned active task prevents another assignment"
         );
+    }
+
+    #[test]
+    fn idle_owner_of_in_progress_work_gets_one_reminder_per_revision_without_a_claim() {
+        let (mut app, first, second, tasks) = fixture();
+        let target = app
+            .delegation
+            .candidates
+            .iter()
+            .find(|c| c.target.terminal == first.terminal)
+            .unwrap()
+            .target
+            .clone();
+        let mut owned = tasks[0].clone();
+        owned["status"] = json!("in_progress");
+        owned["updated_at"] = json!(20);
+        owned["owner_origin"] = serde_json::to_value(&target.origin).unwrap();
+        app.workspaces[0].gateway.tasks = vec![owned.clone()];
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(app.delegation.backlog.flight.is_none(), "nothing to claim");
+        assert_eq!(
+            app.delegation.queue.as_ref().unwrap().journal.backlog[0].outcome,
+            Outcome::Queued
+        );
+        // The production threshold waits well past ordinary output.
+        drop(app.backlog_tick());
+        assert!(app.delegation.backlog.flight.is_none());
+        drop(app.backlog_tick_after(Duration::ZERO));
+        let pick = app.delegation.backlog.flight.clone().unwrap();
+        assert!(pick.reminder && pick.delivery);
+        assert_eq!(pick.candidate.target.terminal, first.terminal);
+        verified(&mut app, Some(owned));
+        let lines = wait_lines(&first, 1);
+        assert!(
+            lines[0].contains("In-progress task reminder") && lines[0].contains("Queued item 0")
+        );
+        assert!(lines[0].contains("mark it done if complete"));
+        assert!(second.lines().is_empty());
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(app.delegation.backlog.flight.is_none());
+        assert!(
+            app.delegation.backlog.pending.is_empty(),
+            "one reminder per revision"
+        );
+        assert_eq!(first.lines().len(), 1);
     }
 
     #[test]

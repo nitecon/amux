@@ -82,6 +82,20 @@ pub fn review_text(task: &Value, target: &Target, name: &str, now: i64) -> Resul
     ))
 }
 
+/// A one-time nudge for an idle agent that still owns in-progress work.
+pub fn reminder_text(task: &Value, target: &Target, name: &str, now: i64) -> Result<String> {
+    let mut event = Event::parse(
+        &json!({"id":1,"kind":"task_created", "project_ident":target.project,
+        "created_at":now,"task":task}),
+    )?
+    .ok_or_else(|| anyhow::anyhow!("Not an executable task"))?;
+    event.summary.as_mut().unwrap().heading = "In-progress task reminder".into();
+    Ok(format!(
+        "{} You still own this in-progress task and your terminal has been idle. Continue it, comment on progress, mark it done if complete, or release it if you cannot continue.",
+        event.assigned_terminal_text(target.session, name)
+    ))
+}
+
 pub const REVIEW_COMMENT: &str = "Automatically assigned by amux after 30 seconds without output from this agent's terminal. Evaluate whether this backlog task is still required against the current project and its comments. If uncertain, ask the user. If no longer valid, close it with a reason; otherwise start execution. Respect the task's platform requirements.";
 
 impl Gateway {
