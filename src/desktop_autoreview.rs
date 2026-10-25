@@ -406,6 +406,26 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_requeue_during_review_preparation_wins_idle_assignment() {
+        let (mut app, codex, claude) = fixture();
+        let path = claude.directory.join("preempted-review.json");
+        let work = prepared(&mut app, path.clone());
+        app.workspaces[0].gateway.tasks = vec![json!({
+            "id":Uuid::new_v4(), "project_ident":"alpha", "status":"todo",
+            "labels":[], "updated_at":20, "routing":{"mode":"auto"}
+        })];
+        // The task returned while review preparation was in flight. The ready
+        // batch must not reserve the agent or write review input ahead of it.
+        drop(app.autoreview_prepared_after(work.request, Ok(Some(Box::new(work))), Duration::ZERO));
+        assert!(app.delegation.autoreview.flight.is_none());
+        assert!(!path.exists());
+        app.preferences.current.automatic_notifications = true;
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(app.delegation.backlog.flight.is_some());
+        assert!(codex.lines().is_empty() && claude.lines().is_empty());
+    }
+
+    #[test]
     fn new_queue_work_drafts_disabled_setting_and_rebound_project_block_review_input() {
         for reason in 0..4 {
             let (mut app, codex, claude) = fixture();

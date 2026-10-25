@@ -91,6 +91,13 @@ impl Gateway {
                 && result["project_ident"] == project
                 && result["status"] == "todo"
                 && ownership_cleared(&result)
+                && ((result["routing"].is_null() && current["routing"]["mode"] != "session")
+                    || serde_json::from_value::<crate::task_routing::Routing>(
+                        result["routing"].clone(),
+                    )
+                    .is_ok_and(|route| {
+                        !matches!(route, crate::task_routing::Routing::Session { .. })
+                    }))
                 && (!finding
                     || result["labels"].as_array().is_some_and(|labels| {
                         labels.iter().all(|label| label != "autoreview-finding")

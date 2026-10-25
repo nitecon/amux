@@ -812,6 +812,82 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_requeue_after_assignment_is_not_pinned_to_a_retired_execution() {
+        let (mut app, first, second, tasks) = fixture();
+        app.workspaces[0].gateway.tasks = vec![tasks[0].clone()];
+        drop(app.backlog_tick_after(Duration::ZERO));
+        let pick = app.delegation.backlog.flight.clone().unwrap();
+        verified(&mut app, None);
+        let mut task = tasks[0].clone();
+        task["status"] = json!("in_progress");
+        task["owner_origin"] = json!(pick.candidate.target.origin);
+        drop(app.backlog_claimed(pick.request, Ok(Some(task.clone()))));
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        verified(&mut app, Some(task.clone()));
+        assert_eq!(wait_lines(&first, 1).len(), 1);
+
+        task["status"] = json!("user_review");
+        task["owner_origin"] = Value::Null;
+        task["owner_agent_id"] = Value::Null;
+        task["updated_at"] = json!(20);
+        app.workspaces[0].gateway.tasks = vec![task.clone()];
+        app.delegation.reconcile_backlog("alpha", &[task.clone()]);
+        assert!(
+            app.delegation
+                .queue
+                .as_ref()
+                .unwrap()
+                .journal
+                .backlog
+                .is_empty()
+        );
+
+        // An ordinary task has no finding label. If Return to queue retains a
+        // retired explicit assignment, no current execution can claim it.
+        let mut retired = pick.candidate.target.origin.clone().unwrap();
+        retired.instance_id = Uuid::new_v4();
+        task["status"] = json!("todo");
+        task["updated_at"] = json!(21);
+        task["routing"] = json!({"mode":"session","target":{
+            "origin":retired,"generation":Uuid::new_v4()}});
+        app.workspaces[0].gateway.tasks = vec![task.clone()];
+        let review = Uuid::new_v4();
+        app.delegation.autoreview.flight = Some(review);
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(app.delegation.backlog.flight.is_none());
+        drop(app.autoreview_prepared(review, Ok(None)));
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(
+            app.delegation.backlog.flight.is_none(),
+            "stale explicit route still blocks"
+        );
+
+        // Returning to the general queue must clear that assignment server-side.
+        task["routing"] = json!({"mode":"auto"});
+        app.workspaces[0].gateway.tasks = vec![task.clone()];
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        let next = app.delegation.backlog.flight.clone().unwrap();
+        assert_eq!(next.candidate.target.terminal, second.terminal);
+        verified(&mut app, None);
+        task["status"] = json!("in_progress");
+        task["owner_origin"] = json!(next.candidate.target.origin);
+        drop(app.backlog_claimed(next.request, Ok(Some(task.clone()))));
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        verified(&mut app, Some(task));
+        assert_eq!(wait_lines(&second, 1).len(), 1);
+        assert_eq!(
+            first.lines().len(),
+            1,
+            "old execution is not injected again"
+        );
+    }
+
+    #[test]
     fn idle_assignments_rotate_after_completion_and_failed_claims_do_not_advance() {
         let (mut app, first, second, tasks) = fixture();
         drop(app.backlog_tick_after(Duration::ZERO));

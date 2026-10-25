@@ -502,6 +502,46 @@ fn human_requeue_of_a_finding_requires_confirmed_removal_of_the_hold() {
 }
 
 #[test]
+fn human_requeue_of_an_ordinary_task_must_clear_its_exact_session_route() {
+    let actor = agent(Provider::Codex);
+    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review",
+        "labels":[], "owner_origin":null,"owner_agent_id":null,"started_at":null,"done_at":null,
+        "routing":{"mode":"session","target":{"origin":{
+            "session_id":actor.session_id,"instance_id":actor.instance_id,
+            "provider":actor.provider,"os":actor.os},"generation":uuid::Uuid::new_v4()}}});
+    let mut pinned = parked.clone();
+    pinned["status"] = json!("todo");
+    let mut returned = pinned.clone();
+    returned["routing"] = json!({"mode":"auto"});
+    let mut missing_route = returned.clone();
+    missing_route.as_object_mut().unwrap().remove("routing");
+    let (url, server) = server(vec![
+        reply(200, &parked),
+        reply(200, &pinned),
+        reply(200, &parked),
+        reply(200, &missing_route),
+        reply(200, &parked),
+        reply(200, &returned),
+    ]);
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let id = uuid::Uuid::parse_str(TASK).unwrap();
+        assert!(gateway.resume_desktop_task("demo", id).await.is_err());
+        assert!(gateway.resume_desktop_task("demo", id).await.is_err());
+        assert_eq!(
+            gateway.resume_desktop_task("demo", id).await.unwrap(),
+            returned
+        );
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    for request in requests.iter().skip(1).step_by(2) {
+        assert_eq!(request.body, json!({"status":"todo"}));
+        assert!(!request.head.contains("x-agent-"));
+    }
+}
+
+#[test]
 fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("review-gateway");
     std::fs::create_dir_all(&base).unwrap();
