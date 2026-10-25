@@ -34,6 +34,7 @@ pub(super) enum Action {
     TabMenu(pane_grid::Pane, u64),
     DismissTabMenu,
     CloseMenuTab,
+    RestartMenuTab,
     View(View),
     Filter(Filter),
     Events,
@@ -319,6 +320,13 @@ impl Desktop {
                     && self.workspaces[self.active].id == workspace
                 {
                     return self.update(Message::CloseTab(pane, tab));
+                }
+            }
+            Action::RestartMenuTab => {
+                if let Some((workspace, pane, tab, _)) = self.design.tab_menu.take()
+                    && self.workspaces[self.active].id == workspace
+                {
+                    return self.update(Message::RestartTab(pane, tab));
                 }
             }
             Action::View(mode) => {
@@ -803,16 +811,22 @@ impl Desktop {
                 }),
             );
         }
-        if let Some((workspace, _, _, position)) = self.design.tab_menu
+        if let Some((workspace, pane, tab, position)) = self.design.tab_menu
             && self.workspaces[self.active].id == workspace
         {
+            let agent = self.workspaces[self.active]
+                .panes
+                .get(pane)
+                .and_then(|pane| pane.tabs.iter().find(|t| t.id == tab))
+                .and_then(tab_provider)
+                .is_some();
             let viewport = self
                 .design
                 .viewport
                 .unwrap_or(iced::Size::new(1600.0, 1000.0));
             let position = iced::Point::new(
                 position.x.clamp(0.0, (viewport.width - 180.0).max(0.0)),
-                position.y.clamp(0.0, (viewport.height - 44.0).max(0.0)),
+                position.y.clamp(0.0, (viewport.height - 84.0).max(0.0)),
             );
             layers = layers
                 .push(
@@ -822,12 +836,24 @@ impl Desktop {
                 )
                 .push(
                     container(opaque(
-                        container(
-                            button(row![icon("x"), text("Close terminal").size(12)].spacing(8))
-                                .on_press(action(Action::CloseMenuTab))
-                                .padding([8, 12])
-                                .style(|theme, status| button_style(false, theme, status)),
-                        )
+                        container({
+                            let item = |glyph, label, message| {
+                                button(row![icon(glyph), text(label).size(12)].spacing(8))
+                                    .on_press(action(message))
+                                    .padding([8, 12])
+                                    .width(Length::Fill)
+                                    .style(|theme, status| button_style(false, theme, status))
+                            };
+                            let mut menu = column![];
+                            if agent {
+                                menu = menu.push(item(
+                                    "refresh",
+                                    "Restart session",
+                                    Action::RestartMenuTab,
+                                ));
+                            }
+                            menu.push(item("x", "Close terminal", Action::CloseMenuTab))
+                        })
                         .padding(4)
                         .width(180)
                         .style(|_| surface(CARD, true)),
@@ -1850,6 +1876,31 @@ mod tests {
         assert!(app.workspaces[0].panes.get(other).is_none());
         assert_eq!(app.workspaces[0].focused, original);
         assert!(app.design.tab_menu.is_none());
+    }
+
+    #[test]
+    fn restart_session_relaunches_only_agent_tabs_in_place_on_the_same_terminal_number() {
+        let mut app = super::super::tests::desktop();
+        let pane = app.workspaces[0].focused;
+        let tab = app.workspaces[0].panes.get(pane).unwrap().tabs[0].id;
+        app.workspaces[0].panes.get_mut(pane).unwrap().tabs[0].provider = None;
+        drop(app.update(Message::RestartTab(pane, tab)));
+        assert!(
+            app.status.contains("Only Codex or Claude"),
+            "{}",
+            app.status
+        );
+        let first = &mut app.workspaces[0].panes.get_mut(pane).unwrap().tabs[0];
+        first.provider = Some(Provider::Claude);
+        first.delegation.terminal_number = 42;
+        drop(app.design_message(Action::TabMenu(pane, tab)));
+        drop(app.design_message(Action::RestartMenuTab));
+        assert!(app.design.tab_menu.is_none());
+        let p = app.workspaces[0].panes.get(pane).unwrap();
+        assert_eq!(p.tabs.len(), 1);
+        assert_eq!(p.tabs[0].id, tab);
+        assert_eq!(p.tabs[0].provider, Some(Provider::Claude));
+        assert_eq!(p.tabs[0].delegation.terminal_number, 42);
     }
 
     #[test]

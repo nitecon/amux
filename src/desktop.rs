@@ -58,6 +58,8 @@ enum Message {
     Split(pane_grid::Axis),
     Focus(pane_grid::Pane),
     CloseTab(pane_grid::Pane, u64),
+    /// Exit an agent tab's provider and relaunch the same session in place.
+    RestartTab(pane_grid::Pane, u64),
     Preferences(bool),
     PreferencesTab(PreferencesTab),
     WindowReady,
@@ -881,6 +883,7 @@ impl Desktop {
                 | Message::SelectTab(..)
                 | Message::Split(_)
                 | Message::CloseTab(..)
+                | Message::RestartTab(..)
                 | Message::Resize(_)
         ) {
             self.dismiss_tab_menu();
@@ -1027,6 +1030,52 @@ impl Desktop {
                 {
                     workspace.focused = sibling;
                 }
+                return self.focus();
+            }
+            Message::RestartTab(pane_id, terminal_id) => {
+                let workspace = &self.workspaces[self.active];
+                let Some((index, tab)) = workspace.panes.get(pane_id).and_then(|pane| {
+                    pane.tabs
+                        .iter()
+                        .enumerate()
+                        .find(|(_, t)| t.id == terminal_id)
+                }) else {
+                    return Task::none();
+                };
+                let Some(provider) = tab.delegation.provider.or(tab.provider) else {
+                    self.status = "Only Codex or Claude sessions can be restarted".into();
+                    return Task::none();
+                };
+                let number = Some(tab.delegation.terminal_number).filter(|n| *n > 0);
+                let directory = tab
+                    .terminal
+                    .as_ref()
+                    .and_then(|terminal| amux::session::working_directory(terminal.child_pid()?))
+                    .or_else(|| tab.delegation.directory.clone())
+                    .unwrap_or_else(|| workspace.directory.clone());
+                let title = tab.title.clone();
+                self.withdraw(terminal_id);
+                // Retire the old PTY first; the relaunch keeps its terminal number, so
+                // the same session (and, once it exits, instance) continues.
+                let pane = self.workspaces[self.active]
+                    .panes
+                    .get_mut(pane_id)
+                    .expect("pane exists");
+                drop(pane.tabs.remove(index));
+                let mut tab =
+                    self.open_terminal(terminal_id, &directory, Some(provider), None, true, number);
+                if tab.terminal.is_some() {
+                    tab.title = title;
+                } else {
+                    // A failed relaunch stays on the same session for a later retry.
+                    tab.delegation.terminal_number = number.unwrap_or_default();
+                }
+                let pane = self.workspaces[self.active]
+                    .panes
+                    .get_mut(pane_id)
+                    .expect("pane exists");
+                pane.tabs.insert(index, tab);
+                pane.active = index;
                 return self.focus();
             }
             Message::Preferences(open) => {

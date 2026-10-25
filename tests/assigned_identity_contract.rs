@@ -1,6 +1,6 @@
 //! Task identity comes from an amux assignment, independently of OS ancestry.
 use amux::identity::{AgentIdentity, AgentRecord, Provider};
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, time::Duration};
 
 fn run(state: &Path, actor: &AgentIdentity, selector: &str) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_amux"));
@@ -120,7 +120,7 @@ fn relaunched_terminal_keeps_its_instance_only_after_the_previous_execution_is_g
     // While the previous execution lives, a relaunch never shares its instance.
     let live = AgentIdentity::for_terminal(Provider::Claude, project, 7)
         .unwrap()
-        .resume_at(state.path());
+        .resume_at(state.path(), Duration::ZERO);
     assert_eq!(live.session_id, previous.session_id);
     assert_ne!(live.instance_id, previous.instance_id);
 
@@ -128,8 +128,29 @@ fn relaunched_terminal_keeps_its_instance_only_after_the_previous_execution_is_g
     child.wait().unwrap();
     let resumed = AgentIdentity::for_terminal(Provider::Claude, project, 7)
         .unwrap()
-        .resume_at(state.path());
+        .resume_at(state.path(), Duration::ZERO);
     assert_eq!(resumed, previous);
+
+    // An in-place restart waits briefly for the previous execution to finish exiting.
+    let exiting = AgentIdentity::for_terminal(Provider::Claude, project, 9).unwrap();
+    let mut child = if cfg!(windows) {
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Milliseconds 300"])
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("sleep").arg("0.3").spawn().unwrap()
+    };
+    AgentRecord::inspect(exiting.clone(), child.id())
+        .unwrap()
+        .register_at(state.path())
+        .unwrap();
+    let reaper = std::thread::spawn(move || child.wait().unwrap());
+    let restarted = AgentIdentity::for_terminal(Provider::Claude, project, 9)
+        .unwrap()
+        .resume_at(state.path(), Duration::from_secs(10));
+    assert_eq!(restarted, exiting);
+    reaper.join().unwrap();
 
     // Other terminals and providers never inherit it.
     for other in [
@@ -137,7 +158,10 @@ fn relaunched_terminal_keeps_its_instance_only_after_the_previous_execution_is_g
         AgentIdentity::for_terminal(Provider::Codex, project, 7).unwrap(),
     ] {
         assert_ne!(
-            other.clone().resume_at(state.path()).instance_id,
+            other
+                .clone()
+                .resume_at(state.path(), Duration::ZERO)
+                .instance_id,
             previous.instance_id
         );
     }

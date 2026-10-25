@@ -208,8 +208,9 @@ impl AgentIdentity {
 
     /// A relaunch of the same terminal session (e.g. after an amux restart) keeps
     /// the previous execution identity once that execution is confirmed gone, so
-    /// it still owns the tasks it claimed. A live execution is never shared.
-    pub fn resume_at(mut self, state: &Path) -> Self {
+    /// it still owns the tasks it claimed. A live execution is never shared; an
+    /// in-place restart may `wait` briefly for the previous execution to exit.
+    pub fn resume_at(mut self, state: &Path, wait: std::time::Duration) -> Self {
         let path = state
             .join("agents")
             .join(format!("{}.json", self.session_id));
@@ -221,8 +222,14 @@ impl AgentIdentity {
             && record.identity.provider == self.provider
             && record.identity.os == self.os
             && !record.identity.instance_id.is_nil()
-            && process_is_gone(record.pid, &record.process_generation)
         {
+            let deadline = std::time::Instant::now() + wait;
+            while !process_is_gone(record.pid, &record.process_generation) {
+                if std::time::Instant::now() >= deadline {
+                    return self;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             self.instance_id = record.identity.instance_id;
         }
         self

@@ -395,7 +395,10 @@ async fn confirm_owner(
 }
 
 fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Result<u8> {
-    let actor = AgentIdentity::new(provider, &project)?.resume_at(&identity::state_directory()?);
+    let actor = AgentIdentity::new(provider, &project)?.resume_at(
+        &identity::state_directory()?,
+        std::time::Duration::from_secs(5),
+    );
     let mut command = Command::new(provider.command());
     command
         .args(args)
