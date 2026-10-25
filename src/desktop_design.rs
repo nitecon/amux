@@ -132,6 +132,12 @@ pub(super) fn primary_action(_: &Theme, status: button::Status) -> button::Style
         ..Default::default()
     }
 }
+/// Kanban order: in-progress work first; the gateway's ranking is kept otherwise.
+fn kanban_order(tasks: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    let mut ordered = tasks.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|task| task["status"] != "in_progress");
+    ordered
+}
 fn status_badge(status: &str) -> Element<'static, Message> {
     let (label, color) = match status {
         "done" => ("COMPLETED", GREEN),
@@ -1208,7 +1214,7 @@ impl Desktop {
         ]
         .spacing(8);
         let mut count = 0;
-        for task in &panel.tasks {
+        for task in kanban_order(&panel.tasks) {
             let status = task["status"].as_str().unwrap_or("unknown");
             if !matches_filter(self.design.filter, status) {
                 continue;
@@ -1922,6 +1928,20 @@ mod tests {
         assert_eq!(p.tabs[0].id, tab);
         assert_eq!(p.tabs[0].provider, Some(Provider::Claude));
         assert_eq!(p.tabs[0].delegation.terminal_number, 42);
+    }
+
+    #[test]
+    fn in_progress_tasks_lead_the_list_and_keep_gateway_order_otherwise() {
+        let tasks = ["todo", "in_progress", "user_review", "in_progress", "todo"]
+            .iter()
+            .enumerate()
+            .map(|(i, status)| serde_json::json!({"id": i, "status": status}))
+            .collect::<Vec<_>>();
+        let order = kanban_order(&tasks)
+            .iter()
+            .map(|task| task["id"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(order, [1, 3, 0, 2, 4]);
     }
 
     #[test]
