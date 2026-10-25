@@ -1224,65 +1224,74 @@ impl Desktop {
             let owner = self.design_task_owner(task);
             // Work in progress by an agent outside this app stays visible at a glance.
             let elsewhere = self.task_owned_elsewhere(task);
-            let item =
-                column![
-                    row![
-                        text(format!("#{}", id.chars().take(8).collect::<String>()))
-                            .size(10)
-                            .font(iced::Font::MONOSPACE)
-                            .color(CYAN),
-                        Space::new().width(Length::Fill),
-                        status_badge(status),
-                        button(text("Open").size(10))
-                            .style(button::text)
-                            .on_press_maybe(Uuid::parse_str(id).ok().map(
-                                |id| Message::ManageTask(super::desktop_tasks::Action::Open(id))
-                            )),
-                        button(text("Assign").size(10))
-                            .style(button::text)
-                            .on_press_maybe(
-                                matches!(status, "todo" | "in_progress")
-                                    .then(|| Uuid::parse_str(id).ok())
-                                    .flatten()
-                                    .map(|id| Message::ManageTask(
-                                        super::desktop_tasks::Action::AssignTask(id)
-                                    ))
-                            )
-                    ],
-                    text(task["title"].as_str().unwrap_or("Untitled")).size(12),
-                    if elsewhere {
-                        text(format!("→ {owner} · working outside this app"))
-                            .size(10)
-                            .color(RED)
-                    } else {
-                        text(format!("→ {owner}")).size(10).color(MUTED)
-                    },
-                    text(format!(
-                        "Project: {}{}",
-                        panel.project,
-                        task["updated_at"]
-                            .as_u64()
-                            .map(|ms| format!(
-                                " · updated {}s ago",
-                                unix_ms().saturating_sub(ms) / 1000
-                            ))
-                            .unwrap_or_default()
-                    ))
-                    .size(10)
-                    .font(iced::Font::MONOSPACE)
-                    .color(MUTED),
-                ]
-                .spacing(9);
+            let task_id = Uuid::parse_str(id).ok();
+            let manage = |action: fn(Uuid) -> super::desktop_tasks::Action| {
+                task_id.map(|id| Message::ManageTask(action(id)))
+            };
+            // The assignee line is the Assign control for work that can still be assigned.
+            let assignee = button(
+                if elsewhere {
+                    text(format!("→ {owner} · working outside this app")).color(RED)
+                } else {
+                    text(format!("→ {owner}")).color(MUTED)
+                }
+                .size(10),
+            )
+            .padding(0)
+            .style(button::text)
+            .on_press_maybe(
+                matches!(status, "todo" | "in_progress")
+                    .then(|| manage(super::desktop_tasks::Action::AssignTask))
+                    .flatten(),
+            );
+            let item = column![
+                row![
+                    text(format!("#{}", id.chars().take(8).collect::<String>()))
+                        .size(10)
+                        .font(iced::Font::MONOSPACE)
+                        .color(CYAN),
+                    Space::new().width(Length::Fill),
+                    status_badge(status),
+                ],
+                text(task["title"].as_str().unwrap_or("Untitled")).size(12),
+                assignee,
+                text(format!(
+                    "Project: {}{}",
+                    panel.project,
+                    task["updated_at"]
+                        .as_u64()
+                        .map(|ms| format!(
+                            " · updated {}s ago",
+                            unix_ms().saturating_sub(ms) / 1000
+                        ))
+                        .unwrap_or_default()
+                ))
+                .size(10)
+                .font(iced::Font::MONOSPACE)
+                .color(MUTED),
+            ]
+            .spacing(9);
+            // Clicking anywhere on the card opens the task; hovering outlines it.
             cards = cards.push(
-                container(item)
+                button(item)
                     .padding(11)
                     .width(Length::Fill)
-                    .style(move |_| {
-                        let mut style = surface(CARD, true);
+                    .on_press_maybe(manage(super::desktop_tasks::Action::Open))
+                    .style(move |theme: &Theme, state| {
+                        let card = surface(CARD, true);
+                        let mut border = card.border;
                         if elsewhere {
-                            style.border.color = ORANGE;
+                            border.color = ORANGE;
                         }
-                        style
+                        if matches!(state, button::Status::Hovered | button::Status::Pressed) {
+                            border.color = CYAN;
+                        }
+                        button::Style {
+                            background: card.background,
+                            text_color: theme.palette().text,
+                            border,
+                            ..Default::default()
+                        }
                     }),
             );
         }
