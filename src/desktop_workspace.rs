@@ -40,6 +40,8 @@ pub(super) struct WorkspaceDialog {
     status: String,
     /// The shared browser; it lists files only while choosing a script.
     browser: Option<FileBrowser>,
+    /// The folder browser embedded in the General tab.
+    folders: Option<FileBrowser>,
 }
 
 impl Desktop {
@@ -170,8 +172,10 @@ impl Desktop {
             open: true,
             last_directory,
             folder: directory
+                .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
+            folders: directory.map(|d| FileBrowser::new(d, false, None)),
             ..Default::default()
         };
         iced::widget::operation::focus("workspace-name")
@@ -224,9 +228,18 @@ impl Desktop {
                 }
             }
             Browser(message) => {
-                if let Some(browser) = &mut dialog.browser {
+                let embedded = dialog.browser.is_none() && dialog.tab == Kind::General;
+                let browser = if embedded {
+                    dialog.folders.as_mut()
+                } else {
+                    dialog.browser.as_mut()
+                };
+                if let Some(browser) = browser {
                     let naming = matches!(&message, BrowserMessage::NewFolder(Some(name)) if name.is_empty());
                     browser.update(message);
+                    if embedded {
+                        dialog.folder = browser.target().display().to_string();
+                    }
                     if naming {
                         return iced::widget::operation::focus("browser-new-folder");
                     }
@@ -334,47 +347,13 @@ impl Desktop {
         let msg = Message::Workspace;
         if let Some(browser) = &dialog.browser {
             let target = browser.target();
-            let name = target
-                .file_name()
-                .unwrap_or(target.as_os_str())
-                .to_string_lossy()
-                .into_owned();
             // Scripts must be files; workspaces must be folders.
             let accept = if browser.files {
                 target.is_file().then(|| msg(Pick(target.to_path_buf())))
             } else {
                 browser.error.is_empty().then(|| msg(UseFolder))
             };
-            let mut footer = row![].spacing(10).align_y(iced::Alignment::Center);
-            if !browser.files {
-                footer =
-                    footer
-                        .push(button(text("New folder").size(12)).on_press(msg(Browser(
-                            BrowserMessage::NewFolder(Some(String::new())),
-                        ))));
-            }
-            footer = footer
-                .push(
-                    column![
-                        text(if browser.files {
-                            "SELECTED SCRIPT"
-                        } else {
-                            "SELECTED FOLDER TO OPEN"
-                        })
-                        .size(10),
-                        text(target.display().to_string())
-                            .font(iced::Font::MONOSPACE)
-                            .size(12),
-                    ]
-                    .spacing(2)
-                    .width(Length::Fill),
-                )
-                .push(button(text("Cancel").size(12)).on_press(msg(Back)))
-                .push(
-                    button(text(format!("Accept \"{name}\"")).size(12))
-                        .style(desktop_design::primary_action)
-                        .on_press_maybe(accept),
-                );
+            let footer = browser_footer(browser, accept, msg(Back));
             return container(
                 column![
                     text(if browser.files {
@@ -383,7 +362,7 @@ impl Desktop {
                         "Choose folder"
                     })
                     .size(22),
-                    browser.view(|m| Message::Workspace(Browser(m)), footer.into()),
+                    browser.view(|m| Message::Workspace(Browser(m)), footer),
                 ]
                 .spacing(12),
             )
@@ -418,6 +397,38 @@ impl Desktop {
             .spacing(8)
         ]
         .spacing(16);
+        if let (Kind::General, Some(folders)) = (dialog.tab, &dialog.folders) {
+            let accept = (!dialog.busy && folders.error.is_empty()).then(|| msg(Start));
+            body = body
+                .push(
+                    row![
+                        text_input(
+                            if cfg!(windows) {
+                                "Initialization script (optional): PowerShell .ps1 or .cmd/.bat"
+                            } else {
+                                "Initialization script (optional): POSIX shell script"
+                            },
+                            &dialog.script
+                        )
+                        .on_input(|v| Message::Workspace(Script(v))),
+                        button("Browse…").on_press(msg(Browse(true)))
+                    ]
+                    .spacing(8),
+                )
+                .push(
+                    container(folders.view(
+                        |m| Message::Workspace(Browser(m)),
+                        browser_footer(folders, accept, msg(Cancel)),
+                    ))
+                    .height(Length::Fill),
+                )
+                .push(text(&dialog.status).size(13));
+            return container(body)
+                .padding(24)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
         body = body.push(text(match dialog.tab {
             Kind::General => "Open an existing folder. New terminals will start there.",
             Kind::Clone => "Clone a Git repository into a new folder inside the selected parent.",
@@ -498,6 +509,51 @@ impl Desktop {
     }
 }
 
+/// New folder, the selected target, Cancel and a bottom-right Accept.
+fn browser_footer<'a>(
+    browser: &FileBrowser,
+    accept: Option<Message>,
+    cancel: Message,
+) -> Element<'a, Message> {
+    let target = browser.target();
+    let name = target
+        .file_name()
+        .unwrap_or(target.as_os_str())
+        .to_string_lossy()
+        .into_owned();
+    let mut footer = row![].spacing(10).align_y(iced::Alignment::Center);
+    if !browser.files {
+        footer = footer.push(
+            button(text("New folder").size(12)).on_press(Message::Workspace(
+                WorkspaceMessage::Browser(BrowserMessage::NewFolder(Some(String::new()))),
+            )),
+        );
+    }
+    footer
+        .push(
+            column![
+                text(if browser.files {
+                    "SELECTED SCRIPT"
+                } else {
+                    "SELECTED FOLDER TO OPEN"
+                })
+                .size(10),
+                text(target.display().to_string())
+                    .font(iced::Font::MONOSPACE)
+                    .size(12),
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+        )
+        .push(button(text("Cancel").size(12)).on_press(cancel))
+        .push(
+            button(text(format!("Accept \"{name}\"")).size(12))
+                .style(desktop_design::primary_action)
+                .on_press_maybe(accept),
+        )
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,7 +573,6 @@ mod tests {
             workspace.directory = fixture.path().to_path_buf();
         }
         drop(app.open_workspace_dialog());
-        drop(app.workspace_message(WorkspaceMessage::Browse(false)));
         drop(app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(folder))));
         drop(app.workspace_message(WorkspaceMessage::Cancel));
         assert!(app.dirty);
@@ -527,11 +582,10 @@ mod tests {
         let mut reopened = super::super::tests::desktop();
         reopened.workspace_dialog.last_directory = saved.workspace_browser_directory;
         drop(reopened.open_workspace_dialog());
-        drop(reopened.workspace_message(WorkspaceMessage::Browse(false)));
         assert_eq!(
             reopened
                 .workspace_dialog
-                .browser
+                .folders
                 .as_ref()
                 .unwrap()
                 .directory,
@@ -550,7 +604,6 @@ mod tests {
         std::fs::create_dir(&folder).unwrap();
         let mut app = super::super::tests::desktop();
         drop(app.open_workspace_dialog());
-        drop(app.workspace_message(WorkspaceMessage::Browse(false)));
         drop(
             app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(
                 folder.clone(),
@@ -586,17 +639,15 @@ mod tests {
         let expected = folder.canonicalize().unwrap();
         let mut app = super::super::tests::desktop();
         drop(app.open_workspace_dialog());
-        drop(app.workspace_message(WorkspaceMessage::Browse(false)));
         drop(app.workspace_message(WorkspaceMessage::Browser(BrowserMessage::Open(folder))));
         assert!(
             app.workspace_dialog
-                .browser
+                .folders
                 .as_ref()
                 .unwrap()
                 .error
                 .is_empty()
         );
-        drop(app.workspace_message(WorkspaceMessage::UseFolder));
         assert_eq!(PathBuf::from(&app.workspace_dialog.folder), expected);
         drop(app.workspace_message(WorkspaceMessage::Start));
         assert!(!app.workspace_dialog.open);
