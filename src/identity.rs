@@ -206,6 +206,28 @@ impl AgentIdentity {
         })
     }
 
+    /// A relaunch of the same terminal session (e.g. after an amux restart) keeps
+    /// the previous execution identity once that execution is confirmed gone, so
+    /// it still owns the tasks it claimed. A live execution is never shared.
+    pub fn resume_at(mut self, state: &Path) -> Self {
+        let path = state
+            .join("agents")
+            .join(format!("{}.json", self.session_id));
+        if let Ok(bytes) = std::fs::read(path)
+            && let Ok(record) = serde_json::from_slice::<AgentRecord>(&bytes)
+            && record.identity.session_id == self.session_id
+            && record.identity.project_id == self.project_id
+            && record.identity.agent_id == self.agent_id
+            && record.identity.provider == self.provider
+            && record.identity.os == self.os
+            && !record.identity.instance_id.is_nil()
+            && process_is_gone(record.pid, &record.process_generation)
+        {
+            self.instance_id = record.identity.instance_id;
+        }
+        self
+    }
+
     pub fn environment(&self) -> HashMap<String, String> {
         HashMap::from([
             ("AMUX_AGENT_SESSION_ID".into(), self.session_id.to_string()),

@@ -93,3 +93,52 @@ fn name_pool_is_500_unique_technology_names_with_owner_in_the_middle() {
     let later = AgentIdentity::for_terminal(Provider::Codex, project, 501).unwrap();
     assert_ne!(first.display_name(), later.display_name());
 }
+
+#[test]
+fn relaunched_terminal_keeps_its_instance_only_after_the_previous_execution_is_gone() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("assigned-identity");
+    std::fs::create_dir_all(&base).unwrap();
+    let state = tempfile::tempdir_in(base).unwrap();
+    let project = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sleeper = || {
+        if cfg!(windows) {
+            Command::new("powershell")
+                .args(["-NoProfile", "-Command", "Start-Sleep 30"])
+                .spawn()
+                .unwrap()
+        } else {
+            Command::new("sleep").arg("30").spawn().unwrap()
+        }
+    };
+    let previous = AgentIdentity::for_terminal(Provider::Claude, project, 7).unwrap();
+    let mut child = sleeper();
+    AgentRecord::inspect(previous.clone(), child.id())
+        .unwrap()
+        .register_at(state.path())
+        .unwrap();
+
+    // While the previous execution lives, a relaunch never shares its instance.
+    let live = AgentIdentity::for_terminal(Provider::Claude, project, 7)
+        .unwrap()
+        .resume_at(state.path());
+    assert_eq!(live.session_id, previous.session_id);
+    assert_ne!(live.instance_id, previous.instance_id);
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let resumed = AgentIdentity::for_terminal(Provider::Claude, project, 7)
+        .unwrap()
+        .resume_at(state.path());
+    assert_eq!(resumed, previous);
+
+    // Other terminals and providers never inherit it.
+    for other in [
+        AgentIdentity::for_terminal(Provider::Claude, project, 8).unwrap(),
+        AgentIdentity::for_terminal(Provider::Codex, project, 7).unwrap(),
+    ] {
+        assert_ne!(
+            other.clone().resume_at(state.path()).instance_id,
+            previous.instance_id
+        );
+    }
+}

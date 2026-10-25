@@ -224,6 +224,7 @@ fn discover_root(root: Root, registry: &std::path::Path) -> Option<Found> {
     {
         actor = record.identity;
     } else {
+        actor = actor.resume_at(registry);
         let record = AgentRecord::inspect(actor.clone(), process.pid).ok()?;
         if record.process_generation != process.generation {
             return None;
