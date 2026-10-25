@@ -762,6 +762,56 @@ mod tests {
     }
 
     #[test]
+    fn empty_autoreview_check_does_not_lock_out_a_returned_finding() {
+        let (mut app, first, second, tasks) = fixture();
+        let mut task = tasks[0].clone();
+        task["labels"] = json!(["autoreview-finding", "bug"]);
+        app.workspaces[0].gateway.tasks = vec![task.clone()];
+        app.preferences.current.autoreview = true;
+        let request = Uuid::new_v4();
+        app.delegation.autoreview.flight = Some(request);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(app.delegation.backlog.flight.is_none());
+        // Preparing a review found no unreviewed commits. Only its transient
+        // flight is cleared; this must not reserve the agent indefinitely.
+        drop(app.autoreview_prepared(request, Ok(None)));
+        assert!(app.delegation.autoreview.flight.is_none());
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(
+            app.delegation.backlog.flight.is_none(),
+            "finding still needs triage"
+        );
+
+        // The human's authoritative return clears the hold, preserving labels.
+        task["labels"] = json!(["bug"]);
+        task["updated_at"] = json!(12);
+        app.workspaces[0].gateway.tasks = vec![task.clone()];
+        app.delegation.reconcile_backlog("alpha", &[task.clone()]);
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        let pick = app
+            .delegation
+            .backlog
+            .flight
+            .clone()
+            .expect("returned work is selected");
+        assert_eq!(pick.task.to_string(), task["id"]);
+        assert_eq!(pick.candidate.target.terminal, first.terminal);
+        verified(&mut app, None);
+        task["status"] = json!("in_progress");
+        task["owner_origin"] = json!(pick.candidate.target.origin);
+        drop(app.backlog_claimed(pick.request, Ok(Some(task.clone()))));
+        refreshed(&mut app);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        verified(&mut app, Some(task));
+        let lines = wait_lines(&first, 1);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Queued task review"));
+        assert!(second.lines().is_empty());
+    }
+
+    #[test]
     fn idle_assignments_rotate_after_completion_and_failed_claims_do_not_advance() {
         let (mut app, first, second, tasks) = fixture();
         drop(app.backlog_tick_after(Duration::ZERO));

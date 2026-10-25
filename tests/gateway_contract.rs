@@ -453,6 +453,55 @@ fn user_review_requires_exact_owner_and_cleared_ack_then_only_a_human_requeues()
 }
 
 #[test]
+fn human_requeue_of_a_finding_requires_confirmed_removal_of_the_hold() {
+    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review",
+        "labels":["autoreview-finding","os:linux","bug"],
+        "owner_origin":null,"owner_agent_id":null,"started_at":null,"done_at":null});
+    let mut returned = parked.clone();
+    returned["status"] = json!("todo");
+    returned["labels"] = json!(["os:linux", "bug"]);
+    let mut held = returned.clone();
+    held["labels"] = parked["labels"].clone();
+    let mut missing_labels = returned.clone();
+    missing_labels.as_object_mut().unwrap().remove("labels");
+    let mut wrong_id = returned.clone();
+    wrong_id["id"] = json!(uuid::Uuid::new_v4());
+    let replies = [
+        returned.clone(),
+        held,
+        missing_labels,
+        parked.clone(),
+        wrong_id,
+    ];
+    let (url, server) = server(
+        replies
+            .iter()
+            .flat_map(|result| [reply(200, &parked), reply(200, result)])
+            .collect(),
+    );
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let id = uuid::Uuid::parse_str(TASK).unwrap();
+        assert_eq!(
+            gateway.resume_desktop_task("demo", id).await.unwrap(),
+            returned
+        );
+        for _ in 1..replies.len() {
+            assert!(gateway.resume_desktop_task("demo", id).await.is_err());
+        }
+    });
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 10, "unconfirmed returns are never retried");
+    for request in requests.iter().skip(1).step_by(2) {
+        assert_eq!(request.body, json!({"status":"todo"}));
+        assert!(
+            !request.head.contains("x-agent-"),
+            "only the human can approve"
+        );
+    }
+}
+
+#[test]
 fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("review-gateway");
     std::fs::create_dir_all(&base).unwrap();

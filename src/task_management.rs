@@ -74,6 +74,9 @@ impl Gateway {
             current["status"] == "user_review",
             "Only a task in User review can be returned to the queue"
         );
+        let finding = current["labels"]
+            .as_array()
+            .is_some_and(|labels| labels.iter().any(|label| label == "autoreview-finding"));
         let result = self
             .request(
                 Method::PATCH,
@@ -84,7 +87,14 @@ impl Gateway {
             )
             .await?;
         ensure!(
-            ownership_cleared(&result),
+            result["id"] == task.to_string()
+                && result["project_ident"] == project
+                && result["status"] == "todo"
+                && ownership_cleared(&result)
+                && (!finding
+                    || result["labels"].as_array().is_some_and(|labels| {
+                        labels.iter().all(|label| label != "autoreview-finding")
+                    })),
             "Task return is unconfirmed; inspect it before retrying"
         );
         Ok(result)
