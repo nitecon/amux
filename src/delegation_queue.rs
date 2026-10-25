@@ -23,6 +23,10 @@ pub struct Attempt {
     pub target: Target,
 }
 
+fn awaits_assignment(event: &Event) -> bool {
+    event.state() == "todo" && event.owner.is_none() && event.owner_agent_id.is_none()
+}
+
 impl Queue {
     pub fn begin_backlog(&mut self, receipt: crate::backlog::Receipt) -> Result<()> {
         ensure!(
@@ -178,6 +182,8 @@ impl Queue {
             Some("Event expired or has no valid timestamp")
         } else if !approved {
             Some("Automatic terminal notifications are disabled")
+        } else if awaits_assignment(&receipt.event) {
+            Some("Queued for idle-agent assignment; only the claimed agent receives work")
         } else if candidates.is_empty() {
             Some("No running agent at event arrival")
         } else {
@@ -235,6 +241,8 @@ impl Queue {
                 let current = targets.iter().find(|t| recipient.target.same_attachment(t));
                 let reason = if !approved {
                     Some("Automatic terminal notifications disabled")
+                } else if awaits_assignment(&receipt.event) {
+                    Some("Queued for idle-agent assignment; only the claimed agent receives work")
                 } else if !receipt.event.fresh(now) {
                     Some("Event expired while waiting")
                 } else if current.is_none() {

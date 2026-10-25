@@ -20,6 +20,7 @@ pub(in super::super) struct Pick {
 pub(super) struct State {
     pub(super) flight: Option<Pick>,
     pending: Vec<Pick>,
+    last_assigned: HashMap<String, (u64, u64)>,
     pub status: String,
 }
 
@@ -196,7 +197,16 @@ impl Desktop {
             }
         }
         let mut candidates = self.delegation.candidates.clone();
-        candidates.sort_by_key(|c| (c.root.number, c.root.terminal));
+        candidates.sort_by_key(|c| {
+            let position = (c.root.number, c.root.terminal);
+            let wrapped = self
+                .delegation
+                .backlog
+                .last_assigned
+                .get(&c.target.project)
+                .is_some_and(|last| position <= *last);
+            (c.target.project.clone(), wrapped, position)
+        });
         for candidate in candidates {
             let Some(index) = self
                 .workspaces
@@ -489,6 +499,10 @@ impl Desktop {
         }
         match result {
             Ok(Some(task)) => {
+                self.delegation.backlog.last_assigned.insert(
+                    pick.candidate.target.project.clone(),
+                    (pick.candidate.root.number, pick.candidate.root.terminal),
+                );
                 for w in &mut self.workspaces {
                     if w.gateway.project == pick.candidate.target.project {
                         for row in &mut w.gateway.tasks {
@@ -595,6 +609,50 @@ mod tests {
         assert_eq!(pick.candidate.target.terminal, peer.terminal);
         assert_eq!(pick.scope.workspace_id, app.workspaces[1].id);
         assert_eq!(pick.candidate.target.project, "beta");
+    }
+
+    #[test]
+    fn idle_assignments_rotate_after_completion_and_failed_claims_do_not_advance() {
+        let (mut app, first, second, tasks) = fixture();
+        drop(app.backlog_tick_after(Duration::ZERO));
+        verified(&mut app, None);
+        let request = app.delegation.backlog.flight.as_ref().unwrap().request;
+        drop(app.backlog_claimed(request, Ok(None)));
+        assert!(app.delegation.backlog.last_assigned.is_empty());
+        for (i, expected) in [first.terminal, second.terminal, first.terminal]
+            .into_iter()
+            .enumerate()
+        {
+            let mut queued = tasks[0].clone();
+            queued["id"] = json!(Uuid::new_v4());
+            app.workspaces[0].gateway.tasks = vec![queued.clone()];
+            refreshed(&mut app);
+            drop(app.backlog_tick_after(Duration::ZERO));
+            let pick = app.delegation.backlog.flight.clone().unwrap();
+            assert_eq!(
+                pick.candidate.target.terminal, expected,
+                "round-robin assignment {i}"
+            );
+            verified(&mut app, None);
+            let mut claimed = queued;
+            claimed["status"] = json!("in_progress");
+            claimed["owner_origin"] = json!(pick.candidate.target.origin);
+            drop(app.backlog_claimed(pick.request, Ok(Some(claimed.clone()))));
+            refreshed(&mut app);
+            drop(app.backlog_tick_after(Duration::ZERO));
+            verified(&mut app, Some(claimed));
+            let (agent, count) = if expected == first.terminal {
+                (&first, if i == 0 { 1 } else { 2 })
+            } else {
+                (&second, 1)
+            };
+            assert_eq!(wait_lines(agent, count).len(), count);
+            app.workspaces[0].gateway.tasks[0]["status"] = json!("done");
+            app.delegation
+                .reconcile_backlog("alpha", &app.workspaces[0].gateway.tasks);
+        }
+        assert_eq!(first.lines().len(), 2);
+        assert_eq!(second.lines().len(), 1);
     }
 
     #[test]

@@ -17,12 +17,19 @@ confirms that the decision was saved, including a skip; it does not imply delive
 
 ## Idle backlog review
 
-Current queued tasks are checked separately from historical event replay. The
-first eligible local agent with no output for 30 seconds, no unfinished draft and
+Current queued tasks are checked separately from historical event replay. An
+eligible local agent with no output for 30 seconds, no unfinished draft and
 no owned in-progress task can take the first available queued item. The workspace
 activity icons use this same output clock. Other owners, explicit recipients,
 repository boundaries and task goals are respected; an agent can also evaluate a
 queued task already assigned to it.
+
+Unassigned TODO notifications remain visible in user event bubbles and wait for
+this assignment path instead of being injected into competing agent terminals.
+When several agents are idle, assignments rotate round robin within the task's
+project, using each agent's own workspace and output clock. Only a confirmed
+claim advances the rotation. Busy agents and unfinished drafts are skipped;
+only the selected, confirmed owner receives the work prompt.
 
 Polling follows each native agent's workspace, including workspaces whose initial
 project lookup failed. Resolving or refreshing one workspace does not prevent a
@@ -103,8 +110,8 @@ Gateway task commands use the saved gateway preferences and resolve the project
 automatically; environment variables and flags can override those settings. amux
 owns assignment and registration. No agent-tools update, provider hook,
 or actor announcement is required. Notifications are filtered per native agent: assigned task creation, comments,
-and completion go only to the owner; unassigned tasks remain eligible for
-matching peers. The exact `owner_origin` takes precedence. When a legacy snapshot
+and completion go only to the owner; unassigned TODO work waits for assignment to
+an eligible idle agent. The exact `owner_origin` takes precedence. When a legacy snapshot
 only has `owner_agent_id`, it must match the verified agent's actual gateway ID.
 An unknown owner ID is never treated as unassigned. An exact origin suppresses
 its own notification, including an agent's own comments. Broadcast routing cannot

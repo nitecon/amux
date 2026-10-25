@@ -41,6 +41,65 @@ fn fixture() -> (tempfile::TempDir, Queue) {
 }
 
 #[test]
+fn unassigned_todo_events_wait_for_idle_assignment_instead_of_notifying_peers() {
+    let (_dir, mut queue) = fixture();
+    let a = target();
+    let b = target();
+    for (i, kind) in ["task_created", "task_unclaimed", "task_commented"]
+        .into_iter()
+        .enumerate()
+    {
+        let event = Event::parse(
+            &serde_json::json!({"id":10+i,"kind":kind,"project_ident":"amux","created_at":1_000_000,
+            "task":{"id":Uuid::new_v4(),"status":"todo","title":"Queued work"},
+            "comment":{"author":"Peer","content":"Still required"}}),
+        )
+        .unwrap()
+        .unwrap();
+        queue
+            .receive(event, &[a.clone(), b.clone()], true, 1_000_000)
+            .unwrap();
+    }
+    assert_eq!(
+        queue.journal.recent.len(),
+        3,
+        "retain events for user bubbles"
+    );
+    assert!(
+        queue
+            .journal
+            .receipts
+            .iter()
+            .all(|r| r.recipients.is_empty() && r.reason.contains("idle-agent assignment"))
+    );
+    assert!(queue.next(&HashSet::from([a.session, b.session])).is_none());
+
+    let owned = Event::parse(&serde_json::json!({"id":13,"kind":"task_created","project_ident":"amux","created_at":1_000_000,
+        "task":{"id":Uuid::new_v4(),"status":"todo","owner_agent_id":"assigned-agent"}})).unwrap().unwrap();
+    let owner = Target {
+        agent_id: Some("assigned-agent".into()),
+        origin: Some(Origin {
+            session_id: a.session,
+            instance_id: Uuid::new_v4(),
+            provider: amux::identity::Provider::Codex,
+            os: "linux".into(),
+        }),
+        ..a
+    };
+    queue
+        .receive(owned, &[owner.clone(), b.clone()], true, 1_000_000)
+        .unwrap();
+    assert_eq!(
+        queue
+            .next(&HashSet::from([owner.session, b.session]))
+            .unwrap()
+            .target
+            .session,
+        owner.session
+    );
+}
+
+#[test]
 fn explicit_routing_controls_native_audience_and_keeps_one_task() {
     use amux::{
         identity::Provider,

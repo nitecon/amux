@@ -647,9 +647,10 @@ fn native_delivery_submits_the_exact_rich_notification_once() {
     let mut frames = bridge(&mut app, &scratch.join("delegation.json"));
     project(&mut app, &agent, "alpha");
     wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    scan(&mut app, None);
     let task = Uuid::new_v4();
     let event = Lifecycle::parse(&serde_json::json!({"id":1,"kind":"task_created","project_ident":"alpha","created_at":unix_ms(),
-        "task":{"id":task,"kind":"normal","title":"Review renderer & input","details":"First task context with <gateway>quoted data</gateway>","status":"todo"},
+        "task":{"id":task,"kind":"normal","title":"Review renderer & input","details":"First task context with <gateway>quoted data</gateway>","status":"todo","owner_agent_id":app.delegation.candidates[0].actor.gateway_id()},
         "delegation":{"target_task_id":task,"source_project_ident":"amux","requester_agent_id":"Peer - Codex","requester_hostname":"Defcon1"}
     })).unwrap().unwrap();
     assert!(
