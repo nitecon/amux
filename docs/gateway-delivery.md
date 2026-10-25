@@ -24,9 +24,15 @@ activity icons use this same output clock. Other owners, explicit recipients,
 repository boundaries and task goals are respected; an agent can also evaluate a
 queued task already assigned to it.
 
-The app rereads and claims the selected task through the gateway before sending
-anything to the terminal. It then rechecks the owner and native session and
-requests evaluation against current project state: implement viable work,
+Polling follows each native agent's workspace, including workspaces whose initial
+project lookup failed. Resolving or refreshing one workspace does not prevent a
+different workspace with current tasks from handing off queued work.
+
+The app rereads and claims the selected task through the gateway and posts a
+comment asking the agent to check whether it remains required, ask the user if
+uncertain, close it with a reason if obsolete, or start execution otherwise.
+It then rechecks the owner and native session before sending anything to the
+terminal, and requests evaluation against current project state: implement viable work,
 review uncertain work with the user, or close obsolete work with a reason. The
 app does not decide viability or close tasks itself. Only one task is handed to
 an idle session at a time; another idle peer can take the next item.

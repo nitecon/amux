@@ -146,7 +146,7 @@ impl Desktop {
                 .delegation
                 .candidates
                 .iter()
-                .any(|c| c.target.project == w.gateway.project)
+                .any(|c| c.root.workspace == w.id)
                 && !w.gateway.loading
                 && w.gateway
                     .queried_at
@@ -155,9 +155,7 @@ impl Desktop {
                 queries.push(self.query(index));
             }
         }
-        if !queries.is_empty() {
-            return Task::batch(queries);
-        }
+        // Resolving or refreshing one workspace must not stall a ready peer.
         // A closed task or retired tab cannot retain an in-memory handoff.
         let pending = std::mem::take(&mut self.delegation.backlog.pending);
         for pick in pending {
@@ -193,7 +191,8 @@ impl Desktop {
         for mut pick in self.delegation.backlog.pending.clone() {
             pick.delivery = true;
             if self.backlog_ready(&pick, idle_after) {
-                return self.verify_backlog(pick);
+                queries.push(self.verify_backlog(pick));
+                return Task::batch(queries);
             }
         }
         let mut candidates = self.delegation.candidates.clone();
@@ -275,10 +274,11 @@ impl Desktop {
                 current_task: None,
             };
             if self.backlog_ready(&pick, idle_after) {
-                return self.verify_backlog(pick);
+                queries.push(self.verify_backlog(pick));
+                return Task::batch(queries);
             }
         }
-        Task::none()
+        Task::batch(queries)
     }
 
     pub(super) fn backlog_verified(&mut self, pick: Pick, valid: bool) -> Task<Message> {
@@ -562,6 +562,39 @@ mod tests {
         );
         assert!(valid);
         drop(app.backlog_verified_after(pick, valid, Duration::ZERO));
+    }
+
+    #[test]
+    fn unresolved_workspace_is_polled_without_stalling_another_idle_workspace() {
+        let (mut app, _, _, tasks) = fixture();
+        let peer = spawn(&mut app, 1, 1, Provider::Codex, "opaque");
+        project(&mut app, &peer, "beta");
+        let mut queued = tasks[0].clone();
+        queued["project_ident"] = json!("beta");
+        let panel = &mut app.workspaces[1].gateway;
+        panel.project = "beta".into();
+        panel.tasks = vec![queued];
+        panel.loaded_at = Some(Instant::now());
+        panel.queried_at = Some(Instant::now());
+        // A failed initial lookup leaves this workspace unbound, even after its
+        // native agent's repository identity has been discovered independently.
+        app.workspaces[0].gateway.project.clear();
+        app.workspaces[0].gateway.queried_at = None;
+        scan(&mut app, None);
+        drop(app.backlog_tick_after(Duration::ZERO));
+        assert!(
+            app.workspaces[0].gateway.loading,
+            "retry unresolved workspace"
+        );
+        let pick = app
+            .delegation
+            .backlog
+            .flight
+            .as_ref()
+            .expect("other workspace still dispatches");
+        assert_eq!(pick.candidate.target.terminal, peer.terminal);
+        assert_eq!(pick.scope.workspace_id, app.workspaces[1].id);
+        assert_eq!(pick.candidate.target.project, "beta");
     }
 
     #[test]

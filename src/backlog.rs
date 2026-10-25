@@ -82,6 +82,8 @@ pub fn review_text(task: &Value, target: &Target, name: &str, now: i64) -> Resul
     ))
 }
 
+pub const REVIEW_COMMENT: &str = "Automatically assigned by amux after 30 seconds without output from this agent's terminal. Evaluate whether this backlog task is still required against the current project and its comments. If uncertain, ask the user. If no longer valid, close it with a reason; otherwise start execution. Respect the task's platform requirements.";
+
 impl Gateway {
     /// A fresh read prevents taking a changed/assigned item; the gateway arbitrates claims.
     pub async fn claim_backlog(
@@ -118,8 +120,19 @@ impl Gateway {
         if revision(&current) != expected_revision || !eligible(&current, target) {
             return Ok(None);
         }
-        self.claim(&target.project, &task.to_string(), actor)
-            .await
-            .map(Some)
+        let claimed = self
+            .claim(&target.project, &task.to_string(), actor)
+            .await?;
+        // The durable claim receipt already fences this operation. A lost
+        // acknowledgment must not cause a second claim or duplicate comment.
+        self.request(
+            reqwest::Method::POST,
+            &target.project,
+            &[&task.to_string(), "comments"],
+            Some(json!({"content": REVIEW_COMMENT})),
+            Some(actor),
+        )
+        .await?;
+        Ok(Some(claimed))
     }
 }

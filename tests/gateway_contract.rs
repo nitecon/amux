@@ -139,10 +139,13 @@ fn backlog_claim_rechecks_repository_revision_and_owner_before_one_agent_mutatio
     other["owner_agent_id"] = json!("Other agent");
     let mut changed = queued.clone();
     changed["updated_at"] = json!(11);
+    let comment =
+        json!({"id":uuid::Uuid::new_v4(), "task_id":TASK, "content":amux::backlog::REVIEW_COMMENT});
     let (url, server) = server(vec![
         reply(200, &projects),
         reply(200, &queued),
         reply(200, &claimed),
+        reply(200, &comment),
         reply(200, &projects),
         reply(200, &other),
         reply(200, &projects),
@@ -150,6 +153,10 @@ fn backlog_claim_rechecks_repository_revision_and_owner_before_one_agent_mutatio
         reply(200, &projects),
         reply(200, &queued),
         reply(409, &json!({"error":"already claimed"})),
+        reply(200, &projects),
+        reply(200, &queued),
+        reply(200, &claimed),
+        reply(503, &json!({"error":"comment acknowledgment unavailable"})),
     ]);
     let gateway = Gateway::new(&url, "fixture".into()).unwrap();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -181,15 +188,37 @@ fn backlog_claim_rechecks_repository_revision_and_owner_before_one_agent_mutatio
                 .await
                 .is_err()
         );
+        assert!(
+            gateway
+                .claim_backlog(task, 10, &target, &actor)
+                .await
+                .is_err(),
+            "an uncertain comment must not acknowledge a completed handoff"
+        );
     });
     let requests = server.join().unwrap();
+    let comments = requests
+        .iter()
+        .filter(|r| r.head.starts_with("post ") && r.head.contains("/comments "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        comments.len(),
+        2,
+        "only confirmed claims get comments; no retry after a lost acknowledgment"
+    );
+    assert_eq!(comments[0].body["content"], amux::backlog::REVIEW_COMMENT);
+    assert!(
+        comments[0]
+            .head
+            .contains(&format!("x-agent-session-id: {}", actor.session_id))
+    );
     let mutations = requests
         .iter()
         .filter(|r| r.head.starts_with("patch "))
         .collect::<Vec<_>>();
     assert_eq!(
         mutations.len(),
-        2,
+        3,
         "one attempt per request, no retries or claims after stale reads"
     );
     for request in mutations {
