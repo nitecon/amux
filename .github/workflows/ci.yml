@@ -147,6 +147,8 @@ jobs:
           if [ -n "$MAS_APP_IDENTITY" ]; then export MAS_PROVISIONING_PROFILE="$RUNNER_TEMP/amux.provisionprofile"; fi
           mkdir -p macos
           sh scripts/package_macos.sh target/aarch64-apple-darwin/release macos
+          # The updater requires an intact seal over BUILD.json and both binaries.
+          codesign --verify --strict macos/amux.app
           macos/amux.app/Contents/MacOS/amux --version
           macos/amux.app/Contents/MacOS/amux-desktop --version
           rm -rf macos/amux.app
