@@ -536,6 +536,29 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
         &identity::state_directory()?,
         std::time::Duration::from_secs(5),
     );
+    let restoring = args
+        .iter()
+        .map(String::as_str)
+        .eq(amux::session::resume_arguments(provider).iter().copied());
+    let mut status = launch_agent_once(&project, provider, &args, &actor)?;
+    // Missing native conversation history exits with 1. Retry only the standard
+    // restore invocation, once, leaving custom arguments and signals alone.
+    if restoring && status.code() == Some(1) {
+        eprintln!(
+            "Unable to resume {}; starting a new session.",
+            provider.command()
+        );
+        status = launch_agent_once(&project, provider, &[], &actor)?;
+    }
+    Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
+}
+
+fn launch_agent_once(
+    project: &std::path::Path,
+    provider: Provider,
+    args: &[String],
+    actor: &AgentIdentity,
+) -> Result<std::process::ExitStatus> {
     let mut command = Command::new(provider.command());
     command
         .args(args)
@@ -593,7 +616,7 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
         Ok(r) => r,
         Err(error) => {
             if let Some(status) = child.try_wait()? {
-                return Ok(status.code().unwrap_or(1).clamp(0, 255) as u8);
+                return Ok(status);
             }
             let _ = child.kill();
             let _ = child.wait();
@@ -609,6 +632,5 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
     // Retain the private native generation record for recovery. A missing
     // gateway lease alone cannot prove this executor has stopped; live_agents
     // still lists only records whose native process generation is running.
-    let status = status?;
-    Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
+    Ok(status?)
 }

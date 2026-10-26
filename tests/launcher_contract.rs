@@ -197,3 +197,149 @@ fn restored_agent_launches_forward_native_continuation_arguments_without_a_promp
         assert!(child.0.wait().unwrap().success());
     }
 }
+
+fn resume_fixture(root: &Path, provider: amux::identity::Provider) -> std::ffi::OsString {
+    let script = root.join(provider.command());
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+printf '%s:%s\n' "$#" "$*" >> "$AMUX_ARGS_FILE"
+printf '%s %s %s\n' "$AMUX_AGENT_SESSION_ID" "$AMUX_AGENT_INSTANCE_ID" "$$" >> "$AMUX_IDENTITY_FILE"
+if [ "$#" -gt 0 ]; then
+    if [ "$AMUX_RESUME_EXIT" = signal ]; then kill -TERM $$; fi
+    if [ "$AMUX_RESUME_EXIT" = 1 ]; then echo 'No conversation found' >&2; fi
+    exit "$AMUX_RESUME_EXIT"
+fi
+if [ "$AMUX_FRESH_EXIT" = wait ]; then read -r stop; exit 0; fi
+exit "$AMUX_FRESH_EXIT"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(script, fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::join_paths(
+        std::iter::once(root.to_path_buf()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )),
+    )
+    .unwrap()
+}
+
+#[test]
+fn missing_history_restarts_both_providers_without_resume_args_and_stays_interactive() {
+    use amux::{identity::Provider, session::resume_arguments};
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    fs::create_dir_all(&target).unwrap();
+    for provider in [Provider::Codex, Provider::Claude] {
+        let fixture = tempfile::tempdir_in(&target).unwrap();
+        let root = fixture.path();
+        let mut child = Agent(
+            Command::new(env!("CARGO_BIN_EXE_amux"))
+                .args(["agent", provider.command(), "--"])
+                .args(resume_arguments(provider))
+                .current_dir(root)
+                .env("PATH", resume_fixture(root, provider))
+                .env("AMUX_STATE_DIR", root.join("state"))
+                .env("AMUX_ARGS_FILE", root.join("args"))
+                .env("AMUX_IDENTITY_FILE", root.join("identities"))
+                .env("AMUX_RESUME_EXIT", "1")
+                .env("AMUX_FRESH_EXIT", "wait")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let expected = format!(
+            "{}:{}\n0:\n",
+            resume_arguments(provider).len(),
+            resume_arguments(provider).join(" ")
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let records = loop {
+            let records = amux::identity::live_agents(&root.join("state")).unwrap();
+            if fs::read_to_string(root.join("args")).is_ok_and(|s| s == expected)
+                && records.len() == 1
+            {
+                break records;
+            }
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "fallback exited instead of opening a fresh session"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "fallback did not register and stay interactive"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let identities = fs::read_to_string(root.join("identities")).unwrap();
+        let attempts: Vec<_> = identities
+            .lines()
+            .map(|s| s.split_whitespace().collect::<Vec<_>>())
+            .collect();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0][..2],
+            attempts[1][..2],
+            "fallback retains the tab's assigned identity"
+        );
+        assert_ne!(attempts[0][2], attempts[1][2]);
+        assert_eq!(records[0].pid.to_string(), attempts[1][2]);
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"stop\n")
+            .unwrap();
+        assert!(child.0.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn resume_fallback_is_once_only_and_preserves_other_errors_custom_args_and_signals() {
+    use amux::{identity::Provider, session::resume_arguments};
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    fs::create_dir_all(&target).unwrap();
+    for provider in [Provider::Codex, Provider::Claude] {
+        let resume = resume_arguments(provider);
+        for (args, first, fresh, status, calls) in [
+            (resume, "1", "7", 7, 2),
+            (resume, "1", "1", 1, 2),
+            (resume, "0", "0", 0, 1),
+            (resume, "2", "0", 2, 1),
+            (resume, "signal", "0", 1, 1),
+            (&[][..], "1", "1", 1, 1),
+            (&["custom-resume-id"][..], "1", "0", 1, 1),
+        ] {
+            let fixture = tempfile::tempdir_in(&target).unwrap();
+            let root = fixture.path();
+            let output = Command::new(env!("CARGO_BIN_EXE_amux"))
+                .args(["agent", provider.command(), "--"])
+                .args(args)
+                .current_dir(root)
+                .env("PATH", resume_fixture(root, provider))
+                .env("AMUX_STATE_DIR", root.join("state"))
+                .env("AMUX_ARGS_FILE", root.join("args"))
+                .env("AMUX_IDENTITY_FILE", root.join("identities"))
+                .env("AMUX_RESUME_EXIT", first)
+                .env("AMUX_FRESH_EXIT", fresh)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(status),
+                "{provider:?} {first}/{fresh}"
+            );
+            let log = fs::read_to_string(root.join("args")).unwrap();
+            assert_eq!(
+                log.lines().count(),
+                calls,
+                "{provider:?} {first}/{fresh}: {log}"
+            );
+            if calls == 2 {
+                assert!(log.ends_with("\n0:\n"));
+            }
+        }
+    }
+}
