@@ -1,7 +1,7 @@
 //! Black-box gateway client contract: wire identity, claim acknowledgment,
 //! response bounds and honest failure. Uses a local mock; no live gateway.
 use amux::{
-    gateway::Gateway,
+    gateway::{Gateway, TaskDetails},
     identity::{AgentIdentity, Provider},
 };
 use reqwest::Method;
@@ -1548,6 +1548,112 @@ fn task_reads_updates_and_comments_require_the_requested_resource() {
         9,
         "no retry on ambiguous responses"
     );
+}
+
+#[test]
+fn list_filters_and_rank_use_the_agent_tools_wire_contract() {
+    let actor = agent(Provider::Codex);
+    let ranked = json!({"id":TASK,"project_ident":"demo","status":"todo","rank":3});
+    let mut unranked = ranked.clone();
+    unranked["rank"] = json!(9);
+    let (url, server) = server(vec![
+        reply(200, &json!([])),
+        reply(200, &json!([])),
+        reply(200, &unranked),
+        reply(200, &ranked),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime
+        .block_on(gateway.list_filtered("demo", None, false))
+        .unwrap();
+    runtime
+        .block_on(gateway.list_filtered("demo", Some("done, cancelled"), true))
+        .unwrap();
+    assert!(
+        runtime
+            .block_on(gateway.list_filtered("demo", Some("done,closed"), false))
+            .is_err(),
+        "unknown statuses are refused before any request"
+    );
+    let task = uuid::Uuid::parse_str(TASK).unwrap();
+    assert!(
+        runtime
+            .block_on(gateway.rank("demo", task, 3, &actor))
+            .is_err(),
+        "an unacknowledged rank is unconfirmed"
+    );
+    assert_eq!(
+        runtime
+            .block_on(gateway.rank("demo", task, 3, &actor))
+            .unwrap(),
+        ranked
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 4, "no retry after an unconfirmed rank");
+    assert!(
+        requests[0]
+            .head
+            .starts_with("get /v1/projects/demo/tasks http/1.1")
+    );
+    assert!(requests[1].head.starts_with(
+        "get /v1/projects/demo/tasks?status=done%2ccancelled&include_stale=true http/1.1"
+    ));
+    for request in &requests[2..] {
+        assert!(
+            request
+                .head
+                .starts_with(&format!("patch /v1/projects/demo/tasks/{TASK} http/1.1"))
+        );
+        assert_eq!(request.body, json!({"rank":3}));
+        assert!(
+            request
+                .head
+                .contains(&format!("x-agent-session-id: {}", actor.session_id))
+        );
+    }
+}
+
+#[test]
+fn task_details_merge_metadata_but_never_routing_labels() {
+    let details = TaskDetails {
+        description: Some("Why this matters.".into()),
+        labels: vec!["enhancement".into()],
+        hostname: Some("Defcon2".into()),
+    };
+    let mut body = json!({"title":"Port","labels":["os:windows"]});
+    details.apply(&mut body).unwrap();
+    assert_eq!(
+        body,
+        json!({"title":"Port","labels":["os:windows","enhancement"],"description":"Why this matters.","hostname":"Defcon2"})
+    );
+    let mut untouched = json!({"title":"Port"});
+    TaskDetails::default().apply(&mut untouched).unwrap();
+    assert_eq!(untouched, json!({"title":"Port"}));
+    for details in [
+        TaskDetails {
+            labels: vec!["os:linux".into()],
+            ..Default::default()
+        },
+        TaskDetails {
+            labels: vec!["autoreview-finding".into()],
+            ..Default::default()
+        },
+        TaskDetails {
+            labels: vec![" ".into()],
+            ..Default::default()
+        },
+        TaskDetails {
+            description: Some("x".repeat(64 * 1024 + 1)),
+            ..Default::default()
+        },
+        TaskDetails {
+            hostname: Some("host\nname".into()),
+            ..Default::default()
+        },
+    ] {
+        assert!(details.apply(&mut json!({})).is_err());
+    }
 }
 
 #[test]
