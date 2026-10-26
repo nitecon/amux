@@ -1,5 +1,17 @@
 # Terminal lifecycle candidate
 
+## Missing conversation history
+
+Restored agent tabs first use the provider's standard continuation command:
+`codex resume --last` or `claude --continue`. If that attempt exits with code 1,
+amux launches the same provider once with no arguments, retaining the terminal
+and assigned amux identity. The fresh process is registered with its own native
+PID/generation, and its exit status is returned. Successful resumes, other exit
+codes, signals and custom arguments do not trigger a fallback. Provider input and
+output remain attached to the terminal throughout.
+
+## Process ownership and cleanup
+
 On Linux, a newly created desktop terminal retains a native pidfd for its
 initial PTY child and its exact process generation. Alacritty starts that child
 as a new terminal session leader. Closing its tab, pane or desktop requests
