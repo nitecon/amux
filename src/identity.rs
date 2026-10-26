@@ -489,7 +489,9 @@ impl AgentRecord {
                 {
                     return Ok(());
                 }
-                if !process_is_gone(existing.pid, &existing.process_generation) {
+                if !process_is_gone(existing.pid, &existing.process_generation)
+                    && !existing.fence_is_superseded()
+                {
                     bail!(
                         "agent {} is already running in this project; its live execution is not replaced",
                         existing.identity.agent_id
@@ -504,6 +506,28 @@ impl AgentRecord {
         file.as_file().sync_all()?;
         file.persist(&path).map_err(|error| error.error)?;
         Ok(())
+    }
+
+    /// Whether this record's fence belongs to a generation format this build
+    /// replaced, leaving nothing it can compare. Such a record protects a
+    /// session ID it can never release, so registration falls back to the
+    /// recorded native start time, which no clock adjustment rewrites. Only a
+    /// record whose own PID is absent, or now belongs to a process that started
+    /// at a different time, is treated as replaceable.
+    fn fence_is_superseded(&self) -> bool {
+        if native_generation_format(&self.process_generation) {
+            return false;
+        }
+        let mut system = sysinfo::System::new();
+        let pid = sysinfo::Pid::from_u32(self.pid);
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        system
+            .process(pid)
+            .is_none_or(|process| process.start_time() != self.process_start)
     }
 
     pub fn is_live(&self, system: &sysinfo::System) -> bool {
@@ -563,10 +587,51 @@ pub fn process_generation(pid: u32) -> Result<String> {
     }
 }
 
+/// The per-boot session UUID: this platform's stable analogue of Linux's
+/// `boot_id`. A new boot cannot reuse it, and nothing within one boot can
+/// change it, so a reboot is the only way it is observed to differ.
+#[cfg(target_os = "macos")]
+fn boot_session() -> Result<Uuid> {
+    static SESSION: std::sync::OnceLock<Uuid> = std::sync::OnceLock::new();
+    if let Some(id) = SESSION.get() {
+        return Ok(*id);
+    }
+    let mut text = [0u8; 64];
+    let mut length = text.len();
+    // SAFETY: one sized, initialized output buffer described by its own length.
+    if unsafe {
+        libc::sysctlbyname(
+            c"kern.bootsessionuuid".as_ptr(),
+            text.as_mut_ptr().cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // The sysctl writes a NUL-terminated string and reports the bytes it wrote.
+    let text = std::str::from_utf8(
+        text.get(..length.saturating_sub(1))
+            .context("boot session UUID exceeds its own buffer")?,
+    )
+    .context("boot session UUID is not text")?;
+    let id = Uuid::parse_str(text).context("invalid boot session UUID")?;
+    if id.is_nil() {
+        bail!("boot session UUID cannot be nil");
+    }
+    // Only a reboot changes this value, so a race here stores the same UUID.
+    Ok(*SESSION.get_or_init(|| id))
+}
+
 #[cfg(target_os = "macos")]
 pub fn process_generation(pid: u32) -> Result<String> {
-    // Start time in microseconds, fenced by the boot time (also microseconds).
-    // SAFETY: fixed-size out parameters sized exactly for each call.
+    // Start time in microseconds, fenced by the boot session UUID. `kern.boottime`
+    // cannot fence a generation: it is a wall-clock value derived from the current
+    // time, so every NTP correction and sleep/wake adjustment silently rewrites it
+    // and invalidates generations recorded before the shift.
+    // SAFETY: a fixed-size out parameter sized exactly for this call.
     unsafe {
         let mut info: libc::proc_bsdinfo = std::mem::zeroed();
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
@@ -575,21 +640,8 @@ pub fn process_generation(pid: u32) -> Result<String> {
         {
             return Err(std::io::Error::last_os_error().into());
         }
-        let mut boot: libc::timeval = std::mem::zeroed();
-        let mut length = std::mem::size_of::<libc::timeval>();
-        if libc::sysctlbyname(
-            c"kern.boottime".as_ptr(),
-            (&raw mut boot).cast(),
-            &mut length,
-            std::ptr::null_mut(),
-            0,
-        ) != 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let boot = boot.tv_sec as u64 * 1_000_000 + boot.tv_usec as u64;
         let start = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
-        Ok(format!("macos:{boot}:{start}"))
+        Ok(format!("macos:{}:{start}", boot_session()?))
     }
 }
 
@@ -658,11 +710,16 @@ fn native_generation_format(generation: &str) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        let canonical = |n: &str| n.parse::<u64>().is_ok_and(|v| v > 0 && v.to_string() == n);
-        generation
+        let Some((boot, start)) = generation
             .strip_prefix("macos:")
             .and_then(|value| value.split_once(':'))
-            .is_some_and(|(boot, start)| canonical(boot) && canonical(start))
+        else {
+            return false;
+        };
+        Uuid::parse_str(boot).is_ok_and(|id| !id.is_nil() && id.to_string() == boot)
+            && start
+                .parse::<u64>()
+                .is_ok_and(|n| n > 0 && n.to_string() == start)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {

@@ -156,6 +156,17 @@ fn registration_is_idempotent_refuses_live_and_replaces_only_proven_stale() {
     unknown.process_generation = "unknown".into();
     std::fs::write(&path, serde_json::to_vec(&unknown).unwrap()).unwrap();
     assert!(previous.register_at(state.path()).is_err());
+
+    // A record written in a superseded generation format cannot be compared, so
+    // it must not hold a session ID that this build can never release. Its own
+    // exited PID is the proof of exit instead.
+    let mut superseded = previous.clone();
+    superseded.process_generation = "a format this build replaced".into();
+    std::fs::write(&path, serde_json::to_vec(&superseded).unwrap()).unwrap();
+    current.register_at(state.path()).unwrap();
+    let stored: AgentRecord = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored.pid, std::process::id());
+
     std::fs::write(&path, "not a record").unwrap();
     assert!(current.register_at(state.path()).is_err());
 }

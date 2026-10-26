@@ -66,6 +66,23 @@ fn helper_wait_for_stdin() {
     }
 }
 
+/// A generation that folds in a wall-clock reading is rewritten by every NTP
+/// correction and sleep/wake adjustment, which silently unregisters every agent
+/// recorded before the shift. Linux and macOS therefore fence on a per-boot
+/// UUID, and Windows on a creation time the kernel never readjusts.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn the_boot_fence_is_a_boot_identity_rather_than_a_clock_reading() {
+    let generation = amux::identity::process_generation(std::process::id()).unwrap();
+    let (_, components) = generation.split_once(':').unwrap();
+    let (boot, start) = components.split_once(':').unwrap();
+    let parsed = uuid::Uuid::parse_str(boot)
+        .unwrap_or_else(|error| panic!("boot fence {boot:?} must be a UUID: {error}"));
+    assert!(!parsed.is_nil());
+    assert_eq!(parsed.to_string(), boot, "the boot fence must be canonical");
+    assert!(start.parse::<u64>().unwrap() > 0);
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn process_generation_fences_a_registration_to_one_native_process() {

@@ -1,5 +1,5 @@
 //! A failed process query must not be confused with positive native death proof.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use amux::identity::{process_generation, process_is_gone};
 use std::process::{Child, Command, Stdio};
