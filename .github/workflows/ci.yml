@@ -168,7 +168,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -181,7 +181,11 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           REVISION: ${{ github.sha }}
-        run: python scripts/package_release.py --tag "$TAG" --revision "$REVISION" --artifacts artifacts --output dist
+        run: |
+          python scripts/package_release.py --tag "$TAG" --revision "$REVISION" --artifacts artifacts --output dist
+          # The unsigned macOS app ships beside the portable bundles; the updater ignores it.
+          cp "artifacts/amux-aarch64-apple-darwin-$REVISION/amux-macos-aarch64-$TAG.zip" dist/
+          (cd dist && sha256sum "amux-macos-aarch64-$TAG.zip" >> SHA256SUMS)
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -190,4 +194,4 @@ jobs:
         run: >-
           gh release create "$TAG" dist/* --verify-tag --target "$REVISION"
           --title "amux $TAG" --generate-notes
-          --notes "Portable Linux and Windows release. Extract the complete bundle and keep both executables with BUILD.json. Existing supported direct-download installs can run amux --update, then use the desktop bell to restart. See https://github.com/nitecon/amux/blob/$TAG/docs/updates.md for instructions."
+          --notes "Portable Linux and Windows release, plus an unsigned macOS (Apple Silicon) app preview. Extract the complete bundle and keep both executables with BUILD.json. Existing supported direct-download installs can run amux --update, then use the desktop bell to restart. See https://github.com/nitecon/amux/blob/$TAG/docs/updates.md for instructions."
