@@ -19,6 +19,13 @@ files still in use can remain as backup images until a later update can remove
 them. Failures report whether restoration was complete; retain any reported
 backup files if manual recovery is necessary.
 
+On macOS the app replaces the whole `amux.app` (Apple Silicon releases from
+v0.0.28 on). It verifies the archive checksums, `Contents/Resources/BUILD.json`
+and the app's code signature seal, then renames the new app into place beside
+the old one, so the folder holding `amux.app` (for example `/Applications`)
+must be writable. Earlier macOS downloads have no `BUILD.json`; install
+v0.0.28 manually once.
+
 Existing review candidates can update to the first later published stable release,
 `v0.0.1`. Its installed bundle switches to the stable channel, which follows
 increasing `vMAJOR.MINOR.PATCH` tags and ignores previews. A modified or incomplete bundle is not overwritten;
