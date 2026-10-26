@@ -74,7 +74,13 @@ fn process_generation_fences_a_registration_to_one_native_process() {
 
     let own = process_generation(std::process::id()).unwrap();
     assert_eq!(own, process_generation(std::process::id()).unwrap());
-    let prefix = if cfg!(windows) { "windows:" } else { "linux:" };
+    let prefix = if cfg!(windows) {
+        "windows:"
+    } else if cfg!(target_os = "macos") {
+        "macos:"
+    } else {
+        "linux:"
+    };
     assert!(own.starts_with(prefix), "{own}");
 
     let mut child = Command::new(std::env::current_exe().unwrap())
