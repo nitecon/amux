@@ -14,6 +14,7 @@ pub mod session;
 #[cfg(feature = "desktop")]
 pub mod submission;
 pub mod task_management;
+pub mod task_markdown;
 pub mod task_platform;
 pub mod task_routing;
 

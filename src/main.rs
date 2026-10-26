@@ -60,6 +60,9 @@ enum Operation {
         project: Option<String>,
         #[arg(long, env = "AMUX_GATEWAY_URL")]
         gateway_url: Option<String>,
+        /// Print the raw gateway JSON instead of Markdown.
+        #[arg(long, global = true)]
+        json: bool,
         #[command(subcommand)]
         operation: TaskOperation,
     },
@@ -329,6 +332,7 @@ fn run(cli: Cli) -> Result<u8> {
         Operation::Tasks {
             project,
             gateway_url,
+            json,
             operation,
         } => {
             let saved = amux::gateway_preferences::GatewayPreferences::load(
@@ -410,7 +414,11 @@ fn run(cli: Cli) -> Result<u8> {
                     _ => unreachable!(),
                 }
             })?;
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else {
+                print!("{}", amux::task_markdown::render(&value));
+            }
         }
     }
     Ok(0)

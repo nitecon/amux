@@ -294,6 +294,7 @@ fn shipped_cli_reads_cancellation_without_claim_or_agent_identity() {
             "demo",
             "--gateway-url",
             &url,
+            "--json",
             "cancellation",
             TASK,
         ])

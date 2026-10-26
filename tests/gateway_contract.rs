@@ -366,6 +366,7 @@ fn cli_project_agent_discovery_is_read_only_and_reports_remote_os() {
             "demo",
             "--gateway-url",
             &url,
+            "--json",
             "agents",
             "--os",
             "windows",
@@ -581,6 +582,7 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
             "demo",
             "--gateway-url",
             &url,
+            "--json",
             "user-review",
             TASK,
         ])

@@ -224,7 +224,7 @@ fn registered_agent_cli_delegates_without_agent_tools() {
     fs::create_dir_all(&fixtures).unwrap();
     let fixture = tempfile::tempdir_in(fixtures).unwrap();
     let root = fixture.path();
-    fs::write(root.join("codex"), "#!/bin/sh\nread -r go\namux tasks delegate Review --target-project other --specification \"$HANDOFF_BODY\"\n").unwrap();
+    fs::write(root.join("codex"), "#!/bin/sh\nread -r go\namux tasks --json delegate Review --target-project other --specification \"$HANDOFF_BODY\"\n").unwrap();
     fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
     // Only the fixture and basic shell tools: no agent-tools binary is available.
     let path = std::env::join_paths([root, Path::new("/usr/bin"), Path::new("/bin")]).unwrap();

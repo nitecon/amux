@@ -37,7 +37,7 @@ The shipped `amux` binary works without agent-tools installed:
 | `amux agent codex\|claude [-- args]` | Launch an agent with its own session and instance identity |
 | `amux whoami` | Print the calling agent's identity |
 | `amux agents` | List live amux-launched agents |
-| `amux tasks list\|get\|create\|claim\|comment\|started\|done\|release` | Gateway tasks |
+| `amux tasks list\|get\|create\|claim\|comment\|started\|done\|release` | Gateway tasks (Markdown output; `--json` for raw gateway JSON) |
 | `amux messages list\|get\|send` | Inline scratch text through gateway messages |
 
 Gateway access uses `AMUX_GATEWAY_URL`, `AMUX_GATEWAY_PROJECT` and
