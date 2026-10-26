@@ -114,7 +114,7 @@ jobs:
       - name: Select Rust
         run: rustup override set 1.96.1
       - name: Core behavioral tests
-        run: cargo test --locked --no-default-features --tests
+        run: cargo test --locked --no-default-features --tests --no-fail-fast
       - name: Check desktop and CLI
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Native release build
