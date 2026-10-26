@@ -66,7 +66,7 @@ fn helper_wait_for_stdin() {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn process_generation_fences_a_registration_to_one_native_process() {
     use amux::identity::process_generation;

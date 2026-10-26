@@ -55,6 +55,6 @@ notify-rust = { version = "4.18", optional = true }
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4"
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
 

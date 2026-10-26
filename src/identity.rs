@@ -563,7 +563,37 @@ pub fn process_generation(pid: u32) -> Result<String> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+pub fn process_generation(pid: u32) -> Result<String> {
+    // Start time in microseconds, fenced by the boot time (also microseconds).
+    // SAFETY: fixed-size out parameters sized exactly for each call.
+    unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let pid = libc::c_int::try_from(pid)?;
+        if libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) != size
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut boot: libc::timeval = std::mem::zeroed();
+        let mut length = std::mem::size_of::<libc::timeval>();
+        if libc::sysctlbyname(
+            c"kern.boottime".as_ptr(),
+            (&raw mut boot).cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let boot = boot.tv_sec as u64 * 1_000_000 + boot.tv_usec as u64;
+        let start = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
+        Ok(format!("macos:{boot}:{start}"))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn process_generation(_pid: u32) -> Result<String> {
     bail!("native process-generation verification is not implemented on this platform yet")
 }
@@ -626,14 +656,22 @@ fn native_generation_format(generation: &str) -> bool {
                 .is_ok_and(|n| n > 0 && n.to_string() == ticks)
         })
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        let canonical = |n: &str| n.parse::<u64>().is_ok_and(|v| v > 0 && v.to_string() == n);
+        generation
+            .strip_prefix("macos:")
+            .and_then(|value| value.split_once(':'))
+            .is_some_and(|(boot, start)| canonical(boot) && canonical(start))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = generation;
         false
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn process_is_absent(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
@@ -678,7 +716,7 @@ fn process_is_absent(pid: u32) -> bool {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn process_is_absent(_pid: u32) -> bool {
     false
 }
