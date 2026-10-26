@@ -386,7 +386,6 @@ fn wait(app: &Desktop, done: impl Fn(&Desktop) -> bool) {
 }
 
 /// Human keyboard input through the desktop's own terminal message path.
-#[cfg(any(target_os = "linux", windows))]
 pub(super) fn human(app: &mut Desktop, id: u64, bytes: &[u8]) {
     drop(app.update(Message::Terminal(iced_term::Event::BackendCall(
         id,
