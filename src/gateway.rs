@@ -283,6 +283,32 @@ impl Gateway {
             .await
     }
 
+    /// User review clears a task's owner; its newest event snapshot with an
+    /// owner still names the agent that last held it.
+    pub async fn last_task_owner(
+        &self,
+        project: &str,
+        task: uuid::Uuid,
+    ) -> Result<Option<crate::delegation::Origin>> {
+        validate_project(project)?;
+        let events = self
+            .exchange(
+                Method::GET,
+                self.base.join("v1/task-events")?,
+                None,
+                None,
+                &[("project", project.into()), ("task_id", task.to_string())],
+            )
+            .await?;
+        // Without a cursor the gateway returns the newest events first.
+        Ok(events
+            .as_array()
+            .context("gateway task events are not a list")?
+            .iter()
+            .filter(|event| event["task"]["id"] == task.to_string())
+            .find_map(|event| serde_json::from_value(event["task"]["owner_origin"].clone()).ok()))
+    }
+
     /// Check before any mutation: old gateways must not silently drop subscriptions.
     pub async fn require_requester_subscriptions(&self) -> Result<()> {
         let value = self.exchange(

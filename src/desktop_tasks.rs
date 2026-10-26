@@ -84,6 +84,9 @@ impl Panel {
 enum Mutation {
     Edit(TaskEdits),
     Comment(String),
+    /// A user comment on parked work also returns it to its last live agent,
+    /// or to the queue when that agent is gone.
+    Reply(String, Vec<amux::task_routing::SessionTarget>),
     Assign(amux::task_routing::SessionTarget),
     Close,
     Resume,
@@ -286,6 +289,18 @@ impl Desktop {
                 description: panel.description.text(),
                 specification: panel.specification.text(),
             }),
+            Change::Comment if panel.task.as_ref().unwrap()["status"] == "user_review" => {
+                let routing = &self.workspaces[self.active].gateway.routing;
+                let live = routing
+                    .directory
+                    .as_ref()
+                    .map(|d| d.targets.iter().map(|e| e.target.clone()))
+                    .into_iter()
+                    .flatten()
+                    .filter(|target| routing.available(target))
+                    .collect();
+                Mutation::Reply(panel.comment.text(), live)
+            }
             Change::Comment => Mutation::Comment(panel.comment.text()),
             Change::Assign
                 if panel.mode == Mode::Assign
@@ -323,7 +338,7 @@ impl Desktop {
         };
         let validation = match &mutation {
             Mutation::Edit(edits) => edits.validate(),
-            Mutation::Comment(content) => {
+            Mutation::Comment(content) | Mutation::Reply(content, _) => {
                 if content.trim().is_empty() || content.len() > 64 * 1024 {
                     Err(anyhow::anyhow!("Enter a comment of at most 64 KiB"))
                 } else {
@@ -358,6 +373,24 @@ impl Desktop {
                         }
                         Mutation::Comment(content) => {
                             gateway.comment_on_task(&scope.project, id, &content).await
+                        }
+                        Mutation::Reply(content, live) => {
+                            gateway
+                                .comment_on_task(&scope.project, id, &content)
+                                .await?;
+                            let task = gateway.resume_desktop_task(&scope.project, id).await?;
+                            let last = gateway.last_task_owner(&scope.project, id).await?;
+                            match live.into_iter().find(|target| {
+                                Some(&target.origin) == last.as_ref()
+                                    && amux::task_platform::matches(&task, Some(&target.origin.os))
+                            }) {
+                                Some(target) => {
+                                    gateway
+                                        .assign_desktop_task(&scope.project, id, &target)
+                                        .await
+                                }
+                                None => Ok(task),
+                            }
                         }
                         Mutation::Assign(target) => {
                             gateway
@@ -401,6 +434,8 @@ impl Desktop {
         panel.pending = None;
         match result {
             Ok(mut value) => {
+                // A reply to parked work returns the task, not the comment.
+                let returned = value["status"].as_str().map(|status| status == "todo");
                 if matches!(change, Change::Comment) {
                     panel.comment = text_editor::Content::default();
                 } else {
@@ -415,6 +450,12 @@ impl Desktop {
                 panel.mode = Mode::View;
                 panel.status = match change {
                     Change::Edit => "Task saved",
+                    Change::Comment if returned == Some(true) => {
+                        "Comment posted; task returned to the queue (its last agent is offline)"
+                    }
+                    Change::Comment if returned == Some(false) => {
+                        "Comment posted; task returned to its last agent"
+                    }
                     Change::Comment => "Comment posted",
                     Change::Assign => "Task assigned",
                     Change::Close => "Task closed",
@@ -904,5 +945,35 @@ mod tests {
         assert_eq!(stored["requester"], json!(requester));
         assert_eq!(stored["owner_agent_id"], json!(owner));
         assert!(app.workspaces[0].gateway.detail.pending.is_none());
+    }
+
+    #[test]
+    fn replying_to_parked_work_reports_where_the_task_went() {
+        let mut app = app();
+        let id = Uuid::new_v4();
+        open(&mut app, id);
+        app.workspaces[0].gateway.detail.task.as_mut().unwrap()["status"] = json!("user_review");
+        for (status, message) in [
+            (
+                "in_progress",
+                "Comment posted; task returned to its last agent",
+            ),
+            (
+                "todo",
+                "Comment posted; task returned to the queue (its last agent is offline)",
+            ),
+        ] {
+            app.workspaces[0].gateway.detail.comment = text_editor::Content::with_text("Go ahead");
+            let _ = app.manage_task(Action::PostComment);
+            let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+            let mut returned = task(id, "project-0");
+            returned["status"] = json!(status);
+            let scope = app.scope(0);
+            let _ = app.task_changed(scope, id, pending, Change::Comment, Ok(returned));
+            let panel = &app.workspaces[0].gateway.detail;
+            assert_eq!(panel.status, message);
+            assert!(panel.comment.text().trim().is_empty());
+            app.workspaces[0].gateway.detail.loading = None;
+        }
     }
 }

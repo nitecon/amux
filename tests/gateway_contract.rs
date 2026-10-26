@@ -1964,3 +1964,29 @@ fn invalid_or_unreachable_gateways_fail_without_claiming_acceptance() {
         assert!(format!("{error:#}").contains("gateway unavailable"));
     });
 }
+
+#[test]
+fn last_task_owner_is_the_newest_event_snapshot_that_still_had_one() {
+    let owner = json!({"session_id":"11111111-1111-4111-8111-111111111111",
+        "instance_id":"22222222-2222-4222-8222-222222222222","provider":"claude","os":"linux"});
+    let older = json!({"session_id":"33333333-3333-4333-8333-333333333333",
+        "instance_id":"44444444-4444-4444-8444-444444444444","provider":"codex","os":"windows"});
+    // Newest first: the user review snapshot has no owner, the one before does.
+    let events = json!([
+        {"id":3,"kind":"task_updated","task":{"id":TASK,"status":"user_review","owner_origin":null}},
+        {"id":2,"kind":"task_commented","task":{"id":TASK,"status":"in_progress","owner_origin":owner}},
+        {"id":1,"kind":"task_claimed","task":{"id":TASK,"status":"in_progress","owner_origin":older}}
+    ]);
+    let (url, server) = server(vec![reply(200, &events), reply(200, &json!([]))]);
+    let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+    let id = uuid::Uuid::parse_str(TASK).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let last = gateway.last_task_owner("demo", id).await.unwrap().unwrap();
+        assert_eq!(serde_json::to_value(last).unwrap(), owner);
+        assert!(gateway.last_task_owner("demo", id).await.unwrap().is_none());
+    });
+    let requests = server.join().unwrap();
+    assert!(requests[0].head.starts_with("get /v1/task-events?"));
+    assert!(requests[0].head.contains(&format!("task_id={TASK}")));
+    assert!(requests[0].head.contains("project=demo"));
+}
