@@ -232,6 +232,18 @@ impl Gateway {
             .await
     }
 
+    /// Check before any mutation: old gateways must not silently drop subscriptions.
+    pub async fn require_requester_subscriptions(&self) -> Result<()> {
+        let value = self.exchange(
+            Method::GET, self.base.join("v1/tasks/capabilities")?, None, None, &[],
+        ).await.context("gateway does not confirm task requester subscriptions; no subscription mutation sent")?;
+        ensure!(
+            value["requester_subscriptions"].as_u64() == Some(1),
+            "gateway does not support requester subscriptions version 1; no subscription mutation sent"
+        );
+        Ok(())
+    }
+
     fn projects_url(&self) -> Result<Url> {
         let mut url = self.base.clone();
         url.path_segments_mut()
@@ -424,6 +436,19 @@ impl Gateway {
         specification: Option<String>,
         actor: &AgentIdentity,
     ) -> Result<Value> {
+        self.delegate_with_requester(project, target_project, title, specification, actor, None)
+            .await
+    }
+
+    pub async fn delegate_with_requester(
+        &self,
+        project: &str,
+        target_project: &str,
+        title: String,
+        specification: Option<String>,
+        actor: &AgentIdentity,
+        requester: Option<&crate::task_routing::SessionTarget>,
+    ) -> Result<Value> {
         validate_project(project)?;
         validate_project(target_project)?;
         if project.eq_ignore_ascii_case(target_project) {
@@ -443,12 +468,37 @@ impl Gateway {
         {
             bail!("delegation context exceeds 64 KiB; use a smaller inline handoff");
         }
-        let result = self.project_request(
-            Method::POST, project, &["tasks", "delegate"],
-            Some(json!({"target_project_ident":target_project,"title":title,"specification":specification})),
-            Some(actor), &[],
-        ).await.context("delegation not confirmed; inspect tasks in both projects before retrying")?;
+        let mut body = json!({"target_project_ident":target_project,"title":title,"specification":specification});
+        if let Some(requester) = requester {
+            requester.validate()?;
+            ensure!(
+                requester.origin.session_id == actor.session_id
+                    && requester.origin.instance_id == actor.instance_id
+                    && requester.origin.provider == actor.provider
+                    && requester.origin.os == actor.os,
+                "requester must be the calling agent"
+            );
+            self.require_requester_subscriptions().await?;
+            body["requester"] = json!(requester);
+        }
+        let result = self
+            .project_request(
+                Method::POST,
+                project,
+                &["tasks", "delegate"],
+                Some(body),
+                Some(actor),
+                &[],
+            )
+            .await
+            .context("delegation not confirmed; inspect tasks in both projects before retrying")?;
         let source = &result["source_task"];
+        if let Some(requester) = requester {
+            ensure!(
+                source["requester"] == json!(requester),
+                "delegation accepted without confirmed source requester; inspect both projects before retrying"
+            );
+        }
         let target = &result["target_task"];
         let link = &result["delegation"];
         let source_id = canonical_id(&source["id"]);

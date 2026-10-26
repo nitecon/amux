@@ -51,6 +51,106 @@ impl SessionTarget {
 }
 
 impl Gateway {
+    /// Resolve the caller's exact advertised execution, never a display-name peer.
+    pub async fn requester_target(
+        &self,
+        project: &str,
+        actor: &AgentIdentity,
+    ) -> Result<SessionTarget> {
+        let directory = self
+            .task_agents(project, &actor.project_directory, None)
+            .await?;
+        let origin = Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        };
+        let mut matching = directory
+            .targets
+            .into_iter()
+            .filter(|entry| entry.target.origin == origin);
+        let target = matching
+            .next()
+            .context(
+                "requesting agent is not currently advertised; refresh amux agent availability",
+            )?
+            .target;
+        ensure!(
+            matching.next().is_none(),
+            "requesting agent has multiple executions; refresh availability"
+        );
+        Ok(target)
+    }
+
+    pub async fn create_task_with_requester(
+        &self,
+        project: &str,
+        mut body: serde_json::Value,
+        actor: &AgentIdentity,
+        requester: &SessionTarget,
+    ) -> Result<serde_json::Value> {
+        requester.validate()?;
+        ensure!(
+            requester.origin
+                == Origin {
+                    session_id: actor.session_id,
+                    instance_id: actor.instance_id,
+                    provider: actor.provider,
+                    os: actor.os.clone()
+                },
+            "requester must be the calling agent"
+        );
+        self.require_requester_subscriptions().await?;
+        body["requester"] = json!(requester);
+        let task = self
+            .request(Method::POST, project, &[], Some(body), Some(actor))
+            .await?;
+        ensure!(
+            task.get("requester")
+                .and_then(|v| serde_json::from_value::<SessionTarget>(v.clone()).ok())
+                .as_ref()
+                == Some(requester),
+            "task accepted without confirmed requester; inspect the task before retrying"
+        );
+        Ok(task)
+    }
+
+    /// Human callers pass no actor; agent callers can only manage an authorized self subscription.
+    pub async fn set_task_requester(
+        &self,
+        project: &str,
+        task: Uuid,
+        requester: Option<&SessionTarget>,
+        actor: Option<&AgentIdentity>,
+    ) -> Result<serde_json::Value> {
+        if let Some(target) = requester {
+            target.validate()?;
+        }
+        self.require_requester_subscriptions().await?;
+        let result = self
+            .project_request(
+                Method::PUT,
+                project,
+                &["tasks", &task.to_string(), "requester"],
+                Some(json!({"requester":requester})),
+                actor,
+                &[],
+            )
+            .await?;
+        let acknowledged = result
+            .get("requester")
+            .context("requester acknowledgment missing; inspect task before retrying")?;
+        let expected = json!(requester);
+        ensure!(
+            result["id"] == task.to_string()
+                && result["project_ident"] == project
+                && *acknowledged == expected,
+            "requester not confirmed for this task; inspect task before retrying"
+        );
+        Ok(result)
+    }
+
     /// Fresh, repository-scoped discovery; this does not assign or claim work.
     pub async fn task_agents(
         &self,

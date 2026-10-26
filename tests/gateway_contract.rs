@@ -111,6 +111,244 @@ fn agent(provider: Provider) -> AgentIdentity {
 }
 
 #[test]
+fn requester_creation_keeps_executor_independent_and_checks_capability_before_post() {
+    use amux::{delegation::Origin, task_routing::SessionTarget};
+    let actor = agent(Provider::Codex);
+    let requester = SessionTarget {
+        origin: Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let executor = uuid::Uuid::new_v4();
+    let accepted = json!({"id":TASK,"project_ident":"demo","status":"todo","requester":requester,"owner_agent_id":executor});
+    let (url, mock) = server(vec![
+        reply(200, &json!({"requester_subscriptions":1})),
+        reply(200, &accepted),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let result = runtime
+        .block_on(gateway.create_task_with_requester(
+            "demo",
+            json!({"title":"Review","specification":"literal\ncontext"}),
+            &actor,
+            &requester,
+        ))
+        .unwrap();
+    assert_eq!(result["owner_agent_id"], json!(executor));
+    let requests = mock.join().unwrap();
+    assert!(requests[0].head.starts_with("get /v1/tasks/capabilities "));
+    assert!(
+        requests[1]
+            .head
+            .starts_with("post /v1/projects/demo/tasks ")
+    );
+    assert!(
+        requests[1]
+            .head
+            .contains(&format!("x-agent-session-id: {}", actor.session_id))
+    );
+    assert_eq!(requests[1].body["requester"], json!(requester));
+    assert_eq!(requests[1].body["specification"], "literal\ncontext");
+
+    for capability in [json!({}), json!({"requester_subscriptions":0})] {
+        let (url, mock) = server(vec![reply(200, &capability)]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        assert!(
+            runtime
+                .block_on(gateway.create_task_with_requester(
+                    "demo",
+                    json!({"title":"Review"}),
+                    &actor,
+                    &requester
+                ))
+                .is_err()
+        );
+        assert_eq!(
+            mock.join().unwrap().len(),
+            1,
+            "old gateway must never receive a create"
+        );
+    }
+    let mut missing_ack = accepted.clone();
+    missing_ack.as_object_mut().unwrap().remove("requester");
+    let (url, mock) = server(vec![
+        reply(200, &json!({"requester_subscriptions":1})),
+        reply(200, &missing_ack),
+    ]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let error = runtime
+        .block_on(gateway.create_task_with_requester(
+            "demo",
+            json!({"title":"Review"}),
+            &actor,
+            &requester,
+        ))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("inspect the task before retrying")
+    );
+    assert_eq!(
+        mock.join().unwrap().len(),
+        2,
+        "unconfirmed create is never retried"
+    );
+}
+
+#[test]
+fn human_requester_set_clear_require_exact_resource_and_do_not_impersonate_watcher() {
+    use amux::{delegation::Origin, task_routing::SessionTarget};
+    let watcher = SessionTarget {
+        origin: Origin {
+            session_id: uuid::Uuid::new_v4(),
+            instance_id: uuid::Uuid::new_v4(),
+            provider: Provider::Claude,
+            os: "windows".into(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for requested in [Some(&watcher), None] {
+        let accepted =
+            json!({"id":TASK,"project_ident":"demo","status":"todo","requester":requested});
+        let (url, mock) = server(vec![
+            reply(200, &json!({"requester_subscriptions":1})),
+            reply(200, &accepted),
+        ]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        runtime
+            .block_on(gateway.set_task_requester("demo", TASK.parse().unwrap(), requested, None))
+            .unwrap();
+        let requests = mock.join().unwrap();
+        assert!(
+            requests[1]
+                .head
+                .starts_with(&format!("put /v1/projects/demo/tasks/{TASK}/requester "))
+        );
+        assert_eq!(requests[1].body, json!({"requester":requested}));
+        assert!(
+            !requests[1].head.contains("x-agent-"),
+            "human never impersonates selected watcher"
+        );
+    }
+    for accepted in [
+        json!({"id":TASK,"project_ident":"other","requester":watcher}),
+        json!({"id":uuid::Uuid::new_v4(),"project_ident":"demo","requester":watcher}),
+        json!({"id":TASK,"project_ident":"demo","requester":null}),
+        json!({"id":TASK,"project_ident":"demo"}),
+    ] {
+        let (url, mock) = server(vec![
+            reply(200, &json!({"requester_subscriptions":1})),
+            reply(200, &accepted),
+        ]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        assert!(
+            runtime
+                .block_on(gateway.set_task_requester(
+                    "demo",
+                    TASK.parse().unwrap(),
+                    Some(&watcher),
+                    None
+                ))
+                .is_err()
+        );
+        assert_eq!(mock.join().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn cli_handoff_uses_callers_subscription_and_a_different_exact_executor() {
+    use amux::{delegation::Origin, identity::AgentRecord, task_routing::SessionTarget};
+    let actor = agent(Provider::Codex);
+    let requester = SessionTarget {
+        origin: Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let executor = SessionTarget {
+        origin: Origin {
+            session_id: uuid::Uuid::new_v4(),
+            instance_id: uuid::Uuid::new_v4(),
+            provider: Provider::Claude,
+            os: "windows".into(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let directory = json!({"canonical_remote":"github.com/nitecon/amux","targets":[
+        {"target":requester,"seen_at":now,"expires_at":now+120000},
+        {"target":executor,"seen_at":now,"expires_at":now+120000}
+    ]});
+    let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
+    let routing = json!({"mode":"session","target":executor});
+    let accepted = json!({"id":TASK,"title":"Review","project_ident":"demo","status":"todo","requester":requester,"routing":routing,"owner_origin":executor.origin});
+    let (url, mock) = server(vec![
+        reply(200, &projects),
+        reply(200, &directory),
+        reply(200, &projects),
+        reply(200, &directory),
+        reply(200, &json!({"requester_subscriptions":1})),
+        reply(200, &accepted),
+    ]);
+    let state = tempfile::tempdir().unwrap();
+    AgentRecord::inspect(actor.clone(), std::process::id())
+        .unwrap()
+        .register_at(state.path())
+        .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_amux"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("AMUX_STATE_DIR", state.path())
+        .env("AMUX_GATEWAY_KEY", "test-only")
+        .args([
+            "--agent",
+            &actor.session_id.to_string(),
+            "tasks",
+            "--project",
+            "demo",
+            "--gateway-url",
+            &url,
+            "create",
+            "Review",
+            "--to-agent",
+            &executor.origin.session_id.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = mock.join().unwrap();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(requests[5].body["requester"], json!(requester));
+    assert_eq!(requests[5].body["routing"], routing);
+    assert!(
+        requests[5]
+            .head
+            .contains(&format!("x-agent-session-id: {}", actor.session_id))
+    );
+    assert!(!requests[5].head.contains(&format!(
+        "x-agent-session-id: {}",
+        executor.origin.session_id
+    )));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Result recipient"));
+}
+
+#[test]
 fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("os-gateway");
     std::fs::create_dir_all(&base).unwrap();

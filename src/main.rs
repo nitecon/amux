@@ -143,6 +143,12 @@ enum TaskOperation {
         review_finding: bool,
         #[arg(long, value_enum)]
         os: Option<amux::task_platform::TaskOs>,
+        /// Request comment/completion notices for this exact agent execution.
+        #[arg(long)]
+        notify_results: bool,
+        /// Reserve for a live same-project agent and subscribe this caller to results.
+        #[arg(long)]
+        to_agent: Option<Uuid>,
     },
     /// Create linked tasks in different projects, not an exact-session assignment.
     /// A lost reply is uncertain: inspect both projects before manually retrying.
@@ -152,6 +158,9 @@ enum TaskOperation {
         target_project: String,
         #[arg(long)]
         specification: Option<String>,
+        /// Subscribe this execution to results on the source tracking task.
+        #[arg(long)]
+        notify_results: bool,
     },
     Claim {
         id: Uuid,
@@ -161,6 +170,12 @@ enum TaskOperation {
         id: Uuid,
         #[arg(long)]
         to_agent: Uuid,
+    },
+    /// Receive future comment/completion results for an authorized task, or unsubscribe.
+    Watch {
+        id: Uuid,
+        #[arg(long)]
+        clear: bool,
     },
     /// Change the OS requirement of owned work; incompatible work returns to the queue.
     SetOs {
@@ -373,7 +388,7 @@ fn run(cli: Cli) -> Result<u8> {
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
-                    TaskOperation::Create { title, specification, review_finding, os } => {
+                    TaskOperation::Create { title, specification, review_finding, os, notify_results, to_agent } => {
                         let mut body = json!({"title": title, "specification": specification});
                         let mut labels = Vec::new();
                         if review_finding { labels.push("autoreview-finding".to_owned()); }
@@ -382,22 +397,46 @@ fn run(cli: Cli) -> Result<u8> {
                             labels.push(format!("os:{}", os.as_str()));
                         }
                         if !labels.is_empty() { body["labels"] = json!(labels); }
-                        let task = gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?;
+                        let executor = if let Some(session) = to_agent {
+                            let directory = gateway.task_agents(&project, &actor.project_directory, os).await?;
+                            let mut matching = directory.targets.into_iter().filter(|entry| entry.target.origin.session_id == session);
+                            let target = matching.next().context("recipient is unavailable or incompatible")?.target;
+                            anyhow::ensure!(matching.next().is_none(), "recipient has multiple live executions");
+                            body["routing"] = json!({"mode":"session", "target":target});
+                            Some(target)
+                        } else { None };
+                        let task = if notify_results || to_agent.is_some() {
+                            let requester = gateway.requester_target(&project, &actor).await?;
+                            gateway.create_task_with_requester(&project, body, &actor, &requester).await?
+                        } else {
+                            gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?
+                        };
+                        if let Some(executor) = &executor {
+                            anyhow::ensure!(task["routing"] == json!({"mode":"session", "target":executor}) && task["owner_origin"] == json!(executor.origin),
+                                "executor assignment unconfirmed; inspect task before retrying");
+                        }
                         if let Some(os) = os {
                             anyhow::ensure!(amux::task_platform::required_os(&task)? == Some(os), "OS requirement unconfirmed; inspect task before retrying");
-                            if actor.os != os.as_str() {
+                            if actor.os != os.as_str() && executor.is_none() {
                                 anyhow::ensure!(task["status"] == "todo" && task.get("owner_origin").is_some_and(serde_json::Value::is_null) && task.get("owner_agent_id").is_some_and(serde_json::Value::is_null), "Gateway retained an incompatible owner; inspect task before retrying");
                             }
                         }
                         Ok(task)
                     },
-                    TaskOperation::Delegate { title, target_project, specification } => gateway.delegate(&project, &target_project, title, specification, &actor).await,
+                    TaskOperation::Delegate { title, target_project, specification, notify_results } => {
+                        let requester = if notify_results { Some(gateway.requester_target(&project, &actor).await?) } else { None };
+                        gateway.delegate_with_requester(&project, &target_project, title, specification, &actor, requester.as_ref()).await
+                    },
                     TaskOperation::Claim { id } => {
                         let task = gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await?;
                         anyhow::ensure!(amux::task_platform::matches(&task, Some(&actor.os)), "Task requires another operating system");
                         gateway.claim(&project, &id.to_string(), &actor).await
                     },
                     TaskOperation::Reassign { id, to_agent } => gateway.reassign_agent_task(&project, id, to_agent, &actor).await,
+                    TaskOperation::Watch { id, clear } => {
+                        let requester = if clear { None } else { Some(gateway.requester_target(&project, &actor).await?) };
+                        gateway.set_task_requester(&project, id, requester.as_ref(), Some(&actor)).await
+                    },
                     TaskOperation::SetOs { id, os, .. } => gateway.set_task_os(&project, id, os, &actor).await,
                     TaskOperation::UserReview { id } => gateway.request_user_review(&project, id, &actor).await,
                     TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,

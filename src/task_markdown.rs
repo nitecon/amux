@@ -64,6 +64,20 @@ fn task(task: &Value) -> String {
     field("Owner", owner(task));
     field("Reporter", Some(text(&task["reporter"])));
     field("Routing", Some(text(&task["routing"]["mode"])));
+    if let Ok(requester) =
+        serde_json::from_value::<crate::task_routing::SessionTarget>(task["requester"].clone())
+    {
+        field(
+            "Result recipient",
+            Some(format!(
+                "{} ({}/{}) · execution {}",
+                requester.origin.session_id,
+                requester.origin.provider.command(),
+                requester.origin.os,
+                requester.generation
+            )),
+        );
+    }
     field("Labels", labels(task));
     field("Goal", Some(text(&task["goal"])));
     field("Created", time(&task["created_at"]));

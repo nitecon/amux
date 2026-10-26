@@ -15,6 +15,30 @@ The task panel shows connection status, agents, pending notifications and recent
 confirms that the decision was saved, including a skip; it does not imply delivery.
 `injected` means the notification input transaction was enqueued. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
 
+## Requester result notices
+
+An explicit task requester can receive comment/completion notices even when
+another agent owns the work. The requester is a gateway-stored exact native origin
+plus execution generation; it is never inferred from the reporter, display name,
+or comment author. Project, OS, goal and own-event suppression still apply. No
+creation/assignment notice is returned to a requester merely for subscribing.
+
+These notices are informational results, with a read-only task lookup command.
+They do not claim, reopen or schedule execution. Unlike ordinary owner notices,
+requester notices wait for at least 30 seconds without terminal output and an
+empty tracked input buffer; recent activity and unfinished drafts defer delivery.
+They use the existing native process/input checks rather than prompt-screen
+recognition and do not clear or restore user input. Native process/attachment and
+the current task requester are rechecked before writing, so clearing/changing the
+subscription prevents queued result input.
+
+The existing five-minute event lifetime and durable attempt fences apply. A stopped
+or replaced execution does not inherit pending results. Reconnect and app restart
+do not replay historical/uncertain input; full comments remain available through
+task lookup, including completed tasks. Only the stored requester and eligible
+owner can receive notices; unrelated agents stay excluded. See
+[CLI and native controls](gateway-cli.md#requesting-task-results).
+
 ## Idle backlog review
 
 Current queued tasks are checked separately from historical event replay. An
@@ -73,8 +97,9 @@ Users can inspect parked tasks and their comments, return them to the queue, or
 close them. Returning a task uses the human connection without agent headers.
 Agents cannot resume parked work themselves.
 
-Parked tasks never enter idle assignment, in-progress reminders or terminal
-notification delivery. Review events remain visible in user event bubbles.
+Parked tasks never enter idle assignment, in-progress reminders or owner work
+notification delivery. An explicit requester can still receive an informational
+comment result. Review events remain visible in user event bubbles.
 Authoritative review snapshots also retire older queued notifications and
 handoffs; input already in flight retains an uncertain outcome. When the user
 returns work to TODO, normal eligibility resumes.
@@ -140,7 +165,9 @@ and completion go only to the owner; unassigned TODO work waits for assignment t
 an eligible idle agent. The exact `owner_origin` takes precedence. When a legacy snapshot
 only has `owner_agent_id`, it must match the verified agent's actual gateway ID.
 An unknown owner ID is never treated as unassigned. An exact origin suppresses
-its own notification, including an agent's own comments. Broadcast routing cannot
+its own notification, including an agent's own comments. An explicit requester
+subscription separately permits informational comment/completion returns to the
+exact requesting execution, as described above. Broadcast routing cannot
 override a current owner. Explicit queue-only creation still sends no notification. Named-goal events still require an
 explicit matching goal and are skipped when no goal is bound.
 

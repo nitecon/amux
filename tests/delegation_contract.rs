@@ -91,6 +91,61 @@ fn receipt() -> Value {
 }
 
 #[test]
+fn delegated_return_subscription_belongs_to_source_and_requires_exact_ack() {
+    use amux::{delegation::Origin, task_routing::SessionTarget};
+    let actor =
+        fixture_identity::identity(Provider::Codex, &std::env::current_dir().unwrap()).unwrap();
+    let requester = SessionTarget {
+        origin: Origin {
+            session_id: actor.session_id,
+            instance_id: actor.instance_id,
+            provider: actor.provider,
+            os: actor.os.clone(),
+        },
+        generation: uuid::Uuid::new_v4(),
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for acknowledged in [true, false] {
+        let mut value = receipt();
+        if acknowledged {
+            value["source_task"]["requester"] = json!(requester);
+        }
+        let (url, mock) = server(vec![
+            (200, json!({"requester_subscriptions":1})),
+            (200, value),
+        ]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        let result = runtime.block_on(gateway.delegate_with_requester(
+            "demo",
+            "other",
+            "Review".into(),
+            Some("context".into()),
+            &actor,
+            Some(&requester),
+        ));
+        assert_eq!(result.is_ok(), acknowledged);
+        let requests = mock.join().unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "unknown acceptance never retries delegation"
+        );
+        assert!(
+            requests[0]
+                .headers
+                .starts_with("GET /v1/tasks/capabilities ")
+        );
+        assert!(
+            requests[1]
+                .headers
+                .starts_with("POST /v1/projects/demo/tasks/delegate ")
+        );
+        assert_eq!(requests[1].body["requester"], json!(requester));
+        assert_eq!(requests[1].body["target_project_ident"], "other");
+    }
+}
+
+#[test]
 fn delegation_preserves_inline_context_and_requires_the_requested_linked_records() {
     let good = receipt();
     let mut replies = vec![(200, good.clone())];

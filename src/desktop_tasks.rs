@@ -19,10 +19,13 @@ pub(super) enum Action {
     Specification(text_editor::Action),
     Comment(text_editor::Action),
     ShowAgents,
+    ShowWatcher,
     Target(Choice),
     Save,
     PostComment,
     Assign,
+    Watch,
+    ClearWatcher,
     Close,
     Resume,
 }
@@ -34,6 +37,8 @@ pub(super) enum Change {
     Assign,
     Close,
     Resume,
+    Watch,
+    ClearWatcher,
 }
 
 #[derive(Default, PartialEq)]
@@ -42,6 +47,7 @@ enum Mode {
     View,
     Edit,
     Assign,
+    Watch,
 }
 
 #[derive(Default)]
@@ -81,6 +87,7 @@ enum Mutation {
     Assign(amux::task_routing::SessionTarget),
     Close,
     Resume,
+    Requester(Option<amux::task_routing::SessionTarget>),
 }
 
 fn message(action: Action) -> Message {
@@ -161,6 +168,11 @@ impl Desktop {
                 panel.mode = Mode::Assign;
                 return self.refresh_task_targets();
             }
+            Action::ShowWatcher if panel.ready() => {
+                panel.mode = Mode::Watch;
+                panel.recipient = None;
+                return self.refresh_task_targets();
+            }
             Action::Save
             | Action::PostComment
             | Action::Assign
@@ -175,6 +187,8 @@ impl Desktop {
                 };
                 return self.change_task(change);
             }
+            Action::Watch if panel.ready() => return self.change_task(Change::Watch),
+            Action::ClearWatcher if panel.ready() => return self.change_task(Change::ClearWatcher),
             _ => {}
         }
         Task::none()
@@ -247,6 +261,26 @@ impl Desktop {
             return Task::none();
         }
         let mutation = match change {
+            Change::Watch if panel.mode == Mode::Watch => {
+                let Some(Choice::Session(target, _)) = &panel.recipient else {
+                    return Task::none();
+                };
+                if !self.workspaces[self.active]
+                    .gateway
+                    .routing
+                    .available(target)
+                    || !amux::task_platform::matches(
+                        panel.task.as_ref().unwrap(),
+                        Some(&target.origin.os),
+                    )
+                {
+                    self.workspaces[self.active].gateway.detail.status =
+                        "Result recipient is unavailable or incompatible; refresh agents.".into();
+                    return Task::none();
+                }
+                Mutation::Requester(Some(target.clone()))
+            }
+            Change::ClearWatcher => Mutation::Requester(None),
             Change::Edit if panel.mode == Mode::Edit => Mutation::Edit(TaskEdits {
                 title: panel.title.clone(),
                 description: panel.description.text(),
@@ -332,6 +366,11 @@ impl Desktop {
                         }
                         Mutation::Close => gateway.close_desktop_task(&scope.project, id).await,
                         Mutation::Resume => gateway.resume_desktop_task(&scope.project, id).await,
+                        Mutation::Requester(target) => {
+                            gateway
+                                .set_task_requester(&scope.project, id, target.as_ref(), None)
+                                .await
+                        }
                     }
                 }
                 .await
@@ -380,6 +419,8 @@ impl Desktop {
                     Change::Assign => "Task assigned",
                     Change::Close => "Task closed",
                     Change::Resume => "Task returned to queue",
+                    Change::Watch => "Result recipient saved",
+                    Change::ClearWatcher => "Result recipient cleared",
                 }
                 .into();
                 Task::batch([
@@ -472,12 +513,20 @@ impl Desktop {
                     ]
                     .spacing(6),
                 );
-        } else if panel.mode == Mode::Assign {
+        } else if matches!(panel.mode, Mode::Assign | Mode::Watch) {
+            let watching = panel.mode == Mode::Watch;
             let choices: Vec<_> = self.task_agent_choices().into_iter().filter(|choice| matches!(choice, Choice::Session(target, _) if amux::task_platform::matches(task, Some(&target.origin.os)))).collect();
             let current = panel.recipient.clone();
             let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.workspaces[self.active].gateway.routing.available(target) && amux::task_platform::matches(task, Some(&target.origin.os))));
             body = body
-                .push(text("Assign to agent").size(13))
+                .push(
+                    text(if watching {
+                        "Send results to agent"
+                    } else {
+                        "Assign to agent"
+                    })
+                    .size(13),
+                )
                 .push(text("Local and gateway agents for this repository:").size(11))
                 .push(text(&self.workspaces[self.active].gateway.routing.status).size(10));
             for choice in &choices {
@@ -509,14 +558,39 @@ impl Desktop {
             body = body
                 .push(
                     row![
-                        control("Assign", Action::Assign, ready && available),
-                        control("Refresh agents", Action::ShowAgents, ready)
+                        control(
+                            if watching {
+                                "Save result recipient"
+                            } else {
+                                "Assign"
+                            },
+                            if watching {
+                                Action::Watch
+                            } else {
+                                Action::Assign
+                            },
+                            ready && available
+                        ),
+                        control(
+                            "Refresh agents",
+                            if watching {
+                                Action::ShowWatcher
+                            } else {
+                                Action::ShowAgents
+                            },
+                            ready
+                        )
                     ]
                     .spacing(5),
                 )
                 .push(control("Cancel", Action::Cancel, !panel.unresolved()))
                 .push(
-                    text("Assignments expire through the gateway's inactivity timeout.").size(10),
+                    text(if watching {
+                        "Comment and completion notices only; task ownership is unchanged."
+                    } else {
+                        "Assignments expire through the gateway's inactivity timeout."
+                    })
+                    .size(10),
                 );
         } else {
             if task["status"] == "user_review" {
@@ -543,6 +617,30 @@ impl Desktop {
                 ]
                 .spacing(5),
             );
+            body = body.push(
+                row![
+                    control("Result recipient…", Action::ShowWatcher, ready),
+                    control(
+                        "Clear result recipient",
+                        Action::ClearWatcher,
+                        ready && !task["requester"].is_null()
+                    ),
+                ]
+                .spacing(5),
+            );
+            if let Ok(target) = serde_json::from_value::<amux::task_routing::SessionTarget>(
+                task["requester"].clone(),
+            ) {
+                body = body.push(
+                    text(format!(
+                        "Results to: {} · {} · {}",
+                        target.origin.provider.command(),
+                        target.origin.os,
+                        target.origin.session_id
+                    ))
+                    .size(10),
+                );
+            }
             for (label, field) in [
                 ("Description", "description"),
                 ("Specification", "specification"),
@@ -752,6 +850,10 @@ mod tests {
             .generation = Uuid::new_v4();
         let _ = app.manage_task(Action::Assign);
         assert!(app.workspaces[0].gateway.detail.pending.is_none());
+        // A watcher selection is fenced by the same exact advertised generation.
+        app.workspaces[0].gateway.detail.mode = Mode::Watch;
+        let _ = app.manage_task(Action::Watch);
+        assert!(app.workspaces[0].gateway.detail.pending.is_none());
         app.workspaces[0].gateway.routing.checked =
             Instant::now().checked_sub(Duration::from_secs(61));
         assert!(app.task_agent_choices().is_empty());
@@ -773,5 +875,34 @@ mod tests {
             app.workspaces[0].gateway.detail.task.as_ref().unwrap()["id"],
             id.to_string()
         );
+    }
+
+    #[test]
+    fn watcher_ack_updates_the_result_recipient_without_changing_task_ownership() {
+        let mut app = app();
+        let id = Uuid::new_v4();
+        open(&mut app, id);
+        assert!(app.workspaces[0].gateway.detail.task.as_ref().unwrap()["requester"].is_null());
+        let owner = Uuid::new_v4();
+        let requester = amux::task_routing::SessionTarget {
+            origin: amux::delegation::Origin {
+                session_id: Uuid::new_v4(),
+                instance_id: Uuid::new_v4(),
+                provider: Provider::Claude,
+                os: "windows".into(),
+            },
+            generation: Uuid::new_v4(),
+        };
+        let mut value = task(id, "project-0");
+        value["owner_agent_id"] = json!(owner);
+        value["requester"] = json!(requester);
+        let scope = app.scope(0);
+        let request = Uuid::new_v4();
+        app.workspaces[0].gateway.detail.pending = Some(request);
+        let _ = app.task_changed(scope, id, request, Change::Watch, Ok(value));
+        let stored = app.workspaces[0].gateway.detail.task.as_ref().unwrap();
+        assert_eq!(stored["requester"], json!(requester));
+        assert_eq!(stored["owner_agent_id"], json!(owner));
+        assert!(app.workspaces[0].gateway.detail.pending.is_none());
     }
 }

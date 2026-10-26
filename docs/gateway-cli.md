@@ -113,6 +113,47 @@ Amux also filters notification input, idle pickup, reminders and human assignmen
 by the OS requirement. Work for a different OS does not block an eligible agent's
 Autoreview.
 
+### Requesting task results
+
+For a same-project handoff, create a task for a live agent and subscribe the
+calling execution to its comment and completion updates:
+
+```sh
+amux --agent <calling-id> tasks create 'Review the design' --to-agent <recipient-session-uuid> --specification 'Review only; report findings.'
+amux --agent <calling-id> tasks create 'Track this work' --notify-results
+amux --agent <calling-id> tasks watch <task-id>
+amux --agent <calling-id> tasks watch <task-id> --clear
+amux --agent <calling-id> tasks delegate 'Review another project' --target-project other-project --notify-results
+```
+
+`--to-agent` enables return notices automatically. `--notify-results` adds a
+subscription without selecting an executor. `watch` manages a subscription only
+where the gateway authorizes this caller (the current owner or existing requester).
+The subscription records the caller's exact advertised origin and execution
+generation, independently of task ownership, and survives executor reassignment.
+No display-name or reporter lookup is used as a return address.
+
+The native task detail panel provides **Result recipient…** and **Clear result
+recipient** for explicit human selection. Human creation and assignment default
+to no requester and do not impersonate a selected agent. Task detail output shows
+the stored result recipient; these operations never claim or reopen work.
+
+These commands require the gateway capability endpoint
+`GET /v1/tasks/capabilities` to advertise `requester_subscriptions: 1`, plus
+`PUT /v1/projects/{ident}/tasks/{id}/requester`. Older gateways are rejected before
+the subscription mutation. Creation and update responses must acknowledge the
+exact requester; an unconfirmed response requires inspection before retrying.
+The gateway dependency is tracked in task `01a1796a-bc87-7c40-bafa-17b83a919a89`,
+implemented at source revision `986d84544aae086579c72349a1afc366cef6b589`.
+A minimum deployed release has not yet been verified; do not assume an existing
+release supports this without checking the capability.
+
+See [result delivery](gateway-delivery.md#requester-result-notices) for idle/input,
+freshness and reconnect behavior. Cross-project linked delegation remains a separate
+protocol: `delegate --notify-results` explicitly subscribes the caller to its source
+tracking task, not the foreign-project execution. It requires the gateway to mirror
+the target result to the source; no cross-project watcher is inferred.
+
 ## Task cancellation reports
 
 ```sh
