@@ -27,6 +27,18 @@ fn awaits_assignment(event: &Event) -> bool {
     event.state() == "todo" && event.owner.is_none() && event.owner_agent_id.is_none()
 }
 
+fn recipient_reason(target: &Target, event: &Event) -> Option<&'static str> {
+    if !target.requester_result(event) {
+        if event.state() == "user_review" {
+            return Some("Task awaits a user decision");
+        }
+        if awaits_assignment(event) {
+            return Some("Queued for idle-agent assignment; only the claimed agent receives work");
+        }
+    }
+    target.mismatch_reason(event)
+}
+
 fn retire_review_notifications(
     journal: &mut Journal,
     project: &str,
@@ -42,6 +54,9 @@ fn retire_review_notifications(
             continue;
         }
         for recipient in &mut receipt.recipients {
+            if recipient.target.requester_result(&receipt.event) {
+                continue;
+            }
             if !recipient.outcome.terminal() {
                 recipient.outcome = if recipient.outcome == Outcome::Submitting {
                     Outcome::Uncertain
@@ -254,15 +269,18 @@ impl Queue {
             reason: String::new(),
             confirmed: false,
         };
+        let has_requester = candidates
+            .iter()
+            .any(|t| t.requester_result(&receipt.event));
         let skip = if receipt.event.id <= self.replay_through {
             Some("Offline history is not sent to terminals")
         } else if !receipt.event.fresh(now) {
             Some("Event expired or has no valid timestamp")
         } else if !approved {
             Some("Automatic terminal notifications are disabled")
-        } else if receipt.event.state() == "user_review" {
+        } else if receipt.event.state() == "user_review" && !has_requester {
             Some("Task awaits a user decision")
-        } else if awaits_assignment(&receipt.event) {
+        } else if awaits_assignment(&receipt.event) && !has_requester {
             Some("Queued for idle-agent assignment; only the claimed agent receives work")
         } else if candidates.is_empty() {
             Some("No running agent at event arrival")
@@ -284,7 +302,7 @@ impl Queue {
                 ensure!(seen.insert(target.session), "Duplicate recipient session");
                 let outcome = if target.project.is_empty() {
                     Outcome::Received
-                } else if target.accepts(&receipt.event) {
+                } else if recipient_reason(target, &receipt.event).is_none() {
                     Outcome::Queued
                 } else {
                     Outcome::Skipped
@@ -297,8 +315,7 @@ impl Queue {
                     } else if outcome == Outcome::Queued {
                         "Waiting for terminal input availability"
                     } else {
-                        target
-                            .mismatch_reason(&receipt.event)
+                        recipient_reason(target, &receipt.event)
                             .unwrap_or("Recipient is not eligible")
                     }
                     .into(),
@@ -321,7 +338,10 @@ impl Queue {
                 let current = targets.iter().find(|t| recipient.target.same_attachment(t));
                 let reason = if !approved {
                     Some("Automatic terminal notifications disabled")
-                } else if awaits_assignment(&receipt.event) {
+                } else if (awaits_assignment(&receipt.event)
+                    || receipt.event.state() == "user_review")
+                    && !recipient.target.requester_result(&receipt.event)
+                {
                     Some("Queued for idle-agent assignment; only the claimed agent receives work")
                 } else if !receipt.event.fresh(now) {
                     Some("Event expired while waiting")
@@ -358,7 +378,7 @@ impl Queue {
                     changed = true;
                 } else if recipient.outcome == Outcome::Received && !current.project.is_empty() {
                     recipient.target = current.clone();
-                    recipient.outcome = if current.accepts(&receipt.event) {
+                    recipient.outcome = if recipient_reason(current, &receipt.event).is_none() {
                         Outcome::Queued
                     } else {
                         Outcome::Skipped
@@ -366,14 +386,15 @@ impl Queue {
                     recipient.reason = if recipient.outcome == Outcome::Queued {
                         "Waiting for terminal input availability"
                     } else {
-                        current
-                            .mismatch_reason(&receipt.event)
+                        recipient_reason(current, &receipt.event)
                             .unwrap_or("Recipient is not eligible")
                     }
                     .into();
                     receipt.confirmed = false;
                     changed = true;
-                } else if recipient.outcome == Outcome::Queued && !current.accepts(&receipt.event) {
+                } else if recipient.outcome == Outcome::Queued
+                    && recipient_reason(current, &receipt.event).is_some()
+                {
                     recipient.outcome = Outcome::Skipped;
                     recipient.reason = "Recipient no longer matches the event".into();
                     receipt.confirmed = false;

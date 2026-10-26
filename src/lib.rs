@@ -16,6 +16,7 @@ pub mod submission;
 pub mod task_management;
 pub mod task_markdown;
 pub mod task_platform;
+pub mod task_requester;
 pub mod task_routing;
 
 #[cfg(target_os = "linux")]

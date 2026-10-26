@@ -455,6 +455,7 @@ fn lifecycle(id: i64, project: &str) -> Lifecycle {
         routing: Default::default(),
         owner: None,
         owner_agent_id: None,
+        requester: None,
         summary: None,
         origin: None,
         goal: None,
@@ -510,6 +511,7 @@ fn fence_proof(app: &Desktop) -> Proof {
         attempt: Attempt { event, target },
         candidate,
         started: Instant::now(),
+        requester_verified: None,
     }
 }
 
@@ -524,7 +526,13 @@ fn native_verify(proof: &Proof) -> bool {
     )
 }
 
-fn verified(app: &mut Desktop, proof: Proof, verified: bool) {
+fn verified(app: &mut Desktop, mut proof: Proof, verified: bool) {
+    // Fake gateway reads are driven here; HTTP metadata validation has separate contracts.
+    if proof.attempt.target.requester_result(&proof.attempt.event)
+        && proof.requester_verified.is_none()
+    {
+        proof.requester_verified = Some(true);
+    }
     let epoch = app.delegation.epoch;
     drop(app.delegation_message(epoch, Event::Verified(Box::new(proof), verified)));
 }
@@ -640,6 +648,64 @@ fn typed_text_is_teed_and_navigation_alone_does_not_count() {
     assert!(state.input.is_empty());
     state.note_command(&BackendCommand::Write(b"\x1b[200~paste\x1b[201~".to_vec()));
     assert!(!state.input.is_empty());
+}
+
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn native_requester_return_waits_for_idle_and_preserves_drafts_without_notifying_peers() {
+    let mut app = desktop();
+    let requester = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    let executor = spawn(&mut app, 0, 2, Provider::Claude, "opaque");
+    let unrelated = spawn(&mut app, 1, 1, Provider::Codex, "opaque");
+    let mut frames = bridge(&mut app, &requester.directory.join("requester-return.json"));
+    for agent in [&requester, &executor, &unrelated] {
+        project(&mut app, agent, "alpha");
+    }
+    scan(&mut app, None);
+    let a = app
+        .delegation
+        .targets()
+        .into_iter()
+        .find(|t| t.terminal == requester.terminal)
+        .unwrap();
+    let c = app
+        .delegation
+        .targets()
+        .into_iter()
+        .find(|t| t.terminal == executor.terminal)
+        .unwrap();
+    let result = Lifecycle::parse(&serde_json::json!({
+        "id":1,"kind":"task_completed","project_ident":"alpha","created_at":unix_ms() as i64,
+        "origin":c.origin,"task":{"id":Uuid::new_v4(),"title":"Requested review","status":"done",
+        "owner_origin":c.origin,"owner_agent_id":c.agent_id,
+        "requester":{"origin":a.origin,"generation":a.executor_generation()}}
+    }))
+    .unwrap()
+    .unwrap();
+    human(&mut app, requester.terminal, b"keep my draft");
+    scan(&mut app, Some(result.clone()));
+    never_verifies(&mut app, &mut frames);
+    assert!(
+        requester.lines().is_empty() && executor.lines().is_empty() && unrelated.lines().is_empty()
+    );
+    assert!(!find(&app, requester.terminal).delegation.input.is_empty());
+    human(&mut app, requester.terminal, b"\x15");
+    // Exercise the real production clock, without provider-screen heuristics.
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+    scan(&mut app, None);
+    deliver(&mut app, &mut frames, |app| {
+        outcome(app, 1, requester.terminal) == Some(Outcome::Submitted)
+    });
+    let lines = wait_lines(&requester, 1);
+    assert_eq!(lines.len(), 1);
+    assert!(
+        lines[0].contains("Requested task result")
+            && lines[0].contains("Do not claim, reopen, or implement")
+    );
+    assert!(executor.lines().is_empty() && unrelated.lines().is_empty());
+    scan(&mut app, Some(result));
+    never_verifies(&mut app, &mut frames);
+    assert_eq!(requester.lines().len(), 1);
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1165,6 +1231,7 @@ fn task_events_coalesce_a_refresh_without_changing_durable_delivery() {
         routing: Default::default(),
         owner: None,
         owner_agent_id: None,
+        requester: None,
         summary: None,
         origin: None,
         goal: None,
