@@ -144,7 +144,7 @@ enum TaskOperation {
     },
     Create {
         title: String,
-        #[arg(long)]
+        #[arg(long, alias = "details")]
         specification: Option<String>,
         /// Record a review finding for human triage; do not auto-execute it.
         #[arg(long)]
@@ -166,7 +166,7 @@ enum TaskOperation {
         title: String,
         #[arg(long)]
         target_project: String,
-        #[arg(long)]
+        #[arg(long, alias = "details")]
         specification: Option<String>,
         /// Subscribe this execution to results on the source tracking task.
         #[arg(long)]

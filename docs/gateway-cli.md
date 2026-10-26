@@ -79,7 +79,8 @@ the read and the update.
 
 ## Replacing `agent-tools tasks`
 
-Every `agent-tools tasks` operation has an amux equivalent. Mutations always use
+The published `agent-tools 1.22.0` task workflows map to the commands below, with
+explicit identity and retired-Eventic exceptions. Mutations always use
 the caller's assigned amux identity (`--agent <id>` from the gateway notice), never
 a copied or overridden agent ID.
 
@@ -94,6 +95,8 @@ a copied or overridden agent ID.
 | `tasks done ID` | `amux tasks done ID` (exact owner only) |
 | `tasks comment ID TEXT` | `amux tasks comment ID TEXT` |
 | `tasks rank ID N` | `amux tasks rank ID N`; the reply must acknowledge the new rank |
+| `tasks help [COMMAND]`, `--help` | `amux tasks help [COMMAND]`, `--help` |
+| `--details S` | Alias for `--specification S` on `create` and `delegate` |
 | `--agent-id`, `--reporter` | Not supported: the reporter and author are always the assigned identity |
 | `tasks comment --author-type user` | Not supported: agents cannot post as the user |
 | `tasks builds` | Not ported; Eventic build status is deprecated |
@@ -101,6 +104,13 @@ a copied or overridden agent ID.
 `--hostname` defaults to this machine's hostname, as in agent-tools. amux also
 provides `agents`, `reassign`, `set-os`, `user-review`, `started`, `cancel`,
 `cancellation` and `bind`, described below.
+
+Use the full task UUID printed by amux; identity overrides are replaced by the
+assigned `amux --agent <id>` identity. Native human actions remain available in
+the task pane. Goal/profile work present only in the agent-tools working tree at
+the audit is not part of this released baseline. The deprecation handoff must
+reconcile any such work before switching generated rules; it must not remove a
+newly released workflow without a replacement.
 
 ## Project agents and OS routing
 
