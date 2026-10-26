@@ -38,6 +38,9 @@ is required for the desktop. Enable **Send fresh gateway task notifications to a
 in this app** to allow terminal delivery; machine and session identity are created
 automatically. The task panel shows connection status, agents, pending notifications
 and recent delivery receipts. Offline history is never replayed into terminals.
+Use the Gateway Tasks filter to find full or shortened task IDs, title words,
+or tags. Searches ignore case and include every task state; **Clear** restores
+the selected Active, User review, or Completed tab.
 Each Terminal, Codex and Claude tab has its own **×** close button and a directory
 subtitle; hover the subtitle for the full path and terminal title.
 

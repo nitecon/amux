@@ -43,6 +43,7 @@ pub(super) enum Action {
     RestartMenuTab,
     View(View),
     Filter(Filter),
+    TaskSearch(String),
     Events,
     Bell,
     Search(String),
@@ -61,6 +62,7 @@ pub(super) struct State {
     mode: View,
     compact: bool,
     filter: Filter,
+    task_search: String,
     events: bool,
     bell: bool,
     search: String,
@@ -364,6 +366,9 @@ impl Desktop {
                 }
             }
             Action::Filter(filter) => self.design.filter = filter,
+            Action::TaskSearch(value) => {
+                self.design.task_search = value.chars().take(512).collect();
+            }
             Action::Events => {
                 self.design
                     .seen_events
@@ -1198,6 +1203,37 @@ impl Desktop {
             )
             .width(Length::Fill)
         };
+        let searching = !self
+            .design
+            .task_search
+            .trim()
+            .trim_start_matches('#')
+            .is_empty();
+        let states: Element<'_, Message> = if searching {
+            text("Search results · all task states")
+                .size(11)
+                .color(MUTED)
+                .into()
+        } else {
+            row![
+                filter("Active", Filter::Active),
+                filter("User review", Filter::UserReview),
+                filter("Completed", Filter::Completed)
+            ]
+            .spacing(3)
+            .into()
+        };
+        let search = row![
+            text_input("Filter by task ID, title or tag…", &self.design.task_search)
+                .on_input(|value| action(Action::TaskSearch(value)))
+                .width(Length::Fill),
+            button(text("Clear").size(11)).on_press_maybe(
+                (!self.design.task_search.is_empty())
+                    .then(|| { action(Action::TaskSearch(String::new())) })
+            )
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
         let header = column![
             row![
                 icon("server"),
@@ -1234,12 +1270,8 @@ impl Desktop {
             )
             .padding(5)
             .style(|_| surface(CARD, true)),
-            row![
-                filter("Active", Filter::Active),
-                filter("User review", Filter::UserReview),
-                filter("Completed", Filter::Completed)
-            ]
-            .spacing(3),
+            search,
+            states,
         ]
         .spacing(10);
         let mut cards = column![
@@ -1251,7 +1283,7 @@ impl Desktop {
         let mut count = 0;
         for task in kanban_order(&panel.tasks) {
             let status = task["status"].as_str().unwrap_or("unknown");
-            if !matches_filter(self.design.filter, status) {
+            if !matches_task_filter(task, self.design.filter, &self.design.task_search) {
                 continue;
             }
             count += 1;
@@ -1334,6 +1366,8 @@ impl Desktop {
             cards = cards.push(
                 text(if panel.loading {
                     "Loading gateway tasks…"
+                } else if searching {
+                    "No tasks match this search."
                 } else {
                     "No tasks in this view."
                 })
@@ -1688,6 +1722,26 @@ impl Desktop {
         .into()
     }
 }
+fn matches_task_filter(task: &serde_json::Value, filter: Filter, query: &str) -> bool {
+    let query = query.trim().trim_start_matches('#').to_lowercase();
+    if query.is_empty() {
+        return matches_filter(filter, task["status"].as_str().unwrap_or("unknown"));
+    }
+    let mut content = format!(
+        "{} {}",
+        task["id"].as_str().unwrap_or_default(),
+        task["title"].as_str().unwrap_or_default()
+    );
+    if let Some(labels) = task["labels"].as_array() {
+        for label in labels.iter().filter_map(serde_json::Value::as_str) {
+            content.push(' ');
+            content.push_str(label);
+        }
+    }
+    let content = content.to_lowercase();
+    query.split_whitespace().all(|term| content.contains(term))
+}
+
 fn matches_filter(filter: Filter, status: &str) -> bool {
     match filter {
         Filter::Active => matches!(status, "todo" | "in_progress"),
@@ -1833,6 +1887,48 @@ fn inert<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_search_finds_short_ids_titles_and_tags_across_states_without_changing_the_queue() {
+        let mut app = super::super::tests::desktop();
+        let tasks = vec![
+            serde_json::json!({"id":"01a16c87-1234-4567-890a-123456789abc",
+                "title":"Windows integration check", "status":"user_review", "labels":["os:windows"]}),
+            serde_json::json!({"id":Uuid::new_v4(),"title":"Linux terminal", "status":"todo"}),
+            serde_json::json!({"id":Uuid::new_v4(),"title":"Windows check complete", "status":"done", "labels":["bug"]}),
+        ];
+        app.workspaces[0].gateway.tasks = tasks.clone();
+        let found = |query: &str| {
+            tasks
+                .iter()
+                .filter(|task| matches_task_filter(task, Filter::Active, query))
+                .map(|task| task["title"].as_str().unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(found(" #01A16C87 "), ["Windows integration check"]);
+        assert_eq!(
+            found("01a16c87-1234-4567-890a-123456789abc"),
+            ["Windows integration check"]
+        );
+        assert_eq!(
+            found("check WINDOWS"),
+            ["Windows integration check", "Windows check complete"]
+        );
+        assert_eq!(found("os:WINDOWS"), ["Windows integration check"]);
+        assert_eq!(found("bug"), ["Windows check complete"]);
+        assert!(found("nonexistent").is_empty());
+        assert_eq!(found("   "), ["Linux terminal"]);
+        drop(app.design_message(Action::Search("event search".into())));
+        drop(app.design_message(Action::TaskSearch("01a16c87".into())));
+        assert_eq!(app.design.search, "event search");
+        assert_eq!(app.design.filter, Filter::Active);
+        assert_eq!(app.workspaces[0].gateway.tasks, tasks);
+        drop(app.design_tasks(false));
+        drop(app.design_tasks(true));
+        drop(app.design_message(Action::TaskSearch(String::new())));
+        assert_eq!(app.design.filter, Filter::Active);
+        assert_eq!(app.workspaces[0].gateway.tasks, tasks);
+    }
+
     #[test]
     fn active_is_default_and_detached_tasks_redock_without_closing_sessions() {
         let mut app = super::super::tests::desktop();
