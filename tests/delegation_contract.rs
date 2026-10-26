@@ -226,8 +226,18 @@ fn registered_agent_cli_delegates_without_agent_tools() {
     let root = fixture.path();
     fs::write(root.join("codex"), "#!/bin/sh\nread -r go\namux tasks --json delegate Review --target-project other --specification \"$HANDOFF_BODY\"\n").unwrap();
     fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
-    // Only the fixture and basic shell tools: no agent-tools binary is available.
-    let path = std::env::join_paths([root, Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    // Only the fixture, the real git and basic shell tools: no agent-tools binary
+    // is available. macOS /usr/bin/git is an xcrun stub that fails intermittently,
+    // which would resolve a different project root than the launch did.
+    let git = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .find(|dir| dir.join("git").is_file());
+    let path = std::env::join_paths(
+        [root.to_path_buf()]
+            .into_iter()
+            .chain(git)
+            .chain(["/usr/bin".into(), "/bin".into()]),
+    )
+    .unwrap();
     let (url, server) = server(vec![(200, receipt())]);
     let body = "inline\n$(must stay literal)";
     struct Agent(std::process::Child);
