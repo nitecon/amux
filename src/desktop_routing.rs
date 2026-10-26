@@ -40,6 +40,56 @@ mod tests {
         }
     }
     #[test]
+    fn external_owner_label_uses_the_exact_live_owner_machine() {
+        let mut app = super::super::tests::desktop();
+        let owner = target();
+        let mut directory = directory(owner.clone());
+        directory.targets[0].display_name = Some("Richard Stallman - Claude".into());
+        directory.targets[0].hostname = Some("Defcon2".into());
+        let task = serde_json::json!({
+            "owner_agent_id": "Richard Stallman - Claude",
+            "owner_origin": owner.origin,
+            "hostname": "Task creation machine"
+        });
+        let panel = &mut app.workspaces[0].gateway.routing;
+        panel.directory = Some(directory);
+        panel.checked = Some(Instant::now());
+        assert_eq!(
+            app.external_task_owner(&task),
+            "Richard Stallman - Claude · Defcon2 (external)"
+        );
+
+        app.workspaces[0]
+            .gateway
+            .routing
+            .directory
+            .as_mut()
+            .unwrap()
+            .targets[0]
+            .target
+            .origin
+            .instance_id = Uuid::new_v4();
+        assert_eq!(
+            app.external_task_owner(&task),
+            "Richard Stallman - Claude · machine unavailable (external)"
+        );
+        app.workspaces[0]
+            .gateway
+            .routing
+            .directory
+            .as_mut()
+            .unwrap()
+            .targets[0]
+            .target = owner;
+        app.workspaces[0].gateway.routing.checked =
+            Instant::now().checked_sub(Duration::from_secs(61));
+        assert_eq!(
+            app.external_task_owner(&task),
+            "Richard Stallman - Claude · machine unavailable (external)"
+        );
+    }
+
+    #[test]
     fn unavailable_selection_never_silently_becomes_automatic() {
         let old = target();
         let mut panel = Panel {
@@ -139,6 +189,32 @@ impl Panel {
 }
 
 impl Desktop {
+    pub(super) fn external_task_owner(&self, task: &serde_json::Value) -> String {
+        let panel = &self.workspaces[self.active].gateway.routing;
+        let origin =
+            serde_json::from_value::<amux::delegation::Origin>(task["owner_origin"].clone()).ok();
+        let entry = panel
+            .directory
+            .as_ref()
+            .filter(|_| panel.fresh())
+            .and_then(|directory| {
+                directory.targets.iter().find(|entry| {
+                    Some(&entry.target.origin) == origin.as_ref()
+                        && entry.expires_at > unix_ms() as i64
+                })
+            });
+        let owner = entry
+            .and_then(|entry| entry.display_name.as_deref())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| task["owner_agent_id"].as_str())
+            .unwrap_or("Unknown agent");
+        let machine = entry
+            .and_then(|entry| entry.hostname.as_deref())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("machine unavailable");
+        format!("{owner} · {machine} (external)")
+    }
+
     pub(super) fn refresh_task_targets(&mut self) -> Task<Message> {
         self.workspaces[self.active].gateway.routing.polled = None;
         self.routing_tick()
