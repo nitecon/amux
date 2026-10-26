@@ -141,6 +141,8 @@ jobs:
       - name: Package amux.app
         env:
           MAS_INSTALLER_IDENTITY: ${{ secrets.MAS_INSTALLER_IDENTITY }}
+          AMUX_REVISION: ${{ github.sha }}
+          AMUX_CANDIDATE: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           if [ -n "$MAS_APP_IDENTITY" ]; then export MAS_PROVISIONING_PROFILE="$RUNNER_TEMP/amux.provisionprofile"; fi
           mkdir -p macos

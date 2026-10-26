@@ -13,6 +13,10 @@
 //! until the user restarts it: Unix replaces by rename, Windows renames the
 //! locked image aside (`*.amux-old`, removed by [`cleanup_backups`] once it is
 //! no longer running). The updating CLI replaces itself with `self_replace`.
+//!
+//! macOS updates the whole `amux.app` instead of single files, so its code
+//! signature stays intact: `Contents/Resources/BUILD.json` names the release
+//! and `codesign --verify` proves the bundle is unmodified.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
@@ -232,6 +236,15 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
             detected.note.as_deref().unwrap_or("no matching BUILD.json")
         ),
     };
+    let platform = Platform::current().context("unsupported platform")?;
+    // macOS replaces the whole app, so its lock and staging live beside it.
+    let root = if platform.os == "macos" {
+        dir.parent()
+            .context("app has no parent directory")?
+            .to_path_buf()
+    } else {
+        dir.clone()
+    };
     // Keep one transaction per install, including cleanup and provenance checks.
     // Leave the lock inode in place after unlock so another process cannot lock
     // a newly-created file while the old inode is still held.
@@ -240,7 +253,7 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
         .write(true)
         .create(true)
         .truncate(false)
-        .open(dir.join(".amux-update.lock"))
+        .open(root.join(".amux-update.lock"))
         .context("cannot open update lock; nothing was changed")?;
     lock.try_lock().map_err(|error| {
         anyhow!("another amux update may be running; nothing was changed: {error}")
@@ -250,7 +263,6 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
         matches!(&detected.method, InstallMethod::Direct { dir: current, .. } if current == &dir),
         "installation changed before update lock was acquired; nothing was changed"
     );
-    let platform = Platform::current().context("unsupported platform")?;
     let stale = cleanup_backups(&dir);
     let releases = fetch_releases(source).await?;
     let selection = select(&releases, &detected, source);
@@ -294,17 +306,37 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
 
     let staging = tempfile::Builder::new()
         .prefix(".amux-update-")
-        .tempdir_in(&dir)
-        .with_context(|| format!("cannot write to {}", dir.display()))?;
+        .tempdir_in(&root)
+        .with_context(|| format!("cannot write to {}", root.display()))?;
+    let installed = |build: &Build| -> Result<()> {
+        if let InstallMethod::Direct { revision, .. } = &detected.method {
+            ensure!(
+                &build.revision != revision,
+                "{} contains the installed revision",
+                release.tag_name
+            );
+        }
+        Ok(())
+    };
+    if platform.os == "macos" {
+        let app = extract_app(&bytes, staging.path())?;
+        let build = read_build(&app_build(&app)).context("bundle BUILD.json")?;
+        check_build(&build, &platform)?;
+        check_release(&build, release)?;
+        verify_signature(&app)?;
+        installed(&build)?;
+        swap_app(&dir, &app)?;
+        return Ok(format!(
+            "Updated {} to {} ({}). Restart amux to use it; running terminals and agents keep \
+             the previous version until you restart.",
+            dir.display(),
+            release.tag_name,
+            &build.revision[..12]
+        ));
+    }
     let names = extract(&bytes, &platform, staging.path())?;
     let build = verify_staged(staging.path(), &names, &platform, release)?;
-    if let InstallMethod::Direct { revision, .. } = &detected.method {
-        ensure!(
-            &build.revision != revision,
-            "{} contains the installed revision",
-            release.tag_name
-        );
-    }
+    installed(&build)?;
 
     let cli_is_self = same_file(&dir.join(&platform.cli), std::env::current_exe().ok());
     let leftovers = install(&dir, staging.path(), &names, &platform, cli_is_self)?;
@@ -363,6 +395,7 @@ pub fn cleanup_backups(dir: &Path) -> Vec<PathBuf> {
 struct Platform {
     target: &'static str,
     os: &'static str,
+    arch: &'static str,
     extension: &'static str,
     cli: String,
     gui: String,
@@ -370,15 +403,17 @@ struct Platform {
 
 impl Platform {
     fn current() -> Option<Self> {
-        let (target, os, extension) = match (std::env::consts::OS, std::env::consts::ARCH) {
-            ("linux", "x86_64") => ("x86_64-unknown-linux-gnu", "linux", ".tar.gz"),
-            ("windows", "x86_64") => ("x86_64-pc-windows-msvc", "windows", ".zip"),
+        let (target, os, arch, extension) = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => ("x86_64-unknown-linux-gnu", "linux", "x86_64", ".tar.gz"),
+            ("windows", "x86_64") => ("x86_64-pc-windows-msvc", "windows", "x86_64", ".zip"),
+            ("macos", "aarch64") => ("aarch64-apple-darwin", "macos", "aarch64", ".zip"),
             _ => return None,
         };
         let suffix = std::env::consts::EXE_SUFFIX;
         Some(Self {
             target,
             os,
+            arch,
             extension,
             cli: format!("amux{suffix}"),
             gui: format!("amux-desktop{suffix}"),
@@ -397,8 +432,11 @@ impl Platform {
 struct Build {
     revision: String,
     target: String,
+    /// Empty on macOS, where the code signature seals the bundle instead.
+    #[serde(default)]
     binary_sha256: String,
     gui_binary: String,
+    #[serde(default)]
     gui_binary_sha256: String,
     #[serde(default)]
     candidate_only: bool,
@@ -448,8 +486,27 @@ fn detect(exe: &Path) -> Detected {
 
 fn verified_bundle(exe: &Path) -> Result<(PathBuf, Build)> {
     let platform = Platform::current().context("no direct-download bundle for this platform")?;
+    if platform.os == "macos" {
+        let app = app_of(exe).context("executable is not inside an .app bundle")?;
+        let build = read_build(&app_build(&app)).context("reading BUILD.json")?;
+        check_build(&build, &platform)?;
+        verify_signature(&app)?;
+        return Ok((app, build));
+    }
     let dir = exe.parent().context("executable has no directory")?;
     let build = read_build(&dir.join(BUILD_FILE)).context("reading BUILD.json")?;
+    check_build(&build, &platform)?;
+    for (name, expected) in [
+        (&platform.cli, &build.binary_sha256),
+        (&platform.gui, &build.gui_binary_sha256),
+    ] {
+        let actual = sha256_file(&dir.join(name)).with_context(|| format!("reading {name}"))?;
+        ensure!(&actual == expected, "{name} does not match BUILD.json");
+    }
+    Ok((dir.to_path_buf(), build))
+}
+
+fn check_build(build: &Build, platform: &Platform) -> Result<()> {
     ensure!(build.target == platform.target, "BUILD.json target differs");
     ensure!(
         build.gui_binary == platform.gui,
@@ -459,14 +516,40 @@ fn verified_bundle(exe: &Path) -> Result<(PathBuf, Build)> {
         is_revision(&build.revision),
         "BUILD.json revision is invalid"
     );
-    for (name, expected) in [
-        (&platform.cli, &build.binary_sha256),
-        (&platform.gui, &build.gui_binary_sha256),
-    ] {
-        let actual = sha256_file(&dir.join(name)).with_context(|| format!("reading {name}"))?;
-        ensure!(&actual == expected, "{name} does not match BUILD.json");
-    }
-    Ok((dir.to_path_buf(), build))
+    Ok(())
+}
+
+/// `X.app` for an executable at `X.app/Contents/MacOS/<exe>`.
+fn app_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then(|| app.to_path_buf())
+}
+
+fn app_build(app: &Path) -> PathBuf {
+    app.join("Contents").join("Resources").join(BUILD_FILE)
+}
+
+/// The bundle seal covers every file, including BUILD.json and both binaries.
+fn verify_signature(app: &Path) -> Result<()> {
+    let status = std::process::Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(app)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("running codesign")?;
+    ensure!(
+        status.success(),
+        "{} code signature is invalid or modified",
+        app.display()
+    );
+    Ok(())
 }
 
 /// `(prefix, cask, package)` for executables inside a Homebrew keg or cask.
@@ -664,7 +747,7 @@ fn bundle_assets<'a>(
     platform: &Platform,
     source: &ReleaseSource,
 ) -> Result<(&'a ApiAsset, &'a ApiAsset)> {
-    let prefix = format!("amux-{}-x86_64-", platform.os);
+    let prefix = format!("amux-{}-{}-", platform.os, platform.arch);
     let mut archives = release
         .assets
         .iter()
@@ -872,6 +955,20 @@ fn verify_staged(
     );
     ensure!(build.gui_binary == platform.gui, "bundle GUI name differs");
     ensure!(is_revision(&build.revision), "bundle revision is invalid");
+    check_release(&build, release)?;
+    for (name, expected) in [
+        (&platform.cli, &build.binary_sha256),
+        (&platform.gui, &build.gui_binary_sha256),
+    ] {
+        ensure!(
+            &sha256_file(&dir.join(name))? == expected,
+            "bundle {name} does not match its BUILD.json"
+        );
+    }
+    Ok(build)
+}
+
+fn check_release(build: &Build, release: &ApiRelease) -> Result<()> {
     if is_revision(&release.target_commitish) {
         ensure!(
             release.target_commitish == build.revision,
@@ -887,16 +984,79 @@ fn verify_staged(
             release.tag_name
         );
     }
-    for (name, expected) in [
-        (&platform.cli, &build.binary_sha256),
-        (&platform.gui, &build.gui_binary_sha256),
-    ] {
+    Ok(())
+}
+
+/// Extract `amux.app/...` from the macOS release zip, refusing links, absolute
+/// or parent paths, entries outside the app and oversized contents.
+fn extract_app(bytes: &[u8], out: &Path) -> Result<PathBuf> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    ensure!(archive.len() <= MAX_ENTRIES, "archive has too many entries");
+    let mut unpacked = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let raw = entry.name()?.into_owned();
+        let path = Path::new(&raw);
         ensure!(
-            &sha256_file(&dir.join(name))? == expected,
-            "bundle {name} does not match its BUILD.json"
+            !raw.contains('\\')
+                && path.starts_with("amux.app")
+                && path.components().all(|c| matches!(c, Component::Normal(_))),
+            "archive entry {raw:?} is not inside amux.app"
         );
+        ensure!(!entry.is_symlink(), "archive entry {raw:?} is a link");
+        let dest = out.join(path);
+        if entry.is_dir() {
+            fs::create_dir_all(&dest)?;
+            continue;
+        }
+        ensure!(
+            entry.is_file(),
+            "archive entry {raw:?} is not a regular file"
+        );
+        ensure!(entry.size() <= MAX_ENTRY, "archive entry is too large");
+        unpacked = unpacked
+            .checked_add(entry.size())
+            .context("archive size overflow")?;
+        ensure!(
+            unpacked <= MAX_UNPACKED,
+            "archive expands beyond its size limit"
+        );
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+        let mut file = create(&dest, executable)?;
+        let copied = io::copy(&mut Read::take(&mut entry, MAX_ENTRY + 1), &mut file)?;
+        ensure!(copied <= MAX_ENTRY, "archive entry {raw:?} is too large");
+        file.sync_all()?;
     }
-    Ok(build)
+    let app = out.join("amux.app");
+    ensure!(app.is_dir(), "archive has no amux.app");
+    Ok(app)
+}
+
+/// Rename the verified app into place, keeping the old one until that worked.
+/// Running processes keep their open images after the old app is removed.
+fn swap_app(app: &Path, staged: &Path) -> Result<()> {
+    let parent = app.parent().context("app has no parent directory")?;
+    let name = app
+        .file_name()
+        .context("app has no name")?
+        .to_string_lossy();
+    let backup = backup_path(parent, &name);
+    fs::rename(app, &backup).with_context(|| format!("moving {} aside", app.display()))?;
+    if let Err(error) = fs::rename(staged, app) {
+        return Err(match fs::rename(&backup, app) {
+            Ok(()) => anyhow!(error).context("placing the new app; the previous app was restored"),
+            Err(restore) => anyhow!(error).context(format!(
+                "placing the new app; ROLLBACK INCOMPLETE ({restore}); move {} back to {}",
+                backup.display(),
+                app.display()
+            )),
+        });
+    }
+    let _ = fs::remove_dir_all(&backup);
+    Ok(())
 }
 
 fn same_file(path: &Path, other: Option<PathBuf>) -> bool {
@@ -1015,6 +1175,66 @@ fn rollback(done: Vec<Swapped>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_app_extracts_only_inside_the_bundle_and_swaps_whole() {
+        use std::io::Write;
+        let zip = |entries: &[(&str, u32)]| {
+            let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            for (name, mode) in entries {
+                let options = zip::write::SimpleFileOptions::default().unix_permissions(*mode);
+                if name.ends_with('/') {
+                    writer.add_directory(*name, options).unwrap();
+                } else {
+                    writer.start_file(*name, options).unwrap();
+                    writer.write_all(name.as_bytes()).unwrap();
+                }
+            }
+            writer.finish().unwrap().into_inner()
+        };
+        let root = tempfile::tempdir().unwrap();
+        let bytes = zip(&[
+            ("amux.app/", 0o755),
+            ("amux.app/Contents/MacOS/amux-desktop", 0o755),
+            ("amux.app/Contents/Info.plist", 0o644),
+        ]);
+        let staged = tempfile::tempdir_in(root.path()).unwrap();
+        let app = extract_app(&bytes, staged.path()).unwrap();
+        let desktop = app.join("Contents/MacOS/amux-desktop");
+        assert_eq!(
+            fs::read_to_string(&desktop).unwrap(),
+            "amux.app/Contents/MacOS/amux-desktop"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&desktop).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+        for bad in ["amux.app/../escape", "other.app/Contents/x", "/amux.app/x"] {
+            let out = tempfile::tempdir().unwrap();
+            assert!(
+                extract_app(&zip(&[(bad, 0o644)]), out.path()).is_err(),
+                "{bad}"
+            );
+        }
+
+        let installed = root.path().join("amux.app");
+        fs::create_dir_all(installed.join("Contents")).unwrap();
+        fs::write(installed.join("Contents/old"), "old").unwrap();
+        swap_app(&installed, &app).unwrap();
+        assert!(installed.join("Contents/MacOS/amux-desktop").is_file());
+        assert!(!installed.join("Contents/old").exists());
+        // Only the installed app, the emptied staging folder and nothing left aside.
+        let leftovers: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(leftovers.len(), 2, "{leftovers:?}");
+    }
     #[test]
     fn compressed_metadata_cannot_bypass_the_unpacked_byte_limit() {
         use std::io::Write;

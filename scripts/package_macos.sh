@@ -5,6 +5,8 @@
 #   scripts/package_macos.sh <binary-dir> <output-dir>
 #
 # Optional environment:
+#   AMUX_REVISION            commit SHA; writes Contents/Resources/BUILD.json for updates
+#   AMUX_CANDIDATE           false for tagged releases (default true)
 #   MACOS_BUNDLE_ID          bundle identifier (default com.nitecon.amux)
 #   MAS_APP_IDENTITY         "3rd Party Mac Developer Application: ..." keychain identity
 #   MAS_INSTALLER_IDENTITY   "3rd Party Mac Developer Installer: ..." keychain identity
@@ -25,6 +27,15 @@ sed -e "s/__VERSION__/$version/g" -e "s/__BUNDLE_ID__/$bundle_id/g" \
 # The desktop finds the CLI beside itself, so both live in Contents/MacOS.
 cp "$bin/amux-desktop" "$bin/amux" "$app/Contents/MacOS/"
 cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
+
+# CI release metadata for `amux --update`, sealed by the app signature below.
+# Local builds have none and are never updated in place.
+if [ -n "${AMUX_REVISION:-}" ]; then
+    cat > "$app/Contents/Resources/BUILD.json" <<EOF
+{"revision": "$AMUX_REVISION", "target": "aarch64-apple-darwin", "version": "$version",
+ "gui_binary": "amux-desktop", "candidate_only": ${AMUX_CANDIDATE:-true}}
+EOF
+fi
 
 iconset="$out/amux.iconset"
 rm -rf "$iconset"
