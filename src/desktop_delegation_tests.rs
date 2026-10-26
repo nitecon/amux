@@ -572,6 +572,7 @@ fn until_verifying(app: &mut Desktop, frames: &mut mpsc::Receiver<connection::Co
 }
 
 /// Tick for a while and assert no attempt starts.
+#[cfg(any(target_os = "linux", windows))]
 fn never_verifies(app: &mut Desktop, frames: &mut mpsc::Receiver<connection::Command>) {
     let deadline = Instant::now() + Duration::from_millis(1500);
     while Instant::now() < deadline {
@@ -617,8 +618,11 @@ pub(super) fn wait_lines(agent: &Agent, count: usize) -> Vec<String> {
     }
 }
 
+#[cfg(any(target_os = "linux", windows))]
 type Tamper = fn(&mut Proof);
+#[cfg(any(target_os = "linux", windows))]
 type Change = fn(&mut Desktop, &mut Proof);
+#[cfg(any(target_os = "linux", windows))]
 type Restore = fn(&mut Desktop);
 
 #[test]
