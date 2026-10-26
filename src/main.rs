@@ -125,7 +125,15 @@ enum MessageOperation {
 
 #[derive(Subcommand)]
 enum TaskOperation {
-    List,
+    /// List tasks (default: todo and in_progress).
+    List {
+        /// Comma-separated statuses: todo, in_progress, user_review, done, cancelled.
+        #[arg(long)]
+        status: Option<String>,
+        /// Include done tasks older than the gateway's falloff window.
+        #[arg(long)]
+        include_stale: bool,
+    },
     /// List connected project agents across machines, including OS and execution identity.
     Agents {
         #[arg(long, value_enum)]
@@ -149,6 +157,8 @@ enum TaskOperation {
         /// Reserve for a live same-project agent and subscribe this caller to results.
         #[arg(long)]
         to_agent: Option<Uuid>,
+        #[command(flatten)]
+        details: DetailArgs,
     },
     /// Create linked tasks in different projects, not an exact-session assignment.
     /// A lost reply is uncertain: inspect both projects before manually retrying.
@@ -161,9 +171,17 @@ enum TaskOperation {
         /// Subscribe this execution to results on the source tracking task.
         #[arg(long)]
         notify_results: bool,
+        #[command(flatten)]
+        details: DetailArgs,
     },
     Claim {
         id: Uuid,
+    },
+    /// Set a task's absolute rank (lower = higher priority within its column).
+    Rank {
+        id: Uuid,
+        #[arg(allow_negative_numbers = true)]
+        rank: i64,
     },
     /// Hand an active task to one exact, currently connected project agent.
     Reassign {
@@ -219,6 +237,29 @@ enum TaskOperation {
     Bind {
         ident: String,
     },
+}
+
+#[derive(clap::Args)]
+struct DetailArgs {
+    /// One-paragraph summary.
+    #[arg(long)]
+    description: Option<String>,
+    /// Repeatable task label.
+    #[arg(long = "label")]
+    labels: Vec<String>,
+    /// Originating host. Defaults to this machine's hostname.
+    #[arg(long)]
+    hostname: Option<String>,
+}
+
+impl DetailArgs {
+    fn into_details(self) -> amux::gateway::TaskDetails {
+        amux::gateway::TaskDetails {
+            description: self.description,
+            labels: self.labels,
+            hostname: self.hostname.or_else(sysinfo::System::host_name),
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -381,14 +422,14 @@ fn run(cli: Cli) -> Result<u8> {
                     Some(project) => project,
                     None => gateway.resolve_project(project_dir.canonicalize()?).await?,
                 };
-                if matches!(operation, TaskOperation::List) { return gateway.list(&project).await; }
+                if let TaskOperation::List { status, include_stale } = &operation { return gateway.list_filtered(&project, status.as_deref(), *include_stale).await; }
                 if let TaskOperation::Agents { os } = operation { return Ok(serde_json::to_value(gateway.task_agents(&project, &project_dir, os).await?)?); }
                 if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
-                    TaskOperation::Create { title, specification, review_finding, os, notify_results, to_agent } => {
+                    TaskOperation::Create { title, specification, review_finding, os, notify_results, to_agent, details } => {
                         let mut body = json!({"title": title, "specification": specification});
                         let mut labels = Vec::new();
                         if review_finding { labels.push("autoreview-finding".to_owned()); }
@@ -397,6 +438,7 @@ fn run(cli: Cli) -> Result<u8> {
                             labels.push(format!("os:{}", os.as_str()));
                         }
                         if !labels.is_empty() { body["labels"] = json!(labels); }
+                        details.into_details().apply(&mut body)?;
                         let executor = if let Some(session) = to_agent {
                             let directory = gateway.task_agents(&project, &actor.project_directory, os).await?;
                             let mut matching = directory.targets.into_iter().filter(|entry| entry.target.origin.session_id == session);
@@ -423,10 +465,11 @@ fn run(cli: Cli) -> Result<u8> {
                         }
                         Ok(task)
                     },
-                    TaskOperation::Delegate { title, target_project, specification, notify_results } => {
+                    TaskOperation::Delegate { title, target_project, specification, notify_results, details } => {
                         let requester = if notify_results { Some(gateway.requester_target(&project, &actor).await?) } else { None };
-                        gateway.delegate_with_requester(&project, &target_project, title, specification, &actor, requester.as_ref()).await
+                        gateway.delegate_with_requester(&project, &target_project, title, specification, &details.into_details(), &actor, requester.as_ref()).await
                     },
+                    TaskOperation::Rank { id, rank } => gateway.rank(&project, id, rank, &actor).await,
                     TaskOperation::Claim { id } => {
                         let task = gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await?;
                         anyhow::ensure!(amux::task_platform::matches(&task, Some(&actor.os)), "Task requires another operating system");

@@ -1298,7 +1298,7 @@ impl Desktop {
             // The assignee line is the Assign control for work that can still be assigned.
             let assignee = button(
                 if elsewhere {
-                    text(format!("→ {owner} · working outside this app")).color(RED)
+                    text(format!("→ {}", self.external_task_owner(task))).color(RED)
                 } else {
                     text(format!("→ {owner}")).color(MUTED)
                 }

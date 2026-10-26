@@ -1,6 +1,9 @@
 #[path = "support/identity.rs"]
 mod fixture_identity;
-use amux::{gateway::Gateway, identity::Provider};
+use amux::{
+    gateway::{Gateway, TaskDetails},
+    identity::Provider,
+};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -120,6 +123,7 @@ fn delegated_return_subscription_belongs_to_source_and_requires_exact_ack() {
             "other",
             "Review".into(),
             Some("context".into()),
+            &amux::gateway::TaskDetails::default(),
             &actor,
             Some(&requester),
         ));
@@ -184,6 +188,7 @@ fn delegation_preserves_inline_context_and_requires_the_requested_linked_records
                 "other",
                 "  Review  ".into(),
                 Some(context.into()),
+                &TaskDetails::default(),
                 &actor
             ))
             .unwrap(),
@@ -196,6 +201,7 @@ fn delegation_preserves_inline_context_and_requires_the_requested_linked_records
                 "other",
                 "Review".into(),
                 Some(context.into()),
+                &TaskDetails::default(),
                 &actor,
             ))
             .unwrap_err();
@@ -244,7 +250,14 @@ fn invalid_delegations_and_unregistered_cli_callers_send_nothing() {
     ] {
         assert!(
             runtime
-                .block_on(gateway.delegate("demo", target, title, context, &actor))
+                .block_on(gateway.delegate(
+                    "demo",
+                    target,
+                    title,
+                    context,
+                    &TaskDetails::default(),
+                    &actor
+                ))
                 .is_err()
         );
     }

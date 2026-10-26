@@ -12,6 +12,57 @@ pub struct Gateway {
     token: String,
 }
 
+/// Optional creation metadata shared by task creation and delegation.
+#[derive(Default)]
+pub struct TaskDetails {
+    pub description: Option<String>,
+    pub labels: Vec<String>,
+    pub hostname: Option<String>,
+}
+
+impl TaskDetails {
+    /// Merge into a creation body. Routing labels have dedicated flags, so a
+    /// free-form label cannot bypass their acknowledgment checks.
+    pub fn apply(&self, body: &mut Value) -> Result<()> {
+        if self
+            .description
+            .as_ref()
+            .is_some_and(|text| text.len() > 64 * 1024)
+        {
+            bail!("description exceeds 64 KiB; move long context to the specification");
+        }
+        for label in &self.labels {
+            if label.trim().is_empty() || label.len() > 128 || label.chars().any(char::is_control) {
+                bail!(
+                    "labels must be non-empty, at most 128 bytes and contain no control characters"
+                );
+            }
+            if label.starts_with("os:") || label == "autoreview-finding" {
+                bail!("use --os or --review-finding instead of the `{label}` label");
+            }
+        }
+        if self.hostname.as_ref().is_some_and(|host| {
+            host.trim().is_empty() || host.len() > 255 || host.chars().any(char::is_control)
+        }) {
+            bail!(
+                "hostname must be non-empty, at most 255 bytes and contain no control characters"
+            );
+        }
+        if let Some(description) = &self.description {
+            body["description"] = json!(description);
+        }
+        if !self.labels.is_empty() {
+            let mut labels = body["labels"].as_array().cloned().unwrap_or_default();
+            labels.extend(self.labels.iter().map(|label| json!(label)));
+            body["labels"] = json!(labels);
+        }
+        if let Some(hostname) = &self.hostname {
+            body["hostname"] = json!(hostname);
+        }
+        Ok(())
+    }
+}
+
 impl Gateway {
     pub fn new(base: &str, token: String) -> Result<Self> {
         let base = Url::parse(base).context("invalid gateway URL")?;
@@ -253,7 +304,60 @@ impl Gateway {
     }
 
     pub async fn list(&self, project: &str) -> Result<Value> {
-        self.request(Method::GET, project, &[], None, None).await
+        self.list_filtered(project, None, false).await
+    }
+
+    /// `status` is a comma-separated filter; without it the gateway lists
+    /// todo and in_progress. `include_stale` adds done tasks past its falloff window.
+    pub async fn list_filtered(
+        &self,
+        project: &str,
+        status: Option<&str>,
+        include_stale: bool,
+    ) -> Result<Value> {
+        let mut query = Vec::new();
+        if let Some(status) = status {
+            let statuses: Vec<_> = status.split(',').map(str::trim).collect();
+            if statuses.iter().any(|status| {
+                !matches!(
+                    *status,
+                    "todo" | "in_progress" | "user_review" | "done" | "cancelled"
+                )
+            }) {
+                bail!(
+                    "status filter accepts only todo, in_progress, user_review, done and cancelled"
+                );
+            }
+            query.push(("status", statuses.join(",")));
+        }
+        if include_stale {
+            query.push(("include_stale", "true".into()));
+        }
+        self.project_request(Method::GET, project, &["tasks"], None, None, &query)
+            .await
+    }
+
+    /// Set a task's absolute rank; lower ranks sort first within a column.
+    pub async fn rank(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        rank: i64,
+        actor: &AgentIdentity,
+    ) -> Result<Value> {
+        let result = self
+            .request(
+                Method::PATCH,
+                project,
+                &[&id.to_string()],
+                Some(json!({"rank": rank})),
+                Some(actor),
+            )
+            .await?;
+        if result["rank"] != rank {
+            bail!("gateway did not acknowledge rank {rank}; fetch the task before retrying");
+        }
+        Ok(result)
     }
 
     /// Include parked user decisions and completed work for the desktop lanes.
@@ -434,18 +538,29 @@ impl Gateway {
         target_project: &str,
         title: String,
         specification: Option<String>,
+        details: &TaskDetails,
         actor: &AgentIdentity,
     ) -> Result<Value> {
-        self.delegate_with_requester(project, target_project, title, specification, actor, None)
-            .await
+        self.delegate_with_requester(
+            project,
+            target_project,
+            title,
+            specification,
+            details,
+            actor,
+            None,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)] // Existing delegation arguments plus the explicit return subscription.
     pub async fn delegate_with_requester(
         &self,
         project: &str,
         target_project: &str,
         title: String,
         specification: Option<String>,
+        details: &TaskDetails,
         actor: &AgentIdentity,
         requester: Option<&crate::task_routing::SessionTarget>,
     ) -> Result<Value> {
@@ -469,6 +584,7 @@ impl Gateway {
             bail!("delegation context exceeds 64 KiB; use a smaller inline handoff");
         }
         let mut body = json!({"target_project_ident":target_project,"title":title,"specification":specification});
+        details.apply(&mut body)?;
         if let Some(requester) = requester {
             requester.validate()?;
             ensure!(

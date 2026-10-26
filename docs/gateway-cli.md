@@ -77,6 +77,31 @@ gateway already guards claims with a bound owner origin, but until it enforces
 the exact owner atomically for every claim type, ownership can change between
 the read and the update.
 
+## Replacing `agent-tools tasks`
+
+Every `agent-tools tasks` operation has an amux equivalent. Mutations always use
+the caller's assigned amux identity (`--agent <id>` from the gateway notice), never
+a copied or overridden agent ID.
+
+| agent-tools | amux |
+| --- | --- |
+| `tasks list [--status S] [--include-stale]` | `amux tasks list [--status S] [--include-stale]`; statuses are `todo`, `in_progress`, `user_review`, `done`, `cancelled` |
+| `tasks get ID` | `amux tasks get ID` (`--json` for raw gateway JSON) |
+| `tasks add --title T [--description D] [--specification S] [--label L]… [--hostname H]` | `amux tasks create T [--description D] [--specification S] [--label L]… [--hostname H]`; use `--os` and `--review-finding` instead of `os:` or `autoreview-finding` labels |
+| `tasks add-delegated --target-project P --title T --description D --specification S [--label L]… [--hostname H]` | `amux tasks delegate T --target-project P [--description D] [--specification S] [--label L]… [--hostname H]` |
+| `tasks claim ID` | `amux tasks claim ID` (also refuses tasks that require another OS) |
+| `tasks release ID` | `amux tasks release ID` (exact owner only) |
+| `tasks done ID` | `amux tasks done ID` (exact owner only) |
+| `tasks comment ID TEXT` | `amux tasks comment ID TEXT` |
+| `tasks rank ID N` | `amux tasks rank ID N`; the reply must acknowledge the new rank |
+| `--agent-id`, `--reporter` | Not supported: the reporter and author are always the assigned identity |
+| `tasks comment --author-type user` | Not supported: agents cannot post as the user |
+| `tasks builds` | Not ported; Eventic build status is deprecated |
+
+`--hostname` defaults to this machine's hostname, as in agent-tools. amux also
+provides `agents`, `reassign`, `set-os`, `user-review`, `started`, `cancel`,
+`cancellation` and `bind`, described below.
+
 ## Project agents and OS routing
 
 `amux agents` lists local registrations. For the current project's connected
