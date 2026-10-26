@@ -26,6 +26,7 @@ fn event(id: i64) -> Event {
         routing: Default::default(),
         owner: None,
         owner_agent_id: None,
+        requester: None,
         required_os: None,
         summary: None,
         origin: None,

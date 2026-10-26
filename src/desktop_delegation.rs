@@ -112,6 +112,7 @@ pub(super) struct Proof {
     attempt: Attempt,
     candidate: Candidate,
     started: Instant,
+    requester_verified: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +205,21 @@ fn tab(desktop: &mut Desktop, id: u64) -> Option<&mut Tab> {
         .iter_mut()
         .flat_map(|w| w.panes.iter_mut().flat_map(|(_, p)| &mut p.tabs))
         .find(|t| t.id == id)
+}
+
+fn requester_input_ready(
+    tab: &Tab,
+    event: &delegation::Event,
+    target: &Target,
+    idle_after: Duration,
+) -> bool {
+    !target.requester_result(event)
+        || (tab.delegation.input.is_empty()
+            && tab.terminal.as_ref().is_some_and(|terminal| {
+                terminal
+                    .activity_elapsed()
+                    .is_some_and(|elapsed| elapsed >= idle_after)
+            }))
 }
 
 /// Bind a terminal number to its actual native executor, without provider hooks.
@@ -579,8 +595,34 @@ impl Desktop {
                     return Task::none();
                 }
                 let mut outcome = Outcome::Skipped;
+                let returning = proof.attempt.target.requester_result(&proof.attempt.event);
+                let modal = self.preferences.open || self.workspace_dialog.open;
+                let return_ready = !returning
+                    || (!modal
+                        && tab(self, proof.attempt.target.terminal).is_some_and(|tab| {
+                            requester_input_ready(
+                                tab,
+                                &proof.attempt.event,
+                                &proof.attempt.target,
+                                amux::session::IDLE_AFTER,
+                            )
+                        }));
+                let return_authorized = !returning || proof.requester_verified == Some(true);
+                if returning
+                    && verified
+                    && approved
+                    && current.is_some()
+                    && proof.attempt.event.fresh(now)
+                    && proof.started.elapsed() <= Duration::from_secs(2)
+                    && (!return_ready || proof.requester_verified.is_none())
+                    && proof.requester_verified != Some(false)
+                {
+                    outcome = Outcome::Queued;
+                }
                 if verified
                     && approved
+                    && return_ready
+                    && return_authorized
                     && proof.started.elapsed() <= Duration::from_secs(2)
                     && proof.attempt.event.fresh(now)
                     && current.is_some()
@@ -604,10 +646,10 @@ impl Desktop {
                             // exit the provider when our input tee is stale.
                             bytes.extend_from_slice(b"\x1b[F\x15"); // End, Ctrl+U.
                         }
-                        let message = proof.attempt.event.assigned_terminal_text(
-                            proof.attempt.target.session,
-                            &proof.candidate.name,
-                        );
+                        let message = proof
+                            .attempt
+                            .event
+                            .recipient_terminal_text(&proof.attempt.target, &proof.candidate.name);
                         if terminal
                             .input_mode()
                             .contains(iced_term::TermMode::BRACKETED_PASTE)
@@ -717,8 +759,29 @@ impl Desktop {
             if amux::autoreview::reviewing(&c.target.directory, &c.actor) {
                 continue;
             }
+            let pending = self.delegation.queue.as_ref().and_then(|q| {
+                q.journal
+                    .receipts
+                    .iter()
+                    .find(|r| {
+                        r.recipients
+                            .iter()
+                            .any(|r| r.target.session == c.target.session && !r.outcome.terminal())
+                    })
+                    .map(|r| r.event.clone())
+            });
+            if pending
+                .as_ref()
+                .is_some_and(|e| c.target.requester_result(e))
+                && (self.preferences.open || self.workspace_dialog.open)
+            {
+                continue;
+            }
             if let Some(tab) = tab(self, c.target.terminal)
                 && tab.terminal.is_some()
+                && pending.as_ref().is_none_or(|event| {
+                    requester_input_ready(tab, event, &c.target, amux::session::IDLE_AFTER)
+                })
             {
                 tab.delegation.status = "Ready for task notifications";
                 ready.insert(c.target.session);
@@ -734,6 +797,7 @@ impl Desktop {
                 attempt,
                 candidate,
                 started: Instant::now(),
+                requester_verified: None,
             };
             if let Some(q) = &mut self.delegation.queue
                 && let Err(error) = q.begin(&proof.attempt)
@@ -743,8 +807,20 @@ impl Desktop {
             }
             self.delegation.verifying = true;
             let epoch = self.delegation.epoch;
+            let gateway = self.preferences.current.gateway().ok();
             tasks.push(Task::perform(
                 async move {
+                    let mut proof = proof;
+                    if proof.attempt.target.requester_result(&proof.attempt.event) {
+                        proof.requester_verified = match gateway {
+                            Some(gateway) => gateway
+                                .requester_is_current(&proof.attempt.event, &proof.attempt.target)
+                                .await
+                                .ok(),
+                            None => None,
+                        };
+                        proof.started = Instant::now();
+                    }
                     let c = proof.candidate.clone();
                     let verified = tokio::task::spawn_blocking(move || {
                         delegation_process::verify(
