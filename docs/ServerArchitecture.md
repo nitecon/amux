@@ -137,6 +137,19 @@ invalidates it, and restarting the server clears it. Only its verifier is stored
 in the separate security database. Settings provides Generate new, Copy and the
 remaining lifetime; client Settings accepts a server address and peering key.
 
+Settings shows the configured **Client endpoint** separately from the loopback
+**Local administration** URL. Network hosting listens on all interfaces; the
+server name/IP selects the client address and certificate name. Local-only hosting
+continues to advertise loopback. Native discovery, enrollment and mTLS REST use
+direct connections, matching native WebSockets, rather than system HTTP proxies.
+
+Copy retrieves the current key from the server instead of trusting a desktop
+cache. If the server restarted or the key expired, generate and copy a new key.
+Pairing failures identify discovery, enrollment or activation; public error codes
+distinguish missing/expired/replaced keys and already-enrolled installations.
+Server rejection logs include operation/reason codes without keys, CSRs or private
+credentials, in the profile's `server.log`.
+
 The initial implementation uses a stable installation CA directly signing 30-day
 leaf certificates. It renews client and server leaves with fresh keys after
 two-thirds of their lifetime, retaining current/previous identities for at most

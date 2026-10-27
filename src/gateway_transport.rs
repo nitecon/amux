@@ -183,16 +183,13 @@ impl TransportProfile {
                 .with_client_auth_cert(certificates, key_der)?;
                 let mut identity = key;
                 identity.extend_from_slice(&certificate);
+                // Native REST and discovery use the same direct route as native
+                // WebSockets; system HTTP proxies must not intercept pairing.
                 builder = builder
+                    .no_proxy()
                     .tls_built_in_root_certs(false)
                     .add_root_certificate(reqwest::Certificate::from_pem(&root)?)
                     .identity(reqwest::Identity::from_pem(&identity)?);
-                if matches!(
-                    base.host_str(),
-                    Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-                ) {
-                    builder = builder.no_proxy();
-                }
                 (Some(Arc::new(config)), None)
             }
             _ => bail!("enrolled credentials are unavailable"),

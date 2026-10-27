@@ -35,6 +35,30 @@ impl Default for ServerPreferences {
     }
 }
 
+impl ServerPreferences {
+    /// Address paired machines should use; local administration stays on loopback.
+    pub fn client_url(&self) -> Result<String> {
+        let name = if self.network_hosting {
+            self.server_name.trim()
+        } else {
+            "127.0.0.1"
+        };
+        let host = if name.contains(':') && !name.starts_with('[') {
+            format!("[{name}]")
+        } else {
+            name.into()
+        };
+        Ok(
+            crate::gateway_transport::origin(
+                &format!("https://{host}:{}", self.secure_port),
+                true,
+            )?
+            .origin()
+            .ascii_serialization(),
+        )
+    }
+}
+
 /// Public metadata and a reference to protected credentials, never a peering key.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct EnrolledConnection {
@@ -117,6 +141,11 @@ impl GatewayPreferences {
 
     pub fn transport_profile(&self) -> Result<crate::gateway_transport::TransportProfile> {
         if self.mode != GatewayMode::Legacy {
+            if self.mode == GatewayMode::Server {
+                self.server.client_url().context(
+                    "Enter a server hostname or IP address, without a scheme, path or port",
+                )?;
+            }
             let connection = self
                 .enrolled
                 .as_ref()

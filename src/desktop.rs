@@ -84,7 +84,7 @@ enum Message {
     PairConnected(u64, Result<EnrolledConnection, String>),
     ServerReady(u64, Result<LocalServer, String>),
     GenerateInvitation,
-    InvitationReady(u64, Result<PeeringInvitation, String>),
+    InvitationReady(u64, bool, Result<PeeringInvitation, String>),
     CopyInvitation,
     ServerStopped(ServerExit, Result<(), String>),
     ServerReconfigured(u64, Result<(), String>),
@@ -1231,7 +1231,14 @@ impl Desktop {
                         self.preferences.current.enrolled = Some(connection.clone());
                         self.preferences.draft.enrolled = Some(connection.clone());
                         self.embedded.local = Some(server);
-                        self.embedded.status = format!("Server ready at {}", connection.url);
+                        self.embedded.status = format!(
+                            "Server ready at {}",
+                            self.preferences
+                                .current
+                                .server
+                                .client_url()
+                                .unwrap_or_else(|_| "configured endpoint".into())
+                        );
                         if !self.preferences.status.starts_with("Not saved:") {
                             self.status = self.embedded.status.clone();
                         }
@@ -1262,30 +1269,36 @@ impl Desktop {
                     }
                 }
             }
-            Message::GenerateInvitation => return self.generate_invitation(),
-            Message::InvitationReady(epoch, result) => {
+            Message::GenerateInvitation => return self.load_invitation(true),
+            Message::InvitationReady(epoch, generate, result) => {
                 if epoch != self.embedded.epoch {
                     return Task::none();
                 }
                 self.embedded.busy = false;
                 match result {
                     Ok(invitation) => {
+                        let copy = (!generate).then(|| invitation.value.0.clone());
                         self.embedded.invitation = Some(invitation);
-                        self.embedded.status =
-                            "Peering key generated. Copy it to connect a client.".into();
+                        self.embedded.status = if generate {
+                            "Peering key generated. Copy it to connect a client."
+                        } else {
+                            "Current peering key copied"
+                        }
+                        .into();
+                        if let Some(value) = copy {
+                            return iced::clipboard::write(value);
+                        }
                     }
                     Err(error) => {
-                        self.embedded.status = format!("Could not generate peering key: {error}")
+                        self.embedded.invitation = None;
+                        self.embedded.status = format!(
+                            "Could not {} peering key: {error}. Generate a new key if the server restarted or the key expired.",
+                            if generate { "generate" } else { "copy" }
+                        );
                     }
                 }
             }
-            Message::CopyInvitation => {
-                if let Some(invitation) = self.active_invitation() {
-                    let value = invitation.value.0.clone();
-                    self.embedded.status = "Peering key copied".into();
-                    return iced::clipboard::write(value);
-                }
-            }
+            Message::CopyInvitation => return self.load_invitation(false),
             Message::ServerReconfigured(epoch, result) => {
                 if epoch != self.embedded.epoch {
                     return Task::none();
@@ -1899,7 +1912,7 @@ impl Desktop {
         })
     }
 
-    fn generate_invitation(&mut self) -> Task<Message> {
+    fn load_invitation(&mut self, generate: bool) -> Task<Message> {
         if self.embedded.busy
             || self.embedded.stopping
             || self.preferences.current.mode != GatewayMode::Server
@@ -1916,7 +1929,7 @@ impl Desktop {
         let epoch = self.embedded.epoch;
         Task::perform(
             async move {
-                server_controller::invitation(connection, true)
+                server_controller::invitation(connection, generate)
                     .await
                     .map(|value| {
                         let remaining = value
@@ -1931,7 +1944,7 @@ impl Desktop {
                     })
                     .map_err(|error| error.to_string())
             },
-            move |result| Message::InvitationReady(epoch, result),
+            move |result| Message::InvitationReady(epoch, generate, result),
         )
     }
 
@@ -2157,7 +2170,15 @@ impl Desktop {
                     && self.embedded.local.is_some()
                     && self.preferences.current.server == draft.server
                 {
-                    controls = controls.push(text(format!("Server address: {}", connection.url)));
+                    controls = controls.push(text(format!(
+                        "Client endpoint: {}",
+                        draft
+                            .server
+                            .client_url()
+                            .unwrap_or_else(|_| "Invalid server name or IP address".into())
+                    )));
+                    controls = controls
+                        .push(text(format!("Local administration: {}", connection.url)).size(12));
                     if let Some(invitation) = self.active_invitation() {
                         let seconds = invitation
                             .deadline
@@ -2191,7 +2212,7 @@ impl Desktop {
                                 .on_press_maybe(available.then_some(Message::GenerateInvitation)),
                         );
                     }
-                    controls = controls.push(text("Peering keys expire within ten minutes. Generating a new key invalidates the previous key."));
+                    controls = controls.push(text("Peering keys expire within ten minutes. Generating a new key or restarting the server invalidates the previous key."));
                 } else {
                     controls =
                         controls.push(text("Save settings to start or configure the server."));
@@ -3383,11 +3404,11 @@ mod tests {
         assert!(!format!("{:?}", invitation).contains(secret));
         let input = Message::PairInvitation(Secret(secret.into()));
         assert!(!format!("{input:?}").contains(secret));
-        let ready = Message::InvitationReady(7, Ok(invitation.clone()));
+        let ready = Message::InvitationReady(7, true, Ok(invitation.clone()));
         assert!(!format!("{ready:?}").contains(secret));
         let _ = app.update(ready);
         assert!(app.embedded.invitation.is_none());
-        let _ = app.update(Message::InvitationReady(0, Ok(invitation)));
+        let _ = app.update(Message::InvitationReady(0, true, Ok(invitation)));
         assert!(app.active_invitation().is_some());
         app.embedded.invitation.as_mut().unwrap().deadline = Instant::now();
         assert!(app.active_invitation().is_none());
@@ -3403,6 +3424,23 @@ mod tests {
         let _ = app.update(Message::DeliveryTick);
         assert!(app.embedded.invitation.is_none());
         assert!(!app.embedded.status.contains(secret));
+        let _ = app.update(Message::InvitationReady(
+            0,
+            false,
+            Ok(PeeringInvitation {
+                value: Secret(secret.into()),
+                expires_at: unix_ms() as i64 + 600_000,
+                deadline: Instant::now() + Duration::from_secs(600),
+            }),
+        ));
+        assert_eq!(app.embedded.status, "Current peering key copied");
+        let _ = app.update(Message::InvitationReady(
+            0,
+            false,
+            Err("no active key".into()),
+        ));
+        assert!(app.embedded.invitation.is_none());
+        assert!(app.embedded.status.contains("Generate a new key"));
     }
 
     #[test]

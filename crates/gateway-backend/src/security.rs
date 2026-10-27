@@ -1,5 +1,48 @@
 //! Installation credentials and enrollment state. Never included in application snapshots.
 use anyhow::{ensure, Context, Result};
+
+/// Public, non-secret reasons a peering request can be rejected.
+#[derive(Debug)]
+pub enum EnrollmentRejection {
+    Unavailable,
+    Expired,
+    Invalid,
+    Conflict,
+    AlreadyEnrolled,
+}
+impl EnrollmentRejection {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable => "peering_key_unavailable",
+            Self::Expired => "peering_key_expired",
+            Self::Invalid => "peering_key_invalid",
+            Self::Conflict => "enrollment_conflict",
+            Self::AlreadyEnrolled => "installation_already_enrolled",
+        }
+    }
+    pub fn from_code(code: &str) -> Option<Self> {
+        Some(match code {
+            "peering_key_unavailable" => Self::Unavailable,
+            "peering_key_expired" => Self::Expired,
+            "peering_key_invalid" => Self::Invalid,
+            "enrollment_conflict" => Self::Conflict,
+            "installation_already_enrolled" => Self::AlreadyEnrolled,
+            _ => return None,
+        })
+    }
+}
+impl std::fmt::Display for EnrollmentRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "No active peering key. Generate a new key on the server; restarting the server clears existing keys",
+            Self::Expired => "Peering key expired. Generate a new key on the server and copy it again",
+            Self::Invalid => "Peering key is invalid or was replaced. Copy the current key from the intended server",
+            Self::Conflict => "Enrollment request is already bound to different credentials; retry the original request",
+            Self::AlreadyEnrolled => "This installation is already enrolled. Use its existing connection or recover it through the server administrator",
+        })
+    }
+}
+impl std::error::Error for EnrollmentRejection {}
 use rand_core::{OsRng, RngCore};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
@@ -397,7 +440,7 @@ impl SecurityStore {
         let a = inner
             .active
             .as_ref()
-            .context("generate a new peering key")?;
+            .ok_or(EnrollmentRejection::Unavailable)?;
         let expires: i64 = inner.db.query_row(
             "SELECT expires_at FROM invitations WHERE id=?1 AND revoked=0",
             [&a.id],
@@ -406,7 +449,7 @@ impl SecurityStore {
         if Instant::now() >= a.deadline || now_ms() >= expires {
             inner.active = None;
             inner.db.execute("UPDATE invitations SET revoked=1", [])?;
-            anyhow::bail!("peering key expired");
+            anyhow::bail!(EnrollmentRejection::Expired);
         }
         Ok(Invitation {
             invitation: inner.active.as_ref().unwrap().raw.clone(),
@@ -459,31 +502,37 @@ impl SecurityStore {
             )
             .optional()?
         {
-            ensure!(stored == binding, "request ID already bound");
+            ensure!(stored == binding, EnrollmentRejection::Conflict);
             return Ok(serde_json::from_str(&response)?);
         }
-        let active = inner.active.as_ref().context("no active invitation")?;
-        ensure!(Instant::now() < active.deadline, "invitation expired");
+        let active = inner
+            .active
+            .as_ref()
+            .ok_or(EnrollmentRejection::Unavailable)?;
+        ensure!(
+            Instant::now() < active.deadline,
+            EnrollmentRejection::Expired
+        );
         let (verifier, expires, revoked): (String, i64, bool) = inner.db.query_row(
             "SELECT verifier,expires_at,revoked FROM invitations WHERE id=?1",
             [&active.id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
+        ensure!(now_ms() < expires, EnrollmentRejection::Expired);
         ensure!(
             !revoked
-                && now_ms() < expires
                 && bool::from(
                     verifier
                         .as_bytes()
                         .ct_eq(digest(request.invitation.as_bytes()).as_bytes())
                 ),
-            "invalid or expired invitation"
+            EnrollmentRejection::Invalid
         );
         let existing=inner.db.query_row("SELECT n.id,n.role,n.revoked,MAX(c.expires_at) FROM nodes n JOIN certificates c ON c.node_id=n.id WHERE n.instance_id=?1 GROUP BY n.id",[&request.instance_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?,r.get::<_,i64>(3)?))).optional()?;
         if let Some((_, role, revoked, expires)) = &existing {
             ensure!(
                 role == "client" && !*revoked && *expires <= now_ms(),
-                "installation already enrolled or requires operator recovery"
+                EnrollmentRejection::AlreadyEnrolled
             );
         }
         let node = existing
@@ -494,7 +543,7 @@ impl SecurityStore {
         // Signing and replacement share the same lock; recheck at issuance commit.
         ensure!(
             Instant::now() < inner.active.as_ref().unwrap().deadline && now_ms() < expires,
-            "invitation expired during issuance"
+            EnrollmentRejection::Expired
         );
         let response = EnrollmentResponse {
             cluster_id: self.cluster_id.clone(),

@@ -368,11 +368,7 @@ async fn probe(connection: &EnrolledConnection) -> Result<Value> {
 }
 
 async fn bounded_json<T: DeserializeOwned>(mut response: reqwest::Response) -> Result<T> {
-    ensure!(
-        response.status().is_success(),
-        "server returned {}; operation is unconfirmed",
-        response.status()
-    );
+    let status = response.status();
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         ensure!(
@@ -381,10 +377,38 @@ async fn bounded_json<T: DeserializeOwned>(mut response: reqwest::Response) -> R
         );
         body.extend_from_slice(&chunk);
     }
+    if !status.is_success() {
+        let reason = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value["error"]
+                    .as_str()
+                    .and_then(security::EnrollmentRejection::from_code)
+            });
+        if let Some(reason) = reason {
+            anyhow::bail!(
+                "server rejected request (HTTP {}): {reason}",
+                status.as_u16()
+            );
+        }
+        if matches!(status.as_u16(), 401 | 403) {
+            anyhow::bail!(
+                "server denied request (HTTP {}); check the server endpoint and access policy",
+                status.as_u16()
+            );
+        }
+        anyhow::bail!("server returned {status}; operation is unconfirmed");
+    }
     if body.is_empty() {
         body.extend_from_slice(b"null");
     }
     serde_json::from_slice(&body).context("invalid server control response")
+}
+
+async fn pairing_json<T: DeserializeOwned>(response: reqwest::Response, stage: &str) -> Result<T> {
+    bounded_json(response)
+        .await
+        .map_err(|error| anyhow::anyhow!("{stage}: {error}"))
 }
 
 async fn exchange<T: DeserializeOwned>(
@@ -485,21 +509,13 @@ fn new_pending(directory: &Path, invitation_id: Option<String>) -> Result<Pendin
     })
 }
 
-fn loopback(url: &Url) -> bool {
-    matches!(
-        url.host_str(),
-        Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-    )
-}
-fn pinned_client(root_pem: &str, base: &Url) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
+fn pinned_client(root_pem: &str) -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .tls_built_in_root_certs(false)
         .add_root_certificate(reqwest::Certificate::from_pem(root_pem.as_bytes())?);
-    if loopback(base) {
-        builder = builder.no_proxy();
-    }
     Ok(builder.build()?)
 }
 
@@ -553,8 +569,9 @@ async fn activate_pending(
     let staged_path = active_path.with_extension("staged.json");
     profile.save(&staged_path)?;
     let staged = connection(&profile, &staged_path);
-    let activated: NodeStatus =
-        exchange(&staged, Method::POST, "/v1/enrollment/activate", None).await?;
+    let activated: NodeStatus = exchange(&staged, Method::POST, "/v1/enrollment/activate", None)
+        .await
+        .map_err(|error| anyhow::anyhow!("Certificate activation failed: {error}"))?;
     ensure!(
         activated.node_id == response.node_id
             && activated.current_serial == response.serial
@@ -566,13 +583,8 @@ async fn activate_pending(
     Ok(connection(&profile, active_path))
 }
 
-pub async fn pair(
-    state_dir: PathBuf,
-    url: String,
-    invitation: String,
-) -> Result<EnrolledConnection> {
-    let (cluster, pin, invitation_id, discovery_port) = invitation_metadata(invitation.trim())?;
-    let mut base = origin(&url, true)?;
+fn pairing_base(url: &str) -> Result<Url> {
+    let mut base = origin(url, true)?;
     let explicit_port = url
         .trim()
         .split_once("://")
@@ -582,6 +594,16 @@ pub async fn pair(
     ensure!(port != 0, "invalid server port");
     base.set_port(Some(port))
         .map_err(|_| anyhow::anyhow!("invalid server port"))?;
+    Ok(base)
+}
+
+pub async fn pair(
+    state_dir: PathBuf,
+    url: String,
+    invitation: String,
+) -> Result<EnrolledConnection> {
+    let (cluster, pin, invitation_id, discovery_port) = invitation_metadata(invitation.trim())?;
+    let base = pairing_base(&url)?;
     let mut discovery_url = base.clone();
     discovery_url
         .set_scheme("http")
@@ -590,19 +612,18 @@ pub async fn pair(
         .set_port(Some(discovery_port))
         .map_err(|_| anyhow::anyhow!("invalid discovery port"))?;
     discovery_url.set_path("/v1/discovery");
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none());
-    if loopback(&base) {
-        builder = builder.no_proxy();
-    }
     let public = builder.build()?;
-    let discovery: Discovery = bounded_json(
+    let discovery: Discovery = pairing_json(
         public
             .get(discovery_url)
             .send()
             .await
-            .context("server discovery unavailable")?,
+            .context("Server discovery unavailable; check the address and discovery port")?,
+        "Server discovery failed",
     )
     .await?;
     ensure!(
@@ -642,18 +663,19 @@ pub async fn pair(
         pending = new_pending(&directory, Some(invitation_id.into()))?;
     }
     security::write_private(&pending.root_path, discovery.root_pem.as_bytes())?;
-    let client = pinned_client(&discovery.root_pem, &base)?;
+    let client = pinned_client(&discovery.root_pem)?;
     if pending.response.is_none() {
         let receipt = client
             .get(base.join(&format!("v1/enrollment/requests/{}", pending.request_id))?)
             .send()
             .await?;
         if receipt.status().is_success() {
-            pending.response = Some(bounded_json(receipt).await?);
+            pending.response = Some(pairing_json(receipt, "Enrollment receipt failed").await?);
         } else {
             ensure!(
                 receipt.status() == reqwest::StatusCode::NOT_FOUND,
-                "enrollment receipt could not be confirmed"
+                "Enrollment receipt failed (HTTP {}); existing pairing state was retained",
+                receipt.status().as_u16()
             );
             if pending.invitation_id.as_deref() != Some(invitation_id) {
                 pending = new_pending(&directory, Some(invitation_id.into()))?;
@@ -667,12 +689,14 @@ pub async fn pair(
                 instance_id: installation_id(&state_dir)?,
             };
             pending.response = Some(
-                bounded_json(
+                pairing_json(
                     client
                         .post(base.join("v1/enrollment/requests")?)
                         .json(&request)
                         .send()
-                        .await?,
+                        .await
+                        .context("Enrollment request unavailable; check the secure port")?,
+                    "Enrollment failed",
                 )
                 .await?,
             );
@@ -694,6 +718,33 @@ pub async fn pair(
     .await?;
     let _ = fs::remove_file(path);
     Ok(result)
+}
+
+#[cfg(test)]
+mod pairing_address_tests {
+    use super::pairing_base;
+
+    #[test]
+    fn explicit_default_port_and_omitted_port_produce_the_same_pairing_url() {
+        for host in ["10.0.1.101", "[2001:db8::1]"] {
+            let implicit = pairing_base(&format!("https://{host}")).unwrap();
+            assert_eq!(implicit.port(), Some(24182));
+            assert_eq!(
+                implicit,
+                pairing_base(&format!("https://{host}:24182")).unwrap()
+            );
+            assert_eq!(
+                implicit,
+                pairing_base(&format!("https://{host}:24182/")).unwrap()
+            );
+        }
+        assert_eq!(
+            pairing_base("https://10.0.1.101:443")
+                .unwrap()
+                .port_or_known_default(),
+            Some(443)
+        );
+    }
 }
 
 pub async fn renew_if_due(connection: EnrolledConnection) -> Result<()> {
@@ -781,7 +832,7 @@ async fn renew(connection: EnrolledConnection, force: bool) -> Result<()> {
     if pending.response.is_none() {
         let base = origin(&connection.url, true)?;
         let root = String::from_utf8(security::read_private(&active.root_pem_path)?)?;
-        let receipt = pinned_client(&root, &base)?
+        let receipt = pinned_client(&root)?
             .get(base.join(&format!("v1/enrollment/requests/{}", pending.request_id))?)
             .send()
             .await?;

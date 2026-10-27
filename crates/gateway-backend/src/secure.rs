@@ -158,9 +158,14 @@ struct SecureState {
     process_nonce: String,
     attempts: Arc<Mutex<std::collections::HashMap<std::net::IpAddr, (std::time::Instant, u32)>>>,
 }
-fn api_error(error: anyhow::Error) -> Response {
-    tracing::debug!("secure request rejected: {error}");
-    (StatusCode::FORBIDDEN, "request authorization failed").into_response()
+fn api_error(operation: &'static str, error: anyhow::Error) -> Response {
+    let rejection = error.downcast_ref::<security::EnrollmentRejection>();
+    let code = rejection.map_or("authorization_failed", |reason| reason.code());
+    tracing::warn!(operation, reason = code, "Secure request rejected");
+    (StatusCode::FORBIDDEN, Json(serde_json::json!({
+        "error": code,
+        "message": rejection.map_or_else(|| "Request authorization failed".into(), |reason| reason.to_string()),
+    }))).into_response()
 }
 async fn authorize(State(state): State<SecureState>, mut request: Request, next: Next) -> Response {
     let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<PeerInfo>>().cloned()
@@ -214,6 +219,7 @@ async fn authorize(State(state): State<SecureState>, mut request: Request, next:
             .ok()
             .is_none_or(|instance| state.store.bind_instance(&node.node_id, instance).is_err())
         {
+            tracing::warn!(reason = "instance_binding", "Native request denied");
             return StatusCode::FORBIDDEN.into_response();
         }
     }
@@ -222,6 +228,10 @@ async fn authorize(State(state): State<SecureState>, mut request: Request, next:
             || node.node_id != state.local_node
             || node.role != "administrator")
     {
+        tracing::warn!(
+            reason = "local_administration_required",
+            "Native request denied"
+        );
         return StatusCode::FORBIDDEN.into_response();
     }
     request.extensions_mut().insert(Principal {
@@ -238,7 +248,7 @@ async fn enroll(
 ) -> Response {
     match state.store.enroll(&request) {
         Ok(response) => Json(response).into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("enrollment", error),
     }
 }
 async fn enrollment_result(
@@ -248,7 +258,7 @@ async fn enrollment_result(
     match state.store.issuance_response(&id) {
         Ok(Some(response)) => Json(response).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("enrollment_receipt", error),
     }
 }
 async fn renew(
@@ -258,7 +268,7 @@ async fn renew(
 ) -> Response {
     match state.store.renew(&peer.serial, &request) {
         Ok(response) => Json(response).into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("renewal", error),
     }
 }
 async fn activate(
@@ -267,7 +277,7 @@ async fn activate(
 ) -> Response {
     match state.store.activate(&peer.serial) {
         Ok(response) => Json(response).into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("activation", error),
     }
 }
 async fn status(State(state): State<SecureState>) -> Response {
@@ -282,26 +292,30 @@ async fn revoke(
     }
     match state.store.revoke(&node) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("revocation", error),
     }
 }
 
 async fn invitation(State(state): State<SecureState>) -> Response {
     match state.store.copy_invitation() {
         Ok(response) => Json(response).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "no active invitation").into_response(),
+        Err(error) => {
+            let mut response = api_error("invitation_copy", error);
+            *response.status_mut() = StatusCode::NOT_FOUND;
+            response
+        }
     }
 }
 async fn generate(State(state): State<SecureState>) -> Response {
     match state.store.generate_invitation() {
         Ok(response) => Json(response).into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("invitation_generation", error),
     }
 }
 async fn invalidate(State(state): State<SecureState>) -> Response {
     match state.store.invalidate_invitation() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => api_error(error),
+        Err(error) => api_error("invitation_invalidation", error),
     }
 }
 #[derive(serde::Deserialize)]
@@ -316,7 +330,7 @@ async fn shutdown(
         return StatusCode::CONFLICT.into_response();
     }
     if let Err(error) = state.store.begin_shutdown() {
-        return api_error(error);
+        return api_error("shutdown", error);
     }
     let _ = state.shutdown.send(true);
     StatusCode::ACCEPTED.into_response()
