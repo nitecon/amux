@@ -8,6 +8,7 @@ pub mod gateway_project;
 pub mod gateway_transport;
 pub mod harness;
 pub mod identity;
+pub mod migration;
 pub mod notifications;
 #[cfg(feature = "desktop")]
 pub mod readiness;

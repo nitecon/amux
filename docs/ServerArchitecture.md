@@ -161,6 +161,56 @@ route on public discovery. Database download, an authoritative offline replica,
 live memory injection and CA-root rollover remain separate work. This release
 does not claim those capabilities from having ported the gateway backend.
 
+## Legacy gateway migration
+
+Settings → Gateway Server → Legacy gateway provides a four-step migration wizard:
+choose the source, prepare and review a snapshot, import, then explicitly switch
+this machine to Server mode. Importing alone leaves the legacy connection active.
+This is an operator migration of the entire database, separate from the scoped
+client/offline replication design below.
+
+Choose a readable legacy SQLite database or a consistent exported SQLite backup.
+The importer uses SQLite Online Backup, including committed WAL data while the
+source remains online. It copies all application tables, identifiers, history,
+indexes and triggers, including memories and client mappings, skills, patterns,
+artifacts, users and database settings. It verifies integrity and foreign keys,
+exercises backend schema upgrades on a private copy, and rejects lost table rows.
+Compatibility backfills are shown in the preview. The original snapshot is kept
+as an owner-only `server/legacy-source-SHA256.sqlite` backup; the upgraded database
+and inventory/checksums become `server/application.sqlite` and `server/migration.json`.
+These files contain complete operator data and must not be shared with ordinary
+clients as replication snapshots.
+
+The local server must be stopped and unused. Its normal profile lock prevents an
+import during hosting. Existing empty databases are backed up; populated databases
+or local changes are never merged or overwritten. Installation uses an atomic
+replacement. Repeating the same import is a no-op. A final, newer snapshot from
+the same source may replace an earlier import only while the imported database
+is still untouched; previous generations are backed up. Stop legacy writes before
+the final snapshot and cutover: imports do not replicate later source changes.
+
+Switching is an explicit final action. It saves a protected legacy-connection
+backup and uses the existing server startup/mTLS lifecycle. Other machines keep
+their connections until paired with the new server. Channel names and room IDs
+are preserved, but plugin tokens/environment files are host configuration and
+are not copied. Configure the same external plugins before switching.
+
+For headless import, without switching saved preferences:
+
+```sh
+amux server migrate --source /path/to/gateway.sqlite --preview
+amux server migrate --source /path/to/gateway.sqlite
+```
+
+`--state-dir PATH` selects an explicit destination for isolated testing or hosting.
+The wizard can also download a full snapshot over HTTPS from
+`GET /v1/admin/migration/snapshot` using the configured operator API key. It
+requires a declared length (maximum 2 GiB) and `X-Amux-Snapshot-Sha256`, rejects
+redirects and checksum mismatches, and never installs partial downloads. Older
+external gateways do not have this endpoint: use the local/file path until the
+delegated gateway export task is deployed. This does not supply client replication
+or automatically migrate a remote gateway's host configuration.
+
 ## Direction and scope
 
 Bring the existing gateway database and backend APIs into amux. The target for

@@ -16,6 +16,8 @@ mod desktop_design;
 mod desktop_harness;
 #[path = "desktop_icon.rs"]
 mod desktop_icon;
+#[path = "desktop_migration.rs"]
+mod desktop_migration;
 #[path = "desktop_recovery.rs"]
 mod desktop_recovery;
 #[path = "desktop_routing.rs"]
@@ -79,6 +81,7 @@ enum Message {
     WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
+    Migration(desktop_migration::Message),
     GatewayMode(GatewayMode),
     NetworkHosting(bool),
     ServerName(String),
@@ -383,6 +386,7 @@ struct Desktop {
     updates: Updates,
     harness: desktop_harness::State,
     toasts: desktop_toasts::State,
+    migration: desktop_migration::State,
     workspaces: Vec<Workspace>,
     active: usize,
     workspace_dialog: WorkspaceDialog,
@@ -470,6 +474,7 @@ impl Desktop {
             embedded: EmbeddedServer::default(),
             harness: desktop_harness::State::startup(),
             toasts: desktop_toasts::State::default(),
+            migration: desktop_migration::State::default(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
@@ -1232,10 +1237,15 @@ impl Desktop {
                     }
                 }
             }
+            Message::Migration(message) => return self.migration_message(message),
             Message::DismissToast(id) => self.toasts.dismiss(id),
             Message::DismissHarnessNotice => self.harness.notice_dismissed = true,
             Message::Preference(field, Secret(value)) => {
-                if value.len() <= 16 * 1024 && !self.embedded.busy && !self.embedded.stopping {
+                if value.len() <= 16 * 1024
+                    && !self.embedded.busy
+                    && !self.embedded.stopping
+                    && !self.migration.busy
+                {
                     let draft = &mut self.preferences.draft;
                     *match field {
                         PreferenceField::Url => &mut draft.url,
@@ -1245,7 +1255,7 @@ impl Desktop {
             }
             Message::SavePreferences => return self.save_preferences(),
             Message::GatewayMode(mode) => {
-                if !self.embedded.busy && !self.embedded.stopping {
+                if !self.embedded.busy && !self.embedded.stopping && !self.migration.busy {
                     if mode == GatewayMode::Client
                         && self.preferences.draft.mode == GatewayMode::Server
                     {
@@ -2259,7 +2269,7 @@ impl Desktop {
     }
 
     fn save_preferences(&mut self) -> Task<Message> {
-        if self.embedded.busy || self.embedded.stopping {
+        if self.embedded.busy || self.embedded.stopping || self.migration.busy {
             return Task::none();
         }
         let mode_changed = self.preferences.current.mode != self.preferences.draft.mode;
@@ -2412,7 +2422,7 @@ impl Desktop {
             ]
             .spacing(4)
         };
-        let available = !self.embedded.busy && !self.embedded.stopping;
+        let available = !self.embedded.busy && !self.embedded.stopping && !self.migration.busy;
         let mode = |label, mode| {
             button(text(label)).on_press_maybe(
                 (available && draft.mode != mode).then_some(Message::GatewayMode(mode)),
@@ -2444,7 +2454,8 @@ impl Desktop {
                     &draft.api_key,
                     PreferenceField::ApiKey,
                     true,
-                )),
+                ))
+                .push(self.migration_view()),
             GatewayMode::Server => {
                 let mut controls = column![
                     text("This machine stores task data and serves paired clients. Local connections also use mutual TLS."),
@@ -3238,6 +3249,7 @@ mod tests {
             },
             harness: desktop_harness::State::default(),
             toasts: desktop_toasts::State::default(),
+            migration: desktop_migration::State::default(),
             embedded: EmbeddedServer::default(),
             preferences: Preferences {
                 current: GatewayPreferences::default(),

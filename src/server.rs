@@ -5,6 +5,16 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Import a consistent legacy gateway SQLite snapshot into an unused local server.
+    Migrate {
+        #[arg(long)]
+        source: std::path::PathBuf,
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+        /// Inspect and validate a snapshot without installing it.
+        #[arg(long)]
+        preview: bool,
+    },
     /// Serve the existing gateway API with GATEWAY_* and database environment settings.
     Serve,
     /// Host native mTLS APIs and public discovery using a separate security profile.
@@ -104,6 +114,23 @@ pub fn run(command: Option<Command>) -> Result<()> {
         )
         .try_init();
     match command.unwrap_or(Command::Serve) {
+        Command::Migrate {
+            source,
+            state_dir,
+            preview,
+        } => {
+            let directory = state_dir.map_or_else(crate::identity::state_directory, Ok)?;
+            let snapshot = crate::migration::prepare_local(&source, &directory)?;
+            println!("{}", snapshot.summary());
+            if !preview {
+                let report = crate::migration::install(&snapshot, &directory)?;
+                println!(
+                    "Imported into {}. Saved connection preferences were not changed; choose Server in Settings when ready to cut over.",
+                    report.database.display()
+                );
+            }
+            Ok(())
+        }
         Command::Serve => {
             let config = runtime::RuntimeConfig::from_env()?;
             let _profile_lock = profile_lock(&config.database)?;
@@ -216,7 +243,7 @@ pub fn run(command: Option<Command>) -> Result<()> {
     }
 }
 
-fn profile_lock(config: &db::DatabaseConfig) -> Result<Option<std::fs::File>> {
+pub(crate) fn profile_lock(config: &db::DatabaseConfig) -> Result<Option<std::fs::File>> {
     let Some(path) = config.sqlite_path().filter(|path| *path != ":memory:") else {
         return Ok(None);
     };
