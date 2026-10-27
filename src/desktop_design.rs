@@ -785,6 +785,7 @@ impl Desktop {
         };
         let base: Element<'_, Message> = column![
             header,
+            self.harness_suggestion(),
             row![
                 sidebar,
                 column![center, toolbar]
@@ -1560,6 +1561,7 @@ impl Desktop {
         let body: Element<'_,Message>=match self.preferences.tab {
             PreferencesTab::Gateway=>self.preferences_view(),
             PreferencesTab::Updates=>self.updates_view(),
+            PreferencesTab::Harness=>self.harness_view(),
             PreferencesTab::General=>column![
                 text("Workspaces & Terminals").size(18),
                 checkbox(self.preferences.draft.notify_exits).label("Notify on process exit").on_toggle(Message::ExitNotifications),
@@ -1587,6 +1589,7 @@ impl Desktop {
                     row![
                         tab("Gateway Server", PreferencesTab::Gateway),
                         tab("Workspaces & Terminals", PreferencesTab::General),
+                        tab("Agent Instructions", PreferencesTab::Harness),
                         tab("Updates", PreferencesTab::Updates)
                     ]
                     .spacing(6)

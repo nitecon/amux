@@ -5,6 +5,7 @@ pub mod dispatch;
 pub mod gateway;
 pub mod gateway_preferences;
 pub mod gateway_project;
+pub mod harness;
 pub mod identity;
 pub mod notifications;
 #[cfg(feature = "desktop")]

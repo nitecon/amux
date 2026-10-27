@@ -11,6 +11,8 @@ use amux::submission::{Submission, submit_literal};
 mod desktop_delegation;
 #[path = "desktop_design.rs"]
 mod desktop_design;
+#[path = "desktop_harness.rs"]
+mod desktop_harness;
 #[path = "desktop_icon.rs"]
 mod desktop_icon;
 #[path = "desktop_recovery.rs"]
@@ -64,6 +66,9 @@ enum Message {
     RestartTab(pane_grid::Pane, u64),
     Preferences(bool),
     PreferencesTab(PreferencesTab),
+    CheckHarness,
+    InstallHarness(amux::harness::Provider),
+    HarnessChecked(Result<(Vec<amux::harness::Report>, String), String>),
     WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
@@ -132,6 +137,7 @@ enum PreferencesTab {
     Gateway,
     General,
     Updates,
+    Harness,
 }
 
 struct Updates {
@@ -305,6 +311,7 @@ struct Desktop {
     main_window: iced::window::Id,
     preferences: Preferences,
     updates: Updates,
+    harness: desktop_harness::State,
     workspaces: Vec<Workspace>,
     active: usize,
     workspace_dialog: WorkspaceDialog,
@@ -391,6 +398,7 @@ impl Desktop {
             design: desktop_design::State::default(),
             main_window,
             updates: Updates::new(),
+            harness: desktop_harness::State::default(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
@@ -451,6 +459,7 @@ impl Desktop {
         }
         let focus = app.focus();
         let updates = app.check_updates();
+        let harness = app.check_harness(None);
         let gateways = if !app.preferences.current.url.is_empty() {
             Task::batch(
                 (0..app.workspaces.len())
@@ -462,7 +471,13 @@ impl Desktop {
         };
         (
             app,
-            Task::batch([open.map(|_| Message::WindowReady), focus, updates, gateways]),
+            Task::batch([
+                open.map(|_| Message::WindowReady),
+                focus,
+                updates,
+                gateways,
+                harness,
+            ]),
         )
     }
 
@@ -1094,7 +1109,32 @@ impl Desktop {
                     self.close_preferences()
                 };
             }
-            Message::PreferencesTab(tab) => self.preferences.tab = tab,
+            Message::PreferencesTab(tab) => {
+                if !self.preferences.open {
+                    let focus = self.open_preferences(tab);
+                    return if tab == PreferencesTab::Harness {
+                        Task::batch([focus, self.check_harness(None)])
+                    } else {
+                        focus
+                    };
+                }
+                self.preferences.tab = tab;
+                if tab == PreferencesTab::Harness {
+                    return self.check_harness(None);
+                }
+            }
+            Message::CheckHarness => return self.check_harness(None),
+            Message::InstallHarness(provider) => return self.check_harness(Some(provider)),
+            Message::HarnessChecked(result) => {
+                self.harness.busy = false;
+                match result {
+                    Ok((reports, status)) => {
+                        self.harness.reports = reports;
+                        self.harness.status = status;
+                    }
+                    Err(error) => self.harness.status = error,
+                }
+            }
             Message::Preference(field, Secret(value)) => {
                 if value.len() <= 16 * 1024 {
                     let draft = &mut self.preferences.draft;
@@ -2593,6 +2633,7 @@ mod tests {
                 },
                 error: String::new(),
             },
+            harness: desktop_harness::State::default(),
             preferences: Preferences {
                 current: GatewayPreferences::default(),
                 draft: GatewayPreferences::default(),

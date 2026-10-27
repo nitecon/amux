@@ -36,6 +36,7 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "net", "sync"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 tempfile = "3"
+toml_edit = "0.25"
 # Verified direct-download updates (src/updates.rs).
 flate2 = "1.1"
 self-replace = "1.5"

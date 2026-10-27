@@ -80,6 +80,8 @@ Closing the last workspace opens a fresh **Default** terminal in your home direc
 - [MVP plan](docs/mvp.md): milestones, closing criteria, reviewer evidence, and
   remaining gates.
 - [Gateway CLI](docs/gateway-cli.md): task and inline message commands.
+- [Agent instructions](docs/agent-instructions.md): detect providers, install and
+  verify managed task guidance, and configure local task tools from Settings.
 - [Gateway delivery](docs/gateway-delivery.md): automatic notifications, session identity
   and built-in terminal agent identity.
 - [Reminder validation](docs/reminder-validation.md): how legacy selected-task reminders are

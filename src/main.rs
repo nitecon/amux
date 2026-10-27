@@ -35,6 +35,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Operation {
+    /// Check or install managed task instructions for local coding agents.
+    Harness {
+        #[command(subcommand)]
+        operation: HarnessOperation,
+    },
     /// Inspect or finish a local Autoreview receipt.
     Reviews {
         #[command(subcommand)]
@@ -85,6 +90,17 @@ enum Operation {
         gateway_url: String,
         #[command(subcommand)]
         operation: amux::dispatch::Command,
+    },
+}
+
+#[derive(Subcommand)]
+enum HarnessOperation {
+    /// Detect providers and check instructions/settings without changing files.
+    Check,
+    /// Install/update one provider's global rules and local-task settings.
+    Install {
+        #[arg(value_enum)]
+        provider: amux::harness::Provider,
     },
 }
 
@@ -286,6 +302,23 @@ fn run(cli: Cli) -> Result<u8> {
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
     match cli.command.unwrap_or(Operation::Desktop) {
+        Operation::Harness { operation } => {
+            let environment = amux::harness::Environment::discover()?;
+            match operation {
+                HarnessOperation::Check => {
+                    println!("{}", serde_json::to_string_pretty(&environment.reports())?)
+                }
+                HarnessOperation::Install { provider } => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&environment.install(provider)?)?
+                    );
+                    println!(
+                        "Start a new provider session to load the updated instructions and settings."
+                    );
+                }
+            }
+        }
         Operation::Reviews { operation } => {
             let path = amux::autoreview::path(&project_dir)?;
             match operation {

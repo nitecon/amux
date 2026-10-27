@@ -103,6 +103,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "toml_edit",
  "uuid",
  "windows-sys 0.61.2",
  "winresource",
@@ -4492,6 +4493,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
