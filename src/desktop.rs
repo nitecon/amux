@@ -1,10 +1,11 @@
 //! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
 use amux::delivery::{DeliveryCause, DeliveryLedger, DeliveryState};
-use amux::gateway_preferences::GatewayPreferences;
+use amux::gateway_preferences::{EnrolledConnection, GatewayMode, GatewayPreferences};
 use amux::identity::Provider;
 use amux::notifications::{Notifier, Outcome};
 use amux::readiness::ReadinessGate;
 use amux::recipient::TerminalRecipient;
+use amux::server_controller::{self, LocalServer};
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 use amux::submission::{Submission, submit_literal};
 #[path = "desktop_delegation.rs"]
@@ -74,6 +75,19 @@ enum Message {
     WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
+    GatewayMode(GatewayMode),
+    NetworkHosting(bool),
+    ServerName(String),
+    PairAddress(String),
+    PairInvitation(Secret),
+    PairConnect,
+    PairConnected(u64, Result<EnrolledConnection, String>),
+    ServerReady(u64, Result<LocalServer, String>),
+    GenerateInvitation,
+    InvitationReady(u64, Result<PeeringInvitation, String>),
+    CopyInvitation,
+    ServerStopped(ServerExit, Result<(), String>),
+    ServerReconfigured(u64, Result<(), String>),
     AutomaticNotifications(bool),
     Autoreview(bool),
     AutoResume(bool),
@@ -125,6 +139,55 @@ impl std::fmt::Debug for Secret {
         f.write_str("[redacted]")
     }
 }
+#[derive(Clone)]
+struct PeeringInvitation {
+    value: Secret,
+    expires_at: i64,
+    deadline: Instant,
+}
+impl std::fmt::Debug for PeeringInvitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted peering invitation]")
+    }
+}
+#[derive(Debug, Clone, Copy)]
+enum ServerExit {
+    Close,
+    Restart,
+}
+#[derive(Default)]
+struct EmbeddedServer {
+    local: Option<LocalServer>,
+    busy: bool,
+    epoch: u64,
+    invitation: Option<PeeringInvitation>,
+    pair_address: String,
+    pair_invitation: String,
+    status: String,
+    stopping: bool,
+}
+
+// Absence is deliberately distinct from invalid or explicitly saved settings.
+fn startup_connection(
+    saved: Option<GatewayPreferences>,
+    environment: GatewayPreferences,
+) -> GatewayPreferences {
+    if let Some(saved) = saved {
+        return saved;
+    }
+    if !environment.url.trim().is_empty()
+        || !environment.api_key.trim().is_empty()
+        || !environment.machine_id.is_empty()
+        || !environment.machine_key.is_empty()
+    {
+        return environment;
+    }
+    GatewayPreferences {
+        mode: GatewayMode::Server,
+        ..environment
+    }
+}
+
 struct Preferences {
     current: GatewayPreferences,
     draft: GatewayPreferences,
@@ -312,6 +375,7 @@ struct Desktop {
     design: desktop_design::State,
     main_window: iced::window::Id,
     preferences: Preferences,
+    embedded: EmbeddedServer,
     updates: Updates,
     harness: desktop_harness::State,
     workspaces: Vec<Workspace>,
@@ -386,9 +450,7 @@ impl Desktop {
             .transpose();
         let (preferences, preferences_error) = match loaded {
             Ok(saved) => (
-                saved
-                    .flatten()
-                    .unwrap_or_else(GatewayPreferences::from_environment),
+                startup_connection(saved.flatten(), GatewayPreferences::from_environment()),
                 String::new(),
             ),
             Err(error) => (
@@ -400,6 +462,7 @@ impl Desktop {
             design: desktop_design::State::default(),
             main_window,
             updates: Updates::new(),
+            embedded: EmbeddedServer::default(),
             harness: desktop_harness::State::startup(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
@@ -461,7 +524,9 @@ impl Desktop {
         }
         let focus = app.focus();
         let updates = app.check_updates();
-        let gateways = if !app.preferences.current.url.is_empty() {
+        let gateways = if app.preferences.current.mode == GatewayMode::Server {
+            app.start_local_server()
+        } else if app.preferences.current.has_connection() {
             Task::batch(
                 (0..app.workspaces.len())
                     .map(|i| app.query(i))
@@ -887,6 +952,14 @@ impl Desktop {
         let Some(message) = self.retarget_workspace_message(message) else {
             return Task::none();
         };
+        if (self.embedded.busy || self.embedded.stopping)
+            && matches!(
+                &message,
+                Message::ManageTask(_) | Message::SubmitTask | Message::RefreshTasks
+            )
+        {
+            return Task::none();
+        }
         if matches!(
             &message,
             Message::NewWorkspace
@@ -1144,7 +1217,7 @@ impl Desktop {
                 }
             }
             Message::Preference(field, Secret(value)) => {
-                if value.len() <= 16 * 1024 {
+                if value.len() <= 16 * 1024 && !self.embedded.busy && !self.embedded.stopping {
                     let draft = &mut self.preferences.draft;
                     *match field {
                         PreferenceField::Url => &mut draft.url,
@@ -1153,6 +1226,156 @@ impl Desktop {
                 }
             }
             Message::SavePreferences => return self.save_preferences(),
+            Message::GatewayMode(mode) => {
+                if !self.embedded.busy && !self.embedded.stopping {
+                    if mode == GatewayMode::Client
+                        && self.preferences.draft.mode == GatewayMode::Server
+                    {
+                        self.preferences.draft.enrolled = None;
+                    }
+                    self.preferences.draft.mode = mode;
+                    self.embedded.invitation = None;
+                    self.embedded.pair_invitation.clear();
+                }
+            }
+            Message::NetworkHosting(value) => {
+                if !self.embedded.busy && !self.embedded.stopping {
+                    self.preferences.draft.server.network_hosting = value;
+                }
+            }
+            Message::ServerName(value) => {
+                if value.len() <= 253 && !self.embedded.busy && !self.embedded.stopping {
+                    self.preferences.draft.server.server_name = value;
+                }
+            }
+            Message::PairAddress(value) => {
+                if value.len() <= 2048 {
+                    self.embedded.pair_address = value;
+                }
+            }
+            Message::PairInvitation(Secret(value)) => {
+                if value.len() <= 16 * 1024 {
+                    self.embedded.pair_invitation = value;
+                }
+            }
+            Message::PairConnect => return self.pair_client(),
+            Message::PairConnected(epoch, result) => {
+                if epoch != self.embedded.epoch {
+                    return Task::none();
+                }
+                self.embedded.busy = false;
+                match result {
+                    Ok(connection) => {
+                        self.preferences.draft.mode = GatewayMode::Client;
+                        self.preferences.draft.enrolled = Some(connection);
+                        self.embedded.pair_invitation.clear();
+                        return self.save_preferences();
+                    }
+                    Err(error) => self.embedded.status = format!("Pairing failed: {error}"),
+                }
+            }
+            Message::ServerReady(epoch, result) => {
+                if epoch != self.embedded.epoch {
+                    if let Ok(server) = result {
+                        return Task::perform(
+                            async move {
+                                let _ = server.stop().await;
+                            },
+                            |_| Message::Save,
+                        );
+                    }
+                    return Task::none();
+                }
+                self.embedded.busy = false;
+                match result {
+                    Ok(server) => {
+                        let connection = server.connection();
+                        self.preferences.current.enrolled = Some(connection.clone());
+                        self.preferences.draft.enrolled = Some(connection.clone());
+                        self.embedded.local = Some(server);
+                        self.embedded.status = format!("Server ready at {}", connection.url);
+                        if !self.preferences.status.starts_with("Not saved:") {
+                            self.status = self.embedded.status.clone();
+                        }
+                        let saved = self
+                            .preferences
+                            .path
+                            .as_deref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Application settings directory unavailable")
+                            })
+                            .and_then(|path| self.preferences.current.save(path));
+                        if let Err(error) = saved {
+                            self.embedded.status = format!(
+                                "Server ready; connection settings could not be saved: {error}"
+                            );
+                            self.status = self.embedded.status.clone();
+                        }
+                        let queries = Task::batch(
+                            (0..self.workspaces.len())
+                                .map(|i| self.query(i))
+                                .collect::<Vec<_>>(),
+                        );
+                        return Task::batch([queries, self.close_preferences()]);
+                    }
+                    Err(error) => {
+                        self.embedded.status = format!("Server unavailable: {error}");
+                        self.status = self.embedded.status.clone();
+                    }
+                }
+            }
+            Message::GenerateInvitation => return self.generate_invitation(),
+            Message::InvitationReady(epoch, result) => {
+                if epoch != self.embedded.epoch {
+                    return Task::none();
+                }
+                self.embedded.busy = false;
+                match result {
+                    Ok(invitation) => {
+                        self.embedded.invitation = Some(invitation);
+                        self.embedded.status =
+                            "Peering key generated. Copy it to connect a client.".into();
+                    }
+                    Err(error) => {
+                        self.embedded.status = format!("Could not generate peering key: {error}")
+                    }
+                }
+            }
+            Message::CopyInvitation => {
+                if let Some(invitation) = self.active_invitation() {
+                    let value = invitation.value.0.clone();
+                    self.embedded.status = "Peering key copied".into();
+                    return iced::clipboard::write(value);
+                }
+            }
+            Message::ServerReconfigured(epoch, result) => {
+                if epoch != self.embedded.epoch {
+                    return Task::none();
+                }
+                self.embedded.busy = false;
+                match result {
+                    Ok(()) => {
+                        self.embedded.local = None;
+                        return self.save_preferences();
+                    }
+                    Err(error) => {
+                        self.embedded.status = format!("Could not stop previous server: {error}")
+                    }
+                }
+            }
+            Message::ServerStopped(action, result) => {
+                self.embedded.stopping = false;
+                match result {
+                    Ok(()) => {
+                        self.embedded.local = None;
+                        return match action {
+                            ServerExit::Close => self.close_window(self.main_window),
+                            ServerExit::Restart => self.restart_updated(),
+                        };
+                    }
+                    Err(error) => self.embedded.status = format!("Could not stop server: {error}"),
+                }
+            }
             Message::Updates(open) => {
                 return if open {
                     self.open_preferences(PreferencesTab::Updates)
@@ -1531,6 +1754,9 @@ impl Desktop {
                 }
             }
             Message::DeliveryTick => {
+                if self.embedded.invitation.is_some() && self.active_invitation().is_none() {
+                    self.embedded.invitation = None;
+                }
                 if let Some(notifier) = &self.notifier {
                     for outcome in notifier.outcomes() {
                         self.notification_status = match outcome {
@@ -1560,14 +1786,18 @@ impl Desktop {
                 } else {
                     Task::none()
                 };
-                return Task::batch([
-                    self.delivery_tick(),
-                    self.delegation_tick(),
-                    self.backlog_tick(),
-                    self.autoreview_tick(),
-                    self.routing_tick(),
-                    updates,
-                ]);
+                let gateway_ticks = if self.embedded.busy || self.embedded.stopping {
+                    Task::none()
+                } else {
+                    Task::batch([
+                        self.delivery_tick(),
+                        self.delegation_tick(),
+                        self.backlog_tick(),
+                        self.autoreview_tick(),
+                        self.routing_tick(),
+                    ])
+                };
+                return Task::batch([gateway_ticks, updates]);
             }
         }
         Task::none()
@@ -1638,7 +1868,11 @@ impl Desktop {
         &mut self,
         start: impl FnOnce(&std::path::Path, &std::path::Path) -> anyhow::Result<()>,
     ) -> Task<Message> {
-        if self.updates.installing || self.workspace_dialog.busy {
+        if self.updates.installing
+            || self.workspace_dialog.busy
+            || self.embedded.busy
+            || self.embedded.stopping
+        {
             return Task::none();
         }
         let restart = self
@@ -1654,6 +1888,14 @@ impl Desktop {
         if !self.save() {
             self.updates.error = "Layout could not be saved; restart cancelled.".into();
             return Task::none();
+        }
+        if self
+            .embedded
+            .local
+            .as_ref()
+            .is_some_and(LocalServer::owns_process)
+        {
+            return self.stop_local_server(ServerExit::Restart);
         }
         let had_ledger = self.pause_for_restart();
         match start(&path, &self.workspaces[self.active].directory) {
@@ -1674,7 +1916,11 @@ impl Desktop {
                         )),
                     }
                 }
-                Task::none()
+                if self.preferences.current.mode == GatewayMode::Server {
+                    self.start_local_server()
+                } else {
+                    Task::none()
+                }
             }
         }
     }
@@ -1787,11 +2033,20 @@ impl Desktop {
             self.preferences.draft = self.preferences.current.clone();
         }
         self.preferences.open = true;
+        if self.embedded.pair_address.is_empty()
+            && self.preferences.draft.mode == GatewayMode::Client
+            && let Some(connection) = &self.preferences.draft.enrolled
+        {
+            self.embedded.pair_address = connection.url.clone();
+        }
         self.close_design_popovers();
         iced::widget::operation::focus("gateway-url")
     }
 
     fn close_preferences(&mut self) -> Task<Message> {
+        if self.embedded.busy || self.embedded.stopping {
+            return Task::none();
+        }
         self.preferences.draft = self.preferences.current.clone();
         self.preferences.open = false;
         self.focus()
@@ -1807,9 +2062,19 @@ impl Desktop {
             } else if self.updates.installing {
                 self.status =
                     "An update is installing. Wait for it to finish before closing amux.".into();
+            } else if self.embedded.busy || self.embedded.stopping {
+                self.status = "Wait for the server operation to finish before closing amux.".into();
             } else {
                 self.dirty = true;
                 if self.save() {
+                    if self
+                        .embedded
+                        .local
+                        .as_ref()
+                        .is_some_and(LocalServer::owns_process)
+                    {
+                        return self.stop_local_server(ServerExit::Close);
+                    }
                     return iced::exit();
                 }
             }
@@ -1840,23 +2105,173 @@ impl Desktop {
         self.view()
     }
 
+    fn start_local_server(&mut self) -> Task<Message> {
+        if self.embedded.busy || self.embedded.stopping {
+            return Task::none();
+        }
+        let Some(directory) = self.registry.clone() else {
+            self.embedded.status =
+                "Application settings directory unavailable; server was not started.".into();
+            return Task::none();
+        };
+        self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
+        let epoch = self.embedded.epoch;
+        self.embedded.busy = true;
+        self.embedded.invitation = None;
+        self.embedded.status = "Starting local server…".into();
+        let previous = self.embedded.local.take();
+        let config = self.preferences.current.server.clone();
+        Task::perform(
+            async move {
+                if let Some(server) = previous {
+                    server.stop().await.map_err(|error| error.to_string())?;
+                }
+                server_controller::ensure_local(directory, config)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            move |result| Message::ServerReady(epoch, result),
+        )
+    }
+
+    fn stop_local_server(&mut self, action: ServerExit) -> Task<Message> {
+        let Some(server) = self.embedded.local.clone() else {
+            return Task::none();
+        };
+        self.embedded.stopping = true;
+        self.embedded.invitation = None;
+        self.delegation.stop();
+        Task::perform(
+            async move { server.stop().await.map_err(|error| error.to_string()) },
+            move |result| Message::ServerStopped(action, result),
+        )
+    }
+
+    fn active_invitation(&self) -> Option<&PeeringInvitation> {
+        self.embedded.invitation.as_ref().filter(|invitation| {
+            invitation.expires_at > unix_ms() as i64 && invitation.deadline > Instant::now()
+        })
+    }
+
+    fn generate_invitation(&mut self) -> Task<Message> {
+        if self.embedded.busy
+            || self.embedded.stopping
+            || self.preferences.current.mode != GatewayMode::Server
+            || self.embedded.local.is_none()
+            || self.preferences.current.server != self.preferences.draft.server
+        {
+            return Task::none();
+        }
+        let Some(connection) = self.preferences.current.enrolled.clone() else {
+            return Task::none();
+        };
+        self.embedded.invitation = None;
+        self.embedded.busy = true;
+        let epoch = self.embedded.epoch;
+        Task::perform(
+            async move {
+                server_controller::invitation(connection, true)
+                    .await
+                    .map(|value| {
+                        let remaining = value
+                            .expires_at
+                            .saturating_sub(unix_ms() as i64)
+                            .clamp(0, 600_000) as u64;
+                        PeeringInvitation {
+                            value: Secret(value.invitation),
+                            expires_at: value.expires_at,
+                            deadline: Instant::now() + Duration::from_millis(remaining),
+                        }
+                    })
+                    .map_err(|error| error.to_string())
+            },
+            move |result| Message::InvitationReady(epoch, result),
+        )
+    }
+
+    fn pair_client(&mut self) -> Task<Message> {
+        if self.embedded.busy || self.embedded.stopping || self.pending_gateway_action() {
+            return Task::none();
+        }
+        let Some(directory) = self.registry.clone() else {
+            self.embedded.status = "Application settings directory unavailable".into();
+            return Task::none();
+        };
+        let url = self.embedded.pair_address.trim().to_owned();
+        if url.is_empty() || self.embedded.pair_invitation.trim().is_empty() {
+            self.embedded.status = "Enter the server address and peering key.".into();
+            return Task::none();
+        }
+        let ids: Vec<_> = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.panes.iter().flat_map(|(_, pane)| &pane.tabs))
+            .map(|tab| tab.id)
+            .collect();
+        for id in ids {
+            self.withdraw(id);
+        }
+        self.delegation.stop();
+        self.embedded.busy = true;
+        self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
+        let epoch = self.embedded.epoch;
+        let invitation = std::mem::take(&mut self.embedded.pair_invitation);
+        self.embedded.status = "Connecting to server…".into();
+        Task::perform(
+            async move {
+                server_controller::pair(directory, url, invitation)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            move |result| Message::PairConnected(epoch, result),
+        )
+    }
+
+    fn pending_gateway_action(&self) -> bool {
+        self.workspaces.iter().any(|w| {
+            w.gateway.detail.unresolved()
+                || w.gateway.request.as_ref().is_some_and(|request| {
+                    matches!(
+                        request.state,
+                        TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                    )
+                })
+        })
+    }
+
     fn save_preferences(&mut self) -> Task<Message> {
-        let connection_changed = self.preferences.current.url.trim()
-            != self.preferences.draft.url.trim()
+        if self.embedded.busy || self.embedded.stopping {
+            return Task::none();
+        }
+        let mode_changed = self.preferences.current.mode != self.preferences.draft.mode;
+        let server_changed = self.preferences.current.server.network_hosting
+            != self.preferences.draft.server.network_hosting
+            || self.preferences.current.server.server_name
+                != self.preferences.draft.server.server_name
+            || self.preferences.current.server.secure_port
+                != self.preferences.draft.server.secure_port
+            || self.preferences.current.server.discovery_port
+                != self.preferences.draft.server.discovery_port;
+        let authority_changed = self
+            .preferences
+            .current
+            .enrolled
+            .as_ref()
+            .map(|c| (&c.cluster_id, &c.node_id, &c.url))
+            != self
+                .preferences
+                .draft
+                .enrolled
+                .as_ref()
+                .map(|c| (&c.cluster_id, &c.node_id, &c.url));
+        let connection_changed = mode_changed
+            || server_changed
+            || authority_changed
+            || self.preferences.current.url.trim() != self.preferences.draft.url.trim()
             || self.preferences.current.api_key.trim() != self.preferences.draft.api_key.trim()
             || self.preferences.current.automatic_notifications
                 != self.preferences.draft.automatic_notifications;
-        if connection_changed
-            && self.workspaces.iter().any(|w| {
-                w.gateway.detail.unresolved()
-                    || w.gateway.request.as_ref().is_some_and(|r| {
-                        matches!(
-                            r.state,
-                            TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
-                        )
-                    })
-            })
-        {
+        if connection_changed && self.pending_gateway_action() {
             self.preferences.status = "A gateway task action is pending or unconfirmed. Refresh and inspect its result before changing connections.".into();
             return Task::none();
         }
@@ -1865,6 +2280,32 @@ impl Desktop {
         draft.api_key = draft.api_key.trim().to_owned();
         draft.machine_key = draft.machine_key.trim().to_owned();
         draft.machine_id = draft.machine_id.trim().to_owned();
+        if let Err(error) = draft.validate() {
+            self.preferences.status = format!("Not saved: {error}");
+            return Task::none();
+        }
+        if (mode_changed || server_changed)
+            && let Some(server) = self.embedded.local.clone()
+        {
+            self.embedded.busy = true;
+            self.embedded.invitation = None;
+            self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
+            let epoch = self.embedded.epoch;
+            let ids: Vec<_> = self
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.panes.iter().flat_map(|(_, pane)| &pane.tabs))
+                .map(|tab| tab.id)
+                .collect();
+            for id in ids {
+                self.withdraw(id);
+            }
+            self.delegation.stop();
+            return Task::perform(
+                async move { server.stop().await.map_err(|error| error.to_string()) },
+                move |result| Message::ServerReconfigured(epoch, result),
+            );
+        }
         let result = self
             .preferences
             .path
@@ -1873,6 +2314,11 @@ impl Desktop {
             .and_then(|path| draft.save(path));
         if let Err(error) = result {
             self.preferences.status = format!("Not saved: {error}");
+            if self.preferences.current.mode == GatewayMode::Server && self.embedded.local.is_none()
+            {
+                self.status = self.preferences.status.clone();
+                return self.start_local_server();
+            }
             return Task::none();
         }
         self.notify_exits = draft.notify_exits;
@@ -1882,6 +2328,10 @@ impl Desktop {
         if !connection_changed {
             self.preferences.current = draft;
             self.preferences.status = "Preferences saved".into();
+            if self.preferences.current.mode == GatewayMode::Server && self.embedded.local.is_none()
+            {
+                return self.start_local_server();
+            }
             return self.close_preferences();
         }
         let ids: Vec<_> = self
@@ -1910,8 +2360,15 @@ impl Desktop {
         }
         self.delegation.stop();
         self.preferences.current = draft;
+        self.embedded.invitation = None;
+        self.embedded.pair_invitation.clear();
         self.preferences.status = "Gateway preferences saved".into();
         self.status = "Gateway preferences saved. Connecting repositories…".into();
+        if self.preferences.current.mode == GatewayMode::Server
+            && (mode_changed || server_changed || self.embedded.local.is_none())
+        {
+            return Task::batch([self.start_local_server(), self.close_preferences()]);
+        }
         let queries = Task::batch(
             (0..self.workspaces.len())
                 .map(|i| self.query(i))
@@ -1936,18 +2393,130 @@ impl Desktop {
             ]
             .spacing(4)
         };
-        container(scrollable(column![
+        let available = !self.embedded.busy && !self.embedded.stopping;
+        let mode = |label, mode| {
+            button(text(label)).on_press_maybe(
+                (available && draft.mode != mode).then_some(Message::GatewayMode(mode)),
+            )
+        };
+        let mut content = column![
             text("Gateway Server").size(20),
-            text("Connect with your gateway URL and API key. Projects are resolved automatically from each workspace’s Git remote."),
-            field("Gateway URL", &draft.url, PreferenceField::Url, false),
-            field("API key", &draft.api_key, PreferenceField::ApiKey, true),
-            checkbox(draft.automatic_notifications).label("Send gateway notifications and assign queued work to idle agents in this app").on_toggle(Message::AutomaticNotifications),
-            checkbox(draft.autoreview).label("Autoreview").on_toggle(Message::Autoreview),
-            text("When no tasks are queued, idle agents review up to five unreviewed commits. Findings wait for human triage; reviews must not change code. A different provider is preferred when available. Review history is saved on this device.").size(12),
-            text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12),
-            text("Repository matching is required. Settings are saved on this device.").size(12),
-            text(&self.workspaces[self.active].gateway.status).size(13),
-        ].spacing(14))).width(Length::Fill).height(Length::Fill).into()
+            row![
+                mode("Server", GatewayMode::Server),
+                mode("Client", GatewayMode::Client),
+                mode("Legacy gateway", GatewayMode::Legacy)
+            ]
+            .spacing(8),
+        ]
+        .spacing(14);
+        content = match draft.mode {
+            GatewayMode::Legacy => content
+                .push(text(
+                    "Connect to an existing gateway with its URL and API key.",
+                ))
+                .push(field(
+                    "Gateway URL",
+                    &draft.url,
+                    PreferenceField::Url,
+                    false,
+                ))
+                .push(field(
+                    "API key",
+                    &draft.api_key,
+                    PreferenceField::ApiKey,
+                    true,
+                )),
+            GatewayMode::Server => {
+                let mut controls = column![
+                    text("This machine stores task data and serves paired clients. Local connections also use mutual TLS."),
+                    checkbox(draft.server.network_hosting).label("Allow connections from other machines").on_toggle(Message::NetworkHosting),
+                    text("Server name or IP address used by clients"),
+                    text_input("localhost", &draft.server.server_name).on_input(Message::ServerName),
+                    text(format!("Secure port: {} · Discovery port: {}", draft.server.secure_port, draft.server.discovery_port)),
+                ].spacing(10);
+                if let Some(connection) = &self.preferences.current.enrolled
+                    && self.preferences.current.mode == GatewayMode::Server
+                    && self.embedded.local.is_some()
+                    && self.preferences.current.server == draft.server
+                {
+                    controls = controls.push(text(format!("Server address: {}", connection.url)));
+                    if let Some(invitation) = self.active_invitation() {
+                        let seconds = invitation
+                            .deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_secs()
+                            .min(
+                                invitation
+                                    .expires_at
+                                    .saturating_sub(unix_ms() as i64)
+                                    .max(0) as u64
+                                    / 1000,
+                            );
+                        controls = controls
+                            .push(text(format!(
+                                "Peering key: •••••••• · valid for {seconds}s"
+                            )))
+                            .push(
+                                row![
+                                    button("Copy peering key").on_press_maybe(
+                                        available.then_some(Message::CopyInvitation)
+                                    ),
+                                    button("Generate new").on_press_maybe(
+                                        available.then_some(Message::GenerateInvitation)
+                                    )
+                                ]
+                                .spacing(8),
+                            );
+                    } else {
+                        controls = controls.push(
+                            button("Generate peering key")
+                                .on_press_maybe(available.then_some(Message::GenerateInvitation)),
+                        );
+                    }
+                    controls = controls.push(text("Peering keys expire within ten minutes. Generating a new key invalidates the previous key."));
+                } else {
+                    controls =
+                        controls.push(text("Save settings to start or configure the server."));
+                }
+                content.push(controls)
+            }
+            GatewayMode::Client => {
+                let mut controls = column![
+                    text("Join another amux server using its address and a temporary peering key."),
+                    text("Server address"),
+                    text_input("https://server:24182", &self.embedded.pair_address)
+                        .on_input(Message::PairAddress),
+                    text("Peering key"),
+                    text_input(
+                        "Paste the key from server Settings",
+                        &self.embedded.pair_invitation
+                    )
+                    .secure(true)
+                    .on_input(|value| Message::PairInvitation(Secret(value))),
+                    button("Connect").on_press_maybe(available.then_some(Message::PairConnect)),
+                ]
+                .spacing(10);
+                if let Some(connection) = &draft.enrolled {
+                    controls = controls.push(text(format!(
+                        "Paired with {} · node {}",
+                        connection.url, connection.node_id
+                    )));
+                }
+                content.push(controls)
+            }
+        };
+        content = content
+            .push(text(&self.embedded.status))
+            .push(checkbox(draft.automatic_notifications).label("Send gateway notifications and assign queued work to idle agents in this app").on_toggle(Message::AutomaticNotifications))
+            .push(checkbox(draft.autoreview).label("Autoreview").on_toggle(Message::Autoreview))
+            .push(text("When no tasks are queued, idle agents review up to five unreviewed commits. Findings wait for human triage; reviews must not change code. A different provider is preferred when available. Review history is saved on this device.").size(12))
+            .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
+            .push(text("Repository matching is required. Settings are saved on this device.").size(12))
+            .push(text(&self.workspaces[self.active].gateway.status).size(13));
+        container(scrollable(content))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn scope(&self, workspace: usize) -> QueryScope {
@@ -1988,6 +2557,13 @@ impl Desktop {
     }
 
     fn query(&mut self, workspace: usize) -> Task<Message> {
+        if self.embedded.busy
+            || self.embedded.stopping
+            || (self.preferences.current.mode == GatewayMode::Server
+                && self.embedded.local.is_none())
+        {
+            return Task::none();
+        }
         let scope = self.scope(workspace);
         let panel = &mut self.workspaces[workspace].gateway;
         if panel.loading {
@@ -2642,6 +3218,7 @@ mod tests {
                 error: String::new(),
             },
             harness: desktop_harness::State::default(),
+            embedded: EmbeddedServer::default(),
             preferences: Preferences {
                 current: GatewayPreferences::default(),
                 draft: GatewayPreferences::default(),
@@ -3780,5 +4357,207 @@ mod tests {
                 .reminders
                 .consent
         );
+    }
+    #[test]
+    fn fresh_server_default_preserves_saved_and_environment_connections() {
+        let fresh = startup_connection(None, GatewayPreferences::default());
+        assert_eq!(fresh.mode, GatewayMode::Server);
+        let saved_blank = startup_connection(
+            Some(GatewayPreferences::default()),
+            GatewayPreferences::default(),
+        );
+        assert_eq!(saved_blank.mode, GatewayMode::Legacy);
+        let legacy = GatewayPreferences {
+            url: "https://existing.example".into(),
+            api_key: "existing-key".into(),
+            ..GatewayPreferences::default()
+        };
+        let environment = startup_connection(None, legacy.clone());
+        assert_eq!(environment.mode, GatewayMode::Legacy);
+        assert_eq!(environment.url, legacy.url);
+        let saved = startup_connection(Some(legacy.clone()), fresh);
+        assert_eq!(saved.url, legacy.url);
+        assert_eq!(saved.api_key, legacy.api_key);
+        assert_eq!(saved.mode, GatewayMode::Legacy);
+        let partial = startup_connection(
+            None,
+            GatewayPreferences {
+                api_key: "explicit-partial".into(),
+                ..GatewayPreferences::default()
+            },
+        );
+        assert_eq!(partial.mode, GatewayMode::Legacy);
+    }
+
+    #[test]
+    fn server_initialization_gates_queries_and_does_not_start_without_state_path() {
+        let mut app = desktop();
+        app.preferences.current.mode = GatewayMode::Server;
+        let _ = app.query(0);
+        assert!(!app.workspaces[0].gateway.loading);
+        assert!(app.workspaces[0].gateway.queried_at.is_none());
+        let _ = app.start_local_server();
+        assert!(!app.embedded.busy);
+        assert!(app.embedded.local.is_none());
+        assert!(app.embedded.status.contains("directory unavailable"));
+        let _ = app.update(Message::ServerReady(99, Err("stale failure".into())));
+        assert!(!app.embedded.status.contains("stale failure"));
+        let _ = app.update(Message::ServerReady(0, Err("fixture failure".into())));
+        assert!(app.embedded.status.contains("fixture failure"));
+        assert!(app.embedded.local.is_none());
+    }
+
+    #[test]
+    fn peering_invitation_is_redacted_expiring_and_generation_fenced() {
+        let mut app = desktop();
+        let secret = "fixture-private-invitation";
+        let invitation = PeeringInvitation {
+            value: Secret(secret.into()),
+            expires_at: unix_ms() as i64 + 600_000,
+            deadline: Instant::now() + Duration::from_secs(600),
+        };
+        assert!(!format!("{:?}", invitation).contains(secret));
+        let input = Message::PairInvitation(Secret(secret.into()));
+        assert!(!format!("{input:?}").contains(secret));
+        let ready = Message::InvitationReady(7, Ok(invitation.clone()));
+        assert!(!format!("{ready:?}").contains(secret));
+        let _ = app.update(ready);
+        assert!(app.embedded.invitation.is_none());
+        let _ = app.update(Message::InvitationReady(0, Ok(invitation)));
+        assert!(app.active_invitation().is_some());
+        app.embedded.invitation.as_mut().unwrap().deadline = Instant::now();
+        assert!(app.active_invitation().is_none());
+        let _ = app.update(Message::DeliveryTick);
+        assert!(app.embedded.invitation.is_none());
+        let expired = PeeringInvitation {
+            value: Secret(secret.into()),
+            expires_at: unix_ms() as i64 - 1,
+            deadline: Instant::now() + Duration::from_secs(600),
+        };
+        app.embedded.invitation = Some(expired);
+        assert!(app.active_invitation().is_none());
+        let _ = app.update(Message::DeliveryTick);
+        assert!(app.embedded.invitation.is_none());
+        assert!(!app.embedded.status.contains(secret));
+    }
+
+    #[test]
+    fn mode_selection_preserves_legacy_credentials_and_pairing_secret_is_ephemeral() {
+        let mut app = desktop();
+        app.preferences.draft.url = "https://legacy.example".into();
+        app.preferences.draft.api_key = "legacy-key".into();
+        app.embedded.pair_invitation = "temporary-secret".into();
+        let _ = app.update(Message::GatewayMode(GatewayMode::Server));
+        assert!(app.embedded.pair_invitation.is_empty());
+        let _ = app.update(Message::GatewayMode(GatewayMode::Client));
+        let _ = app.update(Message::GatewayMode(GatewayMode::Legacy));
+        assert_eq!(app.preferences.draft.url, "https://legacy.example");
+        assert_eq!(app.preferences.draft.api_key, "legacy-key");
+        assert_eq!(app.preferences.current.mode, GatewayMode::Legacy);
+        app.embedded.busy = true;
+        let _ = app.update(Message::GatewayMode(GatewayMode::Server));
+        assert_eq!(app.preferences.draft.mode, GatewayMode::Legacy);
+        let _ = app.update(Message::PairConnected(99, Err("stale-pair".into())));
+        assert!(!app.embedded.status.contains("stale-pair"));
+        let stale_connection = EnrolledConnection {
+            url: "https://stale.example:24182".into(),
+            cluster_id: Uuid::new_v4().to_string(),
+            node_id: Uuid::new_v4().to_string(),
+            profile_path: PathBuf::from("target/test-fixtures/unused-stale-client-profile.json"),
+        };
+        let _ = app.update(Message::PairConnected(99, Ok(stale_connection)));
+        assert_eq!(app.preferences.current.mode, GatewayMode::Legacy);
+        assert_eq!(app.preferences.draft.mode, GatewayMode::Legacy);
+        assert!(app.preferences.current.enrolled.is_none());
+        assert!(app.preferences.draft.enrolled.is_none());
+        assert!(app.embedded.local.is_none());
+        assert!(app.embedded.busy);
+    }
+    #[test]
+    fn lifecycle_failures_keep_the_window_and_existing_connection_usable() {
+        let mut app = desktop();
+        app.preferences.current.url = "https://legacy.example".into();
+        app.preferences.current.api_key = "legacy-key".into();
+        app.embedded.stopping = true;
+        let _ = app.update(Message::ServerStopped(
+            ServerExit::Close,
+            Err("fixture stop failure".into()),
+        ));
+        assert!(!app.embedded.stopping);
+        assert!(!app.restarting);
+        assert!(app.embedded.status.contains("fixture stop failure"));
+        assert_eq!(app.preferences.current.url, "https://legacy.example");
+        app.embedded.busy = true;
+        app.preferences.open = true;
+        let _ = app.close_preferences();
+        assert!(app.preferences.open);
+        let _ = app.update(Message::SubmitTask);
+        assert!(app.workspaces[0].gateway.request.is_none());
+        let _ = app.update(Message::ServerReconfigured(
+            0,
+            Err("fixture reconfigure failure".into()),
+        ));
+        assert!(!app.embedded.busy);
+        assert_eq!(app.preferences.current.mode, GatewayMode::Legacy);
+        assert_eq!(app.preferences.current.url, "https://legacy.example");
+    }
+    #[test]
+    fn saving_unchanged_server_preferences_retries_a_failed_start() {
+        let (_directory, mut app) = preferences_fixture();
+        app.preferences.current = GatewayPreferences {
+            mode: GatewayMode::Server,
+            ..Default::default()
+        };
+        app.preferences.draft = app.preferences.current.clone();
+        app.preferences.open = true;
+        app.embedded.status = "Previous startup failed".into();
+        // No registry path: prove the retry reaches the controller precondition
+        // without starting a process or touching installed application state.
+        assert!(app.registry.is_none());
+        let _ = app.save_preferences();
+        assert!(app.embedded.status.contains("directory unavailable"));
+        assert!(app.preferences.open);
+        assert!(app.embedded.local.is_none());
+        assert_eq!(
+            GatewayPreferences::load(app.preferences.path.as_deref().unwrap())
+                .unwrap()
+                .unwrap()
+                .mode,
+            GatewayMode::Server
+        );
+    }
+
+    #[test]
+    fn replacing_the_node_on_the_same_cluster_fences_old_workspace_callbacks() {
+        let (directory, mut app) = preferences_fixture();
+        let original = EnrolledConnection {
+            url: "https://same-cluster.example:24182".into(),
+            cluster_id: Uuid::new_v4().to_string(),
+            node_id: Uuid::new_v4().to_string(),
+            profile_path: directory.path().join("unused-node-profile.json"),
+        };
+        app.preferences.current = GatewayPreferences {
+            mode: GatewayMode::Client,
+            enrolled: Some(original.clone()),
+            ..Default::default()
+        };
+        app.preferences.draft = app.preferences.current.clone();
+        let replacement = EnrolledConnection {
+            node_id: Uuid::new_v4().to_string(),
+            ..original
+        };
+        app.preferences.draft.enrolled = Some(replacement.clone());
+        app.workspaces[0].gateway.project = "old-project".into();
+        app.workspaces[0].gateway.tasks = vec![serde_json::json!({"id": "old-visible-task"})];
+        let previous_scope = app.scope(0);
+        let _ = app.save_preferences();
+        assert_eq!(
+            app.preferences.current.enrolled.as_ref().unwrap().node_id,
+            replacement.node_id
+        );
+        assert!(!app.scope_current(&previous_scope));
+        assert!(app.workspaces[0].gateway.tasks.is_empty());
+        assert!(app.workspaces[0].gateway.project.is_empty());
+        assert!(!replacement.profile_path.exists());
     }
 }

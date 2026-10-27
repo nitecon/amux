@@ -39,6 +39,31 @@ consumer or replay an uncertain mutation against another server. Offline replica
 and conflict reconciliation remain separate capabilities to prove, not properties
 of merely storing a SQLite copy.
 
+The implementation audit found three independently constructed transports:
+`Gateway` HTTP, `Dispatcher` HTTP and the WebSocket connector. All must load the
+same immutable credential generation. `delegation_connection.rs` reconnects the
+socket, while `desktop_recovery.rs` retains dispatch credentials; neither may keep
+using an old certificate after the ordinary REST client changes. A same-authority
+credential refresh must preserve the durable consumer/cursor and uncertain-request
+state rather than invoking the authority-changing reset in `save_preferences`.
+
+Startup must distinguish absent settings, explicitly saved settings, environment
+configuration and invalid saved settings. Only a genuinely fresh, unconfigured
+installation should choose server mode automatically. An unreadable or invalid
+saved connection is an error, not permission to create a different authority.
+
+The imported API bearer key grants administrator-compatible access. The secure
+listener therefore needs an explicit verified-node principal and permissions;
+injecting the bearer key on behalf of every mTLS client would turn ordinary peers
+into administrators. Node identity remains separate from the existing agent,
+instance, session and dispatch ownership fences.
+
+The existing Discord plugin detaches its worker and has no stop operation. Native
+hosting must retain process-lifetime ownership or provide a proven shutdown
+contract before live mode changes/restarts can safely replace that worker. The
+existing application has no OS key-store abstraction; protected private-key
+storage is new work, not an existing preferences capability.
+
 ### Release 1: existing gateway API and database compatibility
 
 Pin the clean gateway `main` revision and inventory every existing backend route,
@@ -92,6 +117,50 @@ Publish and verify a second full native release after server/client and secure
 transport acceptance tests pass. A single combined release, documentation alone,
 or a facade forwarding to an external gateway does not meet these two gates.
 
+### Release 2 implementation boundary
+
+The native implementation adds Server, Client and Legacy connection modes to
+Settings. A fresh install without saved or environment gateway configuration
+starts its own loopback server; network hosting is an explicit Settings choice.
+Existing gateway URL/key configuration stays in Legacy mode. The bundled CLI
+owns the server process and its SQLite profile lock; closing its owning desktop
+or CLI stops that process. Attaching to an existing headless server does not
+transfer ownership. A parent file lease and platform process handles prevent an
+abandoned child from keeping channel consumers running after its owner exits.
+
+Operational REST and WebSocket traffic uses mTLS on 24182. Port 24181 publishes
+only discovery and the public installation root. The on-demand peering key embeds
+the cluster identity, root fingerprint and discovery port. Clients verify that
+fingerprint and the server hostname before sending the key over TLS with a locally
+generated CSR. The active invitation lasts at most ten minutes; generating another
+invalidates it, and restarting the server clears it. Only its verifier is stored
+in the separate security database. Settings provides Generate new, Copy and the
+remaining lifetime; client Settings accepts a server address and peering key.
+
+The initial implementation uses a stable installation CA directly signing 30-day
+leaf certificates. It renews client and server leaves with fresh keys after
+two-thirds of their lifetime, retaining current/previous identities for at most
+seven days and never past expiry. Activation and live connections govern earlier
+retirement. Pending issuance and activation survive interrupted responses without
+persisting the peering secret. A renewal failure allows continued use of a valid
+current certificate; expired or revoked credentials cannot authenticate. The
+rotatable intermediate and shared-root trust transition described below remain
+future design work, not functionality supplied by leaf renewal.
+
+Client preferences contain public identity and profile references. Private keys
+use owner-only files/directories on Unix and current-user DPAPI on Windows. The
+same profile supplies REST, dispatch and WebSocket credentials; renewing a leaf
+preserves the cluster/node journal namespace and reconnects streams with their
+existing consumer/cursor. Nodes receive explicit authorization rather than an
+injected administrator bearer token. Local administration additionally requires
+the reserved local certificate and a loopback connection.
+
+External channel plugins remain required for the operations that use them.
+WhatsApp provider ingress is a separate opt-in, HMAC-protected listener, never a
+route on public discovery. Database download, an authoritative offline replica,
+live memory injection and CA-root rollover remain separate work. This release
+does not claim those capabilities from having ported the gateway backend.
+
 ## Direction and scope
 
 Bring the existing gateway database and backend APIs into amux. The target for
@@ -132,7 +201,9 @@ Amux integration anchors are [gateway.rs](../src/gateway.rs),
 Today REST mutations use reqwest and bearer credentials; the WebSocket at
 `/v1/tasks/stream` carries task events and delivery receipts. Both transports need
 mTLS. Replacing REST with WebSocket commands would break compatibility and is not
-required. Amux currently has no server/database dependency in its Cargo manifest.
+required. Before this port, amux had no server/database dependency. The compatible
+backend now lives in `crates/gateway-backend`, with `amux server` as the explicit
+hosting entry point; the two release gates above still determine readiness.
 
 The gateway uses bundled rusqlite 0.39 and Axum 0.8. SQLite is the implemented
 backend; Postgres/MariaDB configuration exists but their adapters reject connection.

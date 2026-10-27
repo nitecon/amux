@@ -7,6 +7,31 @@ use clap::Subcommand;
 pub enum Command {
     /// Serve the existing gateway API with GATEWAY_* and database environment settings.
     Serve,
+    /// Host native mTLS APIs and public discovery using a separate security profile.
+    Secure {
+        #[arg(long)]
+        profile: std::path::PathBuf,
+        #[arg(long, default_value = "0.0.0.0:24182")]
+        bind: std::net::SocketAddr,
+        #[arg(long, default_value = "0.0.0.0:24181")]
+        discovery_bind: std::net::SocketAddr,
+        #[arg(long = "name")]
+        names: Vec<String>,
+        #[arg(long)]
+        instance_id: String,
+        #[arg(long)]
+        webhook_bind: Option<std::net::SocketAddr>,
+        #[arg(long, hide = true)]
+        parent_lease: Option<std::path::PathBuf>,
+    },
+    /// Print a new short-lived peering key from the running local server.
+    PeeringKey {
+        #[arg(long)]
+        profile: Option<std::path::PathBuf>,
+        /// Print the active key without replacing it or extending its lifetime.
+        #[arg(long)]
+        copy: bool,
+    },
     /// Provision or revoke project-scoped dispatch machine credentials.
     TaskMachine {
         #[command(subcommand)]
@@ -70,7 +95,9 @@ pub enum UserCommand {
 }
 
 pub fn run(command: Option<Command>) -> Result<()> {
-    dotenvy::dotenv().ok();
+    if std::env::var_os("AMUX_NATIVE_SERVER").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        dotenvy::dotenv().ok();
+    }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -88,6 +115,56 @@ pub fn run(command: Option<Command>) -> Result<()> {
                 );
                 runtime::serve(config, listener).await
             })
+        }
+        Command::Secure {
+            profile,
+            bind,
+            discovery_bind,
+            names,
+            instance_id,
+            webhook_bind,
+            parent_lease,
+        } => {
+            uuid::Uuid::parse_str(&instance_id)?;
+            let mut config = runtime::RuntimeConfig::from_env_secure()?;
+            config.database = db::DatabaseConfig::sqlite(
+                profile
+                    .join("application.sqlite")
+                    .to_str()
+                    .context("profile path is not UTF8")?,
+            );
+            let _profile_lock = profile_lock(&config.database)?;
+            tokio::runtime::Runtime::new()?.block_on(amux_gateway_backend::secure::serve(
+                config,
+                amux_gateway_backend::secure::SecureOptions {
+                    profile,
+                    bind,
+                    discovery_bind,
+                    names,
+                    instance_id,
+                    webhook_bind,
+                    parent_lease,
+                },
+            ))
+        }
+        Command::PeeringKey { profile, copy } => {
+            let directory = match profile {
+                Some(path) => path,
+                None => crate::identity::state_directory()?.join("server"),
+            };
+            let path = amux_gateway_backend::security::local_profile_path(&directory);
+            let local = amux_gateway_backend::security::LocalProfile::load(&path)
+                .context("No local server credentials; start amux server secure first")?;
+            let connection = crate::gateway_preferences::EnrolledConnection {
+                url: local.url,
+                cluster_id: local.cluster_id,
+                node_id: local.node_id,
+                profile_path: path,
+            };
+            let invitation = tokio::runtime::Runtime::new()?
+                .block_on(crate::server_controller::invitation(connection, !copy))?;
+            println!("{}", invitation.invitation);
+            Ok(())
         }
         Command::TaskMachine { action } => {
             let database = db::open_config(&db::DatabaseConfig::from_env()?)?;

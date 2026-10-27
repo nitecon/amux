@@ -6,7 +6,7 @@
 //! provider attestation. A claim or an input is never an execution start.
 use crate::identity::AgentIdentity;
 use anyhow::{Context, Result, bail};
-use reqwest::{Client, Method, Url};
+use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -347,9 +347,8 @@ impl Store {
 }
 
 pub struct Dispatcher {
-    client: Client,
     base: Url,
-    token: String,
+    transport: crate::gateway_transport::TransportProfile,
     project: String,
     machine: Machine,
     store: Store,
@@ -393,19 +392,21 @@ impl Dispatcher {
         machine: Machine,
         state: PathBuf,
     ) -> Result<Self> {
-        let base = Url::parse(base).context("invalid gateway URL")?;
-        if !matches!(base.scheme(), "http" | "https")
-            || base.host_str().is_none()
-            || !base.username().is_empty()
-            || base.password().is_some()
-            || base.query().is_some()
-            || base.fragment().is_some()
-            || base.path() != "/"
-        {
-            bail!(
-                "gateway URL must be an HTTP(S) origin without credentials, path, query or fragment"
-            );
-        }
+        Self::from_profile(
+            crate::gateway_transport::TransportProfile::legacy(base, token)?,
+            project,
+            machine,
+            state,
+        )
+    }
+
+    pub fn from_profile(
+        transport: crate::gateway_transport::TransportProfile,
+        project: &str,
+        machine: Machine,
+        state: PathBuf,
+    ) -> Result<Self> {
+        let base = transport.snapshot()?.base;
         if project.is_empty()
             || project == "."
             || project == ".."
@@ -416,12 +417,8 @@ impl Dispatcher {
             bail!("gateway project must be a project identifier");
         }
         Ok(Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(15))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
             base,
-            token,
+            transport,
             project: project.to_owned(),
             machine,
             store: Store::open(&state)?,
@@ -446,11 +443,10 @@ impl Dispatcher {
             .map_err(|_| anyhow::anyhow!("invalid gateway origin"))?
             .extend(["v1", "projects", &self.project])
             .extend(path);
-        let mut request = self
-            .client
+        let snapshot = self.transport.current().await?;
+        let mut request = snapshot
             .request(method, url)
             .query(query)
-            .bearer_auth(&self.token)
             .header("X-Gateway-Machine-Key", &self.machine.key)
             .header("X-Agent-Instance-Id", self.machine.instance_id.to_string());
         if let Some(executor) = executor {

@@ -20,7 +20,8 @@ DATABASE_PATH=./data/gateway.db amux server
 `amux server serve` is equivalent. This release preserves the gateway defaults,
 including port 7913 and binding to `0.0.0.0` when no host is configured. Existing
 remote TLS proxy arrangements remain applicable. It does not yet implement the
-proposed secure listeners on 24182/24181.
+secure listeners on 24182/24181 in this compatibility mode. Native secure mode
+is separate and described below.
 
 Discord and WhatsApp use their existing environment configuration. Projects,
 tasks and storage APIs can start without configured plugins; operations needing
@@ -46,6 +47,47 @@ sidecar lock for its SQLite profile. Stop the previous server before changing
 hosts or switching back to the original gateway: the original executable does
 not participate in this new lock. Keep a backup and use an isolated copied
 profile for cutover testing; never run both channel consumers simultaneously.
+
+## Native secure mode
+
+Settings offers Server, Client and Legacy modes. Fresh installations without
+existing gateway configuration start a loopback server. Enable network hosting
+and set a hostname or IP reachable by clients before generating a peering key.
+Client Settings accepts that address and the key; Generate new replaces the
+previous key, and each key expires within ten minutes. Copy does not extend it.
+Operational traffic uses mTLS on 24182; public discovery on 24181 carries no
+enrollment secret. Existing URL/API-key connections remain in Legacy mode.
+
+To run a headless secure host, supply a persistent profile and installation UUID:
+
+```sh
+amux server secure --profile ./server-profile \
+  --instance-id '<persistent installation UUID>' \
+  --bind 0.0.0.0:24182 --discovery-bind 0.0.0.0:24181 \
+  --name server.example.net
+amux server peering-key --profile ./server-profile
+amux server peering-key --profile ./server-profile --copy
+```
+
+The first peering-key command generates/replaces the invitation; `--copy` prints
+the existing active invitation for copying without replacing it. These are local
+operator commands using the host's reserved mTLS identity. Keep the profile in a
+persistent, owner-controlled directory. The native child uses its own
+`application.sqlite` and security database rather than an inherited database path.
+An existing compatibility database is not automatically moved into this profile.
+
+The owning desktop stops its child on close or mode change. A headless process
+remains owned by its operator; another amux process can attach without taking
+ownership or stopping it. Keep external plugin settings available to the host.
+When WhatsApp ingress is needed, pass a separate `--webhook-bind` and configure
+the existing app secret; discovery never accepts provider webhooks.
+
+Leaf keys rotate automatically under a stable installation CA. Previous keys
+have a bounded overlap, and renewed connections preserve node identity and event
+cursors. Unix files use owner-only permissions; Windows private keys use
+current-user DPAPI. CA-root rollover, database snapshot download and offline
+replication are separate features; see the implementation boundary in
+[ServerArchitecture.md](../ServerArchitecture.md).
 
 ## Compatibility evidence
 

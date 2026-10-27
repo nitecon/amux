@@ -62,6 +62,46 @@ pub async fn connect_with_clock(
     if api_key.is_empty() {
         return Err("Enter a gateway API key".into());
     }
+    connect_credentials(url, Some(api_key), None, consumer_id, after_event_id).await
+}
+
+pub async fn connect_profile_with_clock(
+    profile: &crate::gateway_transport::TransportProfile,
+    consumer_id: Uuid,
+    after_event_id: Option<i64>,
+) -> Result<(Socket, Option<GatewayClock>), String> {
+    connect_profile_generation(profile, consumer_id, after_event_id)
+        .await
+        .map(|(socket, clock, _)| (socket, clock))
+}
+
+pub(crate) async fn connect_profile_generation(
+    profile: &crate::gateway_transport::TransportProfile,
+    consumer_id: Uuid,
+    after_event_id: Option<i64>,
+) -> Result<(Socket, Option<GatewayClock>, String), String> {
+    let snapshot = profile
+        .current()
+        .await
+        .map_err(|_| "Gateway credentials unavailable")?;
+    let (socket, clock) = connect_credentials(
+        snapshot.base.as_str(),
+        snapshot.websocket_bearer(),
+        snapshot.tls.clone(),
+        consumer_id,
+        after_event_id,
+    )
+    .await?;
+    Ok((socket, clock, snapshot.generation))
+}
+
+async fn connect_credentials(
+    url: &str,
+    api_key: Option<&str>,
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+    consumer_id: Uuid,
+    after_event_id: Option<i64>,
+) -> Result<(Socket, Option<GatewayClock>), String> {
     if consumer_id.is_nil() {
         return Err("Invalid stream consumer ID".into());
     }
@@ -74,22 +114,36 @@ pub async fn connect_with_clock(
         .as_str()
         .into_client_request()
         .map_err(|_| "Invalid gateway upgrade")?;
-    request.headers_mut().insert(
-        "Authorization",
-        format!("Bearer {api_key}")
-            .parse()
-            .map_err(|_| "Invalid gateway API key")?,
-    );
+    if let Some(api_key) = api_key {
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {api_key}")
+                .parse()
+                .map_err(|_| "Invalid gateway API key")?,
+        );
+    }
     let limits = WebSocketConfig {
         max_message_size: Some(MAX_MESSAGE),
         max_frame_size: Some(MAX_MESSAGE),
         ..Default::default()
     };
     // tungstenite never follows redirects: a 3xx response is a rejected upgrade.
-    let (mut socket, response) = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio_tungstenite::connect_async_with_config(request, Some(limits), false),
-    )
+    let (mut socket, response) = tokio::time::timeout(Duration::from_secs(10), async move {
+        match tls {
+            Some(tls) => {
+                tokio_tungstenite::connect_async_tls_with_config(
+                    request,
+                    Some(limits),
+                    false,
+                    Some(tokio_tungstenite::Connector::Rustls(tls)),
+                )
+                .await
+            }
+            None => {
+                tokio_tungstenite::connect_async_with_config(request, Some(limits), false).await
+            }
+        }
+    })
     .await
     .map_err(|_| "Gateway upgrade timed out")?
     .map_err(|_| "Gateway upgrade rejected or unavailable")?;

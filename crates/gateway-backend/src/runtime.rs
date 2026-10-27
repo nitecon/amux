@@ -32,9 +32,18 @@ impl RuntimeConfig {
     /// Read configuration only. The caller may load its .env file before calling this.
     /// No database, external plugin, network listener or process is started here.
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("GATEWAY_API_KEY").map_err(|_| {
-            anyhow::anyhow!("Missing required environment variable: GATEWAY_API_KEY")
-        })?;
+        Self::read(None)
+    }
+    /// Native hosting has no shared bearer bootstrap credential.
+    pub fn from_env_secure() -> Result<Self> {
+        Self::read(Some(uuid::Uuid::now_v7().to_string()))
+    }
+    fn read(fallback: Option<String>) -> Result<Self> {
+        let api_key = std::env::var("GATEWAY_API_KEY")
+            .or_else(|error| fallback.ok_or(error))
+            .map_err(|_| {
+                anyhow::anyhow!("Missing required environment variable: GATEWAY_API_KEY")
+            })?;
         let default_channel = std::env::var("DEFAULT_CHANNEL").unwrap_or_else(|_| "discord".into());
         let host = std::env::var("GATEWAY_HOST").unwrap_or_else(|_| "0.0.0.0".into());
         let port: u16 = std::env::var("GATEWAY_PORT")
@@ -108,6 +117,22 @@ impl RuntimeConfig {
 /// imported Discord plugin owns a detached worker and exposes no shutdown hook;
 /// an external-channel runtime therefore follows the hosting process lifetime.
 pub async fn serve(config: RuntimeConfig, listener: TcpListener) -> Result<()> {
+    let prepared = prepare(config).await?;
+    tracing::info!(
+        "Amux compatibility gateway listening on http://{}",
+        listener.local_addr()?
+    );
+    axum::serve(listener, prepared.app.clone()).await?;
+    Ok(())
+}
+
+/// Initialized backend and owned workers, shared by legacy and secure listeners.
+pub struct Prepared {
+    pub app: axum::Router,
+    pub state: AppState,
+    _workers: Workers,
+}
+pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
     if let Some(path) = config.database.sqlite_path() {
         if path != ":memory:" {
             if let Some(parent) = std::path::Path::new(path)
@@ -217,15 +242,14 @@ pub async fn serve(config: RuntimeConfig, listener: TcpListener) -> Result<()> {
             axum::routing::get(crate::channels::whatsapp::verify_webhook)
                 .post(crate::channels::whatsapp::receive_webhook),
         )
-        .with_state(state)
+        .with_state(state.clone())
         // Upstream merges the protected API last, including its fallback.
         .merge(app);
-    tracing::info!(
-        "Amux compatibility gateway listening on http://{}",
-        listener.local_addr()?
-    );
-    axum::serve(listener, app).await?;
-    Ok(())
+    Ok(Prepared {
+        app,
+        state,
+        _workers: workers,
+    })
 }
 
 struct Workers(Vec<tokio::task::JoinHandle<()>>);

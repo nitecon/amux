@@ -18,6 +18,8 @@ mod desktop;
 #[derive(Parser)]
 #[command(version, about = "Agent terminals and gateway task coordination")]
 struct Cli {
+    #[arg(skip)]
+    explicit_gateway: bool,
     #[arg(long, global = true)]
     project_dir: Option<PathBuf>,
     /// Assigned amux agent ID, shown in gateway notifications.
@@ -81,7 +83,7 @@ enum Operation {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
         project: String,
         #[arg(long, env = "AMUX_GATEWAY_URL")]
-        gateway_url: String,
+        gateway_url: Option<String>,
         #[command(subcommand)]
         operation: MessageOperation,
     },
@@ -92,7 +94,7 @@ enum Operation {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
         project: String,
         #[arg(long, env = "AMUX_GATEWAY_URL")]
-        gateway_url: String,
+        gateway_url: Option<String>,
         #[command(subcommand)]
         operation: amux::dispatch::Command,
     },
@@ -289,7 +291,10 @@ impl DetailArgs {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let mut cli = Cli::parse();
+    cli.explicit_gateway = std::env::args_os()
+        .any(|arg| arg == "--gateway-url" || arg.to_string_lossy().starts_with("--gateway-url="));
+    match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("amux: {error:#}");
@@ -382,11 +387,9 @@ fn run(cli: Cli) -> Result<u8> {
             gateway_url,
             operation,
         } => {
-            let token = std::env::var("AMUX_GATEWAY_KEY")
-                .context("set AMUX_GATEWAY_KEY for gateway access")?;
-            let gateway = Gateway::new(&gateway_url, token)?;
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
+                let (gateway, _server) = cli_gateway(gateway_url, cli.explicit_gateway).await?;
                 match operation {
                     MessageOperation::List { limit, offset } => {
                         gateway.messages(&project, limit, offset).await
@@ -415,8 +418,6 @@ fn run(cli: Cli) -> Result<u8> {
                     "dispatch project directory differs from this agent's launch; switch to its project directory"
                 );
             }
-            let token = std::env::var("AMUX_GATEWAY_KEY")
-                .context("set AMUX_GATEWAY_KEY for gateway access")?;
             let machine = Machine::new(
                 std::env::var("AMUX_GATEWAY_MACHINE_ID")
                     .context("set AMUX_GATEWAY_MACHINE_ID to the provisioned machine UUID")?
@@ -427,9 +428,17 @@ fn run(cli: Cli) -> Result<u8> {
             )?;
             let state = identity::state_directory()?;
             let executor = Executor::load(&state, actor)?;
-            let dispatcher = Dispatcher::new(&gateway_url, token, &project, machine, state)?;
             let runtime = tokio::runtime::Runtime::new()?;
-            let value = runtime.block_on(amux::dispatch::run(&dispatcher, &executor, operation))?;
+            let value = runtime.block_on(async {
+                let (gateway, _server) = cli_gateway(gateway_url, cli.explicit_gateway).await?;
+                let dispatcher = Dispatcher::from_profile(
+                    gateway.transport_profile(),
+                    &project,
+                    machine,
+                    state,
+                )?;
+                amux::dispatch::run(&dispatcher, &executor, operation).await
+            })?;
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Operation::Tasks {
@@ -438,25 +447,9 @@ fn run(cli: Cli) -> Result<u8> {
             json,
             operation,
         } => {
-            let saved = amux::gateway_preferences::GatewayPreferences::load(
-                &identity::state_directory()?.join("gateway-preferences.json"),
-            )
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-            let gateway_url = gateway_url
-                .or_else(|| Some(saved.url.clone()).filter(|url| !url.trim().is_empty()))
-                .context("set --gateway-url, AMUX_GATEWAY_URL or desktop gateway preferences")?;
-            let token = std::env::var("AMUX_GATEWAY_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty())
-                .or_else(|| Some(saved.api_key).filter(|key| !key.trim().is_empty()))
-                .context(
-                    "set AMUX_GATEWAY_KEY or desktop gateway preferences for gateway access",
-                )?;
-            let gateway = Gateway::new(gateway_url.trim(), token)?;
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
+                let (gateway, _server) = cli_gateway(gateway_url, cli.explicit_gateway).await?;
                 if let TaskOperation::Bind { ident } = &operation {
                     let directory = project_dir.canonicalize()?;
                     anyhow::ensure!(amux::gateway_project::configured_origin(&directory)?.is_none(), "workspace has a Git origin; it resolves by repository and cannot be bound");
@@ -551,6 +544,63 @@ fn run(cli: Cli) -> Result<u8> {
         }
     }
     Ok(0)
+}
+
+async fn cli_gateway(
+    url: Option<String>,
+    explicit: bool,
+) -> Result<(Gateway, Option<amux::server_controller::LocalServer>)> {
+    use amux::gateway_preferences::{GatewayMode, GatewayPreferences};
+    let state = identity::state_directory()?;
+    let path = state.join("gateway-preferences.json");
+    let saved = GatewayPreferences::load(&path)?;
+    let mut config = saved
+        .clone()
+        .unwrap_or_else(GatewayPreferences::from_environment);
+    // A saved secure selection wins over stale environment inherited by an
+    // already-running provider process. A deliberate CLI override remains explicit.
+    if explicit {
+        let url = url.context("gateway URL override is missing")?;
+        let same_origin = config
+            .resolved_url()
+            .ok()
+            .and_then(|saved| {
+                Some(
+                    amux::gateway_transport::origin(&saved, true).ok()?
+                        == amux::gateway_transport::origin(&url, true).ok()?,
+                )
+            })
+            .unwrap_or(false);
+        if config.mode == GatewayMode::Legacy || !same_origin {
+            config.mode = GatewayMode::Legacy;
+            config.url = url;
+            config.api_key = std::env::var("AMUX_GATEWAY_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+                .unwrap_or(config.api_key);
+        }
+    } else if config.mode == GatewayMode::Legacy {
+        if let Some(url) = url {
+            config.url = url;
+        }
+        if let Ok(key) = std::env::var("AMUX_GATEWAY_KEY")
+            && !key.trim().is_empty()
+        {
+            config.api_key = key;
+        }
+        if saved.is_none() && config.url.is_empty() && config.api_key.is_empty() {
+            config.mode = GatewayMode::Server;
+        }
+    }
+    let server = if config.mode == GatewayMode::Server {
+        let server = amux::server_controller::ensure_local(state, config.server.clone()).await?;
+        config.enrolled = Some(server.connection());
+        config.save(&path)?;
+        Some(server)
+    } else {
+        None
+    };
+    Ok((config.gateway()?, server))
 }
 
 /// Only the exact owning execution may report start, complete or release a task.

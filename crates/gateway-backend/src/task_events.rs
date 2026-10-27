@@ -566,13 +566,14 @@ fn disconnect(conn: &Connection, connection: &str) -> Result<()> {
 pub async fn connect(
     State(state): State<AppState>,
     headers: HeaderMap,
+    peer: Option<axum::Extension<crate::secure::Principal>>,
     ws: WebSocketUpgrade,
 ) -> std::result::Result<Response, AppError> {
     let bearer = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
-    if state.api_key.is_empty() || bearer != Some(state.api_key.as_str()) {
+    if peer.is_none() && (state.api_key.is_empty() || bearer != Some(state.api_key.as_str())) {
         return Err(AppError(
             StatusCode::UNAUTHORIZED,
             "stream bearer token required".into(),
@@ -581,7 +582,7 @@ pub async fn connect(
     Ok(ws
         .max_message_size(FRAME_BYTES)
         .max_frame_size(FRAME_BYTES)
-        .on_upgrade(move |socket| serve(socket, state)))
+        .on_upgrade(move |socket| serve(socket, state, peer.map(|p| p.0))))
 }
 
 async fn send(socket: &mut WebSocket, value: Value) -> Result<()> {
@@ -593,7 +594,7 @@ async fn send(socket: &mut WebSocket, value: Value) -> Result<()> {
     Ok(())
 }
 
-async fn serve(mut socket: WebSocket, state: AppState) {
+async fn serve(mut socket: WebSocket, state: AppState, peer: Option<crate::secure::Principal>) {
     let connection = uuid::Uuid::now_v7().to_string();
     let mut consumer: Option<String> = None;
     let mut cursor = 0;
@@ -619,6 +620,7 @@ async fn serve(mut socket: WebSocket, state: AppState) {
                         Input::Subscribe{protocol_version,consumer_id,after_event_id}=>{
                             if consumer.is_some(){bail!("already subscribed");}
                             if protocol_version!=1{bail!("unsupported protocol version");}
+                            if let Some(peer)=&peer {peer.store.bind_consumer(&peer.node.node_id,&consumer_id)?;}
                             cursor=subscribe(&conn,&connection,&consumer_id,after_event_id)?;
                             consumer=Some(consumer_id.clone());
                             Ok(json!({"type":"subscribed","protocol_version":1,"consumer_id":consumer_id,"cursor":cursor,"latest_event_id":tail(&conn)?}))
@@ -635,6 +637,7 @@ async fn serve(mut socket: WebSocket, state: AppState) {
                 })())
             }
             _=tick.tick()=>{
+                if peer.as_ref().is_some_and(|peer|!peer.valid()){let _=socket.send(Message::Close(None)).await;break;}
                 if last_seen.elapsed()>Duration::from_secs(60){break;}
                 if let Some(id)=&consumer {
                     if owns(&state.db.lock().unwrap(),&connection,id).is_err(){break;}

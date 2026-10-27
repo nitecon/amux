@@ -7,7 +7,6 @@ use amux::{
     delegation_queue::{Attempt, Queue},
 };
 use iced_term::{BackendCommand, Terminal};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -311,7 +310,15 @@ impl Desktop {
     }
     fn start_delegation(&mut self) -> Task<Message> {
         self.delegation.initialized = true;
-        if self.preferences.current.url.is_empty() {
+        if self.embedded.busy
+            || self.embedded.stopping
+            || (self.preferences.current.mode == amux::gateway_preferences::GatewayMode::Server
+                && self.embedded.local.is_none())
+        {
+            self.delegation.initialized = false;
+            return Task::none();
+        }
+        if !self.preferences.current.has_connection() {
             self.delegation.status = "Enter a gateway URL and API key".into();
             return Task::none();
         }
@@ -324,10 +331,13 @@ impl Desktop {
             return Task::none();
         };
         let config = &self.preferences.current;
-        let namespace = format!(
-            "{:x}",
-            Sha256::digest(format!("{}\0{}", config.url, config.api_key).as_bytes())
-        );
+        let namespace = match config.authority_namespace() {
+            Ok(namespace) => namespace,
+            Err(error) => {
+                self.delegation.fail(error);
+                return Task::none();
+            }
+        };
         let queue = match Queue::open(directory.join("delegation.json"), &namespace) {
             Ok(queue) => queue,
             Err(error) => {
@@ -341,15 +351,21 @@ impl Desktop {
         let (commands_tx, commands_rx) = mpsc::channel(64);
         let (events_tx, events_rx) = mpsc::channel(64);
         self.delegation.commands = Some(commands_tx);
-        let url = config.url.clone();
-        let key = config.api_key.clone();
+        let profile = match config.transport_profile() {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.delegation.fail(error);
+                return Task::none();
+            }
+        };
         let epoch = self.delegation.epoch;
         let stream = iced::stream::channel(
             64,
             move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
                 use iced::futures::SinkExt;
                 let mut events_rx = events_rx;
-                let worker = connection::run(url, key, consumer, cursor, commands_rx, events_tx);
+                let worker =
+                    connection::run_profile(profile, consumer, cursor, commands_rx, events_tx);
                 let forward = async move {
                     while let Some(event) = events_rx.recv().await {
                         if output
@@ -918,7 +934,7 @@ impl Desktop {
     pub(super) fn design_connection(&self) -> String {
         if self.delegation.connection.is_some() {
             "Gateway: Connected".into()
-        } else if self.preferences.current.url.is_empty() {
+        } else if !self.preferences.current.has_connection() {
             "Gateway: Not configured".into()
         } else if !self.preferences.current.automatic_notifications {
             "Gateway: Configured · notifications off".into()

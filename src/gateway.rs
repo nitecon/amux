@@ -1,15 +1,14 @@
 //! The gateway owns tasks. The client never manufactures successful ownership.
 use crate::{gateway_project, identity::AgentIdentity};
 use anyhow::{Context, Result, bail, ensure};
-use reqwest::{Client, Method, Url};
+use reqwest::{Method, Url};
 use serde_json::{Value, json};
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 #[derive(Clone)]
 pub struct Gateway {
-    client: Client,
     base: Url,
-    token: String,
+    transport: crate::gateway_transport::TransportProfile,
 }
 
 /// Optional creation metadata shared by task creation and delegation.
@@ -65,27 +64,18 @@ impl TaskDetails {
 
 impl Gateway {
     pub fn new(base: &str, token: String) -> Result<Self> {
-        let base = Url::parse(base).context("invalid gateway URL")?;
-        if !matches!(base.scheme(), "http" | "https")
-            || base.host_str().is_none()
-            || !base.username().is_empty()
-            || base.password().is_some()
-            || base.query().is_some()
-            || base.fragment().is_some()
-        {
-            bail!("gateway URL must be HTTP(S), without credentials, query or fragment");
-        }
-        if base.path() != "/" {
-            bail!("gateway URL must be an origin, without a path prefix");
-        }
-        Ok(Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(15))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
-            base,
-            token,
-        })
+        Self::from_profile(crate::gateway_transport::TransportProfile::legacy(
+            base, token,
+        )?)
+    }
+
+    pub fn from_profile(transport: crate::gateway_transport::TransportProfile) -> Result<Self> {
+        let base = transport.snapshot()?.base;
+        Ok(Self { base, transport })
+    }
+
+    pub fn transport_profile(&self) -> crate::gateway_transport::TransportProfile {
+        self.transport.clone()
     }
 
     pub async fn request(
@@ -179,11 +169,8 @@ impl Gateway {
         actor: Option<&AgentIdentity>,
         query: &[(&str, String)],
     ) -> Result<Value> {
-        let mut request = self
-            .client
-            .request(method, url)
-            .query(query)
-            .bearer_auth(&self.token);
+        let snapshot = self.transport.current().await?;
+        let mut request = snapshot.request(method, url).query(query);
         if let Some(actor) = actor {
             request = request
                 .header("X-Agent-Id", actor.gateway_id())

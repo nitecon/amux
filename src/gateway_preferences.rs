@@ -3,12 +3,53 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayMode {
+    #[default]
+    Legacy,
+    Server,
+    Client,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ServerPreferences {
+    pub network_hosting: bool,
+    pub server_name: String,
+    pub secure_port: u16,
+    pub discovery_port: u16,
+}
+
+impl Default for ServerPreferences {
+    fn default() -> Self {
+        Self {
+            network_hosting: false,
+            server_name: "localhost".into(),
+            secure_port: 24182,
+            discovery_port: 24181,
+        }
+    }
+}
+
+/// Public metadata and a reference to protected credentials, never a peering key.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct EnrolledConnection {
+    pub url: String,
+    pub cluster_id: String,
+    pub node_id: String,
+    pub profile_path: PathBuf,
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GatewayPreferences {
+    pub mode: GatewayMode,
+    pub server: ServerPreferences,
+    pub enrolled: Option<EnrolledConnection>,
     pub url: String,
     pub api_key: String,
     pub automatic_notifications: bool,
@@ -22,6 +63,9 @@ pub struct GatewayPreferences {
 impl Default for GatewayPreferences {
     fn default() -> Self {
         Self {
+            mode: GatewayMode::Legacy,
+            server: ServerPreferences::default(),
+            enrolled: None,
             url: String::new(),
             api_key: String::new(),
             automatic_notifications: false,
@@ -48,17 +92,60 @@ impl GatewayPreferences {
     }
 
     pub fn gateway(&self) -> Result<crate::gateway::Gateway> {
+        crate::gateway::Gateway::from_profile(self.transport_profile()?)
+    }
+
+    pub fn has_connection(&self) -> bool {
+        match self.mode {
+            GatewayMode::Legacy => !self.url.trim().is_empty() && !self.api_key.trim().is_empty(),
+            GatewayMode::Server | GatewayMode::Client => self.enrolled.is_some(),
+        }
+    }
+
+    pub fn resolved_url(&self) -> Result<String> {
+        match self.mode {
+            GatewayMode::Legacy => Ok(self.url.trim().to_owned()),
+            GatewayMode::Server | GatewayMode::Client => self
+                .enrolled
+                .as_ref()
+                .map(|connection| connection.url.clone())
+                .context("Connect to the server before using tasks"),
+        }
+    }
+
+    pub fn authority_namespace(&self) -> Result<String> {
+        Ok(self.transport_profile()?.namespace())
+    }
+
+    pub fn transport_profile(&self) -> Result<crate::gateway_transport::TransportProfile> {
+        if self.mode != GatewayMode::Legacy {
+            let connection = self
+                .enrolled
+                .as_ref()
+                .context("Connect to the server before using tasks")?;
+            return crate::gateway_transport::TransportProfile::enrolled(connection);
+        }
         if self.url.trim().is_empty() || self.api_key.trim().is_empty() {
             bail!("Open Gateway preferences to enter a URL and API key");
         }
         self.api_key
             .parse::<reqwest::header::HeaderValue>()
             .map_err(|_| anyhow::anyhow!("API key contains invalid header characters"))?;
-        crate::gateway::Gateway::new(self.url.trim(), self.api_key.clone())
+        crate::gateway_transport::TransportProfile::legacy(&self.url, self.api_key.clone())
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.automatic_notifications
+        if self.mode != GatewayMode::Legacy {
+            if self.server.secure_port == 0
+                || self.server.discovery_port == 0
+                || self.server.secure_port == self.server.discovery_port
+            {
+                bail!("Choose different nonzero secure and discovery ports");
+            }
+            if self.enrolled.is_some() {
+                self.transport_profile()?;
+            }
+        } else if self.automatic_notifications
             || self.autoreview
             || !self.url.trim().is_empty()
             || !self.api_key.trim().is_empty()

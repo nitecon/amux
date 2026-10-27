@@ -19,6 +19,8 @@ pub mod memory_okf;
 pub mod projects;
 pub mod routes;
 pub mod runtime;
+pub mod secure;
+pub mod security;
 pub mod subtasks;
 pub mod task_cancel;
 pub mod task_dispatch;
@@ -77,6 +79,25 @@ fn stamp_user(request: &mut Request, user: Option<&db::User>) {
 }
 
 async fn bearer_auth(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    if let Some(peer) = request.extensions().get::<secure::Principal>().cloned() {
+        stamp_user(&mut request, None);
+        let value = format!("0:{}:{}", peer.node.node_id, peer.node.node_id);
+        request
+            .headers_mut()
+            .insert(ui_auth::USER_HEADER, value.parse().unwrap());
+        request.headers_mut().insert(
+            ui_auth::USER_ROLE_HEADER,
+            if peer.node.role == "administrator" {
+                "admin"
+            } else {
+                "member"
+            }
+            .parse()
+            .unwrap(),
+        );
+        return next.run(request).await;
+    }
+
     let token = request
         .headers()
         .get("authorization")

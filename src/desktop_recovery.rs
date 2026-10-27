@@ -23,6 +23,7 @@ pub struct Credentials {
     endpoint: String,
     project: String,
     token: String,
+    profile: Option<amux::gateway_transport::TransportProfile>,
     machine_id: Uuid,
     machine_key: String,
     state: PathBuf,
@@ -38,7 +39,7 @@ impl Credentials {
         }
         settings.gateway()?;
         // Journal entries use Url's canonical origin, including its trailing slash.
-        let endpoint = reqwest::Url::parse(settings.url.trim())?.to_string();
+        let endpoint = reqwest::Url::parse(&settings.resolved_url()?)?.to_string();
         let token = settings.api_key.clone();
         let machine_id = canonical_uuid(&settings.machine_id)
             .context("Set provisioned machine credentials in Gateway preferences for recovery")?;
@@ -49,6 +50,7 @@ impl Credentials {
             endpoint,
             project: project.into(),
             token,
+            profile: Some(settings.transport_profile()?),
             machine_id,
             machine_key,
             state: identity::state_directory()
@@ -73,13 +75,17 @@ impl Credentials {
         me.validate()?;
         let executor = Executor::load(&self.state, actor)
             .map_err(|_| anyhow::anyhow!("recovery executor credential unavailable"))?;
-        let dispatcher = Dispatcher::new(
-            &self.endpoint,
-            self.token.clone(),
-            &self.project,
-            machine,
-            self.state.clone(),
-        )
+        let dispatcher = if let Some(profile) = &self.profile {
+            Dispatcher::from_profile(profile.clone(), &self.project, machine, self.state.clone())
+        } else {
+            Dispatcher::new(
+                &self.endpoint,
+                self.token.clone(),
+                &self.project,
+                machine,
+                self.state.clone(),
+            )
+        }
         .map_err(|_| anyhow::anyhow!("recovery transport or journal unavailable"))?;
         Ok((dispatcher, executor, me))
     }
@@ -780,6 +786,7 @@ mod tests {
             endpoint: "http://localhost/".into(),
             project: "demo".into(),
             token: "fixture-secret".into(),
+            profile: None,
             machine_id: machine,
             machine_key: "a".repeat(64),
             state: PathBuf::new(),

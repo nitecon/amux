@@ -27,3 +27,12 @@ The audited method/path/handler inventory is in
 `docs/server/GatewayApiContract.json` at the amux repository root. Importing source
 alone does not establish parity: the real-server/client/differential acceptance
 gates must pass before releasing an embedded gateway.
+
+The second release adds amux-owned `security` and `secure` modules alongside
+the retained compatibility router. These implement installation CA/leaf
+credentials, invitation/CSR enrollment, explicit certificate principals,
+connection retirement and the secure/public listeners. Runtime preparation is
+shared by both modes; secure requests carry their verified principal into the
+existing handler authorization boundary. The original bearer/session path stays
+available in compatibility mode. These additions are not part of the pinned
+upstream source and are covered by separate native transport/security tests.

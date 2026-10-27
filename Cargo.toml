@@ -1,6 +1,6 @@
 [package]
 name = "amux"
-version = "0.0.36"
+version = "0.0.37"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -45,6 +45,8 @@ tempfile = "3"
 toml_edit = "0.25"
 dotenvy = "0.15"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
 # Verified direct-download updates (src/updates.rs).
 flate2 = "1.1"
 self-replace = "1.5"

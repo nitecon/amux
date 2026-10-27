@@ -3,7 +3,7 @@
 //! State text is static and never contains the API key, raw frames or network errors.
 use crate::{
     delegation::Event,
-    gateway_stream::{GatewayClock, Socket, connect_with_clock, next_json, send_json},
+    gateway_stream::{GatewayClock, Socket, connect_profile_generation, next_json, send_json},
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -61,6 +61,23 @@ pub async fn run(
     url: String,
     key: String,
     consumer: Uuid,
+    cursor: Option<i64>,
+    commands: mpsc::Receiver<Command>,
+    events: mpsc::Sender<ConnectionEvent>,
+) {
+    match crate::gateway_transport::TransportProfile::legacy(&url, key) {
+        Ok(profile) => run_profile(profile, consumer, cursor, commands, events).await,
+        Err(_) => {
+            let _ = events
+                .send(ConnectionEvent::State("Invalid gateway connection".into()))
+                .await;
+        }
+    }
+}
+
+pub async fn run_profile(
+    profile: crate::gateway_transport::TransportProfile,
+    consumer: Uuid,
     mut cursor: Option<i64>,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<ConnectionEvent>,
@@ -76,12 +93,12 @@ pub async fn run(
             return;
         }
         let attempt = tokio::select! {
-            socket = connect_with_clock(&url, &key, consumer, cursor) => socket,
+            socket = connect_profile_generation(&profile, consumer, cursor) => socket,
             _ = discard(&mut commands) => return,
             _ = events.closed() => return,
         };
         let error = match attempt {
-            Ok((socket, clock)) => {
+            Ok((socket, clock, generation)) => {
                 connection += 1;
                 let mut stream = Stream {
                     socket,
@@ -92,6 +109,8 @@ pub async fn run(
                     latest: &mut latest,
                     commands: &mut commands,
                     events: &events,
+                    profile: &profile,
+                    generation,
                 };
                 match stream.run().await {
                     Ok(()) => return,
@@ -126,6 +145,8 @@ struct Stream<'a> {
     latest: &'a mut i64,
     commands: &'a mut mpsc::Receiver<Command>,
     events: &'a mpsc::Sender<ConnectionEvent>,
+    profile: &'a crate::gateway_transport::TransportProfile,
+    generation: String,
 }
 
 enum Step {
@@ -192,6 +213,16 @@ impl Stream<'_> {
                     }
                 }
                 Step::Heartbeat => {
+                    if self.profile.is_enrolled() {
+                        let snapshot = self
+                            .profile
+                            .current()
+                            .await
+                            .map_err(|_| "Gateway credential renewal failed")?;
+                        if snapshot.generation != self.generation {
+                            return Err("Gateway credentials renewed; reconnecting".into());
+                        }
+                    }
                     send_json(&mut self.socket, json!({"type":"heartbeat"})).await?;
                 }
             }

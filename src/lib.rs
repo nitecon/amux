@@ -5,6 +5,7 @@ pub mod dispatch;
 pub mod gateway;
 pub mod gateway_preferences;
 pub mod gateway_project;
+pub mod gateway_transport;
 pub mod harness;
 pub mod identity;
 pub mod notifications;
@@ -12,6 +13,7 @@ pub mod notifications;
 pub mod readiness;
 pub mod recipient;
 pub mod server;
+pub mod server_controller;
 pub mod session;
 #[cfg(feature = "desktop")]
 pub mod submission;
