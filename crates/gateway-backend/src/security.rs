@@ -348,6 +348,7 @@ impl SecurityStore {
         csr.params.distinguished_name.push(DnType::CommonName, node);
         csr.params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         csr.params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        csr.params.use_authority_key_identifier_extension = true;
         csr.params.not_before = rcgen_time(now - 300_000)?;
         csr.params.not_after = rcgen_time(expires)?;
         let serial = random();
@@ -863,6 +864,8 @@ impl SecurityStore {
         let key = KeyPair::generate()?;
         let mut params = CertificateParams::new(names.to_vec())?;
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.use_authority_key_identifier_extension = true;
         params.not_before = rcgen_time(now_ms() - 300_000)?;
         let expires = now_ms() / 1000 * 1000 + LEAF_MS;
         params.not_after = rcgen_time(expires)?;
@@ -1276,5 +1279,58 @@ mod tests {
         store.connection_closed(&first.serial);
         store.retire_drained().unwrap();
         assert!(store.renew(&second.serial, &third).is_ok());
+    }
+    #[test]
+    fn server_and_client_leaf_identify_issuer_and_allow_signatures() {
+        use x509_parser::extensions::ParsedExtension;
+        let dir = profile();
+        let store = SecurityStore::open(dir.path(), &["localhost".into()]).unwrap();
+        let root_der = rustls_pemfile::certs(&mut store.root_pem.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap();
+        let (_, root) = x509_parser::parse_x509_certificate(root_der.as_ref()).unwrap();
+        let root_key_id = root
+            .extensions()
+            .iter()
+            .find_map(|extension| match extension.parsed_extension() {
+                ParsedExtension::SubjectKeyIdentifier(id) => Some(id.0.to_vec()),
+                _ => None,
+            })
+            .expect("installation CA must identify its signing key");
+        let client = store
+            .enroll(&request(
+                store.generate_invitation().unwrap().invitation,
+                &ClientIdentity::generate().unwrap(),
+            ))
+            .unwrap();
+        let server = std::fs::read_to_string(store.server_paths().unwrap().0).unwrap();
+        for (pem, server_leaf) in [(&server, true), (&client.certificate_pem, false)] {
+            let der = rustls_pemfile::certs(&mut pem.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap();
+            let (_, certificate) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+            let authority = certificate
+                .extensions()
+                .iter()
+                .find_map(|extension| match extension.parsed_extension() {
+                    ParsedExtension::AuthorityKeyIdentifier(id) => {
+                        id.key_identifier.as_ref().map(|id| id.0.to_vec())
+                    }
+                    _ => None,
+                })
+                .expect("leaf must identify its issuer for strict X509 verification");
+            assert_eq!(authority, root_key_id);
+            assert!(certificate
+                .key_usage()
+                .unwrap()
+                .unwrap()
+                .value
+                .digital_signature());
+            let purpose = certificate.extended_key_usage().unwrap().unwrap();
+            assert_eq!(purpose.value.server_auth, server_leaf);
+            assert_eq!(purpose.value.client_auth, !server_leaf);
+        }
     }
 }
