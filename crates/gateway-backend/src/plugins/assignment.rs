@@ -22,6 +22,10 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             task_id    TEXT NOT NULL,
             project    TEXT NOT NULL,
             session_id TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS assignment_refusals (
+            session_id TEXT PRIMARY KEY,
+            output_at  INTEGER NOT NULL
         );",
     )?;
     Ok(())
@@ -105,16 +109,32 @@ fn release(conn: &Connection, event: &Event) -> Result<()> {
             params![task, session, db::now_ms()],
         )?)
     })?;
-    // Re-evaluate current presence on the next tick, never from this receipt.
+    // The refusing session stays idle and oldest, so it would win the same task
+    // every tick. Skip it until its terminal shows new output.
+    conn.execute(
+        "INSERT OR REPLACE INTO assignment_refusals(session_id, output_at)
+         SELECT session_id, output_at FROM presence_agents
+         WHERE session_id=?1 AND output_at IS NOT NULL",
+        params![session],
+    )?;
     Ok(())
 }
 
 fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
+    // New output (or a departed session) ends a refusal.
+    conn.execute(
+        "DELETE FROM assignment_refusals WHERE NOT EXISTS (
+             SELECT 1 FROM presence_agents p
+             WHERE p.session_id=assignment_refusals.session_id
+               AND p.output_at=assignment_refusals.output_at)",
+        [],
+    )?;
     let agents: Vec<Value> = conn
         .prepare(
             "SELECT agent_json FROM presence_agents
              WHERE state='idle' AND draft=0 AND output_at IS NOT NULL
                AND ?1-output_at >= ?2 AND ?1-seen_at < ?3
+               AND session_id NOT IN (SELECT session_id FROM assignment_refusals)
              ORDER BY output_at, session_id",
         )?
         .query_map(
@@ -657,7 +677,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_offer_returns_to_fifo_but_waits_for_the_next_tick() {
+    async fn a_refusing_idle_session_is_skipped_until_new_output() {
         let (database, bus, _router) = setup();
         seed_agent(
             &database,
@@ -679,19 +699,26 @@ mod tests {
         bus.emit("client-fixture",notify::RESULT,1,json!({"target":session(1,"p")["session_id"],"status":"skipped","reason":"draft changed"}),Some(uuid::Uuid::parse_str(&notify).unwrap())).await.unwrap();
         settle(&database).await;
         assert_eq!(state(&database, &task).0, "todo");
-        database
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE presence_agents SET draft=1 WHERE session_id=?1",
-                params![session(1, "p")["session_id"].as_str()],
-            )
-            .unwrap();
+        let offers = |database: &db::Db| -> i64 {
+            database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM task_comments WHERE task_id=?1 AND author='amux'",
+                    params![task],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        // The refusing session stays idle and oldest; the next tick must skip it.
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &task).0, "todo");
+        assert_eq!(offers(&database), 1);
         seed_agent(
             &database,
             session(2, "p"),
             db::now_ms(),
-            40_000,
+            35_000,
             false,
             "busy",
         );
@@ -700,5 +727,27 @@ mod tests {
             state(&database, &task).1,
             session(2, "p")["session_id"].as_str().map(str::to_owned)
         );
+        assert_eq!(offers(&database), 2);
+        // New terminal output ends the refusal.
+        let refused = |database: &db::Db| -> i64 {
+            database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM assignment_refusals", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(refused(&database), 1);
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE presence_agents SET output_at=output_at+1 WHERE session_id=?1",
+                params![session(1, "p")["session_id"].as_str()],
+            )
+            .unwrap();
+        tick(&bus, &database).await;
+        assert_eq!(refused(&database), 0);
     }
 }

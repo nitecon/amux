@@ -261,6 +261,8 @@ Rules carried over from the desktop:
   task as that agent through the normal task store, comments why, and sends
   `agent.notify` with `require_idle`. A `skipped` or `failed` result releases
   the claim; the next tick revalidates idle sessions and offers queued work.
+  The refusing session is skipped until its terminal reports new output, so
+  other idle sessions receive the task instead of the same refusal repeating.
   Sessions are considered oldest terminal output first, then session ID. The
   sweep fills every eligible free session while work remains; empty or blocked
   projects do not stop other workspaces. Fresh Presence state is authoritative,
