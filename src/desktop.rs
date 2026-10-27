@@ -94,7 +94,7 @@ enum Message {
     Delegation(u64, desktop_delegation::Event),
     Updates(bool),
     CheckUpdates,
-    UpdatesChecked(Result<amux::updates::UpdateCheck, String>),
+    UpdatesChecked(Result<Box<amux::updates::UpdateCheck>, String>),
     InstallUpdate,
     UpdateInstalled(Result<String, String>),
     RestartUpdated,
@@ -1328,7 +1328,7 @@ impl Desktop {
                 match result {
                     Ok(report) => {
                         self.updates.restart = report.restart.clone();
-                        self.updates.report = Some(report);
+                        self.updates.report = Some(*report);
                         self.updates.error.clear();
                     }
                     Err(error) => {
@@ -1587,6 +1587,7 @@ impl Desktop {
             async move {
                 amux::updates::check(&running, &amux::updates::ReleaseSource::github())
                     .await
+                    .map(Box::new)
                     .map_err(|error| error.to_string())
             },
             Message::UpdatesChecked,
@@ -2817,7 +2818,7 @@ mod tests {
     #[test]
     fn update_badge_survives_a_failed_refresh_without_changing_sessions() {
         let mut app = desktop();
-        let _ = app.update(Message::UpdatesChecked(Ok(update_report())));
+        let _ = app.update(Message::UpdatesChecked(Ok(Box::new(update_report()))));
         assert!(app.updates.attention());
         let _ = app.update(Message::UpdatesChecked(Err("offline".into())));
         assert!(app.updates.attention());
@@ -2839,7 +2840,7 @@ mod tests {
             required: true,
             path: Some(exe),
         };
-        let _ = app.update(Message::UpdatesChecked(Ok(report)));
+        let _ = app.update(Message::UpdatesChecked(Ok(Box::new(report))));
         let _ = app.update(Message::RestartUpdated);
         assert!(app.updates.error.contains("No updated desktop"));
         assert!(!app.dirty);

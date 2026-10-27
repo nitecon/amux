@@ -6,6 +6,7 @@
 //! driven manually with the same native discovery calls.
 use super::super::tests::desktop;
 use super::*;
+#[cfg(any(target_os = "linux", windows))]
 use amux::delegation_readiness::{self, InputState};
 use amux::event_client::Incoming;
 use iced_term::TerminalGridObservation;
@@ -368,6 +369,7 @@ fn grid(app: &Desktop, id: u64) -> Option<TerminalGridObservation> {
     find(app, id).terminal.as_ref()?.grid_observation(32_768)
 }
 
+#[cfg(any(target_os = "linux", windows))]
 fn classify(app: &Desktop, id: u64) -> InputState {
     let tab = find(app, id);
     delegation_readiness::classify(&grid(app, id).unwrap(), tab.provider.unwrap())
@@ -471,6 +473,7 @@ fn receive(app: &mut Desktop, event: Value) {
     drop(app.delegation_message(epoch, Event::Router(Incoming::Event(event))));
 }
 
+#[cfg(any(target_os = "linux", windows))]
 fn text(app: &Desktop, agent: &Agent, event: &Value) -> String {
     let candidate = app
         .delegation
@@ -500,6 +503,7 @@ fn deliver(app: &mut Desktop) {
     }
 }
 
+#[cfg(any(target_os = "linux", windows))]
 /// Outcomes reported to the server, in order.
 fn results(frames: &mut mpsc::Receiver<Value>) -> Vec<String> {
     let mut results = Vec::new();

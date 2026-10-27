@@ -315,7 +315,8 @@ ships, other than bug fixes.
 Status: phase 1 shipped in v0.0.43, phase 2 in v0.0.44. Phases 3 and 4 were
 tagged as v0.0.45 and v0.0.46, but their release builds stopped on a Presence
 test that assumed the test's clock instead of the heartbeat's server time on
-slower runners; phase 5 (v0.0.47) carries that fix and ships phases 3–5.
+slower runners; phase 5 was tagged v0.0.47 with that fix but its build stopped on
+macOS/Windows-only lint in the desktop; v0.0.48 ships phases 3–5.
 
 | Phase | Deliverable | Acceptance |
 |---|---|---|
