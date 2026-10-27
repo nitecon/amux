@@ -12149,7 +12149,21 @@ mod tests {
         assert!(pull().memories.is_empty());
         assert_eq!(push(&legacy).results[0].action, "conflict");
         legacy.base_gateway_revision = Some(5);
+        // Upstream labels a retry in the same clock millisecond "tombstoned".
+        // An explicitly historical fixture exercises the later "linked" case
+        // without relying on runner speed or adding a timing delay.
+        conn.execute(
+            "UPDATE gateway_memories SET tombstoned_at=1 WHERE id=?1",
+            [&id],
+        )
+        .unwrap();
+        let before = serde_json::to_value(get_memory_record(&conn, "proj", &id).unwrap()).unwrap();
         assert_eq!(push(&legacy).results[0].action, "linked");
+        assert_eq!(pull().server_revision, 5);
+        assert_eq!(
+            serde_json::to_value(get_memory_record(&conn, "proj", &id).unwrap()).unwrap(),
+            before
+        );
     }
 
     #[test]

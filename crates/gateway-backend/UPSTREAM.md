@@ -17,6 +17,9 @@ Native channel decoupling is deferred until after verified cutover.
 
 Original database and handler tests are retained where they cover the backend.
 The memory rollback SQL fixture is relocated under this crate's test fixtures.
+The OKF tombstone retry test uses an explicitly historical tombstone timestamp
+to exercise the upstream no-op branch independently of wall-clock tick timing;
+it also verifies the record and server revision remain unchanged.
 No original production database
 is imported or modified by these tests.
 
