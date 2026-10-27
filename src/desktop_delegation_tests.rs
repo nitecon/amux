@@ -777,3 +777,181 @@ fn informational_notices_wait_for_an_idle_agent_instead_of_being_skipped() {
     assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &event)]);
     assert_eq!(results(&mut frames), ["delivered"]);
 }
+
+/// The real desktop against a real embedded server, through the production
+/// event client: a fixture agent in a native terminal goes idle, the server
+/// assigns it a new task, and the desktop delivers the offer into its terminal.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
+    use amux_gateway_backend::{db, runtime as server};
+    const KEY: &str = "desktop-e2e-fixture-key";
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let config = server::RuntimeConfig {
+        listen_addr: "127.0.0.1:1".parse().unwrap(),
+        database: db::DatabaseConfig::sqlite(state.path().join("e2e.sqlite").to_string_lossy()),
+        api_key: KEY.into(),
+        default_channel: "discord".into(),
+        retention_days: 30,
+        bot_retention_days: 7,
+        artifact_operations: db::ArtifactOperationsEnvelope::default(),
+        artifact_body_schema_enabled: true,
+        artifact_auth_enforced: false,
+        ui_auth_enabled: true,
+        discord: None,
+        whatsapp: None,
+    };
+    runtime.spawn(async move { server::serve(config, listener).await.unwrap() });
+    let http = reqwest::Client::new();
+    let call = |method: reqwest::Method, path: String, body: Value| {
+        let request = http
+            .request(method, format!("{endpoint}{path}"))
+            .bearer_auth(KEY)
+            .json(&body);
+        runtime.block_on(async move {
+            let response = request.send().await.unwrap();
+            assert!(
+                response.status().is_success(),
+                "{path}: {}",
+                response.status()
+            );
+            response.json::<Value>().await.unwrap()
+        })
+    };
+    call(
+        reqwest::Method::POST,
+        "/v1/projects".into(),
+        json!({"ident": "e2e", "channel": "discord"}),
+    );
+
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Claude, "ready");
+    app.registry = Some(agent.directory.clone());
+    app.preferences.current.automatic_notifications = true;
+    project(&mut app, &agent, "e2e");
+    scan(&mut app);
+    let me = session(&app, &agent);
+    let profile = amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+    let (outgoing, outgoing_rx) = mpsc::channel(256);
+    let (incoming_tx, mut incoming) = mpsc::channel(256);
+    let subscription = amux::event_client::Subscription {
+        consumer: Uuid::new_v4(),
+        events: ["agent.notify", "agent.idle", "agent.busy", "task.created"]
+            .map(String::from)
+            .to_vec(),
+        targets: vec![me.clone()],
+    };
+    runtime.spawn(amux::event_client::run(
+        profile,
+        subscription,
+        outgoing_rx,
+        incoming_tx,
+    ));
+    app.delegation.events.outgoing = Some(outgoing);
+    let mut task_id = None;
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        if Instant::now() >= deadline {
+            panic!(
+                "the server never assigned the idle agent: connected={} busy={:?} task={:?} status={} candidates={:?} lines={:?}",
+                app.delegation.events.connected,
+                find(&app, 0).delegation.server_busy,
+                task_id,
+                app.delegation.events.status,
+                app.delegation
+                    .candidates
+                    .iter()
+                    .map(|c| (c.target.session, c.target.project.clone()))
+                    .collect::<Vec<_>>(),
+                agent.lines()
+            );
+        }
+        while let Ok(message) = incoming.try_recv() {
+            let epoch = app.delegation.epoch;
+            drop(app.delegation_message(epoch, Event::Router(message)));
+        }
+        if app.delegation.events.connected {
+            app.events_report();
+            drop(app.events_deliver());
+            let verified = app
+                .delegation
+                .events
+                .delivering
+                .as_ref()
+                .map(|delivery| events::verify(&delivery.candidate));
+            if let Some(verified) = verified {
+                let epoch = app.delegation.epoch;
+                drop(app.delegation_message(epoch, Event::Verified(verified)));
+            }
+        }
+        // Create the task once the server sees the agent idle (30 s without output).
+        if task_id.is_none() && find(&app, 0).delegation.server_busy == Some(false) {
+            let task = call(
+                reqwest::Method::POST,
+                "/v1/projects/e2e/tasks".into(),
+                json!({"title": "Desktop end-to-end"}),
+            );
+            task_id = task["id"].as_str().map(str::to_owned);
+        }
+        if agent
+            .lines()
+            .iter()
+            .any(|line| line.contains("Queued task review"))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let id = task_id.unwrap();
+    let line = agent
+        .lines()
+        .into_iter()
+        .find(|line| line.contains("Queued task review"))
+        .unwrap();
+    assert!(
+        line.contains("Desktop end-to-end") && line.contains(&id),
+        "{line}"
+    );
+    let task = call(
+        reqwest::Method::GET,
+        format!("/v1/projects/e2e/tasks/{id}"),
+        Value::Null,
+    );
+    assert_eq!(task["status"], "in_progress");
+    assert_eq!(
+        task["owner_origin"]["session_id"], me,
+        "claimed as the desktop's agent"
+    );
+    // The Events panel shows the delivered offer.
+    assert!(
+        app.events_cards()
+            .iter()
+            .any(|card| card.detail.contains("delivered"))
+    );
+}
+
+/// The server offers work based on the output time this desktop reported; a
+/// slightly different local idle clock must not turn that offer away.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn offers_are_judged_against_the_reported_output_time() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    // Reported now, while the fixture's own output is still recent locally.
+    app.events_report();
+    assert!(std::iter::from_fn(|| frames.try_recv().ok()).any(|f| f["id"] == "terminal.activity"));
+    let event = notify(&app, &agent, 1, true);
+    receive(&mut app, event.clone());
+    deliver(&mut app);
+    assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &event)]);
+    assert_eq!(results(&mut frames), ["delivered"]);
+}

@@ -39,7 +39,8 @@ pub(super) struct State {
     retry_at: Option<Instant>,
     heartbeat_at: Option<Instant>,
     heartbeat_agents: Vec<Value>,
-    activity: HashMap<Uuid, (bool, bool, Instant)>,
+    /// Per agent: active, draft, when reported, and the output time reported.
+    activity: HashMap<Uuid, (bool, bool, Instant, Option<i64>)>,
     pub(super) pending: VecDeque<Value>,
     pub(super) delivering: Option<Delivery>,
     delivered: VecDeque<String>,
@@ -258,7 +259,7 @@ impl Desktop {
         self.events_deliver()
     }
 
-    fn events_report(&mut self) {
+    pub(super) fn events_report(&mut self) {
         let now = self.events_now();
         let candidates: Vec<Candidate> = self
             .delegation
@@ -307,7 +308,7 @@ impl Desktop {
                 .events
                 .activity
                 .get(&c.target.session)
-                .is_none_or(|(was_active, was_draft, at)| {
+                .is_none_or(|(was_active, was_draft, at, _)| {
                     *was_active != active
                         || *was_draft != draft
                         || at.elapsed()
@@ -321,7 +322,7 @@ impl Desktop {
                 self.delegation
                     .events
                     .activity
-                    .insert(c.target.session, (active, draft, Instant::now()));
+                    .insert(c.target.session, (active, draft, Instant::now(), output_at));
                 let payload = json!({
                     "session_id": c.target.session.to_string(),
                     "instance_id": c.actor.instance_id.to_string(),
@@ -491,17 +492,30 @@ impl Desktop {
             self.events_result(&event, "skipped", "notification expired");
             return Task::none();
         }
-        if payload["require_idle"] == true
-            && tab(self, candidate.target.terminal).is_none_or(|tab| {
-                !tab.delegation.input.is_empty()
-                    || amux::session::output_active(
-                        tab.terminal.as_ref().and_then(Terminal::activity_elapsed),
-                    )
-            })
-        {
+        let offer = payload["mode"] == "assigned";
+        let now = self.events_now();
+        let reported = self
+            .delegation
+            .events
+            .activity
+            .get(&candidate.target.session)
+            .and_then(|(.., output_at)| *output_at);
+        let busy = tab(self, candidate.target.terminal).is_none_or(|tab| {
+            let elapsed = tab.terminal.as_ref().and_then(Terminal::activity_elapsed);
+            let output_at = elapsed.map(|e| now - e.as_millis() as i64);
+            !tab.delegation.input.is_empty()
+                || match (offer, output_at, reported) {
+                    // The server judged this agent idle from the output time we
+                    // reported; it is busy only if the terminal wrote since then.
+                    (true, Some(output_at), Some(reported)) => output_at > reported + 1_000,
+                    (true, None, _) => false,
+                    _ => amux::session::output_active(elapsed),
+                }
+        });
+        if payload["require_idle"] == true && busy {
             // A work offer goes back so the server can offer it elsewhere;
             // an informational notice waits for the agent to go quiet.
-            if payload["mode"] == "assigned" {
+            if offer {
                 self.events_result(&event, "skipped", "agent is busy");
             } else {
                 self.delegation.events.pending.push_back(event);
