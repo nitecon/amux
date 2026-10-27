@@ -1329,6 +1329,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     crate::task_cancel::initialize(conn)?;
     crate::task_events::initialize(conn)?;
     crate::task_dispatch::initialize(conn)?;
+    crate::router::initialize(conn)?;
     apply_artifact_substrate_schema(conn)?;
     retire_documentation(conn)?;
     validate_project_casing(conn)?;

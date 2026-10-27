@@ -28,7 +28,7 @@ the router and existing plugins are not modified.
 - The router knows nothing about tasks, agents, idle/busy, reviews or timers.
   It only routes events to subscribers.
 - Plugins never call each other. They communicate only by emitting events.
-- An event with no subscribers is skipped.
+- An event with no subscribers is skipped and not stored.
 - Delivery is at least once. Every plugin must be idempotent.
 - Independent plugins run in parallel; ordering is expressed only through
   `depends_on`.
@@ -50,10 +50,11 @@ the router and existing plugins are not modified.
 The router is the only component that is "the state machine".
 
 ```text
-emit(event) -> persist -> lookup subscribers(event.id)
-            -> none: mark skipped
+emit(event) -> validate -> lookup subscribers(event.id, version)
+            -> none: skip (nothing stored)
+            -> persist event + one pending delivery per subscriber
             -> build dependency graph from depends_on
-            -> run each plugin when its dependencies have succeeded
+            -> run each plugin when its dependencies have completed
                (independent plugins in parallel)
             -> record per-plugin outcome; event complete when all settled
 ```
@@ -61,7 +62,8 @@ emit(event) -> persist -> lookup subscribers(event.id)
 Responsibilities, and nothing more:
 
 - Accept events from the emitter (server code and remote clients).
-- Persist each event before acknowledging the emit.
+- Persist each event that has subscribers, with its deliveries, before
+  acknowledging the emit.
 - Resolve subscribers from the registry.
 - Schedule plugin execution per the `depends_on` graph.
 - Record per-plugin delivery state (`pending`, `running`, `retrying`,
@@ -257,7 +259,7 @@ ships, other than bug fixes.
 | Phase | Deliverable | Acceptance |
 |---|---|---|
 | 1. Router | Event registry, emitter, plugin/step contracts, `depends_on` graph and validation, parallel runner, persistence, replay, retry, Clock plugin, test plugins | Unit and restart tests: no-subscriber skip, parallel independents, dependency wait, stopped dependency skips dependents, retrying dependency holds dependents, backoff 1 s doubling to 30 s, cycle rejected at startup, at-least-once after kill/restart, idempotent replay. No behaviour change for users. |
-| 2. Event sources and remote consumers | Task mutations emit `task.*` via outbox; stream subscriptions by event id and target; client `client.heartbeat` / `terminal.activity`; UI activity consumer | Real two-client test: every task mutation produces exactly one persisted event; targeted events reach only their target; UI activity follows `agent.*`. |
+| 2. Event sources and remote consumers | Task mutations emit `task.*` via outbox; stream subscriptions by event id and target; client `client.heartbeat` / `terminal.activity`; UI activity consumer | Real two-client test: every task mutation emits exactly one event; targeted events reach only their target; UI activity follows `agent.*`. |
 | 3. Presence, Assignment, Notifier | Plugins ported from client logic (FIFO, OS, review exclusion, one task per idle agent) | Real-server test: idle agent receives the oldest eligible task; busy or drafting agent does not; `skipped` ack leads to re-offer. |
 | 4. Review, Reminder, Reclaim | Plugins; 15-minute sweep moves into Reclaim | Completed task creates exactly one review; a busy owner's task is not reclaimed; a gone owner's task is. |
 | 5. Client strip | Remove client scheduling/review code and settings; journal format simplified | Desktop against embedded server behaves as phases 3–4; against a legacy gateway does nothing automatic; full core/desktop suites pass on Linux, Windows, macOS. |

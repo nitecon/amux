@@ -210,6 +210,13 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
     drop(tx);
     let mut workers = Workers(vec![spawn_inbound_processor(database.clone(), rx)]);
     workers.0.push(spawn_task_reclaimer(database.clone()));
+    let (bus, router) = crate::router::start(
+        database.clone(),
+        crate::plugins::events(),
+        crate::plugins::plugins(),
+    )?;
+    workers.0.push(router);
+    workers.0.push(crate::plugins::clock::spawn(bus));
     workers.0.push(spawn_retention(
         database.clone(),
         config.retention_days,
@@ -362,6 +369,7 @@ fn spawn_retention(
             let bot_cutoff = now - bot_retention_ms;
             match spawn_blocking(move || {
                 let conn = database.lock().unwrap();
+                crate::router::prune(&conn, cutoff)?;
                 db::purge_old_messages_with_policy(&conn, cutoff, bot_cutoff)
             })
             .await
