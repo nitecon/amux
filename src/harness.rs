@@ -1,7 +1,7 @@
 //! User-invoked global harness setup. Discovery never changes provider files.
 use anyhow::{Context, Result, bail, ensure};
 use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -27,6 +27,59 @@ pub enum Provider {
     Claude,
     Codex,
     Copilot,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum Choice {
+    #[default]
+    Ask,
+    Automatic,
+    Manual,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Choices {
+    claude: Choice,
+    codex: Choice,
+    copilot: Choice,
+}
+impl Choices {
+    pub fn path() -> Result<PathBuf> {
+        Ok(crate::identity::state_directory()?.join("harness-preferences.json"))
+    }
+    pub fn load(path: &Path) -> Result<Self> {
+        let text = read(path)?;
+        if text.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        serde_json::from_str(&text)
+            .context("Saved agent instruction choices are invalid; original preserved")
+    }
+    pub fn save(&self, path: &Path) -> Result<()> {
+        save(
+            path,
+            &read(path)?,
+            &format!("{}\n", serde_json::to_string_pretty(self)?),
+        )
+    }
+    pub fn get(&self, provider: Provider) -> Choice {
+        match provider {
+            Provider::Claude => self.claude,
+            Provider::Codex => self.codex,
+            Provider::Copilot => self.copilot,
+        }
+    }
+    pub fn set(&mut self, provider: Provider, choice: Choice) {
+        *match provider {
+            Provider::Claude => &mut self.claude,
+            Provider::Codex => &mut self.codex,
+            Provider::Copilot => &mut self.copilot,
+        } = choice;
+    }
+    pub fn needs_prompt(&self, report: &Report) -> bool {
+        report.detected && !report.current() && self.get(report.provider) == Choice::Ask
+    }
 }
 impl Provider {
     pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Copilot];
@@ -140,6 +193,42 @@ impl Environment {
     }
     pub fn reports(&self) -> Vec<Report> {
         Provider::ALL.into_iter().map(|p| self.report(p)).collect()
+    }
+    /// Startup maintenance applies only to providers the user opted into.
+    pub fn maintain(&self, choices: &Choices) -> Vec<Report> {
+        self.reports()
+            .into_iter()
+            .map(|report| {
+                if !report.detected
+                    || report.current()
+                    || choices.get(report.provider) != Choice::Automatic
+                {
+                    return report;
+                }
+                match self.install(report.provider) {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        let mut updated = self.report(report.provider);
+                        updated.error =
+                            Some(format!("Automatic rule update incomplete: {error:#}"));
+                        updated
+                    }
+                }
+            })
+            .collect()
+    }
+    pub fn manual_instructions(&self, provider: Provider) -> Result<String> {
+        let mut output = format!(
+            "Add or update this managed block in {}. Preserve your other instructions.\n\n{START}\n{RULES}{END}\n",
+            self.rules_path(provider)?.display()
+        );
+        match provider {
+            Provider::Claude => output.push_str(&format!("\nIn {}, merge these tools into permissions.deny, preserving other settings:\n{}\n", self.claude_home.join("settings.json").display(), serde_json::to_string_pretty(&json!({"permissions":{"deny":CLAUDE_DENIES}}))?)),
+            Provider::Codex => output.push_str(&format!("\nIn {}, set the following value, preserving other settings:\n[tools.update_plan]\nenabled = false\n", self.codex_home.join("config.toml").display())),
+            Provider::Copilot => output.push_str("\nCopilot task tracking is controlled by instructions only; its subagent tools remain available.\n"),
+        }
+        output.push_str("\nStart a new provider session after editing.\n");
+        Ok(output)
     }
     pub fn report(&self, provider: Provider) -> Report {
         let executable = self.executable(provider);

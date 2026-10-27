@@ -97,6 +97,11 @@ enum Operation {
 enum HarnessOperation {
     /// Detect providers and check instructions/settings without changing files.
     Check,
+    /// Print manual instructions and settings snippets without editing files.
+    Print {
+        #[arg(value_enum)]
+        provider: amux::harness::Provider,
+    },
     /// Install/update one provider's global rules and local-task settings.
     Install {
         #[arg(value_enum)]
@@ -307,6 +312,9 @@ fn run(cli: Cli) -> Result<u8> {
             match operation {
                 HarnessOperation::Check => {
                     println!("{}", serde_json::to_string_pretty(&environment.reports())?)
+                }
+                HarnessOperation::Print { provider } => {
+                    print!("{}", environment.manual_instructions(provider)?)
                 }
                 HarnessOperation::Install { provider } => {
                     println!(

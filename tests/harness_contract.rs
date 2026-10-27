@@ -1,4 +1,5 @@
 use amux::harness::{CLAUDE_DENIES, END, Environment, Provider, RULES, START, State, merge_rules};
+use amux::harness::{Choice, Choices};
 use serde_json::json;
 use std::{fs, path::Path, process::Command};
 
@@ -228,4 +229,119 @@ fn cli_installs_only_selected_profile_and_check_reports_copilot_enforcement_limi
     let output = cli(&["harness", "check"]);
     let reports: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reports[2]["local_tasks"], "GuidanceOnly");
+}
+
+#[test]
+fn saved_manual_choice_never_prompts_or_edits_on_later_startups() {
+    let (temp, env) = fixture();
+    fs::create_dir(&env.claude_home).unwrap();
+    fs::create_dir(&env.codex_home).unwrap();
+    let path = temp.path().join("state/harness-preferences.json");
+    let mut choices = Choices::load(&path).unwrap();
+    assert!(choices.needs_prompt(&env.report(Provider::Claude)));
+    choices.set(Provider::Claude, Choice::Manual);
+    choices.save(&path).unwrap();
+    for _ in 0..2 {
+        let restored = Choices::load(&path).unwrap();
+        let reports = env.maintain(&restored);
+        assert!(!restored.needs_prompt(&reports[0]));
+        assert!(restored.needs_prompt(&reports[1]));
+        assert!(!env.claude_home.join("CLAUDE.md").exists());
+        assert!(!env.claude_home.join("settings.json").exists());
+        assert!(!env.codex_home.join("config.toml").exists());
+        assert!(!env.copilot_home.exists());
+    }
+    fs::write(env.claude_home.join("CLAUDE.md"), "My manual text\n").unwrap();
+    env.maintain(&Choices::load(&path).unwrap());
+    assert_eq!(
+        fs::read_to_string(env.claude_home.join("CLAUDE.md")).unwrap(),
+        "My manual text\n"
+    );
+}
+
+#[test]
+fn opted_in_startup_repairs_rules_and_task_settings_but_preserves_broken_files() {
+    let (temp, env) = fixture();
+    fs::create_dir(&env.claude_home).unwrap();
+    fs::create_dir(&env.codex_home).unwrap();
+    fs::write(env.claude_home.join("CLAUDE.md"), "My instructions\n").unwrap();
+    let path = temp.path().join("state/harness-preferences.json");
+    let mut choices = Choices::default();
+    choices.set(Provider::Claude, Choice::Automatic);
+    choices.set(Provider::Codex, Choice::Manual);
+    choices.save(&path).unwrap();
+    let startup = || env.maintain(&Choices::load(&path).unwrap());
+    assert!(startup()[0].current());
+    fs::write(
+        env.claude_home.join("CLAUDE.md"),
+        format!("My instructions\n{START}\nold version\n{END}\nUser suffix\n"),
+    )
+    .unwrap();
+    fs::write(
+        env.claude_home.join("settings.json"),
+        "{\"model\":\"keep\"}",
+    )
+    .unwrap();
+    assert!(startup()[0].current());
+    let rules = fs::read_to_string(env.claude_home.join("CLAUDE.md")).unwrap();
+    assert!(rules.starts_with("My instructions\n"));
+    assert!(rules.ends_with("User suffix\n"));
+    assert!(rules.contains("Do not use `--json`, Python"));
+    assert!(!env.codex_home.join("AGENTS.md").exists());
+    let backup = fs::read(env.claude_home.join("CLAUDE.md.amux.bak")).unwrap();
+    assert!(startup()[0].current());
+    assert_eq!(
+        fs::read(env.claude_home.join("CLAUDE.md.amux.bak")).unwrap(),
+        backup
+    );
+    fs::write(env.claude_home.join("settings.json"), "invalid json").unwrap();
+    let report = &startup()[0];
+    assert!(
+        report
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Automatic rule update incomplete")
+    );
+    assert!(!choices.needs_prompt(report));
+    assert_eq!(
+        fs::read_to_string(env.claude_home.join("settings.json")).unwrap(),
+        "invalid json"
+    );
+    assert_eq!(
+        fs::read_to_string(env.claude_home.join("CLAUDE.md")).unwrap(),
+        rules
+    );
+    fs::write(&path, "invalid choices").unwrap();
+    assert!(Choices::load(&path).is_err());
+    assert_eq!(fs::read_to_string(path).unwrap(), "invalid choices");
+}
+
+#[test]
+fn print_provides_concise_manual_rules_without_setting_up_any_files() {
+    let (temp, env) = fixture();
+    let before = fs::read_dir(temp.path()).unwrap().count();
+    let output = Command::new(env!("CARGO_BIN_EXE_amux"))
+        .args(["harness", "print", "claude"])
+        .env("CLAUDE_CONFIG_DIR", &env.claude_home)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(&env.claude_home.join("CLAUDE.md").display().to_string()));
+    assert!(text.contains("Do not use `--json`, Python, or scripts"));
+    assert!(text.contains("permissions"));
+    assert!(text.contains("TodoWrite"));
+    assert_eq!(RULES.matches("\namux tasks ").count(), 11);
+    assert!(
+        !RULES
+            .split("```sh")
+            .nth(1)
+            .unwrap()
+            .split("```")
+            .next()
+            .unwrap()
+            .contains("--json")
+    );
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), before);
 }

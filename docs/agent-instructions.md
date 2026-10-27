@@ -1,29 +1,45 @@
 # Agent instructions
 
 amux can detect Claude Code, Codex and GitHub Copilot CLI through their executable
-on PATH or their user configuration directory. Startup discovery only reads files.
-If a detected agent needs instructions or task settings, a banner offers
-**Agent Instructions** in Settings. Providers not detected can also be configured
-there, for example before their first launch.
+on PATH or their user configuration directory. On startup, a detected agent with
+missing or outdated rules gets a prompt naming its control file. Choose
+**Update rules automatically** or **Show rules; don’t ask again**. Choices are
+saved per provider on this machine. Providers not detected can also be configured
+in Settings, for example before their first launch.
 
 ## Install and verify
 
-Open **Settings → Agent Instructions**, then choose **Install / update
-instructions** for each provider you use. Installation applies immediately;
-**Save & Close** is for other preferences. **Check installation and updates**
-rechecks the files against the instructions bundled with the running amux version.
-Checks do not contact an update service or upgrade provider software. After an
-amux update, install/update refreshes its managed block. Start a new provider
-session to load changes; already running agents retain their loaded instructions.
+**Update rules automatically** installs the managed instructions and task settings,
+then enables verification and repair on every startup, including after amux
+updates. Startup maintenance finishes before saved provider sessions are restored,
+so those sessions read the updated files. Only opted-in providers are edited.
+
+**Show rules; don’t ask again** displays the rules and settings snippets with a
+copy button, without editing provider files. amux remembers manual mode and never
+prompts or auto-edits that provider again, even if the rules later become outdated.
+To change that choice, use **Update rules** in **Settings → Agent Instructions**;
+this installs the latest block and enables automatic startup maintenance.
+
+These actions apply immediately; **Save & Close** is for other preferences.
+**Check installation and updates** is a read-only check against the rules bundled
+with the running amux version. Checks do not contact an update service or upgrade
+provider software. Start a new provider session after editing rules; already
+running agents retain their loaded instructions. Choices live in
+`harness-preferences.json` in the amux state directory (`AMUX_STATE_DIR` when set).
 
 The same operations are available without the desktop:
 
 ```sh
 amux harness check
+amux harness print claude
 amux harness install claude
 amux harness install codex
 amux harness install copilot
 ```
+
+`print PROVIDER` only prints manual instructions and task-settings snippets;
+`install PROVIDER` performs a one-time install. These CLI commands do not change
+the desktop startup choice. Automatic maintenance is an explicit desktop choice.
 
 Each check reports detection, target paths, missing/current/outdated instructions,
 local-task settings and file errors. A current check confirms file contents,
@@ -53,9 +69,10 @@ and rechecks actual files. It does not claim an all-or-nothing multi-file update
 
 ## Local task systems
 
-The block directs agents to use amux for task tracking and avoid parallel local
-todo/plan boards. It documents task ownership, lifecycle, delegation, result
-subscriptions and handling uncertain replies.
+The concise block documents the basic task lifecycle and delegation commands,
+ownership and handling uncertain replies. Agents must read amux's normal shortened
+text output directly, without `--json`, Python or scripts to parse the output,
+and avoid parallel local todo/plan boards.
 
 Claude installation adds `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and
 `TodoWrite` to `permissions.deny`, preserving existing permissions. It leaves
@@ -77,6 +94,7 @@ tool runs subagents, so amux does not disable it or claim enforced task-tool par
 the UI explicitly reports **Instructions only**. See
 [Copilot's tool reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#tool-availability-values).
 
-Removal of old agent-tools task rules/hooks and migration stubs is delegated to
-agent-tools. amux installs its own block without removing unrelated agent-tools,
-memory or user-authored instructions.
+Agent-tools has retired its task rules/hooks in favor of amux migration stubs.
+Existing agent-tools rules and skills still need regeneration/reloading on each
+host. amux installs its own block without removing unrelated agent-tools, memory
+or user-authored instructions.

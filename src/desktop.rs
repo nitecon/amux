@@ -68,7 +68,9 @@ enum Message {
     PreferencesTab(PreferencesTab),
     CheckHarness,
     InstallHarness(amux::harness::Provider),
-    HarnessChecked(Result<(Vec<amux::harness::Report>, String), String>),
+    ManualHarness(amux::harness::Provider),
+    CopyHarnessRules,
+    HarnessChecked(Result<desktop_harness::Checked, String>),
     WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
@@ -398,7 +400,7 @@ impl Desktop {
             design: desktop_design::State::default(),
             main_window,
             updates: Updates::new(),
-            harness: desktop_harness::State::default(),
+            harness: desktop_harness::State::startup(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
@@ -459,7 +461,6 @@ impl Desktop {
         }
         let focus = app.focus();
         let updates = app.check_updates();
-        let harness = app.check_harness(None);
         let gateways = if !app.preferences.current.url.is_empty() {
             Task::batch(
                 (0..app.workspaces.len())
@@ -471,13 +472,7 @@ impl Desktop {
         };
         (
             app,
-            Task::batch([
-                open.map(|_| Message::WindowReady),
-                focus,
-                updates,
-                gateways,
-                harness,
-            ]),
+            Task::batch([open.map(|_| Message::WindowReady), focus, updates, gateways]),
         )
     }
 
@@ -1113,24 +1108,37 @@ impl Desktop {
                 if !self.preferences.open {
                     let focus = self.open_preferences(tab);
                     return if tab == PreferencesTab::Harness {
-                        Task::batch([focus, self.check_harness(None)])
+                        Task::batch([focus, self.check_harness(desktop_harness::Action::Check)])
                     } else {
                         focus
                     };
                 }
                 self.preferences.tab = tab;
                 if tab == PreferencesTab::Harness {
-                    return self.check_harness(None);
+                    return self.check_harness(desktop_harness::Action::Check);
                 }
             }
-            Message::CheckHarness => return self.check_harness(None),
-            Message::InstallHarness(provider) => return self.check_harness(Some(provider)),
+            Message::CheckHarness => return self.check_harness(desktop_harness::Action::Check),
+            Message::InstallHarness(provider) => {
+                return self.check_harness(desktop_harness::Action::Automatic(provider));
+            }
+            Message::ManualHarness(provider) => {
+                let focus = self.open_preferences(PreferencesTab::Harness);
+                return Task::batch([
+                    focus,
+                    self.check_harness(desktop_harness::Action::Manual(provider)),
+                ]);
+            }
+            Message::CopyHarnessRules => {
+                if let Some(manual) = &self.harness.manual {
+                    return iced::clipboard::write(manual.clone());
+                }
+            }
             Message::HarnessChecked(result) => {
                 self.harness.busy = false;
                 match result {
-                    Ok((reports, status)) => {
-                        self.harness.reports = reports;
-                        self.harness.status = status;
+                    Ok(checked) => {
+                        self.harness.apply(checked);
                     }
                     Err(error) => self.harness.status = error,
                 }
