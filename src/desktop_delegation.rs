@@ -136,6 +136,7 @@ pub(super) struct Bridge {
     epoch: u64,
     clock: Option<amux::gateway_stream::GatewayClock>,
     initialized: bool,
+    retry_at: Option<Instant>,
     queue: Option<Queue>,
     flight: Option<iced::task::Handle>,
     commands: Option<mpsc::Sender<connection::Command>>,
@@ -179,6 +180,17 @@ impl Bridge {
         self.flight.take();
         self.commands = None;
         self.connection = None;
+    }
+    fn transport_lost(&mut self) {
+        self.flight.take();
+        self.commands = None;
+        self.connection = None;
+        self.initialized = false;
+        self.retry_at = Some(Instant::now());
+        self.status = "Gateway transport stopped; reconnecting".into();
+        if let Some(queue) = &mut self.queue {
+            queue.disconnected();
+        }
     }
     fn targets(&self) -> Vec<Target> {
         self.candidates.iter().map(|c| c.target.clone()).collect()
@@ -343,16 +355,23 @@ impl Desktop {
                 return Task::none();
             }
         };
-        let queue = match Queue::open(directory.join("delegation.json"), &namespace) {
-            Ok(queue) => queue,
-            Err(error) => {
-                self.delegation.fail(error);
-                return Task::none();
+        if self.delegation.queue.is_none() {
+            match Queue::open(directory.join("delegation.json"), &namespace) {
+                Ok(queue) => self.delegation.queue = Some(queue),
+                Err(error) => {
+                    self.delegation.fail(error);
+                    return Task::none();
+                }
             }
-        };
+        }
+        let queue = self.delegation.queue.as_ref().unwrap();
+        if queue.journal.namespace != namespace {
+            self.delegation
+                .fail("gateway authority changed before reconnect");
+            return Task::none();
+        }
         let consumer = queue.journal.consumer;
         let cursor = queue.journal.cursor;
-        self.delegation.queue = Some(queue);
         let (commands_tx, commands_rx) = mpsc::channel(64);
         let (events_tx, events_rx) = mpsc::channel(64);
         self.delegation.commands = Some(commands_tx);
@@ -407,8 +426,8 @@ impl Desktop {
                 .try_send(connection::Command { connection, frame })
                 .is_err()
             {
-                self.delegation
-                    .fail("gateway acknowledgment channel closed");
+                self.delegation.transport_lost();
+                self.toasts.connection_lost();
                 break;
             }
         }
@@ -431,6 +450,10 @@ impl Desktop {
                 Ok(())
             }
             Event::Stream(ConnectionEvent::State(status)) => {
+                if status != "Connected" && status != "Connecting" {
+                    self.toasts.connection_lost();
+                }
+                self.queue_diagnostic(format!("Gateway connection: {status}"));
                 self.delegation.status = status;
                 self.delegation.connection = None;
                 if let Some(q) = &mut self.delegation.queue {
@@ -443,11 +466,27 @@ impl Desktop {
                 cursor,
                 replay_through,
             }) => {
-                self.delegation.connection = Some(connection);
-                self.delegation
+                let result = self
+                    .delegation
                     .queue
                     .as_mut()
-                    .map_or(Ok(()), |q| q.subscribed(cursor, replay_through))
+                    .map_or(Ok(()), |q| q.subscribed(cursor, replay_through));
+                if result.is_ok() {
+                    self.delegation.connection = Some(connection);
+                    self.delegation.retry_at = None;
+                    self.toasts.connection_restored();
+                    let mut ready = Vec::new();
+                    for (index, workspace) in self.workspaces.iter_mut().enumerate() {
+                        workspace.gateway.routing.polled = None;
+                        if workspace.gateway.loading {
+                            workspace.gateway.refresh_pending = true;
+                        } else {
+                            ready.push(index);
+                        }
+                    }
+                    refresh = Task::batch(ready.into_iter().map(|index| self.query(index)));
+                }
+                result
             }
             Event::Stream(ConnectionEvent::Event(event)) => {
                 refresh = self.refresh_task_project(&event.project);
@@ -733,7 +772,24 @@ impl Desktop {
 
     pub fn delegation_tick(&mut self) -> Task<Message> {
         let now = self.delegation.now_ms();
+        if self
+            .delegation
+            .commands
+            .as_ref()
+            .is_some_and(|commands| commands.is_closed())
+        {
+            self.delegation.transport_lost();
+            self.toasts.connection_lost();
+            self.queue_diagnostic("Gateway transport worker stopped; reconnect scheduled".into());
+        }
         if !self.delegation.initialized {
+            if self
+                .delegation
+                .retry_at
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+            {
+                return Task::none();
+            }
             return self.start_delegation();
         }
         let mut tasks = Vec::new();
@@ -963,6 +1019,8 @@ impl Desktop {
             "Gateway: Connected".into()
         } else if !self.preferences.current.has_connection() {
             "Gateway: Not configured".into()
+        } else if self.delegation.commands.is_some() || self.delegation.retry_at.is_some() {
+            "Gateway: Reconnecting".into()
         } else if !self.preferences.current.automatic_notifications {
             "Gateway: Configured · notifications off".into()
         } else {

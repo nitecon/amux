@@ -9,6 +9,11 @@ in Settings, for example before their first launch.
 
 ## Install and verify
 
+Startup suggestions appear as dismissible cards in the bottom-right corner,
+without resizing the terminal. Dismissing a card only hides it for this launch;
+use **Show rules; don’t ask again** to remember a manual choice. Check and install
+results use temporary corner notifications and remain available in Settings.
+
 **Update rules automatically** installs the managed instructions and task settings,
 then enables verification and repair on every startup, including after amux
 updates. Startup maintenance finishes before saved provider sessions are restored,

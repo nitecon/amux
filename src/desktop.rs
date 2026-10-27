@@ -22,6 +22,8 @@ mod desktop_recovery;
 mod desktop_routing;
 #[path = "desktop_tasks.rs"]
 mod desktop_tasks;
+#[path = "desktop_toasts.rs"]
+mod desktop_toasts;
 #[path = "desktop_workspace.rs"]
 mod desktop_workspace;
 use desktop_workspace::{WorkspaceDialog, WorkspaceMessage};
@@ -72,6 +74,8 @@ enum Message {
     ManualHarness(amux::harness::Provider),
     CopyHarnessRules,
     HarnessChecked(Result<desktop_harness::Checked, String>),
+    DismissToast(u64),
+    DismissHarnessNotice,
     WindowReady,
     Preference(PreferenceField, Secret),
     SavePreferences,
@@ -378,6 +382,7 @@ struct Desktop {
     embedded: EmbeddedServer,
     updates: Updates,
     harness: desktop_harness::State,
+    toasts: desktop_toasts::State,
     workspaces: Vec<Workspace>,
     active: usize,
     workspace_dialog: WorkspaceDialog,
@@ -464,6 +469,7 @@ impl Desktop {
             updates: Updates::new(),
             embedded: EmbeddedServer::default(),
             harness: desktop_harness::State::startup(),
+            toasts: desktop_toasts::State::default(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
@@ -1211,11 +1217,23 @@ impl Desktop {
                 self.harness.busy = false;
                 match result {
                     Ok(checked) => {
+                        let title = if checked.reports.iter().any(|report| report.error.is_some()) {
+                            "Agent rules need attention"
+                        } else {
+                            "Agent instructions"
+                        };
+                        self.toasts.show("harness", title, &checked.status);
                         self.harness.apply(checked);
                     }
-                    Err(error) => self.harness.status = error,
+                    Err(error) => {
+                        self.toasts
+                            .show("harness", "Agent rules need attention", &error);
+                        self.harness.status = error;
+                    }
                 }
             }
+            Message::DismissToast(id) => self.toasts.dismiss(id),
+            Message::DismissHarnessNotice => self.harness.notice_dismissed = true,
             Message::Preference(field, Secret(value)) => {
                 if value.len() <= 16 * 1024 && !self.embedded.busy && !self.embedded.stopping {
                     let draft = &mut self.preferences.draft;
@@ -1754,6 +1772,7 @@ impl Desktop {
                 }
             }
             Message::DeliveryTick => {
+                self.toasts.expire();
                 if self.embedded.invitation.is_some() && self.active_invitation().is_none() {
                     self.embedded.invitation = None;
                 }
@@ -3218,6 +3237,7 @@ mod tests {
                 error: String::new(),
             },
             harness: desktop_harness::State::default(),
+            toasts: desktop_toasts::State::default(),
             embedded: EmbeddedServer::default(),
             preferences: Preferences {
                 current: GatewayPreferences::default(),

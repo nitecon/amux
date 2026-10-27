@@ -279,6 +279,46 @@ async fn reconnect_resumes_cursor_and_discards_stale_commands() {
 }
 
 #[tokio::test]
+async fn silent_old_route_reconnects_with_cursor_and_does_not_replay_old_commands() {
+    let mut h = start(Some(10)).await;
+    assert_eq!(h.state().await, "Connecting");
+    let (mut old, _) = h.accept().await;
+    let first = h.subscribe(&mut old, 10, 10).await;
+    send(&mut old, lifecycle(11, Uuid::new_v4())).await;
+    assert!(matches!(h.next().await, ConnectionEvent::Event(_)));
+    h.command(first, ack(11)).await;
+    assert_eq!(read_text(&mut old).await, ack(11));
+    send(
+        &mut old,
+        json!({"type":"recorded","event_id":11,"status":"injected"}),
+    )
+    .await;
+    assert!(matches!(
+        h.next().await,
+        ConnectionEvent::Recorded { cursor: 11, .. }
+    ));
+    // Leave the old TCP/WebSocket open, but stop answering: a VPN route can
+    // disappear without sending a close or reset to the application.
+    let lost = tokio::time::timeout(Duration::from_secs(60), h.events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(lost, ConnectionEvent::State(ref state) if state.contains("timed out")));
+    h.command(first, ack(11)).await;
+    assert_eq!(h.state().await, "Connecting");
+    let (mut restored, subscribe) = h.accept().await;
+    assert_eq!(subscribe["after_event_id"], 11);
+    let second = h.subscribe(&mut restored, 11, 12).await;
+    assert!(second > first);
+    h.command(first, ack(11)).await;
+    h.command(second, ack(12)).await;
+    assert_eq!(read_text(&mut restored).await, ack(12));
+    drop(old);
+    drop(h.commands);
+    timeout(h.worker).await.unwrap();
+}
+
+#[tokio::test]
 async fn malformed_subscription_is_rejected() {
     let base = |h: &Harness| h.subscribed(5, 9);
     type Case = (fn(&mut Value), &'static str);

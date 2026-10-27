@@ -9,6 +9,7 @@ pub(super) struct State {
     pub status: String,
     pub choices: Choices,
     pub manual: Option<String>,
+    pub notice_dismissed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -28,6 +29,16 @@ pub(super) struct Checked {
 }
 
 impl State {
+    pub fn needs_notice(&self) -> bool {
+        !self.notice_dismissed
+            && !self.busy
+            && ((self.reports.is_empty() && !self.status.is_empty())
+                || self.reports.iter().any(|report| {
+                    self.choices.needs_prompt(report)
+                        || (report.error.is_some()
+                            && self.choices.get(report.provider) == Choice::Automatic)
+                }))
+    }
     // Complete opted-in file maintenance before restoring provider processes, so
     // restored sessions load the updated instructions rather than yesterday's block.
     pub fn startup() -> Self {
@@ -125,7 +136,7 @@ impl Desktop {
             if self.harness.choices.needs_prompt(report) {
                 prompts = prompts.push(container(column![
                     text(format!("{}: amux task rules need updating in {}. May amux maintain them automatically?", report.provider.name(), report.instructions.display())).size(12),
-                    row![
+                    column![
                         button("Update rules automatically").on_press_maybe((!self.harness.busy).then_some(Message::InstallHarness(report.provider))),
                         button("Show rules; don’t ask again").on_press_maybe((!self.harness.busy).then_some(Message::ManualHarness(report.provider))),
                     ].spacing(8)
@@ -222,6 +233,23 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dismissing_the_notice_does_not_choose_consent_or_open_settings() {
+        let mut app = super::super::tests::desktop();
+        app.harness.status = "Instructions need attention".into();
+        assert!(app.harness.needs_notice());
+        let _ = app.update(Message::DismissHarnessNotice);
+        assert!(!app.harness.needs_notice());
+        assert_eq!(app.harness.choices.get(Provider::Claude), Choice::Ask);
+        let _ = app.update(Message::HarnessChecked(Err("Check failed".into())));
+        assert!(!app.preferences.open);
+        assert!(!app.harness.needs_notice());
+        assert_eq!(app.toasts.items.len(), 1);
+        let id = app.toasts.items[0].id;
+        let _ = app.update(Message::DismissToast(id));
+        assert!(app.toasts.items.is_empty());
+    }
 
     #[test]
     fn suggestion_opens_instruction_settings_and_check_results_do_not_save_preferences() {

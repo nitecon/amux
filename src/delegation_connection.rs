@@ -6,7 +6,10 @@ use crate::{
     gateway_stream::{GatewayClock, Socket, connect_profile_generation, next_json, send_json},
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 use tokio::{sync::mpsc, time::Instant};
 use uuid::Uuid;
 
@@ -14,6 +17,8 @@ const SUBSCRIBE_DEADLINE: Duration = Duration::from_secs(10);
 const MAX_SILENCE: Duration = Duration::from_secs(30);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const RECONNECT: Duration = Duration::from_secs(5);
+const CONNECT_DEADLINE: Duration = Duration::from_secs(35);
+static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 const STATUSES: [&str; 6] = [
     "received",
     "queued",
@@ -83,7 +88,6 @@ pub async fn run_profile(
     events: mpsc::Sender<ConnectionEvent>,
 ) {
     let mut latest = 0;
-    let mut connection = 0;
     loop {
         if events
             .send(ConnectionEvent::State("Connecting".into()))
@@ -93,13 +97,14 @@ pub async fn run_profile(
             return;
         }
         let attempt = tokio::select! {
-            socket = connect_profile_generation(&profile, consumer, cursor) => socket,
+            socket = tokio::time::timeout(CONNECT_DEADLINE, connect_profile_generation(&profile, consumer, cursor)) =>
+                socket.unwrap_or_else(|_| Err("Gateway connection timed out; reconnecting".into())),
             _ = discard(&mut commands) => return,
             _ = events.closed() => return,
         };
         let error = match attempt {
             Ok((socket, clock, generation)) => {
-                connection += 1;
+                let connection = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
                 let mut stream = Stream {
                     socket,
                     clock,
@@ -184,6 +189,7 @@ impl Stream<'_> {
             return Ok(());
         }
         let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut silence = Instant::now() + MAX_SILENCE;
         loop {
             let step = tokio::select! {
@@ -213,11 +219,13 @@ impl Stream<'_> {
                     }
                 }
                 Step::Heartbeat => {
+                    if Instant::now() >= silence {
+                        return Err("Gateway stream timed out; reconnecting".into());
+                    }
                     if self.profile.is_enrolled() {
-                        let snapshot = self
-                            .profile
-                            .current()
+                        let snapshot = tokio::time::timeout_at(silence, self.profile.current())
                             .await
+                            .map_err(|_| "Gateway stream timed out; reconnecting")?
                             .map_err(|_| "Gateway credential renewal failed")?;
                         if snapshot.generation != self.generation {
                             return Err("Gateway credentials renewed; reconnecting".into());

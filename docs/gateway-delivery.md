@@ -190,6 +190,19 @@ credentials are not used by desktop lifecycle notifications.
 
 ## Verification
 
+Network recovery uses bounded connection attempts, a 30-second stream silence
+deadline and five-second reconnect retries, including after sleep or a VPN route
+change. A stopped transport worker is restarted with the same durable consumer,
+cursor and pending work. Successful subscription refreshes task views and agent
+availability while preserving drafts. Storage or protocol safety failures remain
+paused rather than retrying unsafe work. Connection loss and recovery produce
+deduplicated, dismissible corner notifications without resizing the terminal.
+
+The local WebSocket regression leaves the old route open but unresponsive, then
+verifies reconnection from the saved cursor and rejection of commands scoped to
+the old connection. Physical WireGuard roaming still needs validation on the
+affected laptop.
+
 Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, and built-in identity. Controlled native terminal fixtures exercise exact input, immediate delivery with restored user drafts, text-versus-navigation tracking, hidden footers, unrecognized layouts, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex submission still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.
 
 

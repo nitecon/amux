@@ -8,6 +8,13 @@ desktop UI does not call it yet; wiring it in is separate work.
 
 ## Interface
 
+Gateway connection changes and agent-rule suggestions/results use in-app,
+bottom-right overlay cards. They do not resize terminals or require an OS
+notification service. Connection retries share one outage notice; recovery
+replaces it. Temporary cards expire after ten seconds and can be dismissed.
+Rule-consent suggestions stay until acted on or dismissed for the current launch.
+The OS notifier below continues to handle existing native notification events.
+
 ```rust
 let mut notifier = Notifier::native();          // or Notifier::new(backend)
 let id = notifier.notify("Title", "Body")?;     // never blocks

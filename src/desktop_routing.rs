@@ -160,7 +160,7 @@ pub(super) struct Panel {
     pub choice: Choice,
     pub directory: Option<Directory>,
     pub checked: Option<Instant>,
-    polled: Option<Instant>,
+    pub(super) polled: Option<Instant>,
     pub loading: bool,
     pub status: String,
 }

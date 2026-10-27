@@ -17,6 +17,79 @@ const LAYOUT: &str = "AMUX_DESKTOP_FIXTURE_LAYOUT";
 const ENTRY: &str = "desktop::desktop_delegation::tests::fixture_process";
 const CONNECTION: u64 = 7;
 
+#[test]
+fn a_closed_transport_restarts_without_resetting_the_consumer_cursor_or_journal() {
+    let mut app = desktop();
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    std::fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    app.preferences.current.url = "http://127.0.0.1:9".into();
+    app.preferences.current.api_key = "isolated-reconnect-fixture".into();
+    let frames = bridge(&mut app, &directory.path().join("old-transport.json"));
+    let mut queue = Queue::open(
+        directory.path().join("delegation.json"),
+        &app.preferences.current.authority_namespace().unwrap(),
+    )
+    .unwrap();
+    queue.subscribed(4, 4).unwrap();
+    let consumer = queue.journal.consumer;
+    let pending = delegation::ReviewRequest {
+        project: "amux".into(),
+        task: Uuid::new_v4(),
+        event: 4,
+    };
+    queue.schedule_review(pending.clone()).unwrap();
+    app.delegation.queue = Some(queue);
+    app.ledger = Some(
+        amux::delivery::DeliveryLedger::open(&directory.path().join("deliveries.json")).unwrap(),
+    );
+    drop(frames);
+    drop(app.delegation_tick());
+    assert!(!app.delegation.initialized);
+    assert!(app.delegation.connection.is_none());
+    assert_eq!(app.toasts.items.len(), 1);
+    app.delegation.retry_at = Instant::now().checked_sub(Duration::from_secs(6));
+    drop(app.delegation_tick());
+    assert!(app.delegation.initialized && app.delegation.commands.is_some());
+    let queue = app.delegation.queue.as_ref().unwrap();
+    assert_eq!(queue.journal.consumer, consumer);
+    assert_eq!(queue.journal.cursor, Some(4));
+    assert_eq!(queue.journal.pending_reviews, vec![pending]);
+}
+
+#[test]
+fn restored_subscription_refreshes_read_only_views_without_losing_task_drafts() {
+    let mut app = desktop();
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    std::fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    let _frames = bridge(&mut app, &directory.path().join("transport.json"));
+    app.workspaces[0].gateway.loading = true;
+    app.workspaces[0].gateway.draft_title = "Preserve this task draft".into();
+    app.toasts.connection_lost();
+    let epoch = app.delegation.epoch;
+    drop(app.delegation_message(
+        epoch,
+        Event::Stream(ConnectionEvent::Subscribed {
+            connection: 8,
+            cursor: 4,
+            replay_through: 4,
+        }),
+    ));
+    assert!(app.workspaces[0].gateway.refresh_pending);
+    assert_eq!(
+        app.workspaces[0].gateway.draft_title,
+        "Preserve this task draft"
+    );
+    assert!(
+        app.toasts
+            .items
+            .iter()
+            .any(|toast| toast.title.contains("restored"))
+    );
+    assert!(!app.preferences.open && !app.workspace_dialog.open);
+}
+
 /// A minimal provider-shaped composer. Every submitted line is appended verbatim
 /// to the log, so tests can prove exactly which bytes reached the agent's input.
 struct Fixture {

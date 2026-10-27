@@ -785,7 +785,6 @@ impl Desktop {
         };
         let base: Element<'_, Message> = column![
             header,
-            self.harness_suggestion(),
             row![
                 sidebar,
                 column![center, toolbar]
@@ -951,6 +950,54 @@ impl Desktop {
             layers = layers
                 .push(scrim)
                 .push(container(opaque(self.settings_modal())).center(Length::Fill));
+        }
+        let mut notices = column![].spacing(8).width(400);
+        let show_harness =
+            self.harness.needs_notice() && !self.preferences.open && !self.workspace_dialog.open;
+        if show_harness {
+            notices = notices.push(
+                container(
+                    column![
+                        row![
+                            text("Agent instructions").size(14),
+                            Space::new().width(Length::Fill),
+                            button("×").on_press(Message::DismissHarnessNotice)
+                        ]
+                        .align_y(Alignment::Center),
+                        self.harness_suggestion(),
+                    ]
+                    .spacing(6),
+                )
+                .padding(12)
+                .style(|_| surface(CARD, true)),
+            );
+        }
+        for toast in &self.toasts.items {
+            notices = notices.push(
+                container(
+                    column![
+                        row![
+                            text(&toast.title).size(14).color(CYAN),
+                            Space::new().width(Length::Fill),
+                            button("×").on_press(Message::DismissToast(toast.id))
+                        ]
+                        .align_y(Alignment::Center),
+                        text(&toast.body).size(12),
+                    ]
+                    .spacing(6),
+                )
+                .padding(12)
+                .width(Length::Fill)
+                .style(|_| surface(CARD, true)),
+            );
+        }
+        if show_harness || !self.toasts.items.is_empty() {
+            layers = layers.push(
+                container(opaque(notices))
+                    .padding(16)
+                    .align_right(Length::Fill)
+                    .align_bottom(Length::Fill),
+            );
         }
         container(layers)
             .width(Length::Fill)
