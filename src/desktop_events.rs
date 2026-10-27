@@ -8,12 +8,17 @@ use amux::event_client::{self, Incoming, Subscription};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 
-const EVENTS: [&str; 5] = [
+const EVENTS: [&str; 9] = [
     "agent.notify",
     "agent.online",
     "agent.idle",
     "agent.busy",
     "agent.gone",
+    // Task panels refresh when their project changes.
+    "task.created",
+    "task.updated",
+    "task.commented",
+    "task.completed",
 ];
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Active terminals refresh their output time well inside the idle window.
@@ -21,11 +26,12 @@ const ACTIVITY_REFRESH: Duration = Duration::from_secs(10);
 const ACTIVITY_RESEND: Duration = Duration::from_secs(30);
 const MAX_AGE_MS: i64 = 5 * 60_000;
 const RECENT: usize = 64;
+const CARDS: usize = 20;
 
 #[derive(Default)]
 pub(super) struct State {
     flight: Option<iced::task::Handle>,
-    outgoing: Option<mpsc::Sender<Value>>,
+    pub(super) outgoing: Option<mpsc::Sender<Value>>,
     clock: Option<amux::gateway_stream::GatewayClock>,
     targets: Vec<String>,
     pub(super) connected: bool,
@@ -34,18 +40,65 @@ pub(super) struct State {
     heartbeat_at: Option<Instant>,
     heartbeat_agents: Vec<Value>,
     activity: HashMap<Uuid, (bool, bool, Instant)>,
-    pending: VecDeque<Value>,
-    delivering: bool,
+    pub(super) pending: VecDeque<Value>,
+    pub(super) delivering: Option<Delivery>,
     delivered: VecDeque<String>,
+    /// Recent notifications and their outcomes, for the Events panel.
+    cards: VecDeque<(String, delegation::Event, String, String)>,
+}
+
+impl State {
+    pub(super) fn running(&self) -> bool {
+        self.flight.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
-pub(in super::super) struct Delivery {
-    event: Value,
-    candidate: Candidate,
+pub(super) struct Delivery {
+    pub(super) event: Value,
+    pub(super) candidate: Candidate,
 }
 
 impl Desktop {
+    /// Append to the bounded `queue.log` in the registry, at most every five seconds.
+    pub(in super::super) fn queue_diagnostic(&mut self, message: String) {
+        if self
+            .delegation
+            .diagnostic
+            .as_ref()
+            .is_some_and(|(last, at)| last == &message || at.elapsed() < Duration::from_secs(5))
+        {
+            return;
+        }
+        self.delegation.diagnostic = Some((message.clone(), Instant::now()));
+        let Some(directory) = &self.registry else {
+            return;
+        };
+        let path = directory.join("queue.log");
+        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() >= 1024 * 1024) {
+            let previous = directory.join("queue.previous.log");
+            let _ = std::fs::remove_file(&previous);
+            if std::fs::rename(&path, previous).is_err() {
+                return;
+            }
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        if let Ok(mut file) = options.open(path) {
+            use std::io::Write;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let _ = writeln!(file, "{now} {message}");
+        }
+    }
+
     /// Embedded and native servers run the event router and decide assignment,
     /// review and notifications; only a legacy gateway leaves this to clients.
     pub(super) fn server_schedules(&self) -> bool {
@@ -69,7 +122,7 @@ impl Desktop {
             .map_or_else(|| unix_ms() as i64, |clock| clock.now_ms())
     }
 
-    fn events_stop(&mut self) {
+    pub(super) fn events_stop(&mut self) {
         let status = std::mem::take(&mut self.delegation.events.status);
         self.delegation.events = State {
             status,
@@ -287,6 +340,7 @@ impl Desktop {
                 events.clock = clock;
                 events.heartbeat_at = None;
                 events.status = "Connected to the event router".into();
+                self.toasts.connection_restored();
             }
             Incoming::Rejected(reason) => {
                 self.queue_diagnostic(format!("Event router rejected a frame: {reason}"));
@@ -297,6 +351,9 @@ impl Desktop {
                     "This gateway has no event router; automatic task work is off".into();
             }
             Incoming::Lost(reason) => {
+                if self.delegation.events.connected {
+                    self.toasts.connection_lost();
+                }
                 self.delegation.events.connected = false;
                 self.delegation.events.status = format!("Event router: {reason}; reconnecting");
             }
@@ -308,23 +365,28 @@ impl Desktop {
     fn events_event(&mut self, event: Value) -> Task<Message> {
         let id = event["id"].as_str().unwrap_or_default();
         if id == "agent.notify" {
+            // Acknowledge once queued here, so one agent's wait never holds up
+            // the stream; like before the router, pending notices end with the app.
+            self.events_send(event_client::ack(&event));
             let uid = event["uid"].as_str().unwrap_or_default().to_owned();
-            if self.delegation.events.delivered.contains(&uid)
-                || self
-                    .delegation
-                    .events
+            let events = &mut self.delegation.events;
+            if !events.delivered.contains(&uid)
+                && !events
                     .pending
                     .iter()
                     .any(|pending| pending["uid"] == event["uid"])
             {
-                // A resend of something already handled or queued.
-                if self.delegation.events.delivered.contains(&uid) {
-                    self.events_send(event_client::ack(&event));
-                }
-                return Task::none();
+                events.pending.push_back(event);
             }
-            self.delegation.events.pending.push_back(event);
             return Task::none();
+        }
+        if id.starts_with("task.") {
+            let project = event["payload"]["project"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            self.events_send(event_client::ack(&event));
+            return self.refresh_task_project(&project);
         }
         let session = event["payload"]["agent"]["session_id"]
             .as_str()
@@ -355,6 +417,35 @@ impl Desktop {
 
     fn events_result(&mut self, event: &Value, status: &str, reason: &str) {
         let target = event["payload"]["target"].clone();
+        let mut source = event["payload"]["event"].clone();
+        source["id"] = event["seq"].clone();
+        if let Ok(Some(mut parsed)) = delegation::Event::parse(&source) {
+            if let (Some(heading), Some(summary)) = (
+                event["payload"]["heading"].as_str(),
+                parsed.summary.as_mut(),
+            ) {
+                summary.heading = heading.into();
+            }
+            let name = self
+                .delegation
+                .candidates
+                .iter()
+                .find(|c| target.as_str() == Some(c.target.session.to_string().as_str()))
+                .map_or("Agent".to_owned(), |c| c.name.clone());
+            let cards = &mut self.delegation.events.cards;
+            cards.push_back((
+                event["uid"].as_str().unwrap_or_default().to_owned(),
+                parsed,
+                name,
+                format!(
+                    "{status}{}{reason}",
+                    if reason.is_empty() { "" } else { " · " }
+                ),
+            ));
+            if cards.len() > CARDS {
+                cards.pop_front();
+            }
+        }
         let payload = json!({"target": target, "status": status, "reason": reason});
         let correlation = event["uid"].as_str();
         self.events_send(event_client::emit(
@@ -362,7 +453,6 @@ impl Desktop {
             payload,
             correlation,
         ));
-        self.events_send(event_client::ack(event));
         let events = &mut self.delegation.events;
         events
             .delivered
@@ -376,8 +466,10 @@ impl Desktop {
         ));
     }
 
-    fn events_deliver(&mut self) -> Task<Message> {
-        if self.delegation.events.delivering || self.preferences.open || self.workspace_dialog.open
+    pub(super) fn events_deliver(&mut self) -> Task<Message> {
+        if self.delegation.events.delivering.is_some()
+            || self.preferences.open
+            || self.workspace_dialog.open
         {
             return Task::none();
         }
@@ -407,34 +499,34 @@ impl Desktop {
                     )
             })
         {
-            self.events_result(&event, "skipped", "agent is busy");
+            // A work offer goes back so the server can offer it elsewhere;
+            // an informational notice waits for the agent to go quiet.
+            if payload["mode"] == "assigned" {
+                self.events_result(&event, "skipped", "agent is busy");
+            } else {
+                self.delegation.events.pending.push_back(event);
+            }
             return Task::none();
         }
-        self.delegation.events.delivering = true;
         let epoch = self.delegation.epoch;
-        let delivery = Delivery { event, candidate };
+        let c = candidate.clone();
+        self.delegation.events.delivering = Some(Delivery { event, candidate });
         Task::perform(
             async move {
-                let c = delivery.candidate.clone();
-                let verified = tokio::task::spawn_blocking(move || {
-                    delegation_process::verify(
-                        c.root.pid,
-                        &c.root.generation,
-                        c.root.foreground,
-                        &c.process,
-                    )
-                })
-                .await
-                .unwrap_or(false);
-                Event::Notified(Box::new(delivery), verified)
+                let verified = tokio::task::spawn_blocking(move || verify(&c))
+                    .await
+                    .unwrap_or(false);
+                Event::Verified(verified)
             },
             move |e| Message::Delegation(epoch, e),
         )
     }
 
-    pub(super) fn events_notified(&mut self, delivery: Delivery, verified: bool) -> Task<Message> {
-        self.delegation.events.delivering = false;
-        let Delivery { event, candidate } = delivery;
+    /// Finish the delivery in flight once its process has been verified natively.
+    pub(super) fn events_verified(&mut self, verified: bool) -> Task<Message> {
+        let Some(Delivery { event, candidate }) = self.delegation.events.delivering.take() else {
+            return Task::none();
+        };
         if !verified {
             self.events_result(&event, "failed", "agent process changed");
             return Task::none();
@@ -462,8 +554,37 @@ impl Desktop {
     }
 }
 
+impl Desktop {
+    pub(super) fn events_cards(&self) -> Vec<super::super::desktop_design::EventCard> {
+        self.delegation
+            .events
+            .cards
+            .iter()
+            .rev()
+            .map(
+                |(uid, event, name, outcome)| super::super::desktop_design::EventCard {
+                    key: format!("router:{uid}"),
+                    title: event.heading().into(),
+                    detail: format!("{}\n{name} · {outcome}", event.terminal_text()),
+                    gateway: Some(Box::new(event.clone())),
+                },
+            )
+            .collect()
+    }
+}
+
+/// The agent's process still matches what the scan bound to its terminal.
+pub(super) fn verify(c: &Candidate) -> bool {
+    delegation_process::verify(
+        c.root.pid,
+        &c.root.generation,
+        c.root.foreground,
+        &c.process,
+    )
+}
+
 /// The terminal text, rendered by the same formatter as stream notifications.
-fn notification_text(event: &Value, candidate: &Candidate) -> Option<String> {
+pub(super) fn notification_text(event: &Value, candidate: &Candidate) -> Option<String> {
     let payload = &event["payload"];
     let mut source = payload["event"].clone();
     source["id"] = event["seq"].clone();

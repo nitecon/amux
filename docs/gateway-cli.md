@@ -144,9 +144,9 @@ Enforced OS creation, claim, retagging and reassignment require the gateway OS
 contract available in gateway v1.28.0 and later. Older gateways
 cannot enforce the requirement for all clients; an unconfirmed ownership release
 is an error, never permission to retry or silently fall back to another OS.
-Amux also filters notification input, idle pickup, reminders and human assignment
-by the OS requirement. Work for a different OS does not block an eligible agent's
-Autoreview.
+The amux server also filters notifications, assignment, reminders and human
+assignment by the OS requirement. Work for a different OS does not block an
+eligible agent.
 
 ### Requesting task results
 

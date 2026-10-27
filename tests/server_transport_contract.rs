@@ -256,17 +256,28 @@ fn transport_fixture_worker() {
         let source = task["id"].as_str().unwrap();
         gateway.claim("transport-fixture", source, &caller).await.unwrap();
         gateway.request(Method::PATCH, "transport-fixture", &[source], Some(json!({"status":"done"})), Some(&caller)).await.unwrap();
-        let review = gateway.enqueue_completion_review("transport-fixture", Uuid::parse_str(source).unwrap()).await.unwrap().unwrap();
+        // The server's review plugin queues exactly one review for the completion.
+        let reviews = |list: Value| -> Vec<Value> {
+            list.as_array().unwrap().iter().filter(|t| t["title"] == "Review: Real mTLS task").cloned().collect()
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let review = loop {
+            let found = reviews(gateway.list("transport-fixture").await.unwrap());
+            if let Some(review) = found.first() { assert_eq!(found.len(), 1); break review.clone(); }
+            assert!(tokio::time::Instant::now() < deadline, "no review was queued");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
         let review_id = review["id"].as_str().unwrap();
         assert_eq!(review["status"], "todo");
         assert!(review["owner_origin"].is_null() && review["owner_agent_id"].is_null());
-        assert_eq!(gateway.enqueue_completion_review("transport-fixture", Uuid::parse_str(source).unwrap()).await.unwrap().unwrap()["id"], review["id"]);
         assert!(gateway.claim("transport-fixture", review_id, &caller).await.is_err());
         assert!(gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"labels":[]})), Some(&caller)).await.is_err());
         let reviewer = actor(&root);
         second.claim("transport-fixture", review_id, &reviewer).await.unwrap();
         second.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"done"})), Some(&reviewer)).await.unwrap();
-        assert!(second.enqueue_completion_review("transport-fixture", Uuid::parse_str(review_id).unwrap()).await.unwrap().is_none());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let titles: Vec<Value> = gateway.list("transport-fixture").await.unwrap().as_array().unwrap().iter().map(|t| t["title"].clone()).collect();
+        assert!(!titles.iter().any(|t| t == "Review: Review: Real mTLS task"), "a completed review is not reviewed");
         let replacement = server_controller::invitation(admin.clone(), true).await.unwrap();
         assert!(replacement.invitation != invitation.invitation);
         assert!(server_controller::pair(root.join("old-invite"), admin.url.clone(), invitation.invitation.clone()).await.is_err());

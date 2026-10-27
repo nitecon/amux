@@ -1,13 +1,9 @@
 //! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
-use amux::delivery::{DeliveryCause, DeliveryLedger, DeliveryState};
 use amux::gateway_preferences::{EnrolledConnection, GatewayMode, GatewayPreferences};
 use amux::identity::Provider;
 use amux::notifications::{Notifier, Outcome};
-use amux::readiness::ReadinessGate;
-use amux::recipient::TerminalRecipient;
 use amux::server_controller::{self, LocalServer};
 use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
-use amux::submission::{Submission, submit_literal};
 #[path = "desktop_delegation.rs"]
 mod desktop_delegation;
 #[path = "desktop_design.rs"]
@@ -18,8 +14,6 @@ mod desktop_harness;
 mod desktop_icon;
 #[path = "desktop_migration.rs"]
 mod desktop_migration;
-#[path = "desktop_recovery.rs"]
-mod desktop_recovery;
 #[path = "desktop_routing.rs"]
 mod desktop_routing;
 #[path = "desktop_tasks.rs"]
@@ -35,7 +29,6 @@ use iced::widget::{
 };
 use iced::{Element, Length, Subscription, Task, Theme};
 use iced_term::{Terminal, TerminalView};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -96,7 +89,6 @@ enum Message {
     ServerStopped(ServerExit, Result<(), String>),
     ServerReconfigured(u64, Result<(), String>),
     AutomaticNotifications(bool),
-    Autoreview(bool),
     AutoResume(bool),
     ExitNotifications(bool),
     Delegation(u64, desktop_delegation::Event),
@@ -118,8 +110,6 @@ enum Message {
         Result<(amux::task_routing::Directory, Option<String>), String>,
     ),
     TaskTarget(desktop_routing::Choice),
-    RecoveryLoaded(RecoveryScope, Result<desktop_recovery::Recovery, String>),
-    ReceiptReported(RecoveryScope, Uuid, Result<(), String>),
     TaskTitle(String),
     TaskContext(text_editor::Action),
     SubmitTask,
@@ -127,8 +117,6 @@ enum Message {
     TaskCreated(QueryScope, Uuid, Result<Uuid, String>),
     #[cfg(test)]
     LocalNotifications(bool),
-    #[cfg(test)]
-    Consent(u64, bool),
     DeliveryTick,
     Save,
     Close(iced::window::Id),
@@ -269,42 +257,6 @@ struct QueryScope {
     revision: u64,
 }
 
-#[derive(Debug, Clone)]
-struct RecoveryScope {
-    query: QueryScope,
-    terminal: u64,
-    epoch: u64,
-    actor: amux::identity::AgentIdentity,
-}
-
-#[derive(Default)]
-struct RecoveryBridge {
-    epoch: u64,
-    actor: Option<amux::identity::AgentIdentity>,
-    flight: Option<iced::task::Handle>,
-    queried_at: Option<Instant>,
-    snapshot: Option<desktop_recovery::Recovery>,
-    managed: HashSet<Uuid>,
-    blocked_receipts: HashSet<Uuid>,
-}
-
-impl RecoveryBridge {
-    fn reset(&mut self) {
-        self.epoch += 1;
-        self.flight.take(); // Abort on drop; uncertain durable requests remain fenced.
-        self.actor = None;
-        self.queried_at = None;
-        self.snapshot = None;
-        self.blocked_receipts.clear();
-    }
-
-    fn fresh(&self) -> bool {
-        self.snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.queried_at.elapsed() <= Duration::from_secs(15))
-    }
-}
-
 #[derive(Default)]
 struct TaskPanel {
     detail: desktop_tasks::Panel,
@@ -338,13 +290,6 @@ enum TaskRequestState {
 }
 
 #[derive(Default)]
-struct Reminders {
-    consent: bool,
-    gate: ReadinessGate,
-    status: String,
-    recovery: RecoveryBridge,
-}
-
 struct Tab {
     id: u64,
     title: String,
@@ -354,17 +299,9 @@ struct Tab {
     terminal: Option<Terminal>,
     stopped_output: Option<String>,
     provider: Option<Provider>,
-    recipient: Option<TerminalRecipient>,
-    reminders: Reminders,
     delegation: desktop_delegation::TabState,
 }
 
-impl Drop for Tab {
-    fn drop(&mut self) {
-        // Cancel transport before retiring the process/PTY fields below.
-        self.reminders.recovery.flight.take();
-    }
-}
 struct Pane {
     tabs: Vec<Tab>,
     active: usize,
@@ -393,7 +330,6 @@ struct Desktop {
     closing_workspace: Option<Uuid>,
     next_id: u64,
     status: String,
-    ledger: Option<DeliveryLedger>,
     registry: Option<PathBuf>,
     snapshot_path: Option<PathBuf>,
     dirty: bool,
@@ -439,16 +375,7 @@ impl Desktop {
             eprintln!("amux desktop icon: {error:#}");
         }
         let state = amux::identity::state_directory();
-        let ledger = state
-            .as_ref()
-            .ok()
-            .map(|path| DeliveryLedger::open(&path.join("deliveries.json")))
-            .transpose();
-        let delivery_error = state
-            .as_ref()
-            .err()
-            .map(ToString::to_string)
-            .or_else(|| ledger.as_ref().err().map(ToString::to_string));
+        let state_error = state.as_ref().err().map(ToString::to_string);
         let preferences_path = state
             .as_ref()
             .ok()
@@ -478,7 +405,6 @@ impl Desktop {
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
-            ledger: ledger.ok().flatten(),
             registry: state.ok(),
             snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false, restarting: false,
             notify_exits: false, notifier: None, notification_status: String::new(),
@@ -529,9 +455,9 @@ impl Desktop {
         if directory != home && !app.workspaces.iter().any(|w| w.directory == directory) {
             app.add_workspace(directory.clone());
         }
-        if let Some(error) = delivery_error {
+        if let Some(error) = state_error {
             app.status =
-                format!("Reminder storage unavailable: {error}. Local terminals remain available.");
+                format!("App state unavailable: {error}. Local terminals remain available.");
         }
         let focus = app.focus();
         let updates = app.check_updates();
@@ -591,8 +517,6 @@ impl Desktop {
                             lifetime: None,
                             terminal: None,
                             stopped_output: None,
-                            recipient: None,
-                            reminders: Reminders::default(),
                             delegation: {
                                 let mut state = desktop_delegation::TabState::default();
                                 state.terminal_number = tab.terminal_number.unwrap_or_default();
@@ -787,8 +711,6 @@ impl Desktop {
                         terminal: None,
                         stopped_output: None,
                         provider: Some(provider),
-                        recipient: None,
-                        reminders: Reminders::default(),
                         delegation: desktop_delegation::TabState::default(),
                     };
                 }
@@ -823,8 +745,6 @@ impl Desktop {
                         terminal: None,
                         stopped_output: None,
                         provider: None,
-                        recipient: None,
-                        reminders: Reminders::default(),
                         delegation: desktop_delegation::TabState::default(),
                     };
                 }
@@ -880,9 +800,6 @@ impl Desktop {
                         }
                     }
                 });
-                let recipient = provider.and_then(|provider| {
-                    TerminalRecipient::new(terminal.child_pid()?, provider, directory).ok()
-                });
                 Tab {
                     id,
                     title,
@@ -896,8 +813,6 @@ impl Desktop {
                     terminal: Some(terminal),
                     stopped_output: None,
                     provider,
-                    recipient,
-                    reminders: Reminders::default(),
                 }
             }
             Err(error) => {
@@ -910,8 +825,6 @@ impl Desktop {
                     terminal: None,
                     stopped_output: None,
                     provider,
-                    recipient: None,
-                    reminders: Reminders::default(),
                     delegation: desktop_delegation::TabState::default(),
                 }
             }
@@ -1030,7 +943,6 @@ impl Desktop {
             Message::AutomaticNotifications(value) => {
                 self.preferences.draft.automatic_notifications = value
             }
-            Message::Autoreview(value) => self.preferences.draft.autoreview = value,
             Message::Delegation(epoch, event) => return self.delegation_message(epoch, event),
             Message::Save => {
                 self.save();
@@ -1119,7 +1031,6 @@ impl Desktop {
                     self.status = "Keep one terminal per workspace; exit the application to close all sessions".into();
                     return Task::none();
                 }
-                self.withdraw(terminal_id);
                 let workspace = &mut self.workspaces[self.active];
                 let pane = workspace.panes.get_mut(pane_id).expect("pane exists");
                 if pane.tabs.len() > 1 {
@@ -1157,7 +1068,6 @@ impl Desktop {
                     .or_else(|| tab.delegation.directory.clone())
                     .unwrap_or_else(|| workspace.directory.clone());
                 let title = tab.title.clone();
-                self.withdraw(terminal_id);
                 // Retire the old PTY first; the relaunch keeps its terminal number, so
                 // the same session (and, once it exits, instance) continues.
                 let pane = self.workspaces[self.active]
@@ -1450,14 +1360,6 @@ impl Desktop {
                     for (_, pane) in workspace.panes.iter_mut() {
                         if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id) {
                             tab.delegation.note_command(&command);
-                            if matches!(
-                                &command,
-                                iced_term::BackendCommand::Write(_)
-                                    | iced_term::BackendCommand::MouseReport(..)
-                            ) && let Some(recipient) = &mut tab.recipient
-                            {
-                                recipient.note_human_input();
-                            }
                             if let Some(terminal) = &mut tab.terminal {
                                 match terminal.handle(iced_term::Command::ProxyToBackend(command)) {
                                     iced_term::actions::Action::ChangeTitle(title) => {
@@ -1465,7 +1367,6 @@ impl Desktop {
                                     }
                                     iced_term::actions::Action::Shutdown => {
                                         self.dirty = true;
-                                        tab.reminders.recovery.reset();
                                         // Preserve only the bounded visible text, then release
                                         // the PTY and its subscription. This is never input-ready.
                                         tab.stopped_output = Some(terminal.screen_text());
@@ -1496,14 +1397,6 @@ impl Desktop {
                                             tab.lifetime.take();
                                         }
                                         tab.terminal = None;
-                                        tab.recipient = None;
-                                        tab.reminders.consent = false;
-                                        if let Some(ledger) = &mut self.ledger
-                                            && let Err(error) = ledger.retire_terminal(id)
-                                        {
-                                            self.status =
-                                                format!("Reminder retirement failed: {error}");
-                                        }
                                         tab.title.push_str(" · exited");
                                         if let Some(code) = exit_code {
                                             tab.title.push_str(&format!(" (code {code})"));
@@ -1511,9 +1404,6 @@ impl Desktop {
                                     }
                                     _ => {}
                                 }
-                            }
-                            if let Some(terminal) = &tab.terminal {
-                                tab.reminders.gate.note_terminal_output(terminal);
                             }
                             return Task::none();
                         }
@@ -1631,154 +1521,11 @@ impl Desktop {
                             format!("Gateway unavailable: {error}. Queued delivery paused.");
                     }
                 }
-                if panel.loaded_at.is_some() {
-                    self.delegation
-                        .reconcile_backlog(&panel.project, &panel.tasks);
-                }
                 if std::mem::take(&mut panel.refresh_pending) {
                     return self.query(scope.workspace);
                 }
                 if panel.loaded_at.is_some() && panel.detail.refresh_with_list() {
                     return self.refresh_open_task(scope.workspace);
-                }
-            }
-            Message::RecoveryLoaded(scope, result) => {
-                let current = self.scope_current(&scope.query);
-                let registry = self.registry.clone();
-                if let Some(workspace) = self.workspaces.get_mut(scope.query.workspace) {
-                    for (_, pane) in workspace.panes.iter_mut() {
-                        if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == scope.terminal)
-                        {
-                            if tab.reminders.recovery.epoch != scope.epoch {
-                                return Task::none();
-                            }
-                            tab.reminders.recovery.flight.take();
-                            let actor_matches = registry.as_deref().is_some_and(|registry| {
-                                tab.recipient.as_mut().is_some_and(|recipient| {
-                                    recipient
-                                        .resolve(registry)
-                                        .is_ok_and(|actor| actor == &scope.actor)
-                                })
-                            });
-                            if !current || !tab.reminders.consent || !actor_matches {
-                                return Task::none();
-                            }
-                            match result {
-                                Ok(snapshot)
-                                    if snapshot.queried_at.elapsed() <= Duration::from_secs(15) =>
-                                {
-                                    tab.reminders.recovery.blocked_receipts.retain(|task| {
-                                        snapshot
-                                            .awaiting_receipt
-                                            .iter()
-                                            .any(|work| work.task == *task)
-                                    });
-                                    for work in
-                                        snapshot.ready.iter().chain(&snapshot.awaiting_receipt)
-                                    {
-                                        tab.reminders.recovery.managed.insert(work.task);
-                                    }
-                                    // Keep only current work and already queued deliveries.
-                                    tab.reminders.recovery.managed.retain(|task| {
-                                        snapshot
-                                            .ready
-                                            .iter()
-                                            .chain(&snapshot.awaiting_receipt)
-                                            .any(|work| work.task == *task)
-                                            || self.ledger.as_ref().is_some_and(|ledger| {
-                                                ledger.records().iter().any(|record| {
-                                                    record.task_id == *task
-                                                        && record.recipient.terminal_id()
-                                                            == scope.terminal
-                                                        && record.state == DeliveryState::Pending
-                                                })
-                                            })
-                                    });
-                                    tab.reminders.status = if snapshot
-                                        .unresolved_receipts
-                                        .is_empty()
-                                    {
-                                        "Gateway recovery checked; waiting for a supported empty prompt. No work was claimed or started.".into()
-                                    } else {
-                                        "Receipt outcome unknown; inspect gateway requests before retrying. Input stays paused for those tasks.".into()
-                                    };
-                                    tab.reminders.recovery.actor = Some(scope.actor);
-                                    tab.reminders.recovery.snapshot = Some(snapshot);
-                                }
-                                Ok(_) => {
-                                    tab.reminders.recovery.snapshot = None;
-                                    tab.reminders.status = "Gateway recovery took too long; input paused until a fresh query.".into();
-                                }
-                                Err(error) => {
-                                    tab.reminders.recovery.snapshot = None;
-                                    tab.reminders.status =
-                                        format!("Gateway recovery paused: {error}");
-                                }
-                            }
-                            return Task::none();
-                        }
-                    }
-                }
-            }
-            Message::ReceiptReported(scope, task, result) => {
-                let current = self.scope_current(&scope.query);
-                let registry = self.registry.clone();
-                if let Some(workspace) = self.workspaces.get_mut(scope.query.workspace) {
-                    for (_, pane) in workspace.panes.iter_mut() {
-                        if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == scope.terminal)
-                        {
-                            if tab.reminders.recovery.epoch != scope.epoch {
-                                return Task::none();
-                            }
-                            tab.reminders.recovery.flight.take();
-                            let actor_matches = registry.as_deref().is_some_and(|registry| {
-                                tab.recipient.as_mut().is_some_and(|recipient| {
-                                    recipient
-                                        .resolve(registry)
-                                        .is_ok_and(|actor| actor == &scope.actor)
-                                })
-                            });
-                            if !current || !tab.reminders.consent || !actor_matches {
-                                return Task::none();
-                            }
-                            tab.reminders.recovery.snapshot = None;
-                            tab.reminders.recovery.queried_at = None;
-                            tab.reminders.status = match result {
-                                Ok(()) => "Transport receipt reported; refreshing the task. Agent acknowledgment and execution remain unknown.".into(),
-                                Err(error) => {
-                                    tab.reminders.recovery.blocked_receipts.insert(task);
-                                    format!("Transport receipt unconfirmed: {error}. Inspect gateway requests before retrying.")
-                                }
-                            };
-                            return Task::none();
-                        }
-                    }
-                }
-            }
-            #[cfg(test)]
-            Message::Consent(id, enabled) => {
-                if !enabled {
-                    self.withdraw(id);
-                } else if self.ledger.is_some() {
-                    let mut query_workspace = None;
-                    for (index, workspace) in self.workspaces.iter_mut().enumerate() {
-                        for (_, pane) in workspace.panes.iter_mut() {
-                            if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id)
-                                && let Some(recipient) = &mut tab.recipient
-                            {
-                                tab.reminders.consent = true;
-                                tab.reminders.recovery.reset();
-                                recipient.set_consent(true);
-                                query_workspace = Some(index);
-                                tab.reminders.status =
-                                    "Waiting for supported empty prompt; select a task to queue."
-                                        .into();
-                            }
-                        }
-                    }
-                    return query_workspace
-                        .map(|index| self.query(index))
-                        .unwrap_or_else(Task::none);
                 }
             }
             Message::DeliveryTick => {
@@ -1818,13 +1565,7 @@ impl Desktop {
                 let gateway_ticks = if self.embedded.busy || self.embedded.stopping {
                     Task::none()
                 } else {
-                    Task::batch([
-                        self.delivery_tick(),
-                        self.delegation_tick(),
-                        self.backlog_tick(),
-                        self.autoreview_tick(),
-                        self.routing_tick(),
-                    ])
+                    Task::batch([self.delegation_tick(), self.routing_tick()])
                 };
                 return Task::batch([gateway_ticks, updates]);
             }
@@ -1926,25 +1667,12 @@ impl Desktop {
         {
             return self.stop_local_server(ServerExit::Restart);
         }
-        let had_ledger = self.pause_for_restart();
+        self.pause_for_restart();
         match start(&path, &self.workspaces[self.active].directory) {
             Ok(()) => iced::exit(),
             Err(error) => {
                 self.restarting = false;
                 self.updates.error = format!("Could not restart: {error}");
-                if had_ledger {
-                    let reopened = self
-                        .registry
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("reminder storage path unavailable"))
-                        .and_then(|p| DeliveryLedger::open(&p.join("deliveries.json")));
-                    match reopened {
-                        Ok(ledger) => self.ledger = Some(ledger),
-                        Err(error) => self.updates.error.push_str(&format!(
-                            "; reminder storage could not be reopened: {error}"
-                        )),
-                    }
-                }
                 if self.preferences.current.mode == GatewayMode::Server {
                     self.start_local_server()
                 } else {
@@ -1954,21 +1682,9 @@ impl Desktop {
         }
     }
 
-    fn pause_for_restart(&mut self) -> bool {
-        let ids: Vec<_> = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
-            .map(|t| t.id)
-            .collect();
-        for id in ids {
-            self.withdraw(id);
-        }
+    fn pause_for_restart(&mut self) {
         self.delegation.stop();
-        let had_ledger = self.ledger.is_some();
-        drop(self.ledger.take());
         self.restarting = true;
-        had_ledger
     }
 
     fn updates_view(&self) -> Element<'_, Message> {
@@ -2231,15 +1947,6 @@ impl Desktop {
             self.embedded.status = "Enter the server address and peering key.".into();
             return Task::none();
         }
-        let ids: Vec<_> = self
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.panes.iter().flat_map(|(_, pane)| &pane.tabs))
-            .map(|tab| tab.id)
-            .collect();
-        for id in ids {
-            self.withdraw(id);
-        }
         self.delegation.stop();
         self.embedded.busy = true;
         self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
@@ -2320,15 +2027,6 @@ impl Desktop {
             self.embedded.invitation = None;
             self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
             let epoch = self.embedded.epoch;
-            let ids: Vec<_> = self
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.panes.iter().flat_map(|(_, pane)| &pane.tabs))
-                .map(|tab| tab.id)
-                .collect();
-            for id in ids {
-                self.withdraw(id);
-            }
             self.delegation.stop();
             return Task::perform(
                 async move { server.stop().await.map_err(|error| error.to_string()) },
@@ -2363,15 +2061,6 @@ impl Desktop {
             }
             return self.close_preferences();
         }
-        let ids: Vec<_> = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.panes.iter().flat_map(|(_, p)| &p.tabs))
-            .map(|t| t.id)
-            .collect();
-        for id in ids {
-            self.withdraw(id);
-        }
         for workspace in &mut self.workspaces {
             let panel = &mut workspace.gateway;
             panel.revision += 1;
@@ -2383,9 +2072,7 @@ impl Desktop {
             panel.loaded_at = None;
             panel.queried_at = None;
             panel.tasks.clear();
-            panel.status =
-                "Gateway preferences changed. Refresh to connect; reminder consent withdrawn."
-                    .into();
+            panel.status = "Gateway preferences changed. Refresh to connect.".into();
         }
         self.delegation.stop();
         self.preferences.current = draft;
@@ -2537,9 +2224,8 @@ impl Desktop {
         };
         content = content
             .push(text(&self.embedded.status))
-            .push(checkbox(draft.automatic_notifications).label("Send gateway notifications and assign queued work to idle agents in this app").on_toggle(Message::AutomaticNotifications))
-            .push(checkbox(draft.autoreview).label("Queue independent completion reviews").on_toggle(Message::Autoreview))
-            .push(text("Completed tasks create one queued review for a different agent. Idle agents pick eligible tasks oldest first, including reviews and confirmed findings. Reviews inspect the source task and associated comments without changing code. Explicit User review still waits for your decision.").size(12))
+            .push(checkbox(draft.automatic_notifications).label("Let the amux server assign queued work and send task notifications to agents in this app").on_toggle(Message::AutomaticNotifications))
+            .push(text("On amux servers (Server or Client mode) the server decides: idle agents receive eligible tasks oldest first, completed tasks get one review by a different agent, and owners and requesters hear about their tasks. Explicit User review still waits for your decision. A legacy gateway gets no automatic task work; ask an agent directly.").size(12))
             .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
             .push(text("Repository matching is required. Settings are saved on this device.").size(12))
             .push(text(&self.workspaces[self.active].gateway.status).size(13));
@@ -2561,15 +2247,6 @@ impl Desktop {
     }
 
     fn bind_project(&mut self, workspace: usize, project: String) {
-        let ids: Vec<_> = self.workspaces[workspace]
-            .panes
-            .iter()
-            .flat_map(|(_, pane)| &pane.tabs)
-            .map(|tab| tab.id)
-            .collect();
-        for id in ids {
-            self.withdraw(id);
-        }
         let panel = &mut self.workspaces[workspace].gateway;
         panel.routing = Default::default();
         panel.project = project;
@@ -2718,343 +2395,6 @@ impl Desktop {
         )
     }
 
-    fn recovery_request(&mut self, index: usize, id: u64, receive: Option<Uuid>) -> Task<Message> {
-        let query = self.scope(index);
-        let Some(registry) = self.registry.as_deref() else {
-            return Task::none();
-        };
-        let workspace = &mut self.workspaces[index];
-        let Some(tab) = workspace
-            .panes
-            .iter_mut()
-            .flat_map(|(_, pane)| &mut pane.tabs)
-            .find(|tab| tab.id == id)
-        else {
-            return Task::none();
-        };
-        if !tab.reminders.consent
-            || tab.reminders.recovery.flight.is_some()
-            || !cfg!(target_os = "linux")
-            || tab.provider != Some(Provider::Codex)
-        {
-            return Task::none();
-        }
-        let Some(recipient) = &mut tab.recipient else {
-            return Task::none();
-        };
-        let Ok(actor) = recipient.resolve(registry).cloned() else {
-            return Task::none();
-        };
-        if amux::project_identity::resolve(&query.directory)
-            .ok()
-            .map(|p| p.directory)
-            .as_ref()
-            != Some(&actor.project_directory)
-        {
-            return Task::none();
-        }
-        let Some(terminal) = tab.terminal.as_ref() else {
-            return Task::none();
-        };
-        if receive.is_some()
-            && tab
-                .reminders
-                .gate
-                .observe(terminal, recipient, Instant::now())
-                .is_none()
-        {
-            return Task::none();
-        }
-        let credentials = match desktop_recovery::Credentials::from_preferences(
-            query.project.trim(),
-            &self.preferences.current,
-        ) {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                tab.reminders.recovery.queried_at = Some(Instant::now());
-                tab.reminders.recovery.snapshot = None;
-                tab.reminders.status = format!("Gateway recovery unavailable: {error}");
-                return Task::none();
-            }
-        };
-        tab.reminders.recovery.actor = Some(actor.clone());
-        let scope = RecoveryScope {
-            query,
-            terminal: id,
-            epoch: tab.reminders.recovery.epoch,
-            actor: actor.clone(),
-        };
-        let task = match receive {
-            Some(task) => {
-                if tab.reminders.recovery.blocked_receipts.contains(&task)
-                    || !tab.reminders.recovery.fresh()
-                    || tab
-                        .reminders
-                        .recovery
-                        .snapshot
-                        .as_ref()
-                        .is_none_or(|snapshot| {
-                            snapshot.unresolved_receipts.contains(&task)
-                                || !snapshot
-                                    .awaiting_receipt
-                                    .iter()
-                                    .any(|work| work.task == task)
-                        })
-                {
-                    return Task::none();
-                }
-                Task::perform(
-                    async move {
-                        desktop_recovery::receive(credentials, actor, task)
-                            .await
-                            .map_err(|error| error.to_string())
-                    },
-                    move |result| Message::ReceiptReported(scope.clone(), task, result),
-                )
-            }
-            None => Task::perform(
-                async move {
-                    desktop_recovery::query(credentials, actor)
-                        .await
-                        .map_err(|error| error.to_string())
-                },
-                move |result| Message::RecoveryLoaded(scope.clone(), result),
-            ),
-        };
-        let (task, handle) = task.abortable();
-        tab.reminders.recovery.flight = Some(handle.abort_on_drop());
-        tab.reminders.recovery.queried_at = Some(Instant::now());
-        if receive.is_none() {
-            tab.reminders.recovery.snapshot = None;
-        }
-        task
-    }
-
-    fn withdraw(&mut self, id: u64) {
-        for workspace in &mut self.workspaces {
-            for (_, pane) in workspace.panes.iter_mut() {
-                if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id) {
-                    tab.reminders.consent = false;
-                    tab.reminders.recovery.reset();
-                    tab.reminders.status = "Reminders off; pending input retired.".into();
-                    if let Some(recipient) = &mut tab.recipient {
-                        recipient.set_consent(false);
-                    }
-                }
-            }
-        }
-        if let Some(ledger) = &mut self.ledger
-            && let Err(error) = ledger.retire_terminal(id)
-        {
-            self.status = format!("Reminder retirement failed: {error}. Delivery disabled.");
-        }
-    }
-
-    fn delivery_tick(&mut self) -> Task<Message> {
-        if self.preferences.current.automatic_notifications {
-            return Task::none();
-        }
-        let Some(ledger) = &mut self.ledger else {
-            return Task::none();
-        };
-        let automatic = std::env::var_os("AMUX_GATEWAY_MACHINE_ID").is_some()
-            || std::env::var_os("AMUX_GATEWAY_MACHINE_KEY").is_some();
-        let mut legacy_queries = Vec::new();
-        let mut recovery_queries = Vec::new();
-        let mut receipts = Vec::new();
-        for (index, workspace) in self.workspaces.iter_mut().enumerate() {
-            let mut legacy_pending = false;
-            for (_, pane) in workspace.panes.iter_mut() {
-                for tab in &mut pane.tabs {
-                    if !tab.reminders.consent {
-                        continue;
-                    }
-                    let (Some(terminal), Some(recipient), Some(registry)) =
-                        (&tab.terminal, &mut tab.recipient, &self.registry)
-                    else {
-                        continue;
-                    };
-                    let Ok(actor) = recipient.resolve(registry).cloned() else {
-                        continue;
-                    };
-                    let bridge = &mut tab.reminders.recovery;
-                    let poll_due = automatic
-                        && cfg!(target_os = "linux")
-                        && tab.provider == Some(Provider::Codex)
-                        && bridge.flight.is_none()
-                        && bridge
-                            .queried_at
-                            .is_none_or(|time| time.elapsed() >= Duration::from_secs(10));
-                    if poll_due {
-                        recovery_queries.push((index, tab.id));
-                    }
-                    let snapshot = bridge
-                        .snapshot
-                        .as_ref()
-                        .filter(|_| bridge.fresh() && bridge.actor.as_ref() == Some(&actor));
-                    let mut record = ledger
-                        .records()
-                        .iter()
-                        .find(|record| {
-                            record.recipient.terminal_id() == tab.id
-                                && record.state == DeliveryState::Pending
-                        })
-                        .cloned();
-                    if record.is_none()
-                        && let Some(snapshot) = snapshot
-                        && let Some(address) = recipient.address(tab.id)
-                        && let Some(work) = snapshot.ready.iter().find(|work| {
-                            !ledger.records().iter().any(|record| {
-                                record.task_id == work.task
-                                    && record.recipient == address
-                                    && record.cause == DeliveryCause::RecoveryQuery
-                            })
-                        })
-                    {
-                        match ledger.queue(
-                            work.task,
-                            address,
-                            DeliveryCause::RecoveryQuery,
-                            snapshot.observed_at_ms,
-                            unix_ms(),
-                        ) {
-                            Ok(id) => {
-                                bridge.managed.insert(work.task);
-                                record = ledger
-                                    .records()
-                                    .iter()
-                                    .find(|record| {
-                                        record.id == id && record.state == DeliveryState::Pending
-                                    })
-                                    .cloned();
-                            }
-                            Err(error) => {
-                                tab.reminders.status =
-                                    format!("Recovery reminder not queued: {error}")
-                            }
-                        }
-                    }
-                    if let Some(record) = record {
-                        let managed = bridge.managed.contains(&record.task_id);
-                        legacy_pending |= !managed;
-                        let (observed_at, reminder) = if managed {
-                            let Some(snapshot) = snapshot else {
-                                continue;
-                            };
-                            let Some(work) = snapshot
-                                .ready
-                                .iter()
-                                .find(|work| work.task == record.task_id)
-                            else {
-                                if let Err(error) = ledger.retire_pending(record.id) {
-                                    tab.reminders.status =
-                                        format!("Reminder retirement failed: {error}");
-                                }
-                                continue;
-                            };
-                            if poll_due {
-                                continue;
-                            }
-                            (snapshot.observed_at_ms, work.text.clone())
-                        } else {
-                            if !workspace.gateway.fresh() {
-                                continue;
-                            }
-                            if !workspace.gateway.pending_task(record.task_id) {
-                                if let Err(error) = ledger.retire_pending(record.id) {
-                                    tab.reminders.status =
-                                        format!("Reminder retirement failed: {error}");
-                                } else {
-                                    tab.reminders.status =
-                                        "Task is no longer pending; reminder retired.".into();
-                                }
-                                continue;
-                            }
-                            (
-                                workspace.gateway.observed_at_ms,
-                                format!(
-                                    "Pending task {} in project {}. Fetch its current record and check eligibility before deciding to claim.",
-                                    record.task_id,
-                                    workspace.gateway.project.trim()
-                                ),
-                            )
-                        };
-                        let now = unix_ms();
-                        if let Err(error) = ledger.queue(
-                            record.task_id,
-                            record.recipient.clone(),
-                            DeliveryCause::RecoveryQuery,
-                            observed_at,
-                            now,
-                        ) {
-                            tab.reminders.status = format!("Reminder storage failed: {error}");
-                            continue;
-                        }
-                        match submit_literal(
-                            ledger,
-                            &mut tab.reminders.gate,
-                            terminal,
-                            recipient,
-                            record.id,
-                            &reminder,
-                            now,
-                        ) {
-                            Ok(Submission::Deferred) => {}
-                            Ok(Submission::Enqueued) => {
-                                tab.reminders.status =
-                                    "Reminder enqueued; agent acknowledgment and execution unknown."
-                                        .into()
-                            }
-                            Err(error) => {
-                                tab.reminders.status = format!(
-                                    "Reminder paused: {error}; no automatic retry after an input attempt."
-                                )
-                            }
-                        }
-                    } else if tab
-                        .reminders
-                        .gate
-                        .observe(terminal, recipient, Instant::now())
-                        .is_some()
-                        && !poll_due
-                        && bridge.flight.is_none()
-                        && let Some(snapshot) = snapshot
-                        && let Some(work) = snapshot.awaiting_receipt.iter().find(|work| {
-                            !bridge.blocked_receipts.contains(&work.task)
-                                && !snapshot.unresolved_receipts.contains(&work.task)
-                        })
-                    {
-                        receipts.push((index, tab.id, work.task));
-                    }
-                }
-            }
-            if legacy_pending
-                && !workspace.gateway.loading
-                && workspace
-                    .gateway
-                    .queried_at
-                    .is_none_or(|time| time.elapsed() >= Duration::from_secs(10))
-            {
-                legacy_queries.push(index);
-            }
-        }
-        let mut tasks: Vec<_> = legacy_queries
-            .into_iter()
-            .map(|index| self.query(index))
-            .collect();
-        tasks.extend(
-            recovery_queries
-                .into_iter()
-                .map(|(index, id)| self.recovery_request(index, id, None)),
-        );
-        tasks.extend(
-            receipts
-                .into_iter()
-                .map(|(index, id, task)| self.recovery_request(index, id, Some(task))),
-        );
-        Task::batch(tasks)
-    }
-
     fn task_form(&self) -> Element<'_, Message> {
         let panel = &self.workspaces[self.active].gateway;
         if let Some(request) = &panel.request {
@@ -3151,26 +2491,6 @@ impl Desktop {
     }
 }
 
-impl TaskPanel {
-    fn fresh(&self) -> bool {
-        self.loaded_at
-            .is_some_and(|time| time.elapsed() <= Duration::from_secs(15))
-    }
-
-    fn pending_task(&self, id: Uuid) -> bool {
-        self.fresh()
-            && self.tasks.iter().any(|task| {
-                task["id"]
-                    .as_str()
-                    .and_then(|value| Uuid::parse_str(value).ok())
-                    == Some(id)
-                    && task["status"] == "todo"
-                    && task["owner_origin"].is_null()
-                    && task["owner_agent_id"].as_str().is_none_or(str::is_empty)
-            })
-    }
-}
-
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3211,8 +2531,6 @@ mod tests {
                     terminal: None,
                     stopped_output: None,
                     provider: Some(Provider::Codex),
-                    recipient: None,
-                    reminders: Reminders::default(),
                     delegation: desktop_delegation::TabState::default(),
                 }],
                 active: 0,
@@ -3265,7 +2583,6 @@ mod tests {
             closing_workspace: None,
             next_id: 2,
             status: String::new(),
-            ledger: None,
             registry: None,
             snapshot_path: None,
             dirty: false,
@@ -3280,7 +2597,7 @@ mod tests {
     #[test]
     fn workspace_removal_preserves_selected_peer_and_saves_only_remaining_layout() {
         let mut app = desktop();
-        let (fixture, _, _) = restart_fixture();
+        let (fixture, _) = restart_fixture();
         let path = fixture.path().join("removed-layout.json");
         app.snapshot_path = Some(path.clone());
         for (i, workspace) in app.workspaces.iter_mut().enumerate() {
@@ -3498,12 +2815,8 @@ mod tests {
     }
 
     #[test]
-    fn update_badge_survives_a_failed_refresh_without_changing_sessions_or_consent() {
+    fn update_badge_survives_a_failed_refresh_without_changing_sessions() {
         let mut app = desktop();
-        let workspace = &mut app.workspaces[0];
-        workspace.panes.get_mut(workspace.focused).unwrap().tabs[0]
-            .reminders
-            .consent = true;
         let _ = app.update(Message::UpdatesChecked(Ok(update_report())));
         assert!(app.updates.attention());
         let _ = app.update(Message::UpdatesChecked(Err("offline".into())));
@@ -3512,15 +2825,6 @@ mod tests {
         let _ = app.update(Message::Updates(true));
         assert!(app.preferences.open);
         assert_eq!(app.preferences.tab, PreferencesTab::Updates);
-        assert!(
-            app.workspaces[0]
-                .panes
-                .get(app.workspaces[0].focused)
-                .unwrap()
-                .tabs[0]
-                .reminders
-                .consent
-        );
         assert_eq!(app.workspaces.len(), 2);
     }
 
@@ -3542,7 +2846,7 @@ mod tests {
         assert_eq!(app.workspaces.len(), 2);
     }
 
-    fn restart_fixture() -> (tempfile::TempDir, Desktop, PathBuf) {
+    fn restart_fixture() -> (tempfile::TempDir, Desktop) {
         let (dir, mut app) = preferences_fixture();
         let exe = dir.path().join("amux-desktop-fixture");
         std::fs::write(&exe, b"old").unwrap();
@@ -3553,50 +2857,18 @@ mod tests {
         }
         app.snapshot_path = Some(dir.path().join("layout.json"));
         app.registry = Some(dir.path().to_owned());
-        let ledger_path = dir.path().join("deliveries.json");
-        app.ledger = Some(DeliveryLedger::open(&ledger_path).unwrap());
-        (dir, app, ledger_path)
-    }
-
-    #[test]
-    fn restart_releases_the_ledger_before_the_replacement_boots() {
-        let (_dir, mut app, ledger_path) = restart_fixture();
-        assert!(DeliveryLedger::open(&ledger_path).is_err());
-        let opened = std::cell::Cell::new(false);
-        let _ = app.restart_with(|_, _| {
-            let _replacement_ledger = DeliveryLedger::open(&ledger_path)?;
-            opened.set(true);
-            Ok(())
-        });
-        assert!(
-            opened.get(),
-            "replacement failed to acquire ledger: {}",
-            app.updates.error
-        );
+        (dir, app)
     }
 
     #[test]
     fn offline_update_check_does_not_hide_a_locally_ready_restart() {
-        let (_dir, mut app, _ledger) = restart_fixture();
+        let (_dir, mut app) = restart_fixture();
         app.updates.report = None;
         let _ = app.update(Message::UpdatesChecked(Err("offline".into())));
         assert!(app.updates.report.is_none());
         assert!(app.updates.restart.required);
         assert!(app.updates.attention());
         assert!(app.updates.error.contains("offline"));
-    }
-
-    #[test]
-    fn failed_restart_reacquires_ledger_and_keeps_the_current_app_usable() {
-        let (_dir, mut app, ledger_path) = restart_fixture();
-        let _ = app.restart_with(|_, _| anyhow::bail!("fixture launch failed"));
-        assert!(!app.restarting);
-        assert!(app.ledger.is_some());
-        assert!(DeliveryLedger::open(&ledger_path).is_err());
-        assert!(app.updates.error.contains("fixture launch failed"));
-        let _ = app.update(Message::Updates(true));
-        assert!(app.preferences.open);
-        assert_eq!(app.preferences.tab, PreferencesTab::Updates);
     }
 
     fn preferences_fixture() -> (tempfile::TempDir, Desktop) {
@@ -3614,26 +2886,18 @@ mod tests {
     }
 
     #[test]
-    fn gateway_rebind_rejects_late_lists_and_withdraws_all_consent() {
+    fn gateway_rebind_rejects_late_lists() {
         let (_dir, mut app) = preferences_fixture();
         let old_scope = app.scope(0);
         for workspace in &mut app.workspaces {
             workspace.gateway.loading = true;
             workspace.gateway.tasks.push(json!({"id": Uuid::new_v4()}));
-            workspace.panes.get_mut(workspace.focused).unwrap().tabs[0]
-                .reminders
-                .consent = true;
         }
         let _ = app.update(Message::SavePreferences);
         assert!(app.workspaces.iter().all(|w| w.gateway.project.is_empty()));
         for workspace in &app.workspaces {
             assert!(workspace.gateway.loading);
             assert!(workspace.gateway.tasks.is_empty());
-            assert!(
-                !workspace.panes.get(workspace.focused).unwrap().tabs[0]
-                    .reminders
-                    .consent
-            );
         }
         let _ = app.update(Message::TasksLoaded(
             old_scope,
@@ -3743,7 +3007,6 @@ mod tests {
         );
         assert_eq!(pane.tabs[1].id, 43);
         assert!(pane.tabs[1].terminal.is_none());
-        assert!(pane.tabs.iter().all(|t| !t.reminders.consent));
         assert_eq!(app.next_id, 44);
     }
 
@@ -3786,255 +3049,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn recovery_fixture() -> (tempfile::TempDir, Desktop, RecoveryScope) {
-        use amux::identity::{AgentIdentity, AgentRecord};
-        use std::os::unix::fs::PermissionsExt;
-        let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
-        std::fs::create_dir_all(&target).unwrap();
-        let directory = tempfile::tempdir_in(target).unwrap();
-        std::fs::write(
-            directory.path().join("codex"),
-            "#!/bin/sh\nwhile :; do /bin/sleep 1; done\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            directory.path().join("codex"),
-            std::fs::Permissions::from_mode(0o700),
-        )
-        .unwrap();
-        let pid_path = directory.path().join("child.pid");
-        let terminal = Terminal::new(
-            0,
-            iced_term::settings::Settings {
-                backend: iced_term::settings::BackendSettings {
-                    program: "/bin/sh".into(),
-                    args: vec![
-                        "-c".into(),
-                        "\"$1\" & echo $! > \"$2\"; wait".into(),
-                        "amux-fixture".into(),
-                        directory.path().join("codex").display().to_string(),
-                        pid_path.display().to_string(),
-                    ],
-                    working_directory: Some(directory.path().into()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(8);
-        let child = loop {
-            if let Ok(pid) = std::fs::read_to_string(&pid_path)
-                && let Ok(pid) = pid.trim().parse::<u32>()
-            {
-                break pid;
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let actor = AgentIdentity::for_terminal(Provider::Codex, directory.path(), 1).unwrap();
-        let record = AgentRecord::inspect(actor.clone(), child).unwrap();
-        std::fs::create_dir(directory.path().join("agents")).unwrap();
-        std::fs::write(
-            directory
-                .path()
-                .join("agents")
-                .join(format!("{}.json", actor.session_id)),
-            serde_json::to_vec(&record).unwrap(),
-        )
-        .unwrap();
-        let lifetime =
-            amux::terminal_lifetime::TerminalLifetime::capture(terminal.child_pid().unwrap())
-                .unwrap();
-        let mut recipient = TerminalRecipient::new(
-            terminal.child_pid().unwrap(),
-            Provider::Codex,
-            directory.path(),
-        )
-        .unwrap();
-        recipient.resolve(directory.path()).unwrap();
-        recipient.set_consent(true);
-        let mut app = desktop();
-        app.registry = Some(directory.path().into());
-        app.ledger = Some(DeliveryLedger::open(&directory.path().join("deliveries.json")).unwrap());
-        app.workspaces[0].directory = directory.path().canonicalize().unwrap();
-        let focused = app.workspaces[0].focused;
-        let tab = &mut app.workspaces[0].panes.get_mut(focused).unwrap().tabs[0];
-        tab.lifetime = Some(lifetime);
-        tab.terminal = Some(terminal);
-        tab.recipient = Some(recipient);
-        tab.reminders.consent = true;
-        tab.reminders.recovery.epoch = 1;
-        let scope = RecoveryScope {
-            query: app.scope(0),
-            terminal: 0,
-            epoch: 1,
-            actor,
-        };
-        (directory, app, scope)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn recovery_snapshot(task: Uuid) -> desktop_recovery::Recovery {
-        desktop_recovery::Recovery {
-            ready: vec![desktop_recovery::Work {
-                task,
-                text: format!(
-                    "Task {task} project project-0. Check current progress before any claim or execution."
-                ),
-            }],
-            awaiting_receipt: Vec::new(),
-            unresolved_receipts: HashSet::new(),
-            observed_at_ms: unix_ms(),
-            queried_at: Instant::now(),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn recovery_callbacks_bind_consent_epoch_project_and_real_recipient() {
-        let (_directory, mut app, scope) = recovery_fixture();
-        let task = Uuid::new_v4();
-        let _ = app.update(Message::RecoveryLoaded(
-            scope.clone(),
-            Ok(recovery_snapshot(task)),
-        ));
-        let focused = app.workspaces[0].focused;
-        assert!(
-            app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-                .reminders
-                .recovery
-                .snapshot
-                .is_some()
-        );
-        app.withdraw(0);
-        let _ = app.update(Message::Consent(0, true));
-        // Native actor is still alive; only the withdrawn consent epoch differs.
-        assert_eq!(
-            app.workspaces[0].panes.get_mut(focused).unwrap().tabs[0]
-                .recipient
-                .as_mut()
-                .unwrap()
-                .resolve(app.registry.as_deref().unwrap())
-                .unwrap(),
-            &scope.actor
-        );
-        let _ = app.update(Message::RecoveryLoaded(
-            scope.clone(),
-            Ok(recovery_snapshot(task)),
-        ));
-        assert!(
-            app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-                .reminders
-                .recovery
-                .snapshot
-                .is_none()
-        );
-        let mut rebound = scope.clone();
-        rebound.epoch = app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-            .reminders
-            .recovery
-            .epoch;
-        rebound.query.project = "other-project".into();
-        let _ = app.update(Message::RecoveryLoaded(
-            rebound,
-            Ok(recovery_snapshot(task)),
-        ));
-        assert!(
-            app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-                .reminders
-                .recovery
-                .snapshot
-                .is_none()
-        );
-        let mut wrong_actor = scope.clone();
-        wrong_actor.epoch = app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-            .reminders
-            .recovery
-            .epoch;
-        wrong_actor.actor.session_id = Uuid::new_v4();
-        let _ = app.update(Message::RecoveryLoaded(
-            wrong_actor,
-            Ok(recovery_snapshot(task)),
-        ));
-        assert!(
-            app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-                .reminders
-                .recovery
-                .snapshot
-                .is_none()
-        );
-        assert!(app.ledger.as_ref().unwrap().records().is_empty());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn transport_receipt_requires_a_fresh_query_and_never_claims_or_queues_input() {
-        let (_directory, mut app, scope) = recovery_fixture();
-        let task = Uuid::new_v4();
-        let _ = app.update(Message::RecoveryLoaded(
-            scope.clone(),
-            Ok(recovery_snapshot(task)),
-        ));
-        let _ = app.update(Message::ReceiptReported(scope, task, Ok(())));
-        let tab = &app.workspaces[0].panes.iter().next().unwrap().1.tabs[0];
-        assert!(tab.reminders.recovery.snapshot.is_none());
-        assert!(tab.reminders.recovery.queried_at.is_none());
-        assert!(
-            tab.reminders
-                .status
-                .contains("Agent acknowledgment and execution remain unknown")
-        );
-        assert!(app.ledger.as_ref().unwrap().records().is_empty());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn recovery_expiry_pauses_and_withdrawal_prevents_same_generation_replay() {
-        let (_directory, mut app, scope) = recovery_fixture();
-        let task = Uuid::new_v4();
-        let _ = app.update(Message::RecoveryLoaded(
-            scope.clone(),
-            Ok(recovery_snapshot(task)),
-        ));
-        let focused = app.workspaces[0].focused;
-        app.workspaces[0].panes.get_mut(focused).unwrap().tabs[0]
-            .reminders
-            .recovery
-            .snapshot
-            .as_mut()
-            .unwrap()
-            .queried_at = Instant::now() - Duration::from_secs(16);
-        let _ = app.delivery_tick();
-        assert!(app.ledger.as_ref().unwrap().records().is_empty());
-        let _ = app.update(Message::RecoveryLoaded(
-            scope.clone(),
-            Ok(recovery_snapshot(task)),
-        ));
-        let _ = app.delivery_tick();
-        assert_eq!(app.ledger.as_ref().unwrap().records().len(), 1);
-        assert_eq!(
-            app.ledger.as_ref().unwrap().records()[0].state,
-            DeliveryState::Pending,
-            "unsupported fixture prompt cannot attempt input"
-        );
-        app.withdraw(0);
-        let _ = app.update(Message::Consent(0, true));
-        let mut fresh = scope;
-        fresh.epoch = app.workspaces[0].panes.get(focused).unwrap().tabs[0]
-            .reminders
-            .recovery
-            .epoch;
-        let _ = app.update(Message::RecoveryLoaded(fresh, Ok(recovery_snapshot(task))));
-        let _ = app.delivery_tick();
-        assert_eq!(app.ledger.as_ref().unwrap().records().len(), 1);
-        assert_eq!(
-            app.ledger.as_ref().unwrap().records()[0].state,
-            DeliveryState::Retired
-        );
-    }
-
-    #[cfg(target_os = "linux")]
     #[test]
     fn exited_terminal_retains_diagnostic_text_and_releases_input() {
         use iced::futures::StreamExt;
@@ -4065,7 +3079,6 @@ mod tests {
         let focused = app.workspaces[0].focused;
         let tab = &mut app.workspaces[0].panes.get_mut(focused).unwrap().tabs[0];
         tab.terminal = Some(terminal);
-        tab.reminders.consent = true;
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let deadline = Instant::now() + Duration::from_secs(8);
         while app.workspaces[0].panes.get(focused).unwrap().tabs[0]
@@ -4089,8 +3102,6 @@ mod tests {
             "{output:?}"
         );
         assert!(output.chars().count() <= 32_768);
-        assert!(tab.recipient.is_none());
-        assert!(!tab.reminders.consent);
         assert!(tab.title.ends_with(" · exited (code 17)"));
         assert!(app.status.contains("process exited with code 17"));
         assert!(
@@ -4282,7 +3293,13 @@ mod tests {
                 {"id": task, "status": "todo", "title": "first workspace"}
             ])),
         ));
-        assert!(app.workspaces[0].gateway.pending_task(task));
+        assert!(
+            app.workspaces[0]
+                .gateway
+                .tasks
+                .iter()
+                .any(|t| t["id"] == task.to_string())
+        );
         assert!(app.workspaces[1].gateway.tasks.is_empty());
         let _ = app.update(Message::SelectWorkspace(0));
         let _ = app.update(Message::GatewayProject("replacement".into()));
@@ -4304,92 +3321,6 @@ mod tests {
         assert!(!app.scope_current(&wrong_directory));
     }
 
-    #[test]
-    fn failed_expired_and_changed_task_queries_cannot_supply_pending_work() {
-        let mut app = desktop();
-        let task = Uuid::new_v4();
-        let scope = app.scope(0);
-        let _ = app.update(Message::TasksLoaded(
-            scope.clone(),
-            Ok(json!([
-                {"id": task, "status": "todo"}
-            ])),
-        ));
-        assert!(app.workspaces[0].gateway.pending_task(task));
-        app.workspaces[0].gateway.loaded_at = Some(Instant::now() - Duration::from_secs(16));
-        assert!(!app.workspaces[0].gateway.pending_task(task));
-        let _ = app.update(Message::TasksLoaded(
-            scope.clone(),
-            Ok(json!([
-                {"id": task, "status": "in_progress"}
-            ])),
-        ));
-        assert!(
-            !app.workspaces[0].gateway.pending_task(task),
-            "claimed recovery needs separate provenance"
-        );
-        let _ = app.update(Message::TasksLoaded(
-            scope.clone(),
-            Ok(json!([
-                {"id": task, "status": "todo", "owner_origin": {"session_id": Uuid::new_v4()}}
-            ])),
-        ));
-        assert!(
-            !app.workspaces[0].gateway.pending_task(task),
-            "inconsistent ownership must defer"
-        );
-        let _ = app.update(Message::TasksLoaded(scope.clone(), Err("offline".into())));
-        assert!(!app.workspaces[0].gateway.fresh());
-        assert!(app.workspaces[0].gateway.tasks.is_empty());
-        let _ = app.update(Message::TasksLoaded(scope, Ok(json!({"tasks": []}))));
-        assert!(!app.workspaces[0].gateway.fresh());
-    }
-
-    #[test]
-    fn consent_is_ephemeral_and_project_rebinding_withdraws_only_that_workspace() {
-        let mut app = desktop();
-        for workspace in &app.workspaces {
-            assert!(
-                !workspace.panes.get(workspace.focused).unwrap().tabs[0]
-                    .reminders
-                    .consent
-            );
-        }
-        for workspace in &mut app.workspaces {
-            workspace.panes.get_mut(workspace.focused).unwrap().tabs[0]
-                .reminders
-                .consent = true;
-        }
-        let _ = app.update(Message::GatewayProject("replacement".into()));
-        assert!(
-            !app.workspaces[0]
-                .panes
-                .get(app.workspaces[0].focused)
-                .unwrap()
-                .tabs[0]
-                .reminders
-                .consent
-        );
-        assert!(
-            app.workspaces[1]
-                .panes
-                .get(app.workspaces[1].focused)
-                .unwrap()
-                .tabs[0]
-                .reminders
-                .consent
-        );
-        let _ = app.update(Message::Consent(1, false));
-        assert!(
-            !app.workspaces[1]
-                .panes
-                .get(app.workspaces[1].focused)
-                .unwrap()
-                .tabs[0]
-                .reminders
-                .consent
-        );
-    }
     #[test]
     fn fresh_server_default_preserves_saved_and_environment_connections() {
         let fresh = startup_connection(None, GatewayPreferences::default());

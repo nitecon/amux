@@ -335,68 +335,6 @@ impl Gateway {
         self.list_filtered(project, None, false).await
     }
 
-    /// Atomic on the server: safe to retry after a lost response or from another host.
-    pub async fn enqueue_completion_review(
-        &self,
-        project: &str,
-        task: uuid::Uuid,
-    ) -> Result<Option<Value>> {
-        let mut url = self.projects_url()?;
-        url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("invalid gateway URL"))?
-            .extend([project, "tasks", &task.to_string(), "review"]);
-        let response = self
-            .transport
-            .current()
-            .await?
-            .request(Method::POST, url)
-            .send()
-            .await?;
-        if response.status() == reqwest::StatusCode::NO_CONTENT {
-            return Ok(None);
-        }
-        if matches!(
-            response.status(),
-            reqwest::StatusCode::CONFLICT | reqwest::StatusCode::NOT_FOUND
-        ) {
-            let mut source_url = self.projects_url()?;
-            source_url
-                .path_segments_mut()
-                .map_err(|_| anyhow::anyhow!("invalid gateway URL"))?
-                .extend([project, "tasks", &task.to_string()]);
-            let source = self
-                .transport
-                .current()
-                .await?
-                .request(Method::GET, source_url)
-                .send()
-                .await?;
-            if source.status() == reqwest::StatusCode::NOT_FOUND {
-                return Ok(None);
-            }
-            let source = response_json(source).await?;
-            if source["status"] != "done" {
-                return Ok(None);
-            }
-        }
-        ensure!(
-            response.status().is_success(),
-            "completion review queue returned {}; check gateway support and queue.log",
-            response.status()
-        );
-        let task = response_json(response).await?;
-        ensure!(
-            task["id"]
-                .as_str()
-                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
-                && task["labels"]
-                    .as_array()
-                    .is_some_and(|labels| labels.iter().any(|label| label == "task-review")),
-            "gateway did not confirm a queued review task"
-        );
-        Ok(Some(task))
-    }
-
     /// `status` is a comma-separated filter; without it the gateway lists
     /// todo and in_progress. `include_stale` adds done tasks past its falloff window.
     pub async fn list_filtered(

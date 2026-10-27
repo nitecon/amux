@@ -1,6 +1,4 @@
-use amux::{
-    delegation::*, delegation_queue::Queue, identity::Provider, task_routing::SessionTarget,
-};
+use amux::{delegation::*, identity::Provider, task_routing::SessionTarget};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -25,37 +23,6 @@ fn target(number: u64) -> Target {
     }
 }
 
-#[test]
-fn informational_returns_can_reach_requester_during_user_review_without_resuming_work() {
-    let a = target(1);
-    let c = target(3);
-    let d = target(4);
-    let (_dir, mut queue) = fixture();
-    let mut result = event(1, &a, &c, Kind::Commented);
-    result.summary.as_mut().unwrap().state = "user_review".into();
-    queue
-        .receive(result, &[a.clone(), c.clone(), d.clone()], true, 1_000_000)
-        .unwrap();
-    queue.refresh(&[a.clone(), c, d], true, 1_000_000).unwrap();
-    let attempt = queue
-        .next(&std::collections::HashSet::from([a.session]))
-        .unwrap();
-    assert_eq!(attempt.target.session, a.session);
-    assert!(
-        attempt
-            .event
-            .recipient_terminal_text(&a, "A")
-            .contains("Do not claim, reopen, or implement")
-    );
-    let mut created = attempt.event.clone();
-    created.id = 2;
-    created.kind = Kind::Created;
-    assert!(!a.requester_result(&created));
-    queue
-        .receive(created, std::slice::from_ref(&a), true, 1_000_000)
-        .unwrap();
-    assert_eq!(queue.journal.receipts[1].outcome, Outcome::Skipped);
-}
 fn subscription(target: &Target) -> SessionTarget {
     SessionTarget {
         origin: target.origin.clone().unwrap(),
@@ -70,70 +37,6 @@ fn event(id: i64, requester: &Target, owner: &Target, kind: Kind) -> Event {
         "title":"Requested review", "requester":subscription(requester),"owner_origin":owner.origin,"owner_agent_id":owner.agent_id}
     })).unwrap().unwrap()
 }
-fn fixture() -> (tempfile::TempDir, Queue) {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
-    std::fs::create_dir_all(&root).unwrap();
-    let dir = tempfile::tempdir_in(root).unwrap();
-    let mut queue = Queue::open(dir.path().join("requester.json"), "fixture").unwrap();
-    queue.subscribed(0, 0).unwrap();
-    (dir, queue)
-}
-
-#[test]
-fn requester_a_gets_comments_and_completion_from_reassigned_c_without_notifying_d_or_c() {
-    let a = target(1);
-    let b = target(2);
-    let c = target(3);
-    let d = target(4);
-    let (_dir, mut queue) = fixture();
-    for (id, kind) in [(1, Kind::Commented), (2, Kind::Completed)] {
-        let mut result = event(id, &a, &b, kind);
-        let saved = result.requester.clone();
-        // Executor reassignment changes no requester metadata.
-        result.owner = c.origin.clone();
-        result.owner_agent_id = c.agent_id.clone().map(String::into_boxed_str);
-        result.origin = c.origin.clone();
-        assert_eq!(result.requester, saved);
-        assert!(a.accepts(&result));
-        assert!(!b.accepts(&result));
-        assert!(!c.accepts(&result));
-        assert!(!d.accepts(&result));
-        queue
-            .receive(
-                result.clone(),
-                &[a.clone(), c.clone(), d.clone()],
-                true,
-                1_000_000,
-            )
-            .unwrap();
-        let attempt = queue
-            .next(&std::collections::HashSet::from([
-                a.session, c.session, d.session,
-            ]))
-            .unwrap();
-        assert_eq!(attempt.target, a);
-        let text = result.recipient_terminal_text(&a, "Requester A");
-        assert!(
-            text.contains("Requested task result")
-                && text.contains("Informational return notice only")
-        );
-        assert!(text.contains("Do not claim, reopen, or implement"));
-        queue.begin(&attempt).unwrap();
-        queue.finish(&attempt, Outcome::Submitted).unwrap();
-        queue
-            .receive(result, &[a.clone(), c.clone(), d.clone()], true, 1_000_000)
-            .unwrap();
-        assert!(
-            queue
-                .next(&std::collections::HashSet::from([
-                    a.session, c.session, d.session
-                ]))
-                .is_none()
-        );
-    }
-    assert_eq!(queue.journal.receipts.len(), 2);
-}
-
 #[test]
 fn no_implicit_requester_from_reporter_origin_or_reused_names_and_no_replacement_generation() {
     let a = target(1);
@@ -222,56 +125,4 @@ async fn current_task_read_rejects_removed_replaced_and_os_retagged_watchers() {
         );
     }
     server.join().unwrap();
-}
-
-#[test]
-fn requester_reconnect_expiry_blocked_and_uncertain_receipts_never_replay() {
-    let a = target(1);
-    let c = target(3);
-    let (dir, mut queue) = fixture();
-    let result = event(1, &a, &c, Kind::Completed);
-    queue
-        .receive(result.clone(), std::slice::from_ref(&a), true, 1_000_000)
-        .unwrap();
-    assert!(queue.next(&std::collections::HashSet::new()).is_none());
-    queue
-        .refresh(
-            std::slice::from_ref(&a),
-            true,
-            1_000_000 + MAX_EVENT_AGE_MS + 1,
-        )
-        .unwrap();
-    assert!(queue.journal.receipts[0].recipients[0].outcome.terminal());
-    let second = event(2, &a, &c, Kind::Completed);
-    queue
-        .receive(second.clone(), std::slice::from_ref(&a), true, 1_000_000)
-        .unwrap();
-    let attempt = queue
-        .next(&std::collections::HashSet::from([a.session]))
-        .unwrap();
-    queue.begin(&attempt).unwrap();
-    let mut reloaded = Queue::open(dir.path().join("requester.json"), "fixture").unwrap();
-    assert_eq!(
-        reloaded.journal.receipts[1].recipients[0].outcome,
-        Outcome::Uncertain
-    );
-    reloaded.subscribed(2, 2).unwrap();
-    reloaded
-        .receive(second, std::slice::from_ref(&a), true, 1_000_000)
-        .unwrap();
-    assert!(
-        reloaded
-            .next(&std::collections::HashSet::from([a.session]))
-            .is_none()
-    );
-    let absent = event(3, &a, &c, Kind::Completed);
-    reloaded.receive(absent, &[], true, 1_000_000).unwrap();
-    reloaded
-        .refresh(std::slice::from_ref(&a), true, 1_000_000)
-        .unwrap();
-    assert!(
-        reloaded
-            .next(&std::collections::HashSet::from([a.session]))
-            .is_none()
-    );
 }

@@ -70,14 +70,6 @@ impl Desktop {
             Message::TaskCreated(scope, request, result) => {
                 Message::TaskCreated(remap(scope)?, request, result)
             }
-            Message::RecoveryLoaded(mut scope, result) => {
-                scope.query = remap(scope.query)?;
-                Message::RecoveryLoaded(scope, result)
-            }
-            Message::ReceiptReported(mut scope, task, result) => {
-                scope.query = remap(scope.query)?;
-                Message::ReceiptReported(scope, task, result)
-            }
             message => message,
         })
     }
@@ -128,16 +120,7 @@ impl Desktop {
         } else {
             None
         };
-        let terminals: Vec<_> = self.workspaces[index]
-            .panes
-            .iter()
-            .flat_map(|(_, pane)| &pane.tabs)
-            .map(|tab| tab.id)
-            .collect();
         self.status = "Workspace closed. Project files were kept on disk.".into();
-        for terminal in terminals {
-            self.withdraw(terminal);
-        }
         // Dropping tabs retires their owned jobs and PTYs, using the same path as
         // closing individual tabs. Project directories and files are untouched.
         self.workspaces.remove(index);

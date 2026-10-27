@@ -47,11 +47,6 @@ enum Operation {
         #[command(subcommand)]
         operation: HarnessOperation,
     },
-    /// Inspect or finish a local Autoreview receipt.
-    Reviews {
-        #[command(subcommand)]
-        operation: ReviewOperation,
-    },
     /// Launch the desktop (also the default).
     Desktop,
     /// Run a native agent with its own session and execution identity.
@@ -113,18 +108,6 @@ enum HarnessOperation {
     Install {
         #[arg(value_enum)]
         provider: amux::harness::Provider,
-    },
-}
-
-#[derive(Subcommand)]
-enum ReviewOperation {
-    Status,
-    Complete {
-        id: Uuid,
-    },
-    /// Allow retry only after explicitly confirming the prior review has stopped.
-    Release {
-        id: Uuid,
     },
 }
 
@@ -335,24 +318,6 @@ fn run(cli: Cli) -> Result<u8> {
                     println!(
                         "Start a new provider session to load the updated instructions and settings."
                     );
-                }
-            }
-        }
-        Operation::Reviews { operation } => {
-            let path = amux::autoreview::path(&project_dir)?;
-            match operation {
-                ReviewOperation::Status => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&amux::autoreview::load(&path)?)?
-                ),
-                ReviewOperation::Complete { id } => {
-                    let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
-                    amux::autoreview::complete(&path, id, &actor)?;
-                    println!("Review {id} completed");
-                }
-                ReviewOperation::Release { id } => {
-                    amux::autoreview::release(&path, id)?;
-                    println!("Review {id} released without marking commits reviewed");
                 }
             }
         }

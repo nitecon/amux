@@ -370,7 +370,20 @@ mod tests {
         drop(conn);
         assert_eq!(emitted(&database), [ONLINE, BUSY, IDLE]);
         let conn = database.lock().unwrap();
-        tick(&conn, &context(&bus), now + GONE_AFTER_MS + 1).unwrap();
+        // Liveness counts from the heartbeat's own server time, not the test's clock.
+        let seen_at: i64 = conn
+            .query_row("SELECT seen_at FROM presence_agents", [], |row| row.get(0))
+            .unwrap();
+        tick(&conn, &context(&bus), seen_at + GONE_AFTER_MS - 1).unwrap();
+        let gone: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM router_events WHERE id=?1",
+                [GONE],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "not gone before the window ends");
+        tick(&conn, &context(&bus), seen_at + GONE_AFTER_MS).unwrap();
         drop(conn);
         assert_eq!(emitted(&database), [ONLINE, BUSY, IDLE, GONE]);
     }

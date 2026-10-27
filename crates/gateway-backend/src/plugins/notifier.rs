@@ -119,9 +119,11 @@ fn announce(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
         .iter()
         .filter(|agent| recipient(kind, payload, agent))
     {
+        // Requester results are informational and wait until the agent is idle.
         let notification = json!({
             "target": agent["session_id"], "project": project, "mode": "recipient",
-            "require_idle": false, "heading": null, "instructions": null,
+            "require_idle": requester_result(kind, payload, agent),
+            "heading": null, "instructions": null,
             "event": {"kind": kind, "project_ident": project, "created_at": event.emitted_at,
                       "task": payload["task"], "comment": payload["comment"], "origin": payload["actor"]},
         });
@@ -134,6 +136,15 @@ fn same(origin: &Value, agent: &Value) -> bool {
     origin["session_id"].is_string()
         && origin["session_id"] == agent["session_id"]
         && origin["instance_id"] == agent["instance_id"]
+}
+
+/// A comment or completion result for the explicit requester, not the owner.
+fn requester_result(kind: &str, payload: &Value, agent: &Value) -> bool {
+    let task = &payload["task"];
+    matches!(kind, "task_commented" | "task_completed")
+        && !same(&task["owner_origin"], agent)
+        && same(&task["requester"]["origin"], agent)
+        && task["requester"]["generation"] == agent["generation"]
 }
 
 /// Port of the desktop `Target::mismatch_reason` / `requester_result` rules.
@@ -157,11 +168,7 @@ pub fn recipient(kind: &str, payload: &Value, agent: &Value) -> bool {
         return false;
     }
     let result = matches!(kind, "task_commented" | "task_completed");
-    if result
-        && !same(owner, agent)
-        && same(&requester["origin"], agent)
-        && requester["generation"] == agent["generation"]
-    {
+    if requester_result(kind, payload, agent) {
         return true;
     }
     if (result && !requester.is_null() && owner.is_null())
@@ -256,6 +263,16 @@ mod tests {
                 &agent()
             ),
             "requester gets results"
+        );
+        let completed = payload(result.clone(), user.clone());
+        assert!(
+            requester_result("task_completed", &completed, &agent()),
+            "results wait for idle"
+        );
+        let comment = payload(owned.clone(), user.clone());
+        assert!(
+            !requester_result("task_commented", &comment, &agent()),
+            "owner notices do not"
         );
         let mut stale = agent();
         stale["generation"] = json!("old");

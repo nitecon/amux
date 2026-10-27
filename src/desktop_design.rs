@@ -1091,11 +1091,7 @@ impl Desktop {
                 );
             }
             if let Some(tab) = pane.tabs.get(pane.active) {
-                let status = if self.preferences.current.automatic_notifications {
-                    tab.delegation.status()
-                } else {
-                    &tab.reminders.status
-                };
+                let status = tab.delegation.status();
                 title = title.push(
                     row![
                         text(if status.is_empty() {
@@ -1324,12 +1320,7 @@ impl Desktop {
             states,
         ]
         .spacing(10);
-        let mut cards = column![
-            text(&panel.status).size(11).color(MUTED),
-            text(self.backlog_status()).size(11).color(MUTED),
-            text(self.autoreview_status()).size(11).color(MUTED)
-        ]
-        .spacing(8);
+        let mut cards = column![text(&panel.status).size(11).color(MUTED),].spacing(8);
         let mut count = 0;
         for task in kanban_order(&panel.tasks) {
             let status = task["status"].as_str().unwrap_or("unknown");

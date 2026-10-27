@@ -1,91 +1,75 @@
 # Gateway task delivery
 
-Set the gateway URL and API key in Preferences, then enable **Send gateway notifications and assign queued work to idle agents in this app** and save. No project identifier, machine UUID or machine key is required. The app creates a durable consumer identity and resolves repositories from Git remotes and gateway metadata.
+Automatic task work runs on the amux server (embedded **Server** mode, or
+**Client** mode against a dedicated amux server) through its event router; see
+[StateMachine.md](StateMachine.md). Enable **Let the amux server assign queued
+work and send task notifications to agents in this app** in Settings. A legacy
+gateway has no event router: the desktop then does no automatic assignment,
+review or terminal notification, and you ask an agent directly.
 
-Created tasks, comments and completed tasks produce a bounded `<gateway>` summary in a matching Claude or Codex terminal: task ID, title, event state, sender, available provenance, and the first 200 characters of the initial details or comment. Only the bounded preview is copied; complete descriptions and comment bodies are not injected. Preview text is normalized to one line and XML-escaped. Events older than five minutes and events already present when a connection is established are skipped. Freshness uses the gateway upgrade response’s HTTP Date plus monotonic elapsed time when available, so a local PC clock offset does not incorrectly expire a fresh event. Opening a later agent does not attach it to earlier notifications.
+The desktop connects to `/v1/events/stream`, reports each running agent
+(`client.heartbeat`) and its terminal activity (`terminal.activity`: last output
+time on the server's clock, and whether a typed draft is present), and delivers
+`agent.notify` events into the named agent's terminal. The server decides who
+hears about what; the desktop decides only whether it can deliver safely now,
+and reports `delivered`, `skipped` or `failed` back as `agent.notify_result`.
 
-Each running agent has its own delivery session, pinned to its terminal, workspace and native process generation. Automatic delivery uses the owned terminal and process identity, with no screen parsing or prompt/footer matching. amux tees typed text and subsequent editing keystrokes into an in-memory buffer. Enter resets the buffer; modifier/navigation keys alone do not count as text.
+Notifications are a bounded `<gateway>` summary: task ID, title, event state,
+sender, available provenance, and the first 200 characters of the initial details
+or comment, normalized to one line and XML-escaped. Notifications older than five
+minutes are skipped.
 
-A notification does not wait for an empty prompt or for a draft to be submitted. If user text is buffered, amux clears the provider draft, sends and submits the notification, then restores the buffered input in the same ordered terminal write. A native End key separates the message from Enter so a character-paste burst is flushed without a timer. Terminal protocol flags determine bracketed-paste encoding without reading rendered content. The current process, consent and event freshness are checked before the transaction. Each attempt is saved before enqueue; interrupted or uncertain attempts are never automatically repeated. Application restart retires pending notifications rather than replaying them.
+Each running agent is pinned to its terminal, workspace and native process
+generation. Delivery uses the owned terminal and process identity, with no screen
+parsing or prompt/footer matching. amux tees typed text and subsequent editing
+keystrokes into an in-memory buffer; Enter resets it and navigation keys alone do
+not count as text. A notification clears a buffered draft with End and Ctrl+U,
+sends and submits the notification, then restores the draft in the same ordered
+terminal write. A native End key separates the message from Enter so a
+character-paste burst is flushed without a timer. Terminal protocol flags decide
+bracketed-paste encoding. Notifications never synthesize Ctrl+C. The agent's
+process is verified natively immediately before writing; a changed process is
+reported `failed` without input.
 
-Draft clearing uses End followed by Ctrl+U. Notifications never synthesize Ctrl+C,
-which can interrupt a running turn or exit the provider when a draft tee is stale.
-
-The task panel shows connection status, agents, pending notifications and recent receipts with the reason for each delivery decision. Gateway acknowledgment
-confirms that the decision was saved, including a skip; it does not imply delivery.
-`injected` means the notification input transaction was enqueued. It does not confirm provider understanding, task claim, execution or completion. Tasks remain authoritative on the gateway.
+The Events panel shows the router connection and recent notifications with their
+outcome. `delivered` means the input transaction was enqueued; it does not confirm
+provider understanding, task claim, execution or completion. Tasks remain
+authoritative on the server.
 
 ## Requester result notices
 
-An explicit task requester can receive comment/completion notices even when
-another agent owns the work. The requester is a gateway-stored exact native origin
-plus execution generation; it is never inferred from the reporter, display name,
-or comment author. Project, OS, goal and own-event suppression still apply. No
-creation/assignment notice is returned to a requester merely for subscribing.
+An explicit task requester receives comment/completion notices even when another
+agent owns the work. The requester is a server-stored exact native origin plus
+execution generation; it is never inferred from the reporter, display name or
+comment author. Project, OS, goal and own-event suppression still apply.
 
-These notices are informational results, with a read-only task lookup command.
-They do not claim, reopen or schedule execution. Unlike ordinary owner notices,
-requester notices wait for at least 30 seconds without terminal output and an
-empty tracked input buffer; recent activity and unfinished drafts defer delivery.
-They use the existing native process/input checks rather than prompt-screen
-recognition and do not clear or restore user input. Native process/attachment and
-the current task requester are rechecked before writing, so clearing/changing the
-subscription prevents queued result input.
+These notices are informational, with a read-only task lookup command. They do
+not claim, reopen or schedule execution. They wait on the desktop until the
+requester has had no terminal output for 30 seconds and has no draft, within the
+five-minute lifetime. See [CLI and native controls](gateway-cli.md#requesting-task-results).
 
-The existing five-minute event lifetime and durable attempt fences apply. A stopped
-or replaced execution does not inherit pending results. Reconnect and app restart
-do not replay historical/uncertain input; full comments remain available through
-task lookup, including completed tasks. Only the stored requester and eligible
-owner can receive notices; unrelated agents stay excluded. See
-[CLI and native controls](gateway-cli.md#requesting-task-results).
+## Queued work assignment
 
-## Idle backlog review
+The server's `assignment` plugin gives each idle agent (no terminal output for 30
+seconds, no draft, no owned in-progress task) the oldest eligible queued task in
+its project. Creation time defines FIFO. Eligibility respects the task's OS label,
+review exclusion, held review findings, goal, delegation, owner and exact session
+routing. The server claims the task as that agent through the normal task store,
+comments why, and sends a `Queued task review` (or `Queued independent review`)
+notification asking the agent to check whether the task is still required,
+implement it, ask the user, or close it with a reason. One task is handed to an
+idle agent at a time.
 
-Current queued tasks are checked separately from historical event replay. An
-eligible local agent with no output for 30 seconds, no unfinished draft and
-no owned in-progress task can take the oldest eligible queued item. Creation time
-defines FIFO; editing, commenting or changing a row's display rank does not move
-it ahead of older work. The scheduler compares eligible jobs across idle agents,
-so an older review can go to a compatible peer before newer work is selected.
-The workspace
-activity icons use this same output clock. Other owners, explicit recipients,
-repository boundaries and task goals are respected; an agent can also evaluate a
-queued task already assigned to it.
-
-Unassigned TODO notifications remain visible in user event bubbles and wait for
-this assignment path instead of being injected into competing agent terminals.
-When several agents are idle, assignments rotate round robin within the task's
-project, using each agent's own workspace and output clock. Only a confirmed
-claim advances the rotation. Busy agents and unfinished drafts are skipped;
-only the selected, confirmed owner receives the work prompt.
-
-Polling follows each native agent's workspace, including workspaces whose initial
-project lookup failed. Resolving or refreshing one workspace does not prevent a
-different workspace with current tasks from handing off queued work.
-Gateway list summaries omit `project_ident`; the client binds missing project
-fields to the requested workspace project. Explicit foreign projects are rejected,
-and a fresh task-detail read still confirms the project before a claim.
-
-The app rereads and claims the selected task through the gateway and posts a
-comment asking the agent to check whether it remains required, ask the user if
-uncertain, close it with a reason if obsolete, or start execution otherwise.
-It then rechecks the owner and native session before sending anything to the
-terminal, and requests evaluation against current project state: implement viable work,
-review uncertain work with the user, or close obsolete work with a reason. The
-app does not decide viability or close tasks itself. Only one task is handed to
-an idle session at a time; another idle peer can take the next item.
-
-Claims and input attempts are saved before sending. Unknown outcomes pause the
-affected handoff for inspection rather than retrying automatically. Restart does
-not replay input. A newer explicit requeue retires a known handoff fence;
-unconfirmed attempts remain paused until the task is resolved. Completed tasks
-retire their old backlog fences. This does not replay old lifecycle events.
+If the desktop cannot deliver the offer (the agent became busy, started typing,
+or its process changed), it reports the outcome and the server releases the claim
+so the next idle agent gets the task. An agent idle for ten minutes that still
+owns in-progress work receives one `In-progress task reminder` per task revision.
+Claimed work returns to the queue after 15 minutes without task activity unless
+the server sees its owner busy.
 
 OS-restricted tasks use one explicit `os:windows`, `os:linux` or `os:macos`
-label. Pickup and notification delivery require a matching verified native OS;
-unavailable platforms leave their work queued. Retagging cancels incompatible
-pending input without replaying uncertain attempts. See the project-agent and
-OS-routing commands in [gateway-cli.md](gateway-cli.md#project-agents-and-os-routing).
+label; only agents on that OS receive them. See the project-agent and OS-routing
+commands in [gateway-cli.md](gateway-cli.md#project-agents-and-os-routing).
 
 ## User review
 
@@ -101,50 +85,29 @@ Users can inspect parked tasks and their comments, return them to the queue, or
 close them. Returning a task uses the human connection without agent headers.
 Agents cannot resume parked work themselves.
 
-Parked tasks never enter idle assignment, in-progress reminders or owner work
-notification delivery. An explicit requester can still receive an informational
-comment result. Review events remain visible in user event bubbles.
-Authoritative review snapshots also retire older queued notifications and
-handoffs; input already in flight retains an uncertain outcome. When the user
-returns work to TODO, normal eligibility resumes.
+Parked tasks never enter assignment, in-progress reminders or owner
+notifications. An explicit requester can still receive an informational comment
+result. When the user returns work to TODO, normal eligibility resumes.
 
-## Autoreview
+## Completion reviews
 
-Enable **Queue independent completion reviews** in Settings to create an ordinary
-queued review when a task completes. No special review prompt is injected ahead
-of queued work. Review tasks use the same FIFO pickup, idle clock, claim and
-delivery path as other work. The original completing agent is excluded, including
-by the backend's atomic claim and assignment checks. A different provider is not
-required: another agent is sufficient.
+When a task completes, the server's `review` plugin queues one ordinary review
+task for a different agent (the completing agent is excluded, including by the
+task store's claim and assignment checks). Reviews use the same FIFO assignment
+as other work. The server creates at most one review per source completion, and
+completing a review does not create another review.
 
-The server creates at most one review per source task/completion timestamp, even
-when multiple hosts observe the event or a response is lost. The desktop persists
-review creation requests before acknowledging completion events and retries
-unconfirmed creation after 30 seconds, including after restart. Review completion
-does not create another review. Legacy local review receipts never reserve an
-agent or block ordinary queued work.
-
-Reviews inspect the source task, its comments and actual changes. They must follow
+Reviews inspect the source task, its comments and actual changes. They follow
 KISS/YAGNI, create tasks only for concrete actionable defects, and avoid edits,
 commits, pushes and speculative scope expansion. Results are posted on the source
-and review tasks, then the review task is marked done. The legacy `amux reviews`
-commands remain available for old manual receipts but are not needed by this flow.
+and review tasks, then the review task is marked done.
 
 A TODO finding is executable queued work; its `autoreview-finding` label is
-descriptive and does not impose a hidden hold. Only explicit **User review**
-waits for a human decision. Automatic task pickup/notifications must be enabled
-for this app to hand queued work to terminals.
+descriptive. Only explicit **User review** waits for a human decision.
 
-The embedded server supplies `POST /v1/projects/{ident}/tasks/{id}/review`.
-External gateways need the same atomic endpoint. An unavailable endpoint leaves
-the durable request pending and reports the problem instead of injecting a
-fallback prompt or creating potentially duplicate ordinary tasks.
-
-Queue diagnostics are written to `queue.log` in the amux data directory, with a
-single rotated `queue.previous.log` (about 1 MiB each). They record native scan
-counts/duration, presence errors, blocked pickup reasons and claim/delivery IDs;
-they omit task bodies and credentials. Scans do not overlap, and stale scans do
-not consume the presence refresh interval.
+Server plugins can be switched off with `PUT /v1/plugins/{id}`
+(`assignment`, `notifier`, `reminder`, `review`, `reclaim`); `GET /v1/plugins`
+lists them.
 
 ## Built-in agent identity
 
@@ -190,29 +153,25 @@ credentials are not used by desktop lifecycle notifications.
 
 ## Verification
 
-Network recovery uses bounded connection attempts, a 30-second stream silence
+The event client uses bounded connection attempts, a 60-second stream silence
 deadline and five-second reconnect retries, including after sleep or a VPN route
-change. A stopped transport worker is restarted with the same durable consumer,
-cursor and pending work. Successful subscription refreshes task views and agent
-availability while preserving drafts. Storage or protocol safety failures remain
-paused rather than retrying unsafe work. Connection loss and recovery produce
-deduplicated, dismissible corner notifications without resizing the terminal.
+change; a gateway without the event router is rechecked every five minutes. On
+reconnect the server resends any notification that was not acknowledged.
+Connection loss and recovery produce deduplicated, dismissible corner
+notifications without resizing the terminal.
 
-The local WebSocket regression leaves the old route open but unresponsive, then
-verifies reconnection from the saved cursor and rejection of commands scoped to
-the old connection. Physical WireGuard roaming still needs validation on the
-affected laptop.
-
-Contract tests cover local WebSocket subscription/reconnect, offline-tail suppression, routing, durable attempts and acknowledgments, and built-in identity. Controlled native terminal fixtures exercise exact input, immediate delivery with restored user drafts, text-versus-navigation tracking, hidden footers, unrecognized layouts, stale callbacks and three-peer isolation. Native Windows tests run on Windows CI; installed Windows Codex submission still needs confirmation on the user's machine. Controlled fixture input is not evidence of provider understanding or task execution.
-
+Real-server contract tests (`tests/event_stream_contract.rs`) cover subscription
+by event and target, acknowledgment and resend, cursor resume, remote emits,
+presence, FIFO assignment and release, owner notices, completion reviews and
+plugin switches. Controlled native terminal fixtures exercise exact input,
+bracketed paste, immediate delivery with restored user drafts, idle-gated offers,
+failed verification and peer isolation. Controlled fixture input is not evidence
+of provider understanding or task execution.
 
 The left-side **Gateway messages** drawer presents sender bubbles with task
 title, preview, project, state at the time of the event, age, and task ID. Hover
-for delivery details, which remain separate from task state. The latest 50
-previews are saved independently of delivery receipt pruning. Clear hides the
-view without deleting delivery fences or history. Historical snapshots do not
-claim to be the task's current state, and old journal entries without summaries
-show explicit unavailable fields rather than forcing a lookup or inventing text.
+for the delivery outcome, which remains separate from task state. Historical
+snapshots do not claim to be the task's current state.
 
 Delegated-task creation uses the gateway's requester name, requester hostname,
 and source project. Comments use their own author; a task's recorded hostname

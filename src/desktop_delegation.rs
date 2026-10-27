@@ -1,10 +1,10 @@
-//! CMUX-style lifecycle notifications. The UI owns all terminal access and final input checks.
+//! Agent discovery for terminals, and the desktop side of the server event
+//! router. The UI owns all terminal access and final input checks; the server
+//! decides which agent hears about what (docs/StateMachine.md).
 use super::{Desktop, Instant, Message, Provider, Tab, Task, unix_ms};
 use amux::{
-    delegation::{self, Outcome, Target},
-    delegation_connection::{self as connection, ConnectionEvent},
+    delegation::{self, Target},
     delegation_process::{self, AgentProcess},
-    delegation_queue::{Attempt, Queue},
 };
 use iced_term::{BackendCommand, Terminal};
 use std::{
@@ -14,10 +14,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
-#[path = "desktop_autoreview.rs"]
-mod autoreview;
-#[path = "desktop_backlog.rs"]
-mod backlog;
 #[path = "desktop_events.rs"]
 mod events;
 
@@ -111,43 +107,21 @@ struct Candidate {
     target: Target,
 }
 #[derive(Debug, Clone)]
-pub(super) struct Proof {
-    attempt: Attempt,
-    candidate: Candidate,
-    started: Instant,
-    requester_verified: Option<bool>,
-}
-
-#[derive(Debug, Clone)]
 pub(super) enum Event {
-    AutoreviewPrepared(Uuid, Result<Option<Box<autoreview::Prepared>>, String>),
-    BacklogVerified(Box<backlog::Pick>, bool),
-    BacklogClaimed(Uuid, Result<Option<serde_json::Value>, String>),
-    Stream(ConnectionEvent),
     Scanned {
         serial: u64,
         found: Vec<Found>,
-        arrival: Option<Box<delegation::Event>>,
     },
     Project(PathBuf, Result<String, String>),
-    Verified(Box<Proof>, bool),
     Router(amux::event_client::Incoming),
-    Notified(Box<events::Delivery>, bool),
+    /// Native verification result for the delivery in flight.
+    Verified(bool),
 }
 
 #[derive(Default)]
 pub(super) struct Bridge {
-    autoreview: autoreview::State,
-    backlog: backlog::State,
-    events: events::State,
     epoch: u64,
-    clock: Option<amux::gateway_stream::GatewayClock>,
-    initialized: bool,
-    retry_at: Option<Instant>,
-    queue: Option<Queue>,
-    flight: Option<iced::task::Handle>,
-    commands: Option<mpsc::Sender<connection::Command>>,
-    connection: Option<u64>,
+    events: events::State,
     status: String,
     candidates: Vec<Candidate>,
     scan_at: Option<Instant>,
@@ -156,57 +130,17 @@ pub(super) struct Bridge {
     scan_applied: u64,
     pub(super) scan_completed: Option<Instant>,
     projects: HashMap<PathBuf, (Instant, Option<String>)>,
-    verifying: bool,
+    diagnostic: Option<(String, Instant)>,
 }
 impl Bridge {
-    pub(super) fn reconcile_backlog(&mut self, project: &str, tasks: &[serde_json::Value]) {
-        if let Some(queue) = &mut self.queue
-            && let Err(error) = queue.reconcile_backlog(project, tasks)
-        {
-            self.fail(error);
-        }
-    }
-    fn now_ms(&self) -> i64 {
-        self.clock
-            .as_ref()
-            .map_or_else(|| unix_ms() as i64, |clock| clock.now_ms())
-    }
     pub fn stop(&mut self) {
-        let now = self.now_ms();
-        if let Some(queue) = &mut self.queue {
-            let _ = queue.refresh(&[], false, now);
-        }
-        self.flight.take();
         *self = Self {
             epoch: self.epoch.wrapping_add(1),
             ..Self::default()
         };
     }
-    fn fail(&mut self, error: impl std::fmt::Display) {
-        self.status = format!("Task notifications paused: {error}");
-        self.flight.take();
-        self.commands = None;
-        self.connection = None;
-    }
-    fn transport_lost(&mut self) {
-        self.flight.take();
-        self.commands = None;
-        self.connection = None;
-        self.initialized = false;
-        self.retry_at = Some(Instant::now());
-        self.status = "Gateway transport stopped; reconnecting".into();
-        if let Some(queue) = &mut self.queue {
-            queue.disconnected();
-        }
-    }
-    fn targets(&self) -> Vec<Target> {
-        self.candidates.iter().map(|c| c.target.clone()).collect()
-    }
 }
 
-/// Submit `message` as one ordered native input transaction, owned by this UI
-/// turn: user edits cannot interleave with clear/send/submit/restore. A draft
-/// in `input` is cleared first and restored after.
 fn paste(terminal: &Terminal, input: &[u8], message: &str) -> bool {
     let mut bytes = Vec::new();
     if !input.is_empty() {
@@ -250,21 +184,6 @@ fn tab(desktop: &mut Desktop, id: u64) -> Option<&mut Tab> {
         .iter_mut()
         .flat_map(|w| w.panes.iter_mut().flat_map(|(_, p)| &mut p.tabs))
         .find(|t| t.id == id)
-}
-
-fn requester_input_ready(
-    tab: &Tab,
-    event: &delegation::Event,
-    target: &Target,
-    idle_after: Duration,
-) -> bool {
-    !target.requester_result(event)
-        || (tab.delegation.input.is_empty()
-            && tab.terminal.as_ref().is_some_and(|terminal| {
-                terminal
-                    .activity_elapsed()
-                    .is_some_and(|elapsed| elapsed >= idle_after)
-            }))
 }
 
 /// Bind a terminal number to its actual native executor, without provider hooks.
@@ -328,7 +247,7 @@ impl Desktop {
         }
         roots
     }
-    fn delegation_scan(&mut self, arrival: Option<delegation::Event>) -> Task<Message> {
+    fn delegation_scan(&mut self) -> Task<Message> {
         if self.delegation.scan_inflight.is_some() {
             return Task::none();
         }
@@ -349,235 +268,19 @@ impl Desktop {
                 })
                 .await
                 .unwrap_or_default();
-                Event::Scanned {
-                    serial,
-                    found,
-                    arrival: arrival.map(Box::new),
-                }
+                Event::Scanned { serial, found }
             },
             move |event| Message::Delegation(epoch, event),
         )
-    }
-    fn start_delegation(&mut self) -> Task<Message> {
-        self.delegation.initialized = true;
-        if self.embedded.busy
-            || self.embedded.stopping
-            || (self.preferences.current.mode == amux::gateway_preferences::GatewayMode::Server
-                && self.embedded.local.is_none())
-        {
-            self.delegation.initialized = false;
-            return Task::none();
-        }
-        if !self.preferences.current.has_connection() {
-            self.delegation.status = "Enter a gateway URL and API key".into();
-            return Task::none();
-        }
-        if self.ledger.is_none() {
-            self.delegation
-                .fail("exclusive delivery storage unavailable");
-            return Task::none();
-        }
-        let Some(directory) = &self.registry else {
-            return Task::none();
-        };
-        let config = &self.preferences.current;
-        let namespace = match config.authority_namespace() {
-            Ok(namespace) => namespace,
-            Err(error) => {
-                self.delegation.fail(error);
-                return Task::none();
-            }
-        };
-        if self.delegation.queue.is_none() {
-            match Queue::open(directory.join("delegation.json"), &namespace) {
-                Ok(queue) => self.delegation.queue = Some(queue),
-                Err(error) => {
-                    self.delegation.fail(error);
-                    return Task::none();
-                }
-            }
-        }
-        let queue = self.delegation.queue.as_ref().unwrap();
-        if queue.journal.namespace != namespace {
-            self.delegation
-                .fail("gateway authority changed before reconnect");
-            return Task::none();
-        }
-        let consumer = queue.journal.consumer;
-        let cursor = queue.journal.cursor;
-        let (commands_tx, commands_rx) = mpsc::channel(64);
-        let (events_tx, events_rx) = mpsc::channel(64);
-        self.delegation.commands = Some(commands_tx);
-        let profile = match config.transport_profile() {
-            Ok(profile) => profile,
-            Err(error) => {
-                self.delegation.fail(error);
-                return Task::none();
-            }
-        };
-        let epoch = self.delegation.epoch;
-        let stream = iced::stream::channel(
-            64,
-            move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
-                use iced::futures::SinkExt;
-                let mut events_rx = events_rx;
-                let worker =
-                    connection::run_profile(profile, consumer, cursor, commands_rx, events_tx);
-                let forward = async move {
-                    while let Some(event) = events_rx.recv().await {
-                        if output
-                            .send(Message::Delegation(epoch, Event::Stream(event)))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                };
-                tokio::select! {_ = worker => {}, _ = forward => {}}
-            },
-        );
-        let (task, handle) = Task::run(stream, |message| message).abortable();
-        self.delegation.flight = Some(handle.abort_on_drop());
-        task
-    }
-    fn delegation_acknowledge(&mut self) {
-        let Some(connection) = self.delegation.connection else {
-            return;
-        };
-        let Some(commands) = &self.delegation.commands else {
-            return;
-        };
-        if commands.capacity() < 32 {
-            return;
-        }
-        let Some(queue) = &mut self.delegation.queue else {
-            return;
-        };
-        for frame in queue.acknowledgments() {
-            if commands
-                .try_send(connection::Command { connection, frame })
-                .is_err()
-            {
-                self.delegation.transport_lost();
-                self.toasts.connection_lost();
-                break;
-            }
-        }
     }
     pub fn delegation_message(&mut self, epoch: u64, event: Event) -> Task<Message> {
         if epoch != self.delegation.epoch {
             return Task::none();
         }
-        let now = self.delegation.now_ms();
-        let mut follow = Task::none();
-        let mut refresh = Task::none();
-        let result: anyhow::Result<()> = match event {
+        match event {
             Event::Router(incoming) => return self.events_incoming(incoming),
-            Event::Notified(delivery, verified) => {
-                return self.events_notified(*delivery, verified);
-            }
-            Event::AutoreviewPrepared(request, result) => {
-                return self.autoreview_prepared(request, result);
-            }
-            Event::BacklogVerified(pick, valid) => return self.backlog_verified(*pick, valid),
-            Event::BacklogClaimed(request, result) => return self.backlog_claimed(request, result),
-            Event::Stream(ConnectionEvent::Clock(clock)) => {
-                self.delegation.clock = Some(clock);
-                Ok(())
-            }
-            Event::Stream(ConnectionEvent::State(status)) => {
-                if status != "Connected" && status != "Connecting" {
-                    self.toasts.connection_lost();
-                }
-                self.queue_diagnostic(format!("Gateway connection: {status}"));
-                self.delegation.status = status;
-                self.delegation.connection = None;
-                if let Some(q) = &mut self.delegation.queue {
-                    q.disconnected();
-                }
-                Ok(())
-            }
-            Event::Stream(ConnectionEvent::Subscribed {
-                connection,
-                cursor,
-                replay_through,
-            }) => {
-                let result = self
-                    .delegation
-                    .queue
-                    .as_mut()
-                    .map_or(Ok(()), |q| q.subscribed(cursor, replay_through));
-                if result.is_ok() {
-                    self.delegation.connection = Some(connection);
-                    self.delegation.retry_at = None;
-                    self.toasts.connection_restored();
-                    let mut ready = Vec::new();
-                    for (index, workspace) in self.workspaces.iter_mut().enumerate() {
-                        workspace.gateway.routing.polled = None;
-                        if workspace.gateway.loading {
-                            workspace.gateway.refresh_pending = true;
-                        } else {
-                            ready.push(index);
-                        }
-                    }
-                    refresh = Task::batch(ready.into_iter().map(|index| self.query(index)));
-                }
-                result
-            }
-            Event::Stream(ConnectionEvent::Event(event)) => {
-                refresh = self.refresh_task_project(&event.project);
-                // Persist before receive can acknowledge the completion. A lost
-                // HTTP response or restart retries the server-deduplicated job.
-                if self.preferences.current.autoreview
-                    && event.kind == delegation::Kind::Completed
-                    && let Some(queue) = &mut self.delegation.queue
-                    && let Err(error) = queue.schedule_review(delegation::ReviewRequest {
-                        project: event.project.clone(),
-                        task: event.task,
-                        event: event.id,
-                    })
-                {
-                    self.delegation.fail(error);
-                    return Task::none();
-                }
-                // Pin the last completed native scan at arrival, rather than spawning an
-                // unbounded scan task for every stream event or attaching agents started later.
-                let targets = if self
-                    .delegation
-                    .scan_completed
-                    .is_some_and(|at| at.elapsed() <= Duration::from_secs(2))
-                {
-                    self.delegation.targets()
-                } else {
-                    Vec::new()
-                };
-                self.delegation.queue.as_mut().map_or(Ok(()), |q| {
-                    q.receive(
-                        *event,
-                        &targets,
-                        self.preferences.current.automatic_notifications,
-                        now,
-                    )
-                })
-            }
-            Event::Stream(ConnectionEvent::Rejected { event_id, reason }) => self
-                .delegation
-                .queue
-                .as_mut()
-                .map_or(Ok(()), |q| q.reject(event_id, &reason)),
-            Event::Stream(ConnectionEvent::Recorded {
-                event_id, status, ..
-            }) => self
-                .delegation
-                .queue
-                .as_mut()
-                .map_or(Ok(()), |q| q.recorded(event_id, &status)),
-            Event::Scanned {
-                serial,
-                found,
-                arrival,
-            } => {
+            Event::Verified(verified) => return self.events_verified(verified),
+            Event::Scanned { serial, found } => {
                 if self.delegation.scan_inflight == Some(serial) {
                     self.delegation.scan_inflight = None;
                 }
@@ -639,22 +342,6 @@ impl Desktop {
                         }
                     })
                     .collect();
-                let targets = candidates
-                    .iter()
-                    .map(|c| c.target.clone())
-                    .collect::<Vec<_>>();
-                let receive = if let Some(event) = arrival {
-                    self.delegation.queue.as_mut().map_or(Ok(()), |q| {
-                        q.receive(
-                            *event,
-                            &targets,
-                            self.preferences.current.automatic_notifications,
-                            now,
-                        )
-                    })
-                } else {
-                    Ok(())
-                };
                 if serial >= self.delegation.scan_applied {
                     let server_state = self.server_schedules() && self.delegation.events.connected;
                     for workspace in &mut self.workspaces {
@@ -689,7 +376,6 @@ impl Desktop {
                     self.delegation.scan_applied = serial;
                     self.delegation.scan_completed = Some(Instant::now());
                 }
-                receive
             }
             Event::Project(directory, result) => {
                 let previous = self
@@ -700,98 +386,11 @@ impl Desktop {
                 self.delegation
                     .projects
                     .insert(directory, (Instant::now(), result.ok().or(previous)));
-                Ok(())
             }
-            Event::Verified(proof, verified) => {
-                self.delegation.verifying = false;
-                let current = self
-                    .delegation
-                    .candidates
-                    .iter()
-                    .find(|c| c.target == proof.attempt.target)
-                    .cloned();
-                let approved = self.preferences.current.automatic_notifications
-                    && self.delegation.connection.is_some();
-                if !self
-                    .delegation
-                    .queue
-                    .as_ref()
-                    .is_some_and(|q| q.submitting(&proof.attempt))
-                {
-                    return Task::none();
-                }
-                let mut outcome = Outcome::Skipped;
-                let returning = proof.attempt.target.requester_result(&proof.attempt.event);
-                let modal = self.preferences.open || self.workspace_dialog.open;
-                let return_ready = !returning
-                    || (!modal
-                        && tab(self, proof.attempt.target.terminal).is_some_and(|tab| {
-                            requester_input_ready(
-                                tab,
-                                &proof.attempt.event,
-                                &proof.attempt.target,
-                                amux::session::IDLE_AFTER,
-                            )
-                        }));
-                let return_authorized = !returning || proof.requester_verified == Some(true);
-                if returning
-                    && verified
-                    && approved
-                    && current.is_some()
-                    && proof.attempt.event.fresh(now)
-                    && proof.started.elapsed() <= Duration::from_secs(2)
-                    && (!return_ready || proof.requester_verified.is_none())
-                    && proof.requester_verified != Some(false)
-                {
-                    outcome = Outcome::Queued;
-                }
-                if verified
-                    && approved
-                    && return_ready
-                    && return_authorized
-                    && proof.started.elapsed() <= Duration::from_secs(2)
-                    && proof.attempt.event.fresh(now)
-                    && current.is_some()
-                    && let Some(tab) = tab(self, proof.attempt.target.terminal)
-                    && let Some(terminal) = &tab.terminal
-                {
-                    if tab.delegation.root.as_ref()
-                        == Some(&(
-                            proof.candidate.root.pid,
-                            proof.candidate.root.generation.clone(),
-                        ))
-                        && foreground(terminal) == proof.candidate.root.foreground
-                        && amux::identity::process_generation(proof.candidate.process.pid)
-                            .is_ok_and(|g| g == proof.candidate.process.generation)
-                    {
-                        let message = proof
-                            .attempt
-                            .event
-                            .recipient_terminal_text(&proof.attempt.target, &proof.candidate.name);
-                        outcome = if paste(terminal, &tab.delegation.input, &message) {
-                            Outcome::Submitted
-                        } else {
-                            Outcome::Uncertain
-                        };
-                    } else {
-                        outcome = Outcome::Queued;
-                    }
-                }
-                self.delegation
-                    .queue
-                    .as_mut()
-                    .map_or(Ok(()), |q| q.finish(&proof.attempt, outcome))
-            }
-        };
-        if let Err(error) = result {
-            self.delegation.fail(error);
-            follow = Task::none();
         }
-        self.delegation_acknowledge();
-        Task::batch([follow, refresh])
+        Task::none()
     }
 
-    /// Look up the gateway project of each agent's repository, at most every 30 seconds.
     fn resolve_projects(&mut self, wanted: bool) -> Vec<Task<Message>> {
         let mut tasks = Vec::new();
         let mut directories = HashSet::new();
@@ -830,167 +429,28 @@ impl Desktop {
         tasks
     }
 
+    /// Keep agents and their projects current; on embedded and native servers,
+    /// also talk to the event router. A legacy gateway gets nothing automatic.
     pub fn delegation_tick(&mut self) -> Task<Message> {
-        let now = self.delegation.now_ms();
-        if self
-            .delegation
-            .commands
-            .as_ref()
-            .is_some_and(|commands| commands.is_closed())
-        {
-            self.delegation.transport_lost();
-            self.toasts.connection_lost();
-            self.queue_diagnostic("Gateway transport worker stopped; reconnect scheduled".into());
-        }
-        if self.server_schedules() {
-            // The server decides assignment and notifications; keep agents and
-            // their projects current, and talk to its event router.
-            let mut tasks = Vec::new();
-            if self
-                .delegation
-                .scan_at
-                .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
-            {
-                tasks.push(self.delegation_scan(None));
-            }
-            tasks.extend(self.resolve_projects(self.preferences.current.automatic_notifications));
-            tasks.push(self.events_tick());
-            return Task::batch(tasks);
-        }
-        if !self.delegation.initialized {
-            if self
-                .delegation
-                .retry_at
-                .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
-            {
-                return Task::none();
-            }
-            return self.start_delegation();
-        }
         let mut tasks = Vec::new();
         if self
             .delegation
             .scan_at
             .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
         {
-            tasks.push(self.delegation_scan(None));
+            tasks.push(self.delegation_scan());
         }
-        if self.delegation.queue.is_none() || self.delegation.commands.is_none() {
-            return Task::batch(tasks);
-        }
-        let wanted =
-            self.preferences.current.automatic_notifications || self.preferences.current.autoreview;
-        tasks.extend(self.resolve_projects(wanted));
-        let targets = self.delegation.targets();
-        if let Some(q) = &mut self.delegation.queue
-            && let Err(error) = q.refresh(
-                &targets,
-                self.preferences.current.automatic_notifications,
-                now,
-            )
-        {
-            self.delegation.fail(error);
-            return Task::batch(tasks);
-        }
-        self.delegation_acknowledge();
-        if self.delegation.verifying
-            || !self.preferences.current.automatic_notifications
-            || self.delegation.connection.is_none()
-        {
-            return Task::batch(tasks);
-        }
-        let mut ready = HashSet::new();
-        let candidates = self.delegation.candidates.clone();
-        for c in &candidates {
-            let pending = self.delegation.queue.as_ref().and_then(|q| {
-                q.journal
-                    .receipts
-                    .iter()
-                    .find(|r| {
-                        r.recipients
-                            .iter()
-                            .any(|r| r.target.session == c.target.session && !r.outcome.terminal())
-                    })
-                    .map(|r| r.event.clone())
-            });
-            if pending
-                .as_ref()
-                .is_some_and(|e| c.target.requester_result(e))
-                && (self.preferences.open || self.workspace_dialog.open)
-            {
-                continue;
-            }
-            if let Some(tab) = tab(self, c.target.terminal)
-                && tab.terminal.is_some()
-                && pending.as_ref().is_none_or(|event| {
-                    requester_input_ready(tab, event, &c.target, amux::session::IDLE_AFTER)
-                })
-            {
-                tab.delegation.status = "Ready for task notifications";
-                ready.insert(c.target.session);
-            }
-        }
-        let attempt = self.delegation.queue.as_ref().and_then(|q| q.next(&ready));
-        if let Some(attempt) = attempt {
-            let Some(candidate) = candidates.into_iter().find(|c| c.target == attempt.target)
-            else {
-                return Task::batch(tasks);
-            };
-            let proof = Proof {
-                attempt,
-                candidate,
-                started: Instant::now(),
-                requester_verified: None,
-            };
-            if let Some(q) = &mut self.delegation.queue
-                && let Err(error) = q.begin(&proof.attempt)
-            {
-                self.delegation.fail(error);
-                return Task::batch(tasks);
-            }
-            self.delegation.verifying = true;
-            let epoch = self.delegation.epoch;
-            let gateway = self.preferences.current.gateway().ok();
-            tasks.push(Task::perform(
-                async move {
-                    let mut proof = proof;
-                    if proof.attempt.target.requester_result(&proof.attempt.event) {
-                        proof.requester_verified = match gateway {
-                            Some(gateway) => gateway
-                                .requester_is_current(&proof.attempt.event, &proof.attempt.target)
-                                .await
-                                .ok(),
-                            None => None,
-                        };
-                        proof.started = Instant::now();
-                    }
-                    let c = proof.candidate.clone();
-                    let verified = tokio::task::spawn_blocking(move || {
-                        delegation_process::verify(
-                            c.root.pid,
-                            &c.root.generation,
-                            c.root.foreground,
-                            &c.process,
-                        )
-                    })
-                    .await
-                    .unwrap_or(false);
-                    Event::Verified(Box::new(proof), verified)
-                },
-                move |e| Message::Delegation(epoch, e),
-            ));
+        if self.server_schedules() {
+            tasks.extend(self.resolve_projects(self.preferences.current.automatic_notifications));
+            tasks.push(self.events_tick());
+        } else if self.delegation.events.running() {
+            self.events_stop();
         }
         Task::batch(tasks)
     }
 }
 
 impl Desktop {
-    pub(super) fn backlog_status(&self) -> &str {
-        &self.delegation.backlog.status
-    }
-    pub(super) fn autoreview_status(&self) -> &str {
-        &self.delegation.autoreview.status
-    }
     pub(super) fn routing_actors(
         &self,
         workspace: Uuid,
@@ -1059,16 +519,16 @@ impl Desktop {
         )
     }
     pub(super) fn design_connection(&self) -> String {
-        if self.delegation.connection.is_some() {
-            "Gateway: Connected".into()
-        } else if !self.preferences.current.has_connection() {
+        if !self.preferences.current.has_connection() {
             "Gateway: Not configured".into()
-        } else if self.delegation.commands.is_some() || self.delegation.retry_at.is_some() {
-            "Gateway: Reconnecting".into()
+        } else if !self.server_schedules() {
+            "Gateway: Legacy · no automatic task work".into()
+        } else if self.delegation.events.connected {
+            "Gateway: Connected".into()
         } else if !self.preferences.current.automatic_notifications {
             "Gateway: Configured · notifications off".into()
         } else {
-            "Gateway: Disconnected".into()
+            "Gateway: Connecting".into()
         }
     }
     pub(super) fn design_task_owner(&self, task: &serde_json::Value) -> String {
@@ -1176,48 +636,15 @@ impl Desktop {
                 gateway: None,
             });
         }
-        if let Some(queue) = &self.delegation.queue {
-            let mut history = queue
-                .journal
-                .recent
-                .iter()
-                .chain(queue.journal.receipts.iter().map(|r| &r.event))
-                .collect::<Vec<_>>();
-            history.sort_by_key(|e| e.id);
-            history.dedup_by_key(|e| e.id);
-            for event in history {
-                let receipt = queue
-                    .journal
-                    .receipts
-                    .iter()
-                    .find(|r| r.event.id == event.id);
-                let mut detail = event.terminal_text();
-                if let Some(receipt) = receipt {
-                    detail.push_str(&format!(
-                        "\nDelivery: {}{} · {}",
-                        receipt.status(),
-                        if receipt.confirmed { " · saved" } else { "" },
-                        receipt.reason
-                    ));
-                    for recipient in &receipt.recipients {
-                        let name = self
-                            .delegation
-                            .candidates
-                            .iter()
-                            .find(|c| c.target.session == recipient.target.session)
-                            .map(|c| c.name.as_str())
-                            .unwrap_or("Previous agent");
-                        detail.push_str(&format!("\n{name} · {}", recipient.reason));
-                    }
-                }
-                events.push(super::desktop_design::EventCard {
-                    key: format!("gateway:{}", event.id),
-                    title: event.heading().into(),
-                    detail,
-                    gateway: Some(Box::new(event.clone())),
-                });
-            }
+        if !self.delegation.events.status.is_empty() {
+            events.push(super::desktop_design::EventCard {
+                key: format!("router:{}", self.delegation.events.status),
+                title: "Event router".into(),
+                detail: self.delegation.events.status.clone(),
+                gateway: None,
+            });
         }
+        events.extend(self.events_cards());
         events
     }
 }

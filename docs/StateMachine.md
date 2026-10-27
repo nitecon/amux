@@ -276,23 +276,32 @@ are enabled by default.
 
 The client keeps only what the server cannot observe or do:
 
-- Local process/PTY observation, reported as `terminal.activity` and
-  `client.heartbeat` events (`delegation_process.rs`, `readiness.rs`, input tee
-  draft detection).
-- Delivery of `agent.notify` into the terminal with the existing safety: process
-  re-verify, draft guard, bracketed paste (`delivery.rs`, `recipient.rs`,
-  `submission.rs`, verified delivery in `desktop_delegation.rs`).
+- Local process/PTY observation: the agent scan binds each terminal to its
+  native process and identity (`delegation_process.rs`), the input tee tracks
+  typed drafts, and both are reported as `client.heartbeat` and
+  `terminal.activity` (`desktop_events.rs`, via `event_client.rs`).
+- Delivery of `agent.notify` into the named agent's terminal with the existing
+  safety: native process re-verify, draft clear/restore in one ordered write,
+  bracketed paste, never Ctrl+C. The client acknowledges each `agent.notify` as
+  soon as it is queued locally, so one agent's wait never holds up the stream;
+  as before the router, pending notices end with the app and are not replayed.
+  `require_idle` notices are only delivered while the agent is idle: an
+  `assigned` work offer to a busy agent is reported `skipped` so the server can
+  offer it elsewhere, and an informational notice (a requester result) waits
+  for the agent to go quiet within its five-minute lifetime.
+- The UI as a consumer: server `agent.idle` / `agent.busy` drive each terminal's
+  activity indicator, and `task.*` events refresh that project's task panel.
 - Manual task UI and CLI (`desktop_tasks.rs`, `task_routing.rs`,
   `desktop_routing.rs`).
 
-Removed from the client (about 3,000–3,500 lines including tests):
-`desktop_backlog.rs`, `backlog.rs`, `desktop_autoreview.rs`, the review/backlog
-journal in `delegation_queue.rs` / `delegation.rs`,
-`gateway.rs::enqueue_completion_review`, the decision half of
-`desktop_recovery.rs`, the reminder/recovery block in `desktop.rs`, the legacy
-`amux reviews` CLI (`autoreview.rs`, keeping `held_finding`), and their tests
-(`tests/backlog_contract.rs`, `tests/autoreview_contract.rs`, parts of
-`tests/gateway_contract.rs` and `tests/delegation_queue_contract.rs`).
+Removed from the client in phase 5: the desktop backlog scheduler, client
+autoreview and its journal, the legacy task-stream delivery journal
+(`delegation_queue.rs`) and its desktop bridge, the opt-in reminder/dispatch
+recovery path (`desktop_recovery.rs`) with its delivery ledger,
+`Gateway::enqueue_completion_review`, the Autoreview setting, and the legacy
+`amux reviews` CLI (`autoreview.rs` keeps `held_finding` and the guidelines
+text). `delegation_connection.rs` remains as the client for the
+legacy-compatible `/v1/tasks/stream`, which the server still serves.
 
 The client detects support by connecting to `/v1/events/stream`; a legacy
 gateway answers 404, and the client then does nothing automatic. This keeps
@@ -302,6 +311,11 @@ gateway answers 404, and the client then does nothing automatic. This keeps
 
 Each phase is a full verified release; no phase changes the router once phase 1
 ships, other than bug fixes.
+
+Status: phase 1 shipped in v0.0.43, phase 2 in v0.0.44. Phases 3 and 4 were
+tagged as v0.0.45 and v0.0.46, but their release builds stopped on a Presence
+test that assumed the test's clock instead of the heartbeat's server time on
+slower runners; phase 5 (v0.0.47) carries that fix and ships phases 3–5.
 
 | Phase | Deliverable | Acceptance |
 |---|---|---|

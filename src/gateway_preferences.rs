@@ -53,7 +53,6 @@ pub struct GatewayPreferences {
     pub url: String,
     pub api_key: String,
     pub automatic_notifications: bool,
-    pub autoreview: bool,
     pub notify_exits: bool,
     pub auto_resume: bool,
     pub machine_id: String,
@@ -69,7 +68,6 @@ impl Default for GatewayPreferences {
             url: String::new(),
             api_key: String::new(),
             automatic_notifications: false,
-            autoreview: false,
             notify_exits: false,
             auto_resume: true,
             machine_id: String::new(),
@@ -146,7 +144,6 @@ impl GatewayPreferences {
                 self.transport_profile()?;
             }
         } else if self.automatic_notifications
-            || self.autoreview
             || !self.url.trim().is_empty()
             || !self.api_key.trim().is_empty()
         {

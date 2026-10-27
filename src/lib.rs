@@ -1,4 +1,3 @@
-pub mod backlog;
 pub mod cli_path;
 pub mod delivery;
 pub mod dispatch;
@@ -39,8 +38,6 @@ pub mod gateway_stream;
 pub mod delegation;
 
 pub mod delegation_process;
-
-pub mod delegation_queue;
 
 #[cfg(feature = "desktop")]
 pub mod delegation_readiness;
