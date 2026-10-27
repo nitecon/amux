@@ -69,8 +69,8 @@ and rechecks actual files. It does not claim an all-or-nothing multi-file update
 
 ## Local task systems
 
-The concise block documents the basic task lifecycle and delegation commands,
-ownership and handling uncertain replies. Agents must read amux's normal shortened
+The concise block lists basic task lifecycle and delegation commands and points
+to task comments for more details. Agents must read amux's normal shortened
 text output directly, without `--json`, Python or scripts to parse the output,
 and avoid parallel local todo/plan boards.
 
