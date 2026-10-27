@@ -25,7 +25,7 @@ jobs:
             binary: amux.exe
             gui: amux-desktop.exe
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Validate release version
