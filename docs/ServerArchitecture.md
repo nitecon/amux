@@ -1,16 +1,89 @@
 # Embedded server architecture
 
-Status: research and proposed implementation architecture, 2026-10-26. No runtime
-changes are implemented by this document. The actual agent implementation goals,
-dependencies, and acceptance criteria live in
+Status: research and proposed implementation architecture, updated 2026-10-27.
+The earlier S1–S6 goals and detailed topology/enrollment defaults are **examples
+only for now**, not approved implementation gates or evidence of implemented behavior. The example
+agent implementation goals, dependencies and acceptance criteria live in
 [`docs/goals/ServerArchitecture.md`](goals/ServerArchitecture.md). `docs/goals/` is
 intentionally ignored by Git and must be supplied separately for agent handoffs.
-The durable design belongs here; the goal file is agent working data.
+The durable design belongs here; the goal file is provisional agent working data.
+The owner's current ordering is client-mode research, a complete API-compatible
+backend release, and only then a separate server-listening/mTLS release. Research
+and verified compatibility results must refine the example goals before execution.
+
+## Two-release implementation sequence
+
+### Research first: current client behavior
+
+The task-tool migration brought task operations into the amux CLI; it did not
+make the gateway database local. The desktop and CLI still connect to one remote
+authority using saved gateway URL/API-key preferences. Preserve that working client
+mode, including reqwest REST calls, WebSocket events, exact agent ownership,
+requester subscriptions, receipts, task cancellation and dispatch recovery. Neither
+an API proxy nor a task-only replacement establishes embedded gateway parity.
+
+Existing HTTP/WSS integration points are `src/gateway.rs`,
+`src/gateway_preferences.rs`, `src/gateway_stream.rs`, `src/desktop_delegation.rs`,
+`src/dispatch.rs` and `src/task_requester.rs`. Plaintext WebSockets are currently
+limited to loopback. Release 1 must preserve that restriction: validate the embedded
+backend locally and retain existing HTTPS/WSS hosting for remote deployments until
+the second release supplies its secure listener. Do not silently switch an existing
+configured deployment to a new, empty local database.
+
+Client-mode research must identify every gateway request and credential source,
+project resolution, connection ownership, restart path and durable journal key.
+Today the event journal is namespaced by URL/API-key identity, and dispatch recovery
+is origin-bound. Secure transport migration and later certificate rotation must
+preserve server identity and recovery fences; they must not silently create a new
+consumer or replay an uncertain mutation against another server. Offline replication
+and conflict reconciliation remain separate capabilities to prove, not properties
+of merely storing a SQLite copy.
+
+### Release 1: existing gateway API and database compatibility
+
+Pin the clean gateway `main` revision and inventory every existing backend route,
+method, authentication path, request/response schema, status/error response,
+database migration/index/trigger, event stream and background database job. The
+initial refreshed baseline is gateway commit
+`986d84544aae086579c72349a1afc366cef6b589`; the sibling checkout is on an older,
+dirty branch and must not be copied as an authoritative release baseline.
+
+Embed the backend in this repository so an amux instance can act as the standalone
+gateway with the same configured API-key behavior and native clients. Preserve the
+full backend API surface, not only the routes currently exercised by task commands.
+Keep the current native frontend and omit browser-page serving and external channel
+workers. Any plugin-dependent API behavior must be compared against the existing
+gateway with the same plugin configuration; do not claim parity by substituting
+new generic unsupported responses or silently dropping routes.
+
+Prove parity using the pinned upstream contracts and a differential harness running
+the original and embedded routers against isolated database fixtures. Include
+positive and negative authorization, identity/OS fencing, requester subscriptions,
+errors, pagination, events/receipts, interrupted requests and database upgrades.
+Validate the actual amux desktop/CLI against the embedded backend, then publish a
+full native release. This release must work with the established gateway URL/key
+workflow before certificate transport is introduced.
+
+### Release 2: native server lifecycle, listening and mTLS
+
+Begin after release 1's published artifacts and complete API compatibility have
+been verified. Build the default server versus explicit client topology, local
+server ownership and headless lifecycle, secure operational listener on 24182,
+public discovery on 24181, enrollment and certificate rotation on that proven
+backend. Refine the example enrollment/replication details below using the research
+results; porting the API is not permission to weaken its existing authorization.
+
+Use configured legacy connections during migration, and explicitly distinguish
+API-key compatibility from the new peering invitation and node-certificate flow.
+Publish and verify a second full native release after server/client and secure
+transport acceptance tests pass. A single combined release, documentation alone,
+or a facade forwarding to an external gateway does not meet these two gates.
 
 ## Direction and scope
 
-Bring the existing gateway database and backend APIs into amux. A fresh install
-defaults to **server mode**, with its own SQLite storage and a secure API listener
+Bring the existing gateway database and backend APIs into amux. The target for
+the second release is a fresh install defaulting to **server mode**, with its own
+SQLite storage and a secure API listener
 on port **24182**. Its desktop uses that API just as another client would. A user
 can designate one machine as the network server and switch other installs to
 **client mode**. A client retains durable local data and can work during an outage.
@@ -33,7 +106,7 @@ Read-only source audit of sibling repositories at these revisions:
 
 | Repository | Revision | Relevant sources and findings |
 | --- | --- | --- |
-| agent-gateway | `f0604142ada28bbdf7e1a97572079012565cf56d` | `crates/gateway/src/main.rs`: Axum router and startup, bearer authentication, UI and plugin coupling. `db.rs`: SQLite schema and startup upgrades. No reusable gateway library entry point today. |
+| agent-gateway | `986d84544aae086579c72349a1afc366cef6b589` | Refreshed clean `main` baseline including requester subscriptions, task targets and reviewed-task requeue behavior. `crates/gateway/src/main.rs`: Axum router and startup, bearer authentication, UI and plugin coupling. `db.rs`: SQLite schema and startup upgrades. No reusable gateway library entry point today. The sibling working checkout remains an older dirty branch. |
 | agent-memory | `41a3b76401b5044e4dea7bfdb494965954aaee7b` | `memory/src/db`, `search`, `gateway_sync.rs`, `okf`: local memory engine and revision-aware sync, separate from gateway memory storage. |
 | agent-tools | `84993127c310ebf62a4ef656a0ebb58a7c30c2c1` | `crates/agent-knowledge` and `crates/agent-symbols`: project/code indexes and derived knowledge, separate from the gateway database. |
 
@@ -75,10 +148,15 @@ The following defines the required families; exact methods and payloads come fro
 | Administration | Users/roles, settings, legacy command/agent definitions stored with skills, retention policy | Retain data and non-browser operations; replace browser authentication with native administration and certificate principals. |
 
 External room provisioning cannot behave identically without its channel plugin.
-Retain room metadata on import and return an explicit unsupported-integration
-result for channel-only operations. Persisted internal messages must still work
-with zero channel plugins. Keep external notifications, templates, UI cookies,
-webhooks, and the gateway self-updater out of the embedded runtime.
+The clean gateway also requires a channel plugin for repository registration and
+several message operations, so an empty plugin registry is not a usable standalone
+amux backend. A native internal-message adapter is under owner review; it would
+preserve the API contract while replacing external channel side effects with native
+delivery. Document and test that adapter explicitly rather than claiming an empty
+registry provides equivalent behavior. Preserve existing responses for unknown or
+unconfigured channels; do not replace APIs with generic unsupported stubs. Keep
+external notification workers, browser pages and gateway self-updating out of the
+embedded runtime. Retain backend authentication helpers where APIs depend on them.
 
 ## Runtime and topology
 
@@ -395,9 +473,12 @@ globally unique task execution during a partition.
 
 ## Porting, validation and remaining decisions
 
-Implement in this order: pinned backend inventory and fixtures; in-repository
-backend extraction; standalone server lifecycle and mTLS; existing-client parity;
-snapshot/journal/outbox and offline reconnection; then memory integration. Reuse
+The two-release sequence above takes precedence over the example phase ordering.
+Research the existing client and pin backend contracts first. Complete in-repository
+backend extraction and prove existing-client/API parity for release 1. Only after
+that release is verified, implement server lifecycle/listening and mTLS for release
+2. Snapshot/journal/outbox, offline reconciliation and memory integration retain
+their own acceptance requirements and must not be claimed from API parity alone. Reuse
 source and tests with license notices, without runtime dependencies on sibling
 checkouts. Changes needed upstream must be delegated to the owning project.
 

@@ -1,0 +1,1164 @@
+{
+  "baseline": {
+    "repository": "https://github.com/nitecon/agent-gateway",
+    "commit": "986d84544aae086579c72349a1afc366cef6b589",
+    "source": "clean Git object, not dirty sibling worktree",
+    "worktree_at_audit": {
+      "head": "f0604142ada28bbdf7e1a97572079012565cf56d",
+      "branch": "task-cancellation-report",
+      "dirty": true
+    }
+  },
+  "api_boundary": {
+    "main_source": "crates/gateway/src/main.rs:624-893",
+    "merged_source": "crates/gateway/src/task_dispatch.rs:865-884",
+    "path_count": 79,
+    "operation_count": 107,
+    "root_path_count": 75,
+    "root_operation_count": 102,
+    "dispatch_path_count": 4,
+    "dispatch_operation_count": 5,
+    "operations": [
+      {
+        "method": "GET",
+        "path": "/v1/tasks/capabilities",
+        "handler": "task_requester::capabilities"
+      },
+      {
+        "method": "PUT",
+        "path": "/v1/projects/{ident}/tasks/{id}/requester",
+        "handler": "task_requester::set"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/task-targets",
+        "handler": "task_targets::list"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/task-targets",
+        "handler": "task_targets::heartbeat"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/{id}/reassign",
+        "handler": "routes::reassign_task_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/{id}/assign",
+        "handler": "routes::assign_task_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/tasks/{id}/subtasks",
+        "handler": "subtasks::get"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/{id}/subtasks",
+        "handler": "subtasks::create"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/tasks/stream",
+        "handler": "task_events::connect"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/task-events",
+        "handler": "task_events::events"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/task-events/consumers",
+        "handler": "task_events::consumers"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/execution/runs",
+        "handler": "task_events::history"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects",
+        "handler": "routes::list_projects_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects",
+        "handler": "routes::register_project"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/messages",
+        "handler": "routes::list_message_threads"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages",
+        "handler": "routes::send_message"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/human",
+        "handler": "routes::post_human_message"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/messages/{id}/thread",
+        "handler": "routes::get_message_thread"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/resolve",
+        "handler": "routes::resolve_messages_bulk"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/{id}/resolve",
+        "handler": "routes::resolve_message"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/{id}/reopen",
+        "handler": "routes::reopen_message"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/links",
+        "handler": "routes::list_project_links"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/links",
+        "handler": "routes::add_project_link"
+      },
+      {
+        "method": "DELETE",
+        "path": "/v1/projects/{ident}/links/{id}",
+        "handler": "routes::delete_project_link"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/room",
+        "handler": "routes::create_project_room"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/messages/unread",
+        "handler": "routes::get_unread_messages"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/{id}/confirm",
+        "handler": "routes::confirm_message"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/{id}/reply",
+        "handler": "routes::reply_to_message"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/messages/{id}/action",
+        "handler": "routes::taking_action_on"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/skills",
+        "handler": "routes::list_skills_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/skills",
+        "handler": "routes::upsert_named_skill_json"
+      },
+      {
+        "method": "PUT",
+        "path": "/v1/skills/{name}",
+        "handler": "routes::upload_skill"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/skills/{name}",
+        "handler": "routes::upsert_skill_json"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/skills/{name}",
+        "handler": "routes::download_skill"
+      },
+      {
+        "method": "DELETE",
+        "path": "/v1/skills/{name}",
+        "handler": "routes::delete_skill_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/skills/{name}/multipart",
+        "handler": "routes::upload_skill_multipart"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/skills/{name}/content",
+        "handler": "routes::get_skill_content"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/tasks",
+        "handler": "routes::list_tasks_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks",
+        "handler": "routes::create_task_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/delegate",
+        "handler": "routes::delegate_task_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/reorder",
+        "handler": "routes::reorder_tasks_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/tasks/{id}",
+        "handler": "routes::get_task_handler"
+      },
+      {
+        "method": "PATCH",
+        "path": "/v1/projects/{ident}/tasks/{id}",
+        "handler": "routes::update_task_handler"
+      },
+      {
+        "method": "DELETE",
+        "path": "/v1/projects/{ident}/tasks/{id}",
+        "handler": "routes::delete_task_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/tasks/{id}/cancellation",
+        "handler": "task_cancel::get_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/{id}/cancellation",
+        "handler": "task_cancel::create_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/tasks/{id}/comments",
+        "handler": "routes::add_comment_handler"
+      },
+      {
+        "method": "PATCH",
+        "path": "/v1/projects/{ident}/tasks/{id}/delegation",
+        "handler": "routes::update_delegation_handler"
+      },
+      {
+        "method": "PATCH",
+        "path": "/v1/projects/{ident}/repo",
+        "handler": "routes::update_project_repo_mapping"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/archive",
+        "handler": "routes::archive_project"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/restore",
+        "handler": "routes::restore_project"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/memories",
+        "handler": "routes::list_memories_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/memories",
+        "handler": "routes::push_memories_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/memories/pull",
+        "handler": "routes::pull_memories_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/memories/push",
+        "handler": "routes::push_memories_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/memories/capabilities",
+        "handler": "routes::memory_capabilities_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/memories/projects",
+        "handler": "routes::discover_memory_projects_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts",
+        "handler": "routes::list_artifacts_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts",
+        "handler": "routes::create_artifact_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}",
+        "handler": "routes::get_artifact_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/versions",
+        "handler": "routes::list_artifact_versions_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/versions",
+        "handler": "routes::create_artifact_version_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/versions/{version_id}",
+        "handler": "routes::get_artifact_version_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/versions/{version_id}/diff",
+        "handler": "routes::diff_artifact_version_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/comments",
+        "handler": "routes::list_artifact_comments_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/comments",
+        "handler": "routes::create_artifact_comment_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/comments/{comment_id}/resolve",
+        "handler": "routes::resolve_artifact_comment_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/comments/{comment_id}/reopen",
+        "handler": "routes::reopen_artifact_comment_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/contributions",
+        "handler": "routes::list_artifact_contributions_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/contributions",
+        "handler": "routes::create_artifact_contribution_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/links",
+        "handler": "routes::list_artifact_links_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/links",
+        "handler": "routes::create_artifact_link_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/workflow-runs",
+        "handler": "routes::list_artifact_workflow_runs_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/workflow-runs",
+        "handler": "routes::start_artifact_workflow_run_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/workflow-runs/{workflow_run_id}",
+        "handler": "routes::get_artifact_workflow_run_handler"
+      },
+      {
+        "method": "PATCH",
+        "path": "/v1/projects/{ident}/artifacts/{artifact_id}/workflow-runs/{workflow_run_id}",
+        "handler": "routes::complete_artifact_workflow_run_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/design-reviews",
+        "handler": "routes::create_design_review_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/design-reviews/{artifact_id}/rounds",
+        "handler": "routes::create_design_review_round_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/design-reviews/{artifact_id}/rounds/{workflow_run_id}/contributions",
+        "handler": "routes::create_design_review_contribution_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/design-reviews/{artifact_id}/rounds/{workflow_run_id}/synthesis",
+        "handler": "routes::create_design_review_synthesis_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/design-reviews/{artifact_id}/state",
+        "handler": "routes::update_design_review_state_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/design-reviews/{artifact_id}/contributions",
+        "handler": "routes::list_design_review_contributions_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/specs",
+        "handler": "routes::create_spec_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/specs/{artifact_id}/versions",
+        "handler": "routes::create_spec_version_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/specs/{artifact_id}/accept",
+        "handler": "routes::accept_spec_version_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/specs/{artifact_id}/manifest",
+        "handler": "routes::get_spec_manifest_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/specs/{artifact_id}/manifest/{manifest_item_id}",
+        "handler": "routes::get_spec_manifest_item_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/specs/{artifact_id}/generate-tasks",
+        "handler": "routes::generate_spec_tasks_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/specs/{artifact_id}/link-task",
+        "handler": "routes::link_existing_spec_task_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/patterns",
+        "handler": "routes::list_patterns_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/patterns",
+        "handler": "routes::create_pattern_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/patterns/{id}",
+        "handler": "routes::get_pattern_handler"
+      },
+      {
+        "method": "PATCH",
+        "path": "/v1/patterns/{id}",
+        "handler": "routes::update_pattern_handler"
+      },
+      {
+        "method": "DELETE",
+        "path": "/v1/patterns/{id}",
+        "handler": "routes::delete_pattern_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/patterns/{id}/comments",
+        "handler": "routes::list_pattern_comments_handler"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/patterns/{id}/comments",
+        "handler": "routes::add_pattern_comment_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/users",
+        "handler": "routes::list_users"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/users",
+        "handler": "routes::create_user"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/users/me",
+        "handler": "routes::current_user"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/users/me/password",
+        "handler": "routes::change_own_password"
+      },
+      {
+        "method": "PATCH",
+        "path": "/v1/users/{id}",
+        "handler": "routes::update_user"
+      },
+      {
+        "method": "DELETE",
+        "path": "/v1/users/{id}",
+        "handler": "routes::delete_user"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/task-sessions",
+        "handler": "task_dispatch::sessions"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/task-sessions",
+        "handler": "task_dispatch::register"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/task-dispatches",
+        "handler": "task_dispatch::delegate_handler"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/projects/{ident}/task-dispatches/recovery",
+        "handler": "task_dispatch::recovery"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/projects/{ident}/task-dispatches/{id}/actions",
+        "handler": "task_dispatch::action_handler"
+      }
+    ],
+    "other_non_browser_http_routes": [
+      {
+        "method": "GET",
+        "path": "/webhooks/whatsapp",
+        "handler": "channels::whatsapp::verify_webhook"
+      },
+      {
+        "method": "POST",
+        "path": "/webhooks/whatsapp",
+        "handler": "channels::whatsapp::receive_webhook"
+      }
+    ],
+    "health_version_endpoints": "None at this baseline; version is CLI/build metadata only."
+  },
+  "excluded_router_operations": [
+    {
+      "method": "GET",
+      "path": "/",
+      "handler": "ui::home::home_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects",
+      "handler": "ui::projects::projects_registry_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}",
+      "handler": "ui::projects::project_overview_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/inbox",
+      "handler": "ui::inbox::inbox_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/settings",
+      "handler": "ui::projects::project_settings_page"
+    },
+    {
+      "method": "GET",
+      "path": "/artifacts",
+      "handler": "routes::artifacts_index_page"
+    },
+    {
+      "method": "GET",
+      "path": "/memories",
+      "handler": "routes::memories_index_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/memories",
+      "handler": "routes::memories_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/artifacts",
+      "handler": "routes::artifact_workspace_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/artifacts/{artifact_id}",
+      "handler": "routes::artifact_detail_page"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks",
+      "handler": "ui::tasks::tasks_index_page"
+    },
+    {
+      "method": "GET",
+      "path": "/activity",
+      "handler": "ui::activity::activity_page"
+    },
+    {
+      "method": "GET",
+      "path": "/task-link/{task_ref}",
+      "handler": "ui::tasks::task_link_redirect"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/tasks",
+      "handler": "routes::tasks_board"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/tasks/new",
+      "handler": "routes::new_task_page"
+    },
+    {
+      "method": "GET",
+      "path": "/projects/{ident}/tasks/{task_id}",
+      "handler": "ui::tasks::task_detail_page"
+    },
+    {
+      "method": "GET",
+      "path": "/patterns",
+      "handler": "routes::patterns_page"
+    },
+    {
+      "method": "GET",
+      "path": "/patterns/{id}",
+      "handler": "routes::pattern_detail_page"
+    },
+    {
+      "method": "GET",
+      "path": "/skills",
+      "handler": "routes::skills_page"
+    },
+    {
+      "method": "GET",
+      "path": "/skills/{name}",
+      "handler": "routes::skill_detail_page"
+    },
+    {
+      "method": "GET",
+      "path": "/commands",
+      "handler": "routes::commands_page"
+    },
+    {
+      "method": "GET",
+      "path": "/commands/new",
+      "handler": "routes::new_command_page"
+    },
+    {
+      "method": "GET",
+      "path": "/commands/{name}",
+      "handler": "routes::command_detail_page"
+    },
+    {
+      "method": "GET",
+      "path": "/agents",
+      "handler": "routes::agents_page"
+    },
+    {
+      "method": "GET",
+      "path": "/agents/new",
+      "handler": "routes::new_agent_page"
+    },
+    {
+      "method": "GET",
+      "path": "/agents/{name}",
+      "handler": "routes::agent_detail_page"
+    },
+    {
+      "method": "GET",
+      "path": "/settings",
+      "handler": "ui::settings::settings_page"
+    },
+    {
+      "method": "GET",
+      "path": "/settings/{section}",
+      "handler": "ui::settings::section_page"
+    },
+    {
+      "method": "GET",
+      "path": "/task-stream",
+      "handler": "ui::execution::page"
+    },
+    {
+      "method": "GET",
+      "path": "/execution",
+      "handler": "ui::execution::page"
+    },
+    {
+      "method": "GET",
+      "path": "/theme",
+      "handler": "routes::get_theme"
+    },
+    {
+      "method": "POST",
+      "path": "/theme",
+      "handler": "routes::set_theme"
+    },
+    {
+      "method": "GET",
+      "path": "/login",
+      "handler": "routes::login_page"
+    },
+    {
+      "method": "POST",
+      "path": "/login",
+      "handler": "routes::login_submit"
+    },
+    {
+      "method": "GET",
+      "path": "/logout",
+      "handler": "routes::logout"
+    },
+    {
+      "method": "POST",
+      "path": "/logout",
+      "handler": "routes::logout"
+    },
+    {
+      "method": "GET",
+      "path": "/webhooks/whatsapp",
+      "handler": "channels::whatsapp::verify_webhook"
+    },
+    {
+      "method": "POST",
+      "path": "/webhooks/whatsapp",
+      "handler": "channels::whatsapp::receive_webhook"
+    }
+  ],
+  "exclusion_rationale": {
+    "browser_pages_login_logout_theme": "Existing native amux frontend remains; omit browser routes/UI templates. ui_auth backend cryptography and identity helpers remain for API compatibility.",
+    "webhooks_whatsapp": "External channel integration excluded by owner scope; no plugin runtime in embedded backend. Preserve documented original no-plugin API responses unless a native internal adapter is explicitly approved.",
+    "gateway_updater": "Do not port gateway executable updater or background external update polling; amux already owns updates.",
+    "browser_only_queries": "TasksQuery references at routes.rs8234/8508 are in HTML handlers; no API handler requires ui rendering helpers."
+  },
+  "route_function_extraction": {
+    "api_and_backend_function_roots": [
+      "accept_spec_version_handler",
+      "add_comment_handler",
+      "add_pattern_comment_handler",
+      "add_project_link",
+      "archive_project",
+      "assign_task_handler",
+      "change_own_password",
+      "complete_artifact_workflow_run_handler",
+      "confirm_message",
+      "create_artifact_comment_handler",
+      "create_artifact_contribution_handler",
+      "create_artifact_handler",
+      "create_artifact_link_handler",
+      "create_artifact_version_handler",
+      "create_design_review_contribution_handler",
+      "create_design_review_handler",
+      "create_design_review_round_handler",
+      "create_design_review_synthesis_handler",
+      "create_pattern_handler",
+      "create_project_room",
+      "create_spec_handler",
+      "create_spec_version_handler",
+      "create_task_handler",
+      "create_user",
+      "current_user",
+      "delegate_task_handler",
+      "delete_pattern_handler",
+      "delete_project_link",
+      "delete_skill_handler",
+      "delete_task_handler",
+      "delete_user",
+      "diff_artifact_version_handler",
+      "discover_memory_projects_handler",
+      "download_skill",
+      "generate_spec_tasks_handler",
+      "get_artifact_handler",
+      "get_artifact_version_handler",
+      "get_artifact_workflow_run_handler",
+      "get_message_thread",
+      "get_pattern_handler",
+      "get_skill_content",
+      "get_spec_manifest_handler",
+      "get_spec_manifest_item_handler",
+      "get_task_handler",
+      "get_unread_messages",
+      "link_existing_spec_task_handler",
+      "list_artifact_comments_handler",
+      "list_artifact_contributions_handler",
+      "list_artifact_links_handler",
+      "list_artifact_versions_handler",
+      "list_artifact_workflow_runs_handler",
+      "list_artifacts_handler",
+      "list_design_review_contributions_handler",
+      "list_memories_handler",
+      "list_message_threads",
+      "list_pattern_comments_handler",
+      "list_patterns_handler",
+      "list_project_links",
+      "list_projects_handler",
+      "list_skills_handler",
+      "list_tasks_handler",
+      "list_users",
+      "memory_capabilities_handler",
+      "post_human_message",
+      "pull_memories_handler",
+      "push_memories_handler",
+      "reassign_task_handler",
+      "register_project",
+      "reopen_artifact_comment_handler",
+      "reopen_message",
+      "reorder_tasks_handler",
+      "reply_to_message",
+      "resolve_artifact_comment_handler",
+      "resolve_identity",
+      "resolve_message",
+      "resolve_messages_bulk",
+      "restore_project",
+      "send_message",
+      "start_artifact_workflow_run_handler",
+      "taking_action_on",
+      "task_creation_origin",
+      "update_delegation_handler",
+      "update_design_review_state_handler",
+      "update_pattern_handler",
+      "update_project_repo_mapping",
+      "update_task_handler",
+      "update_user",
+      "upload_skill",
+      "upload_skill_multipart",
+      "upsert_named_skill_json",
+      "upsert_skill_json"
+    ],
+    "serde_callback_roots": [
+      "default_true"
+    ],
+    "lexically_reachable_functions": [
+      "accept_spec_version_handler",
+      "actor_agent_id",
+      "add_comment_handler",
+      "add_pattern_comment_handler",
+      "add_project_link",
+      "archive_project",
+      "artifact_body_schema_allowed",
+      "assign_task_handler",
+      "begin_artifact_mutation",
+      "body_text",
+      "build_artifact_provenance",
+      "build_outbound",
+      "change_own_password",
+      "chunking_status_for",
+      "complete_artifact_workflow_run_handler",
+      "complete_resumed_run",
+      "confirm_message",
+      "create_artifact_comment_handler",
+      "create_artifact_contribution_handler",
+      "create_artifact_handler",
+      "create_artifact_link_handler",
+      "create_artifact_version_handler",
+      "create_design_review_contribution_handler",
+      "create_design_review_handler",
+      "create_design_review_round_handler",
+      "create_design_review_synthesis_handler",
+      "create_pattern_handler",
+      "create_project_room",
+      "create_spec_handler",
+      "create_spec_version_handler",
+      "create_task_handler",
+      "create_user",
+      "current_user",
+      "decode_labels_field",
+      "decode_nullable_string",
+      "decode_optional_labels_field",
+      "default_true",
+      "delegate_task_handler",
+      "delete_pattern_handler",
+      "delete_project_link",
+      "delete_skill_handler",
+      "delete_task_handler",
+      "delete_user",
+      "derive_subject",
+      "design_review_payload",
+      "diff_artifact_version_handler",
+      "discover_memory_projects_handler",
+      "download_skill",
+      "emit_artifact_metric",
+      "ensure_project_room",
+      "ensure_workflow_run_retryable",
+      "extract_agent_id",
+      "generate_spec_tasks_handler",
+      "generated_resource",
+      "generated_spec_task_title",
+      "generated_task_specification",
+      "generated_workflow_resources",
+      "get_artifact_handler",
+      "get_artifact_version_handler",
+      "get_artifact_workflow_run_handler",
+      "get_message_thread",
+      "get_pattern_handler",
+      "get_skill_content",
+      "get_spec_manifest_handler",
+      "get_spec_manifest_item_handler",
+      "get_task_handler",
+      "get_unread_messages",
+      "item_generation_key",
+      "link_existing_spec_task_handler",
+      "link_task_to_spec_item",
+      "list_artifact_comments_handler",
+      "list_artifact_contributions_handler",
+      "list_artifact_links_handler",
+      "list_artifact_versions_handler",
+      "list_artifact_workflow_runs_handler",
+      "list_artifacts_handler",
+      "list_design_review_contributions_handler",
+      "list_memories_handler",
+      "list_message_threads",
+      "list_pattern_comments_handler",
+      "list_patterns_handler",
+      "list_project_links",
+      "list_projects_handler",
+      "list_skills_handler",
+      "list_tasks_handler",
+      "list_users",
+      "load_workflow_run_for_link",
+      "manifest_item_id",
+      "memory_capabilities_handler",
+      "memory_okf_requested",
+      "memory_push_source",
+      "normalize_spec_manifest",
+      "optional_header",
+      "optional_string_field_value",
+      "parse_artifact_actor_headers",
+      "parse_mutation_context",
+      "parse_scope_header",
+      "persist_text_skill",
+      "post_human_message",
+      "project_memory_envelopes",
+      "pull_memories_handler",
+      "push_memories_handler",
+      "read_set_for_reviewed_version",
+      "read_set_has_ids",
+      "reassign_task_handler",
+      "register_project",
+      "reopen_artifact_comment_handler",
+      "reopen_message",
+      "reorder_tasks_handler",
+      "reply_to_message",
+      "require_admin",
+      "require_artifact_authorization",
+      "require_artifact_read",
+      "require_quota_override_authorization",
+      "resolve_artifact_actor",
+      "resolve_artifact_comment_handler",
+      "resolve_identity",
+      "resolve_message",
+      "resolve_messages_bulk",
+      "resolver_identity",
+      "restore_project",
+      "result_label",
+      "scope_grants",
+      "send_message",
+      "set_project_archived",
+      "simple_diff",
+      "spec_item_stability_policy",
+      "spec_manifest_from_version",
+      "spec_structured_payload",
+      "spec_task_source_block",
+      "start_artifact_workflow_run_handler",
+      "status_for_replay",
+      "string_array_field",
+      "system_nudge",
+      "taking_action_on",
+      "task_creation_origin",
+      "task_goal_header",
+      "trim_required",
+      "update_delegation_handler",
+      "update_design_review_state_handler",
+      "update_pattern_handler",
+      "update_project_repo_mapping",
+      "update_task_handler",
+      "update_user",
+      "upload_skill",
+      "upload_skill_multipart",
+      "upsert_named_skill_json",
+      "upsert_skill_json",
+      "validate_artifact_kind",
+      "validate_body_format",
+      "validate_design_review_phase",
+      "validate_pattern_state_field",
+      "validate_pattern_version_field",
+      "validate_read_set_required",
+      "validate_synthesis_read_set",
+      "validate_workflow_run_for_mutation",
+      "version_status"
+    ],
+    "not_in_static_reachability": [
+      "actions_for_status",
+      "agent_detail_page",
+      "agents_page",
+      "artifact_auth_signal",
+      "artifact_detail_page",
+      "artifact_workspace_page",
+      "artifacts_index_page",
+      "attach_session",
+      "command_detail_page",
+      "commands_page",
+      "empty_table_rows",
+      "format_epoch_ms",
+      "get_theme",
+      "login_error_redirect",
+      "login_page",
+      "login_submit",
+      "logout",
+      "map_db_error",
+      "memories_index_page",
+      "memories_page",
+      "memory_type_options",
+      "new_agent_page",
+      "new_command_page",
+      "new_task_page",
+      "operations_envelope",
+      "path_segment",
+      "pattern_detail_page",
+      "pattern_state_options",
+      "pattern_superseded_by_options",
+      "pattern_superseded_select_script",
+      "pattern_version_options",
+      "patterns_page",
+      "render_kind_page",
+      "render_login_page",
+      "render_skill_detail_page",
+      "render_task_link_page",
+      "safe_next_path",
+      "set_theme",
+      "skill_detail_page",
+      "skills_page",
+      "tasks_board",
+      "tasks_board_content",
+      "truncate_text",
+      "url_encode",
+      "value_as_bool",
+      "value_as_i64"
+    ],
+    "algorithm": "Read pinned routes.rs before its cfg(test) module; identify free fn definitions; seed routed routes::* handlers plus backend module routes::* references and serde default callbacks; follow free-function calls. Preserve shared types/impls/constants. Lexical candidates are evidence for review, not a Rust AST proof: review function pointers/macros/imported helpers, then compile and compare original handler fixtures. Drop HTML-only handlers and their private rendering helpers; no reachable API function calls ui::* or control_panel_*/he()."
+  },
+  "startup_invariants": [
+    "Open explicit SQLite database, never source production file; PRAGMA journal_mode=WAL and foreign_keys=ON.",
+    "Preserve db::apply_schema ordering including task_cancel::initialize, task_events::initialize, task_dispatch::initialize, artifact substrate schema, documentation retirement SQL, project casing validation and uniqueness indexes.",
+    "Call task_events::recover once before accepting requests.",
+    "Keep 30-second stale-task reclaimer that emits durable task_unclaimed events even with no board reads.",
+    "Keep daily message retention policy with independent human/default and bot windows.",
+    "Preserve configuration-dependent artifact operations envelope/body schema/auth behavior.",
+    "Do not spawn external channel connectors, inbound webhook processor or gateway updater inside amux."
+  ],
+  "authentication_invariants": [
+    "Keep configured GATEWAY_API_KEY Bearer parsing and status behavior for release one; no mTLS rewrite until release-two gate.",
+    "Strip caller-supplied x-gateway-user and x-gateway-user-role before stamping verified identity.",
+    "Bearer users are administrators; user/me and own-password routes require resolved session identity and must retain existing error behavior.",
+    "API middleware also accepts verified gw_session for x-gateway-ui XHR. Retain backend HMAC/Argon2 helpers even when no browser routes are served.",
+    "Do not set ui_auth_enabled=false merely because web frontend is omitted: original false setting permits arbitrary x-gateway-ui XHR to bypass bearer auth.",
+    "Preserve separate provisioned task machine credentials and exact agent/session/generation header fences; API key alone does not replace machine authentication."
+  ],
+  "operational_interfaces": [
+    "Local task-machine issue/revoke provisions and rotates credentials required by dispatch HTTP routes.",
+    "Local task claim-info/recover uses optimistic concurrency token; needed for orphaned ownership recovery.",
+    "Local user add/reset-password/list retains administration without browser UI."
+  ],
+  "channel_coupling": {
+    "api_functions": [
+      "register_project",
+      "create_project_room",
+      "send_message",
+      "reply_to_message",
+      "taking_action_on",
+      "post_human_message"
+    ],
+    "critical_behavior": "register_project with repo_url requires configured channel plugin and ensure_room; empty registry returns400. send_message returns503 before durable insertion without plugin. Native local channel adapter can preserve schema/client usability without external sends, but must be explicitly documented and tested as changed adapter semantics rather than byte-for-byte external-side-effect parity."
+  },
+  "port_modules": [
+    "channel.rs",
+    "db.rs",
+    "execution_history.rs",
+    "memory_okf.rs",
+    "projects.rs",
+    "subtasks.rs",
+    "task_cancel.rs",
+    "task_dispatch.rs",
+    "task_events.rs",
+    "task_requester.rs",
+    "task_targets.rs",
+    "ui_auth.rs",
+    "routes.rs",
+    "migrations/retire_documentation.sql"
+  ],
+  "dependencies": {
+    "preserve": [
+      "axum0.8 multipart/form/query/ws",
+      "rusqlite0.39 bundled SQLite",
+      "serde_json arbitrary_precision",
+      "tokio",
+      "serde",
+      "uuid v7",
+      "sha2",
+      "hex",
+      "hmac",
+      "async-trait",
+      "chrono clock/std",
+      "argon2",
+      "rand_core getrandom",
+      "anyhow",
+      "tracing",
+      "tower test/service support"
+    ],
+    "can_omit_when_detached": [
+      "askama/templates/UI modules",
+      "serenity and Discord connector",
+      "WhatsApp connector",
+      "gateway updater crate",
+      "dotenvy/tracing-subscriber/standalone clap startup wrapper; amux owns process setup",
+      "reqwest0.13 if external connectors/updater omitted; backend handlers themselves do not use reqwest"
+    ],
+    "license": "Apache-2.0; preserve license and copied-source attribution/source pin; avoid runtime path dependencies on sibling repositories."
+  },
+  "verification_gate": [
+    "Pin and hash original backend sources; compare 79 paths/107 method operations and handler associations.",
+    "Port original handler/database/ownership/cancellation/dispatch/requester/targets/memory tests and required test fixtures, excluding only browser-specific assertions.",
+    "Run original real-server task_stream_smoke.py and memory_okf_smoke.py against isolated embedded endpoint; adapt executable selection without altering protocol assertions.",
+    "Also run offline_machine_smoke.py; file exists but original CI currently does not run it.",
+    "Exercise same behavioral fixture corpus against original pinned standalone gateway and embedded backend with deterministic time/UUID normalization, checking status, headers, payloads and persisted state/events.",
+    "Run existing amux clients/contracts unchanged against embedded API, including repo auto-registration (channel coupling decision required), exact requester results, cancellation, task stream/receipts and dispatch recovery.",
+    "Capture runtime sqlite_master tables/indexes/triggers and migration behavior, since dynamic event trigger SQL is not exhaustively represented by static regex inventories.",
+    "Publish release one only after backend parity gate; release two separately introduces listening lifecycle/mTLS/certificate enrollment and must rerun identical API fixtures over new transport."
+  ]
+}
