@@ -174,6 +174,9 @@ impl Desktop {
     }
 
     pub(super) fn backlog_tick_after(&mut self, idle_after: Duration) -> Task<Message> {
+        if self.server_schedules() {
+            return Task::none();
+        }
         let blocked = if !self.preferences.current.automatic_notifications {
             Some("automatic task pickup is disabled in Settings")
         } else if self.delegation.connection.is_none() {

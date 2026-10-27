@@ -108,8 +108,45 @@ async fn connect_credentials(
     if after_event_id.is_some_and(|id| id < 0) {
         return Err("Invalid stream cursor".into());
     }
+    let (mut socket, clock) = upgrade(url, api_key, tls, "/v1/tasks/stream").await?;
+    send_json(
+        &mut socket,
+        json!({"type":"subscribe", "protocol_version":1,
+            "consumer_id":consumer_id, "after_event_id":after_event_id}),
+    )
+    .await?;
+    Ok((socket, clock))
+}
+
+/// Upgrade `/v1/events/stream` with the profile's current credentials. The
+/// caller sends its own subscribe frame. A gateway without the event router
+/// (a legacy gateway) is reported as [`NO_EVENT_ROUTER`].
+pub async fn connect_events(
+    profile: &crate::gateway_transport::TransportProfile,
+) -> Result<(Socket, Option<GatewayClock>), String> {
+    let snapshot = profile
+        .current()
+        .await
+        .map_err(|_| "Gateway credentials unavailable")?;
+    upgrade(
+        snapshot.base.as_str(),
+        snapshot.websocket_bearer(),
+        snapshot.tls.clone(),
+        "/v1/events/stream",
+    )
+    .await
+}
+
+pub const NO_EVENT_ROUTER: &str = "Gateway has no event router";
+
+async fn upgrade(
+    url: &str,
+    api_key: Option<&str>,
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+    path: &str,
+) -> Result<(Socket, Option<GatewayClock>), String> {
     let mut url = stream_url(url)?;
-    url.set_path("/v1/tasks/stream");
+    url.set_path(path);
     let mut request = url
         .as_str()
         .into_client_request()
@@ -128,7 +165,7 @@ async fn connect_credentials(
         ..Default::default()
     };
     // tungstenite never follows redirects: a 3xx response is a rejected upgrade.
-    let (mut socket, response) = tokio::time::timeout(Duration::from_secs(10), async move {
+    let (socket, response) = tokio::time::timeout(Duration::from_secs(10), async move {
         match tls {
             Some(tls) => {
                 tokio_tungstenite::connect_async_tls_with_config(
@@ -146,18 +183,19 @@ async fn connect_credentials(
     })
     .await
     .map_err(|_| "Gateway upgrade timed out")?
-    .map_err(|_| "Gateway upgrade rejected or unavailable")?;
+    .map_err(|error| match error {
+        tungstenite::Error::Http(response)
+            if response.status() == 404 && path == "/v1/events/stream" =>
+        {
+            NO_EVENT_ROUTER
+        }
+        _ => "Gateway upgrade rejected or unavailable",
+    })?;
     let clock = response
         .headers()
         .get("date")
         .and_then(|value| value.to_str().ok())
         .and_then(GatewayClock::from_http_date);
-    send_json(
-        &mut socket,
-        json!({"type":"subscribe", "protocol_version":1,
-            "consumer_id":consumer_id, "after_event_id":after_event_id}),
-    )
-    .await?;
     Ok((socket, clock))
 }
 

@@ -1,0 +1,484 @@
+//! Desktop side of the server event router (docs/StateMachine.md). On embedded
+//! and native servers the server decides who works on what; this desktop only
+//! reports its agents and their terminal activity, shows the activity the
+//! server derives, and safely delivers `agent.notify` into terminals,
+//! reporting each outcome. A legacy gateway has no router, so nothing here runs.
+use super::*;
+use amux::event_client::{self, Incoming, Subscription};
+use serde_json::{Value, json};
+use std::collections::VecDeque;
+
+const EVENTS: [&str; 5] = [
+    "agent.notify",
+    "agent.online",
+    "agent.idle",
+    "agent.busy",
+    "agent.gone",
+];
+const HEARTBEAT: Duration = Duration::from_secs(30);
+/// Active terminals refresh their output time well inside the idle window.
+const ACTIVITY_REFRESH: Duration = Duration::from_secs(10);
+const ACTIVITY_RESEND: Duration = Duration::from_secs(30);
+const MAX_AGE_MS: i64 = 5 * 60_000;
+const RECENT: usize = 64;
+
+#[derive(Default)]
+pub(super) struct State {
+    flight: Option<iced::task::Handle>,
+    outgoing: Option<mpsc::Sender<Value>>,
+    clock: Option<amux::gateway_stream::GatewayClock>,
+    targets: Vec<String>,
+    pub(super) connected: bool,
+    pub(super) status: String,
+    retry_at: Option<Instant>,
+    heartbeat_at: Option<Instant>,
+    heartbeat_agents: Vec<Value>,
+    activity: HashMap<Uuid, (bool, bool, Instant)>,
+    pending: VecDeque<Value>,
+    delivering: bool,
+    delivered: VecDeque<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(in super::super) struct Delivery {
+    event: Value,
+    candidate: Candidate,
+}
+
+impl Desktop {
+    /// Embedded and native servers run the event router and decide assignment,
+    /// review and notifications; only a legacy gateway leaves this to clients.
+    pub(super) fn server_schedules(&self) -> bool {
+        self.preferences.current.mode != amux::gateway_preferences::GatewayMode::Legacy
+    }
+
+    fn events_enabled(&self) -> bool {
+        self.preferences.current.automatic_notifications
+            && self.preferences.current.has_connection()
+            && !self.embedded.busy
+            && !self.embedded.stopping
+            && (self.preferences.current.mode != amux::gateway_preferences::GatewayMode::Server
+                || self.embedded.local.is_some())
+    }
+
+    fn events_now(&self) -> i64 {
+        self.delegation
+            .events
+            .clock
+            .as_ref()
+            .map_or_else(|| unix_ms() as i64, |clock| clock.now_ms())
+    }
+
+    fn events_stop(&mut self) {
+        let status = std::mem::take(&mut self.delegation.events.status);
+        self.delegation.events = State {
+            status,
+            retry_at: Some(Instant::now()),
+            ..State::default()
+        };
+        for workspace in &mut self.workspaces {
+            for (_, pane) in workspace.panes.iter_mut() {
+                for tab in &mut pane.tabs {
+                    tab.delegation.server_busy = None;
+                }
+            }
+        }
+    }
+
+    fn events_send(&mut self, frame: Value) {
+        if let Some(outgoing) = &self.delegation.events.outgoing
+            && outgoing.try_send(frame).is_err()
+        {
+            self.queue_diagnostic("Event router send queue is full; reconnecting".into());
+            self.events_stop();
+        }
+    }
+
+    fn events_consumer(&self) -> Uuid {
+        let Some(directory) = &self.registry else {
+            return Uuid::new_v4();
+        };
+        let path = directory.join("events-consumer");
+        if let Some(id) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| Uuid::parse_str(text.trim()).ok())
+        {
+            return id;
+        }
+        let id = Uuid::new_v4();
+        let _ = std::fs::write(&path, id.to_string());
+        id
+    }
+
+    fn events_targets(&self) -> Vec<String> {
+        let mut targets: Vec<String> = self
+            .delegation
+            .candidates
+            .iter()
+            .filter(|c| !c.target.project.is_empty())
+            .map(|c| c.target.session.to_string())
+            .collect();
+        targets.sort();
+        targets.dedup();
+        targets
+    }
+
+    fn events_start(&mut self) -> Task<Message> {
+        let profile = match self.preferences.current.transport_profile() {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.delegation.events.status = format!("Event router unavailable: {error}");
+                self.delegation.events.retry_at = Some(Instant::now());
+                return Task::none();
+            }
+        };
+        let subscription = Subscription {
+            consumer: self.events_consumer(),
+            events: EVENTS.iter().map(|id| id.to_string()).collect(),
+            targets: self.events_targets(),
+        };
+        self.delegation.events.targets = subscription.targets.clone();
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(256);
+        let (incoming_tx, incoming_rx) = mpsc::channel(64);
+        self.delegation.events.outgoing = Some(outgoing_tx);
+        let epoch = self.delegation.epoch;
+        let stream = iced::stream::channel(
+            64,
+            move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+                use iced::futures::SinkExt;
+                let mut incoming_rx = incoming_rx;
+                let worker = event_client::run(profile, subscription, outgoing_rx, incoming_tx);
+                let forward = async move {
+                    while let Some(incoming) = incoming_rx.recv().await {
+                        if output
+                            .send(Message::Delegation(epoch, Event::Router(incoming)))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                };
+                tokio::select! {_ = worker => {}, _ = forward => {}}
+            },
+        );
+        let (task, handle) = Task::run(stream, |message| message).abortable();
+        self.delegation.events.flight = Some(handle.abort_on_drop());
+        task
+    }
+
+    /// Called from the delegation tick when the server schedules.
+    pub(super) fn events_tick(&mut self) -> Task<Message> {
+        if !self.events_enabled() {
+            if self.delegation.events.flight.is_some() {
+                self.events_stop();
+            }
+            self.delegation.events.status = if self.preferences.current.automatic_notifications {
+                "Waiting for the gateway connection".into()
+            } else {
+                "Automatic task notifications are disabled in Settings".into()
+            };
+            return Task::none();
+        }
+        if self.delegation.events.flight.is_some()
+            && self.events_targets() != self.delegation.events.targets
+        {
+            // The subscription names this desktop's agents; resubscribe for the new set.
+            self.events_stop();
+            self.delegation.events.retry_at = None;
+        }
+        if self.delegation.events.flight.is_none() {
+            if self
+                .delegation
+                .events
+                .retry_at
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+            {
+                return Task::none();
+            }
+            return self.events_start();
+        }
+        if !self.delegation.events.connected {
+            return Task::none();
+        }
+        self.events_report();
+        self.events_deliver()
+    }
+
+    fn events_report(&mut self) {
+        let now = self.events_now();
+        let candidates: Vec<Candidate> = self
+            .delegation
+            .candidates
+            .iter()
+            .filter(|c| !c.target.project.is_empty())
+            .cloned()
+            .collect();
+        let agents: Vec<Value> = candidates
+            .iter()
+            .map(|c| {
+                json!({
+                    "session_id": c.target.session.to_string(),
+                    "instance_id": c.actor.instance_id.to_string(),
+                    "provider": c.actor.provider.command(),
+                    "os": c.actor.os,
+                    "project": c.target.project,
+                    "name": c.name,
+                    "agent_id": c.target.agent_id,
+                    "generation": c.target.executor_generation().to_string(),
+                })
+            })
+            .collect();
+        let events = &mut self.delegation.events;
+        if events.heartbeat_agents != agents
+            || events
+                .heartbeat_at
+                .is_none_or(|at| at.elapsed() >= HEARTBEAT)
+        {
+            events.heartbeat_at = Some(Instant::now());
+            events.heartbeat_agents = agents.clone();
+            events.activity.clear();
+            let frame = event_client::emit("client.heartbeat", json!({"agents": agents}), None);
+            self.events_send(frame);
+        }
+        for c in candidates {
+            let Some(tab) = tab(self, c.target.terminal) else {
+                continue;
+            };
+            let elapsed = tab.terminal.as_ref().and_then(Terminal::activity_elapsed);
+            let active = amux::session::output_active(elapsed);
+            let draft = !tab.delegation.input.is_empty();
+            let output_at = elapsed.map(|e| now - e.as_millis() as i64);
+            let due = self
+                .delegation
+                .events
+                .activity
+                .get(&c.target.session)
+                .is_none_or(|(was_active, was_draft, at)| {
+                    *was_active != active
+                        || *was_draft != draft
+                        || at.elapsed()
+                            >= if active {
+                                ACTIVITY_REFRESH
+                            } else {
+                                ACTIVITY_RESEND
+                            }
+                });
+            if due {
+                self.delegation
+                    .events
+                    .activity
+                    .insert(c.target.session, (active, draft, Instant::now()));
+                let payload = json!({
+                    "session_id": c.target.session.to_string(),
+                    "instance_id": c.actor.instance_id.to_string(),
+                    "output_at": output_at, "draft": draft,
+                });
+                self.events_send(event_client::emit("terminal.activity", payload, None));
+            }
+        }
+    }
+
+    pub(super) fn events_incoming(&mut self, incoming: Incoming) -> Task<Message> {
+        match incoming {
+            Incoming::Connected(clock) => {
+                let events = &mut self.delegation.events;
+                events.connected = true;
+                events.clock = clock;
+                events.heartbeat_at = None;
+                events.status = "Connected to the event router".into();
+            }
+            Incoming::Rejected(reason) => {
+                self.queue_diagnostic(format!("Event router rejected a frame: {reason}"));
+            }
+            Incoming::Unsupported => {
+                self.delegation.events.connected = false;
+                self.delegation.events.status =
+                    "This gateway has no event router; automatic task work is off".into();
+            }
+            Incoming::Lost(reason) => {
+                self.delegation.events.connected = false;
+                self.delegation.events.status = format!("Event router: {reason}; reconnecting");
+            }
+            Incoming::Event(event) => return self.events_event(event),
+        }
+        Task::none()
+    }
+
+    fn events_event(&mut self, event: Value) -> Task<Message> {
+        let id = event["id"].as_str().unwrap_or_default();
+        if id == "agent.notify" {
+            let uid = event["uid"].as_str().unwrap_or_default().to_owned();
+            if self.delegation.events.delivered.contains(&uid)
+                || self
+                    .delegation
+                    .events
+                    .pending
+                    .iter()
+                    .any(|pending| pending["uid"] == event["uid"])
+            {
+                // A resend of something already handled or queued.
+                if self.delegation.events.delivered.contains(&uid) {
+                    self.events_send(event_client::ack(&event));
+                }
+                return Task::none();
+            }
+            self.delegation.events.pending.push_back(event);
+            return Task::none();
+        }
+        let session = event["payload"]["agent"]["session_id"]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok());
+        let busy = match id {
+            "agent.idle" => Some(false),
+            "agent.busy" => Some(true),
+            _ => None,
+        };
+        if let Some(session) = session {
+            let terminals: Vec<u64> = self
+                .delegation
+                .candidates
+                .iter()
+                .filter(|c| c.target.session == session)
+                .map(|c| c.target.terminal)
+                .collect();
+            for terminal in terminals {
+                if let Some(tab) = tab(self, terminal) {
+                    tab.delegation.server_busy = busy;
+                    self.dirty = true;
+                }
+            }
+        }
+        self.events_send(event_client::ack(&event));
+        Task::none()
+    }
+
+    fn events_result(&mut self, event: &Value, status: &str, reason: &str) {
+        let target = event["payload"]["target"].clone();
+        let payload = json!({"target": target, "status": status, "reason": reason});
+        let correlation = event["uid"].as_str();
+        self.events_send(event_client::emit(
+            "agent.notify_result",
+            payload,
+            correlation,
+        ));
+        self.events_send(event_client::ack(event));
+        let events = &mut self.delegation.events;
+        events
+            .delivered
+            .push_back(event["uid"].as_str().unwrap_or_default().to_owned());
+        if events.delivered.len() > RECENT {
+            events.delivered.pop_front();
+        }
+        self.queue_diagnostic(format!(
+            "Event notification {status}: target={} {reason}",
+            target.as_str().unwrap_or_default()
+        ));
+    }
+
+    fn events_deliver(&mut self) -> Task<Message> {
+        if self.delegation.events.delivering || self.preferences.open || self.workspace_dialog.open
+        {
+            return Task::none();
+        }
+        let Some(event) = self.delegation.events.pending.pop_front() else {
+            return Task::none();
+        };
+        let payload = &event["payload"];
+        let candidate = self
+            .delegation
+            .candidates
+            .iter()
+            .find(|c| payload["target"].as_str() == Some(c.target.session.to_string().as_str()))
+            .cloned();
+        let Some(candidate) = candidate else {
+            self.events_result(&event, "skipped", "agent is not running here");
+            return Task::none();
+        };
+        if self.events_now() - event["emitted_at"].as_i64().unwrap_or(0) > MAX_AGE_MS {
+            self.events_result(&event, "skipped", "notification expired");
+            return Task::none();
+        }
+        if payload["require_idle"] == true
+            && tab(self, candidate.target.terminal).is_none_or(|tab| {
+                !tab.delegation.input.is_empty()
+                    || amux::session::output_active(
+                        tab.terminal.as_ref().and_then(Terminal::activity_elapsed),
+                    )
+            })
+        {
+            self.events_result(&event, "skipped", "agent is busy");
+            return Task::none();
+        }
+        self.delegation.events.delivering = true;
+        let epoch = self.delegation.epoch;
+        let delivery = Delivery { event, candidate };
+        Task::perform(
+            async move {
+                let c = delivery.candidate.clone();
+                let verified = tokio::task::spawn_blocking(move || {
+                    delegation_process::verify(
+                        c.root.pid,
+                        &c.root.generation,
+                        c.root.foreground,
+                        &c.process,
+                    )
+                })
+                .await
+                .unwrap_or(false);
+                Event::Notified(Box::new(delivery), verified)
+            },
+            move |e| Message::Delegation(epoch, e),
+        )
+    }
+
+    pub(super) fn events_notified(&mut self, delivery: Delivery, verified: bool) -> Task<Message> {
+        self.delegation.events.delivering = false;
+        let Delivery { event, candidate } = delivery;
+        if !verified {
+            self.events_result(&event, "failed", "agent process changed");
+            return Task::none();
+        }
+        let Some(message) = notification_text(&event, &candidate) else {
+            self.events_result(&event, "skipped", "notification cannot be rendered");
+            return Task::none();
+        };
+        let pasted = tab(self, candidate.target.terminal).is_some_and(|tab| {
+            tab.delegation.root.as_ref()
+                == Some(&(candidate.root.pid, candidate.root.generation.clone()))
+                && tab.terminal.as_ref().is_some_and(|terminal| {
+                    foreground(terminal) == candidate.root.foreground
+                        && amux::identity::process_generation(candidate.process.pid)
+                            .is_ok_and(|g| g == candidate.process.generation)
+                        && paste(terminal, &tab.delegation.input, &message)
+                })
+        });
+        if pasted {
+            self.events_result(&event, "delivered", "");
+        } else {
+            self.events_result(&event, "failed", "terminal changed before delivery");
+        }
+        Task::none()
+    }
+}
+
+/// The terminal text, rendered by the same formatter as stream notifications.
+fn notification_text(event: &Value, candidate: &Candidate) -> Option<String> {
+    let payload = &event["payload"];
+    let mut source = payload["event"].clone();
+    source["id"] = event["seq"].clone();
+    let mut parsed = delegation::Event::parse(&source).ok()??;
+    if payload["mode"] == "assigned" {
+        if let (Some(heading), Some(summary)) =
+            (payload["heading"].as_str(), parsed.summary.as_mut())
+        {
+            summary.heading = heading.into();
+        }
+        let text = parsed.assigned_terminal_text(candidate.target.session, &candidate.name);
+        return Some(match payload["instructions"].as_str() {
+            Some(instructions) => format!("{text} {instructions}"),
+            None => text,
+        });
+    }
+    Some(parsed.recipient_terminal_text(&candidate.target, &candidate.name))
+}

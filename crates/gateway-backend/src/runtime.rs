@@ -373,7 +373,8 @@ fn spawn_retention(
             let bot_cutoff = now - bot_retention_ms;
             match spawn_blocking(move || {
                 let conn = database.lock().unwrap();
-                crate::router::prune(&conn, cutoff)?;
+                // Router events are delivery bookkeeping, not history.
+                crate::router::prune(&conn, now - 86_400_000)?;
                 db::purge_old_messages_with_policy(&conn, cutoff, bot_cutoff)
             })
             .await

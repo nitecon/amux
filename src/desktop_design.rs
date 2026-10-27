@@ -270,7 +270,9 @@ fn tab_provider(tab: &Tab) -> Option<Provider> {
     tab.delegation.provider.or(tab.provider)
 }
 fn active(tab: &Tab) -> bool {
-    amux::session::output_active(tab.terminal.as_ref().and_then(Terminal::activity_elapsed))
+    tab.delegation.server_busy.unwrap_or_else(|| {
+        amux::session::output_active(tab.terminal.as_ref().and_then(Terminal::activity_elapsed))
+    })
 }
 fn workspace_name(workspace: &Workspace) -> String {
     if let Some(name) = &workspace.name {

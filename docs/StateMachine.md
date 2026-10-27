@@ -214,36 +214,63 @@ enum StepOutcome { Continue, Stop, Fail(String) }
   already deduplicates by source task and `done_at`).
 - Retention: completed events are pruned by the existing retention worker.
 
-## Initial event catalogue
+## Event catalogue
 
-| Event | Emitted by | Notes |
+All events are version 1. Payload schemas are validated by the registry.
+
+| Event | Emitted by | Payload |
 |---|---|---|
-| `clock.tick` | Clock plugin | coarse interval; the only source of time |
-| `task.created` / `task.updated` / `task.commented` | task mutations | from existing triggers |
-| `task.assigned` / `task.started` | task mutations | new; `assigned` fires whenever the owner is set or changes (claim or assign) |
-| `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task mutations | `user_review` is new |
-| `client.heartbeat` | remote client | replaces presence-only heartbeat; carries agent list |
-| `terminal.activity` | remote client | per agent: output seen, draft present, process changed |
-| `agent.online` / `agent.idle` / `agent.busy` / `agent.gone` | Presence plugin | derived state |
-| `agent.notify` | Notifier plugin | targeted; text to inject into an agent terminal |
-| `router.retrying` | router | a plugin delivery reached the 30 s retry cap |
+| `clock.tick` | Clock source, every 10 s | `{at}`; the only source of time |
+| `task.created` / `task.updated` / `task.commented` / `task.assigned` / `task.started` / `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task event source (outbox) | `{project, task, comment, actor}`; `assigned` fires whenever the owner is set or changes (claim or assign) |
+| `client.heartbeat` | remote client (`remote_emit`) | `{agents: [{session_id, instance_id, provider, os, project, name?, goal?, agent_id?, generation?}]}`, every agent the client runs |
+| `terminal.activity` | remote client (`remote_emit`) | `{session_id, instance_id, output_at, draft}`; `output_at` is the last terminal output on the server's clock |
+| `agent.online` / `agent.idle` / `agent.busy` / `agent.gone` | Presence | `{agent}` as reported in the heartbeat, plus its `source` |
+| `agent.notify` | Assignment, Notifier, Reminder | `{target, project, mode, event, heading, instructions, require_idle}`; `event` is the task-event shape terminals already render, `mode` is `assigned` (already claimed for the agent) or `recipient` |
+| `agent.notify_result` | remote client (`remote_emit`) | `{target, status, reason}`, correlated with the `agent.notify` it answers; `status` is `delivered`, `skipped` or `failed` |
+| `router.retrying` | router | `{event_uid, event, plugin, attempts, error}` when a delivery reaches the 30 s retry cap |
 
-## Initial plugins
+## Plugins
 
 | Plugin | Consumes | Emits | Replaces (client code) |
 |---|---|---|---|
-| Clock | (timer) | `clock.tick` | client 1 s scheduling ticks |
-| Presence | `client.heartbeat`, `terminal.activity`, `clock.tick` | `agent.online/idle/busy/gone` | `backlog_ready`, idle detection as a scheduling input |
-| Assignment | `agent.idle`, `task.created`, `task.unclaimed` | `task.assigned` | `desktop_backlog.rs`, `backlog.rs` FIFO/eligibility |
-| Notifier | `task.assigned`, reminder/review events | `agent.notify` | audience selection in `delegation.rs` / `delegation_queue.rs` |
-| Reminder | `clock.tick`, `task.started` | `agent.notify` | in-progress reminders, `desktop_recovery.rs` reminders |
-| Review | `task.completed` | `task.created` (review task) | `desktop_autoreview.rs`, client review journal |
-| Reclaim | `agent.gone`, `clock.tick` | `task.unclaimed` | server 15-minute sweep, now aware of real busy state |
-| UI (remote) | `agent.*`, `task.*` | — | desktop polling for activity/task refresh |
+| Clock (source) | (timer) | `clock.tick` | client 1 s scheduling ticks |
+| Task events (source) | outbox rows | `task.*` | — |
+| `remote` | every forwarded event | — (wakes stream connections) | — |
+| `presence` | `client.heartbeat`, `terminal.activity`, `clock.tick` | `agent.online/idle/busy/gone` | `backlog_ready`, idle detection as a scheduling input |
+| `assignment` | `agent.*`, `task.created/unclaimed/user_review/completed/cancelled`, `agent.notify_result` | `agent.notify` | `desktop_backlog.rs`, `backlog.rs` FIFO/eligibility |
+| `notifier` | `agent.*`, `task.created/commented/completed` | `agent.notify` | audience selection in `delegation.rs` / `delegation_queue.rs` |
+| `reminder` | `agent.idle/busy/gone`, `clock.tick` | `agent.notify` | in-progress reminders |
+| `review` | `task.completed` | (review task via `task.created`) | `desktop_autoreview.rs`, client review journal |
+| `reclaim` | `agent.idle/busy/gone`, `clock.tick` | (`task.unclaimed` via the task store) | the 15-minute sweep and per-request reclaims |
+| UI (remote) | `agent.*` | — | local activity indicator |
 | Future: threat modelling | e.g. `task.completed` | its own events | — |
 
-Settings such as automatic assignment or automatic review become per-plugin
-server settings (enable/disable), not client preferences.
+Rules carried over from the desktop:
+
+- **Presence:** an agent is idle when its terminal has had no output for 30 s
+  and it has no draft; until its first activity report its state is unknown.
+  It is gone 90 s after its client's last heartbeat. Only the client that
+  reported an agent may report its activity, and output time only moves
+  forward.
+- **Assignment:** each idle agent that owns no in-progress task gets the
+  oldest eligible queued task in its project (OS label, review exclusion, held
+  review findings, goal, delegation, owner and session routing). It claims the
+  task as that agent through the normal task store, comments why, and sends
+  `agent.notify` with `require_idle`. A `skipped` or `failed` result releases
+  the claim so the next idle agent gets it.
+- **Notifier:** owners hear about activity on their tasks, explicit requesters
+  receive comment/completion results, actors never hear about their own
+  changes, and queued or user-review work is left to Assignment and the user.
+- **Reminder:** an agent idle for ten minutes that still owns in-progress work
+  is reminded once per task revision.
+- **Reclaim:** claimed work returns to the queue after 15 minutes without task
+  activity, except while its owner is busy. With the router running, the
+  per-request reclaims in the task API are not used.
+
+Plugins whose behaviour a user may want off (`assignment`, `notifier`,
+`reminder`, `review`, `reclaim`) start with an `Enabled` pre-exec step that
+stops the run when the server setting `plugin.<id>.enabled` is `false`. They
+are enabled by default.
 
 ## Client after the change
 

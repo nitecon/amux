@@ -50,7 +50,8 @@ pub(in super::super) struct Prepared {
 
 impl Desktop {
     pub(crate) fn autoreview_tick(&mut self) -> Task<Message> {
-        if !self.preferences.current.autoreview
+        if self.server_schedules()
+            || !self.preferences.current.autoreview
             || self.delegation.autoreview.flight.is_some()
             || self
                 .delegation

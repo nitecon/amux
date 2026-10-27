@@ -18,6 +18,8 @@ use uuid::Uuid;
 mod autoreview;
 #[path = "desktop_backlog.rs"]
 mod backlog;
+#[path = "desktop_events.rs"]
+mod events;
 
 #[derive(Default)]
 pub(super) struct TabState {
@@ -28,6 +30,8 @@ pub(super) struct TabState {
     pub directory: Option<PathBuf>,
     input: Vec<u8>,
     status: &'static str,
+    /// Busy/idle as derived by the server event router, when connected to one.
+    pub server_busy: Option<bool>,
 }
 impl TabState {
     pub fn status(&self) -> &str {
@@ -127,12 +131,15 @@ pub(super) enum Event {
     },
     Project(PathBuf, Result<String, String>),
     Verified(Box<Proof>, bool),
+    Router(amux::event_client::Incoming),
+    Notified(Box<events::Delivery>, bool),
 }
 
 #[derive(Default)]
 pub(super) struct Bridge {
     autoreview: autoreview::State,
     backlog: backlog::State,
+    events: events::State,
     epoch: u64,
     clock: Option<amux::gateway_stream::GatewayClock>,
     initialized: bool,
@@ -195,6 +202,32 @@ impl Bridge {
     fn targets(&self) -> Vec<Target> {
         self.candidates.iter().map(|c| c.target.clone()).collect()
     }
+}
+
+/// Submit `message` as one ordered native input transaction, owned by this UI
+/// turn: user edits cannot interleave with clear/send/submit/restore. A draft
+/// in `input` is cleared first and restored after.
+fn paste(terminal: &Terminal, input: &[u8], message: &str) -> bool {
+    let mut bytes = Vec::new();
+    if !input.is_empty() {
+        // Never synthesize Ctrl+C: it can interrupt a turn or
+        // exit the provider when our input tee is stale.
+        bytes.extend_from_slice(b"\x1b[F\x15"); // End, Ctrl+U.
+    }
+    if terminal
+        .input_mode()
+        .contains(iced_term::TermMode::BRACKETED_PASTE)
+    {
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(message.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+    } else {
+        bytes.extend_from_slice(message.as_bytes());
+    }
+    // End flushes a character-paste burst before Enter, without a timer.
+    bytes.extend_from_slice(b"\x1b[F\r");
+    bytes.extend_from_slice(input);
+    terminal.try_enqueue_input(bytes).is_ok()
 }
 
 fn foreground(terminal: &Terminal) -> Option<i32> {
@@ -440,6 +473,10 @@ impl Desktop {
         let mut follow = Task::none();
         let mut refresh = Task::none();
         let result: anyhow::Result<()> = match event {
+            Event::Router(incoming) => return self.events_incoming(incoming),
+            Event::Notified(delivery, verified) => {
+                return self.events_notified(*delivery, verified);
+            }
             Event::AutoreviewPrepared(request, result) => {
                 return self.autoreview_prepared(request, result);
             }
@@ -619,11 +656,15 @@ impl Desktop {
                     Ok(())
                 };
                 if serial >= self.delegation.scan_applied {
+                    let server_state = self.server_schedules() && self.delegation.events.connected;
                     for workspace in &mut self.workspaces {
                         for (_, pane) in workspace.panes.iter_mut() {
                             for tab in &mut pane.tabs {
                                 let candidate =
                                     candidates.iter().find(|c| c.root.terminal == tab.id);
+                                if !server_state || candidate.is_none() {
+                                    tab.delegation.server_busy = None;
+                                }
                                 let provider = candidate.map(|c| c.process.provider);
                                 let directory = candidate.map(|c| c.target.directory.clone());
                                 if tab.delegation.provider != provider
@@ -723,34 +764,14 @@ impl Desktop {
                         && amux::identity::process_generation(proof.candidate.process.pid)
                             .is_ok_and(|g| g == proof.candidate.process.generation)
                     {
-                        // One ordered native input transaction, owned by this UI turn.
-                        // User edits cannot interleave with clear/send/submit/restore.
-                        let mut bytes = Vec::new();
-                        if !tab.delegation.input.is_empty() {
-                            // Never synthesize Ctrl+C: it can interrupt a turn or
-                            // exit the provider when our input tee is stale.
-                            bytes.extend_from_slice(b"\x1b[F\x15"); // End, Ctrl+U.
-                        }
                         let message = proof
                             .attempt
                             .event
                             .recipient_terminal_text(&proof.attempt.target, &proof.candidate.name);
-                        if terminal
-                            .input_mode()
-                            .contains(iced_term::TermMode::BRACKETED_PASTE)
-                        {
-                            bytes.extend_from_slice(b"\x1b[200~");
-                            bytes.extend_from_slice(message.as_bytes());
-                            bytes.extend_from_slice(b"\x1b[201~");
+                        outcome = if paste(terminal, &tab.delegation.input, &message) {
+                            Outcome::Submitted
                         } else {
-                            bytes.extend_from_slice(message.as_bytes());
-                        }
-                        // End flushes a character-paste burst before Enter, without a timer.
-                        bytes.extend_from_slice(b"\x1b[F\r");
-                        bytes.extend_from_slice(&tab.delegation.input);
-                        outcome = match terminal.try_enqueue_input(bytes) {
-                            Ok(()) => Outcome::Submitted,
-                            Err(_) => Outcome::Uncertain,
+                            Outcome::Uncertain
                         };
                     } else {
                         outcome = Outcome::Queued;
@@ -770,44 +791,13 @@ impl Desktop {
         Task::batch([follow, refresh])
     }
 
-    pub fn delegation_tick(&mut self) -> Task<Message> {
-        let now = self.delegation.now_ms();
-        if self
-            .delegation
-            .commands
-            .as_ref()
-            .is_some_and(|commands| commands.is_closed())
-        {
-            self.delegation.transport_lost();
-            self.toasts.connection_lost();
-            self.queue_diagnostic("Gateway transport worker stopped; reconnect scheduled".into());
-        }
-        if !self.delegation.initialized {
-            if self
-                .delegation
-                .retry_at
-                .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
-            {
-                return Task::none();
-            }
-            return self.start_delegation();
-        }
+    /// Look up the gateway project of each agent's repository, at most every 30 seconds.
+    fn resolve_projects(&mut self, wanted: bool) -> Vec<Task<Message>> {
         let mut tasks = Vec::new();
-        if self
-            .delegation
-            .scan_at
-            .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
-        {
-            tasks.push(self.delegation_scan(None));
-        }
-        if self.delegation.queue.is_none() || self.delegation.commands.is_none() {
-            return Task::batch(tasks);
-        }
         let mut directories = HashSet::new();
         for c in &self.delegation.candidates {
             let directory = c.target.directory.clone();
-            if (self.preferences.current.automatic_notifications
-                || self.preferences.current.autoreview)
+            if wanted
                 && directories.insert(directory.clone())
                 && self
                     .delegation
@@ -837,6 +827,60 @@ impl Desktop {
                 ));
             }
         }
+        tasks
+    }
+
+    pub fn delegation_tick(&mut self) -> Task<Message> {
+        let now = self.delegation.now_ms();
+        if self
+            .delegation
+            .commands
+            .as_ref()
+            .is_some_and(|commands| commands.is_closed())
+        {
+            self.delegation.transport_lost();
+            self.toasts.connection_lost();
+            self.queue_diagnostic("Gateway transport worker stopped; reconnect scheduled".into());
+        }
+        if self.server_schedules() {
+            // The server decides assignment and notifications; keep agents and
+            // their projects current, and talk to its event router.
+            let mut tasks = Vec::new();
+            if self
+                .delegation
+                .scan_at
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
+            {
+                tasks.push(self.delegation_scan(None));
+            }
+            tasks.extend(self.resolve_projects(self.preferences.current.automatic_notifications));
+            tasks.push(self.events_tick());
+            return Task::batch(tasks);
+        }
+        if !self.delegation.initialized {
+            if self
+                .delegation
+                .retry_at
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+            {
+                return Task::none();
+            }
+            return self.start_delegation();
+        }
+        let mut tasks = Vec::new();
+        if self
+            .delegation
+            .scan_at
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
+        {
+            tasks.push(self.delegation_scan(None));
+        }
+        if self.delegation.queue.is_none() || self.delegation.commands.is_none() {
+            return Task::batch(tasks);
+        }
+        let wanted =
+            self.preferences.current.automatic_notifications || self.preferences.current.autoreview;
+        tasks.extend(self.resolve_projects(wanted));
         let targets = self.delegation.targets();
         if let Some(q) = &mut self.delegation.queue
             && let Err(error) = q.refresh(

@@ -131,6 +131,35 @@ impl StepContext {
             .emit(&source, id, version, payload, Some(self.cause))
             .await
     }
+
+    /// [`StepContext::emit`] inside the caller's transaction on `conn`, so the
+    /// event commits with the plugin's own changes. Call [`StepContext::wake`]
+    /// after committing.
+    pub fn emit_in(
+        &self,
+        conn: &Connection,
+        id: &str,
+        version: u32,
+        payload: Value,
+    ) -> Result<Uuid> {
+        let source = format!("plugin:{}", self.plugin);
+        self.bus
+            .emit_in(conn, &source, id, version, payload, Some(self.cause))
+    }
+
+    pub fn wake(&self) {
+        self.bus.wake();
+    }
+}
+
+/// A context for driving plugin steps directly in tests.
+#[cfg(test)]
+pub(crate) fn test_context(bus: &Bus, plugin: &'static str) -> StepContext {
+    StepContext {
+        bus: bus.clone(),
+        plugin,
+        cause: Uuid::nil(),
+    }
 }
 
 struct Registered {
