@@ -5,6 +5,40 @@ use reqwest::{Method, Url};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
+#[derive(Debug)]
+pub(crate) struct GatewayStatus(pub reqwest::StatusCode);
+impl std::fmt::Display for GatewayStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "gateway returned {}; operation not acknowledged", self.0)
+    }
+}
+impl std::error::Error for GatewayStatus {}
+
+async fn response_json(mut response: reqwest::Response) -> Result<Value> {
+    let status = response.status();
+    ensure!(
+        response
+            .content_length()
+            .is_none_or(|n| n <= 4 * 1024 * 1024),
+        "gateway response exceeds 4 MiB"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len() + chunk.len() <= 4 * 1024 * 1024,
+            "gateway response exceeds 4 MiB"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(GatewayStatus(status).into());
+    }
+    if bytes.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(&bytes).context("gateway returned invalid JSON")
+}
+
 #[derive(Clone)]
 pub struct Gateway {
     base: Url,
@@ -186,26 +220,7 @@ impl Gateway {
             .send()
             .await
             .context("gateway unavailable; no acceptance or claim is established")?;
-        let status = response.status();
-        let length = response.content_length();
-        if length.is_some_and(|n| n > 4 * 1024 * 1024) {
-            bail!("gateway response exceeds 4 MiB");
-        }
-        let mut response = response;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
-                bail!("gateway response exceeds 4 MiB");
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        if !status.is_success() {
-            bail!("gateway returned {status}; operation not acknowledged");
-        }
-        if bytes.is_empty() {
-            return Ok(Value::Null);
-        }
-        serde_json::from_slice(&bytes).context("gateway returned invalid JSON")
+        response_json(response).await
     }
 
     /// Resolve the gateway project for a workspace from its Git origin, as CMUX does:
@@ -318,6 +333,68 @@ impl Gateway {
 
     pub async fn list(&self, project: &str) -> Result<Value> {
         self.list_filtered(project, None, false).await
+    }
+
+    /// Atomic on the server: safe to retry after a lost response or from another host.
+    pub async fn enqueue_completion_review(
+        &self,
+        project: &str,
+        task: uuid::Uuid,
+    ) -> Result<Option<Value>> {
+        let mut url = self.projects_url()?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("invalid gateway URL"))?
+            .extend([project, "tasks", &task.to_string(), "review"]);
+        let response = self
+            .transport
+            .current()
+            .await?
+            .request(Method::POST, url)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        if matches!(
+            response.status(),
+            reqwest::StatusCode::CONFLICT | reqwest::StatusCode::NOT_FOUND
+        ) {
+            let mut source_url = self.projects_url()?;
+            source_url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("invalid gateway URL"))?
+                .extend([project, "tasks", &task.to_string()]);
+            let source = self
+                .transport
+                .current()
+                .await?
+                .request(Method::GET, source_url)
+                .send()
+                .await?;
+            if source.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            let source = response_json(source).await?;
+            if source["status"] != "done" {
+                return Ok(None);
+            }
+        }
+        ensure!(
+            response.status().is_success(),
+            "completion review queue returned {}; check gateway support and queue.log",
+            response.status()
+        );
+        let task = response_json(response).await?;
+        ensure!(
+            task["id"]
+                .as_str()
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+                && task["labels"]
+                    .as_array()
+                    .is_some_and(|labels| labels.iter().any(|label| label == "task-review")),
+            "gateway did not confirm a queued review task"
+        );
+        Ok(Some(task))
     }
 
     /// `status` is a comma-separated filter; without it the gateway lists

@@ -110,6 +110,86 @@ fn agent(provider: Provider) -> AgentIdentity {
     .unwrap()
 }
 
+#[tokio::test]
+async fn fifo_claim_contention_is_not_uncertainty_and_optional_comment_failure_keeps_confirmed_claim()
+ {
+    use amux::delegation::{Origin, Target};
+    for (status, comment_fails) in [(409, false), (404, false), (500, false), (200, true)] {
+        let actor = agent(Provider::Codex);
+        let target = Target {
+            workspace: uuid::Uuid::new_v4(),
+            terminal: 1,
+            session: actor.session_id,
+            agent_id: Some(actor.gateway_id()),
+            pid: 5,
+            generation: "fixture".into(),
+            directory: actor.project_directory.clone(),
+            project: "demo".into(),
+            origin: Some(Origin {
+                session_id: actor.session_id,
+                instance_id: actor.instance_id,
+                provider: actor.provider,
+                os: actor.os.clone(),
+            }),
+            goal: None,
+        };
+        let queued = json!({"id":TASK,"project_ident":"demo","status":"todo","updated_at":10});
+        let mut replies = vec![
+            reply(
+                200,
+                &json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]),
+            ),
+            reply(200, &queued),
+            reply(status, &owned_by(&actor)),
+        ];
+        if comment_fails {
+            replies.push(reply(503, &json!({"error":"comment service unavailable"})));
+        }
+        let (url, server) = server(replies);
+        let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+        let result = gateway
+            .claim_backlog(uuid::Uuid::parse_str(TASK).unwrap(), 10, &target, &actor)
+            .await;
+        match status {
+            409 | 404 => assert!(
+                result.unwrap().is_none(),
+                "peer won or task was deleted; select the next job"
+            ),
+            500 => assert!(result.is_err(), "unconfirmed claim must remain fenced"),
+            _ => assert!(
+                result.unwrap().is_some(),
+                "failed comment must not hide a confirmed owner"
+            ),
+        }
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), if comment_fails { 4 } else { 3 });
+    }
+}
+
+#[tokio::test]
+async fn deleted_or_requeued_sources_retire_review_requests_but_missing_gateway_support_does_not() {
+    for (post, source, state, skipped) in [
+        (404, 404, "done", true),
+        (409, 200, "todo", true),
+        (404, 200, "done", false),
+    ] {
+        let (url, server) = server(vec![
+            reply(post, &Value::Null),
+            reply(source, &json!({"status":state})),
+        ]);
+        let gateway = Gateway::new(&url, "fixture".into()).unwrap();
+        let result = gateway
+            .enqueue_completion_review("demo", uuid::Uuid::parse_str(TASK).unwrap())
+            .await;
+        if skipped {
+            assert!(result.unwrap().is_none());
+        } else {
+            assert!(result.is_err());
+        }
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+}
+
 #[test]
 fn requester_creation_keeps_executor_independent_and_checks_capability_before_post() {
     use amux::{delegation::Origin, task_routing::SessionTarget};
@@ -439,6 +519,7 @@ fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
         "wrong-OS claim and invalid flags never mutate or retry"
     );
     assert_eq!(requests[1].body["labels"], queued["labels"]);
+    assert_eq!(requests[1].body["routing"], json!({"mode":"unassigned"}));
     assert_eq!(requests[4].body["labels"], released["labels"]);
 }
 
@@ -996,14 +1077,14 @@ fn backlog_claim_rechecks_repository_revision_and_owner_before_one_agent_mutatio
             gateway
                 .claim_backlog(task, 10, &target, &actor)
                 .await
-                .is_err()
+                .unwrap().is_none()
         );
         assert!(
             gateway
                 .claim_backlog(task, 10, &target, &actor)
                 .await
-                .is_err(),
-            "an uncertain comment must not acknowledge a completed handoff"
+                .unwrap().is_some(),
+            "a failed optional comment must not hide a confirmed claim; native delivery still requires its separate recheck"
         );
     });
     let requests = server.join().unwrap();

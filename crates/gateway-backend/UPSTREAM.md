@@ -36,3 +36,8 @@ shared by both modes; secure requests carry their verified principal into the
 existing handler authorization boundary. The original bearer/session path stays
 available in compatibility mode. These additions are not part of the pinned
 upstream source and are covered by separate native transport/security tests.
+
+The amux-owned `task_reviews` module adds atomic, deduplicated completion-review
+tasks and reviewer exclusion. Its SQLite table is an additive extension to the
+pinned schema; the legacy API inventory continues to describe the upstream
+compatibility surface. Review creation uses a separate `/tasks/{id}/review` API.

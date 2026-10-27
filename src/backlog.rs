@@ -37,8 +37,11 @@ pub fn owns(task: &Value, target: &Target) -> bool {
 }
 
 pub fn eligible(task: &Value, target: &Target) -> bool {
-    if crate::autoreview::held_finding(task)
-        || !crate::task_platform::matches(task, target.origin.as_ref().map(|o| o.os.as_str()))
+    let excluded = format!("review-exclude:{}", target.session);
+    if !crate::task_platform::matches(task, target.origin.as_ref().map(|o| o.os.as_str()))
+        || task["labels"]
+            .as_array()
+            .is_some_and(|labels| labels.iter().any(|label| label == &excluded))
     {
         return false;
     }
@@ -78,6 +81,16 @@ pub fn review_text(task: &Value, target: &Target, name: &str, now: i64) -> Resul
     )?
     .ok_or_else(|| anyhow::anyhow!("Not an executable task"))?;
     event.summary.as_mut().unwrap().heading = "Queued task review".into();
+    if task["labels"]
+        .as_array()
+        .is_some_and(|labels| labels.iter().any(|label| label == "task-review"))
+    {
+        event.summary.as_mut().unwrap().heading = "Queued independent review".into();
+        return Ok(format!(
+            "{} This independent review task is already claimed by your amux identity. Review the source task, associated comments and actual changes according to this task's specification. Follow KISS/YAGNI. Review only: do not edit code or implement findings. Record confirmed defects as ordinary queued tasks, post results on the source and review tasks, then mark this review task done. Do not use the legacy reviews complete command.",
+            event.assigned_terminal_text(target.session, name)
+        ));
+    }
     Ok(format!(
         "{} This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {}.",
         event.assigned_terminal_text(target.session, name),
@@ -140,19 +153,39 @@ impl Gateway {
         if revision(&current) != expected_revision || !eligible(&current, target) {
             return Ok(None);
         }
-        let claimed = self
-            .claim(&target.project, &task.to_string(), actor)
-            .await?;
+        let claimed = match self.claim(&target.project, &task.to_string(), actor).await {
+            Ok(claimed) => claimed,
+            // A definite rejection is contention, not a lost acknowledgment.
+            // Refresh and pick the next eligible FIFO item; never pause an idle
+            // agent indefinitely because a peer won the same head-of-queue race.
+            Err(error)
+                if error
+                    .downcast_ref::<crate::gateway::GatewayStatus>()
+                    .is_some_and(|status| {
+                        matches!(
+                            status.0,
+                            reqwest::StatusCode::CONFLICT | reqwest::StatusCode::NOT_FOUND
+                        )
+                    }) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         // The durable claim receipt already fences this operation. A lost
         // acknowledgment must not cause a second claim or duplicate comment.
-        self.request(
-            reqwest::Method::POST,
-            &target.project,
-            &[&task.to_string(), "comments"],
-            Some(json!({"content": REVIEW_COMMENT})),
-            Some(actor),
-        )
-        .await?;
+        if let Err(error) = self
+            .request(
+                reqwest::Method::POST,
+                &target.project,
+                &[&task.to_string(), "comments"],
+                Some(json!({"content": REVIEW_COMMENT})),
+                Some(actor),
+            )
+            .await
+        {
+            eprintln!("amux: queue claim confirmed; assignment comment unconfirmed: {error}");
+        }
         Ok(Some(claimed))
     }
 }

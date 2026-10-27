@@ -26,6 +26,7 @@ pub mod task_cancel;
 pub mod task_dispatch;
 pub mod task_events;
 pub mod task_requester;
+pub mod task_reviews;
 pub mod task_targets;
 pub mod ui_auth;
 
@@ -128,6 +129,7 @@ pub fn api_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/tasks/capabilities", get(task_requester::capabilities))
         .route("/v1/projects/{ident}/tasks/{id}/requester", put(task_requester::set))
+        .route("/v1/projects/{ident}/tasks/{id}/review", post(task_reviews::create))
         .route("/v1/projects/{ident}/task-targets", get(task_targets::list).post(task_targets::heartbeat))
         .route("/v1/projects/{ident}/tasks/{id}/reassign", post(routes::reassign_task_handler))
         .route("/v1/projects/{ident}/tasks/{id}/assign", post(routes::assign_task_handler))

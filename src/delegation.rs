@@ -702,6 +702,14 @@ pub struct Journal {
     pub recent: Vec<Event>,
     #[serde(default)]
     pub backlog: Vec<crate::backlog::Receipt>,
+    #[serde(default)]
+    pub pending_reviews: Vec<ReviewRequest>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    pub project: String,
+    pub task: Uuid,
+    pub event: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rejected {
@@ -720,9 +728,23 @@ impl Journal {
             rejected: Vec::new(),
             recent: Vec::new(),
             backlog: Vec::new(),
+            pending_reviews: Vec::new(),
         }
     }
     fn validate(&self) -> Result<()> {
+        ensure!(
+            self.pending_reviews.len() <= MAX_PENDING,
+            "Review queue capacity reached"
+        );
+        for review in &self.pending_reviews {
+            ensure!(
+                !review.task.is_nil()
+                    && review.event > 0
+                    && !review.project.is_empty()
+                    && review.project.len() <= 512,
+                "Invalid queued completion review"
+            );
+        }
         ensure!(
             self.version == 1 && !self.consumer.is_nil() && self.namespace.len() <= 1024,
             "Invalid delegation journal"

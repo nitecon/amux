@@ -144,8 +144,9 @@ pub(super) struct Bridge {
     candidates: Vec<Candidate>,
     scan_at: Option<Instant>,
     scan_serial: u64,
+    scan_inflight: Option<u64>,
     scan_applied: u64,
-    scan_completed: Option<Instant>,
+    pub(super) scan_completed: Option<Instant>,
     projects: HashMap<PathBuf, (Instant, Option<String>)>,
     verifying: bool,
 }
@@ -283,11 +284,15 @@ impl Desktop {
         roots
     }
     fn delegation_scan(&mut self, arrival: Option<delegation::Event>) -> Task<Message> {
+        if self.delegation.scan_inflight.is_some() {
+            return Task::none();
+        }
         let roots = self.delegation_roots();
         let registry = self.registry.clone();
         let epoch = self.delegation.epoch;
         self.delegation.scan_serial += 1;
         let serial = self.delegation.scan_serial;
+        self.delegation.scan_inflight = Some(serial);
         self.delegation.scan_at = Some(Instant::now());
         Task::perform(
             async move {
@@ -446,6 +451,20 @@ impl Desktop {
             }
             Event::Stream(ConnectionEvent::Event(event)) => {
                 refresh = self.refresh_task_project(&event.project);
+                // Persist before receive can acknowledge the completion. A lost
+                // HTTP response or restart retries the server-deduplicated job.
+                if self.preferences.current.autoreview
+                    && event.kind == delegation::Kind::Completed
+                    && let Some(queue) = &mut self.delegation.queue
+                    && let Err(error) = queue.schedule_review(delegation::ReviewRequest {
+                        project: event.project.clone(),
+                        task: event.task,
+                        event: event.id,
+                    })
+                {
+                    self.delegation.fail(error);
+                    return Task::none();
+                }
                 // Pin the last completed native scan at arrival, rather than spawning an
                 // unbounded scan task for every stream event or attaching agents started later.
                 let targets = if self
@@ -483,6 +502,17 @@ impl Desktop {
                 found,
                 arrival,
             } => {
+                if self.delegation.scan_inflight == Some(serial) {
+                    self.delegation.scan_inflight = None;
+                }
+                self.queue_diagnostic(format!(
+                    "Agent scan: roots={} found={} elapsed_ms={}",
+                    self.delegation_roots().len(),
+                    found.len(),
+                    self.delegation
+                        .scan_at
+                        .map_or(0, |at| at.elapsed().as_millis())
+                ));
                 let roots = self.delegation_roots();
                 let candidates: Vec<Candidate> = found
                     .into_iter()
@@ -772,9 +802,6 @@ impl Desktop {
         let mut ready = HashSet::new();
         let candidates = self.delegation.candidates.clone();
         for c in &candidates {
-            if amux::autoreview::reviewing(&c.target.directory, &c.actor) {
-                continue;
-            }
             let pending = self.delegation.queue.as_ref().and_then(|q| {
                 q.journal
                     .receipts

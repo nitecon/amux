@@ -121,15 +121,15 @@ fn fallback_guidelines_cli_is_exact_and_review_prompt_is_read_only() {
 }
 
 #[test]
-fn findings_wait_for_human_assignment_and_corrupt_history_is_preserved() {
-    let mut task = serde_json::json!({"labels":["autoreview-finding"],"status":"todo"});
+fn only_explicit_user_review_holds_findings_and_corrupt_history_is_preserved() {
+    let mut task = serde_json::json!({"labels":["autoreview-finding"],"status":"user_review"});
     assert!(held_finding(&task));
     assert!(
         amux::delegation::Event::parse(&serde_json::json!({"kind":"task_created","task":task}))
             .unwrap()
             .is_none()
     );
-    task["owner_origin"] = serde_json::json!({"session_id":Uuid::new_v4()});
+    task["status"] = serde_json::json!("todo");
     assert!(!held_finding(&task));
     let dir = fixture();
     let path = dir.path().join("history.json");

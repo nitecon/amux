@@ -43,7 +43,11 @@ owner can receive notices; unrelated agents stay excluded. See
 
 Current queued tasks are checked separately from historical event replay. An
 eligible local agent with no output for 30 seconds, no unfinished draft and
-no owned in-progress task can take the first available queued item. The workspace
+no owned in-progress task can take the oldest eligible queued item. Creation time
+defines FIFO; editing, commenting or changing a row's display rank does not move
+it ahead of older work. The scheduler compares eligible jobs across idle agents,
+so an older review can go to a compatible peer before newer work is selected.
+The workspace
 activity icons use this same output clock. Other owners, explicit recipients,
 repository boundaries and task goals are respected; an agent can also evaluate a
 queued task already assigned to it.
@@ -106,32 +110,41 @@ returns work to TODO, normal eligibility resumes.
 
 ## Autoreview
 
-Enable **Autoreview** in Gateway preferences to review committed code when a
-verified local agent has had no output for 30 seconds and the project's queued
-or TODO list is empty. This setting is off by default and is independent of
-ordinary gateway notifications. Pending task actions, owned work, unfinished
-input, stale task lists and uncertain deliveries prevent a review from starting.
+Enable **Queue independent completion reviews** in Settings to create an ordinary
+queued review when a task completes. No special review prompt is injected ahead
+of queued work. Review tasks use the same FIFO pickup, idle clock, claim and
+delivery path as other work. The original completing agent is excluded, including
+by the backend's atomic claim and assignment checks. A different provider is not
+required: another agent is sufficient.
 
-Each review covers at most five of the newest unreviewed commits. When available,
-amux prefers a different provider from the latest commit's author/coauthor or
-the previous reviewer. Eligible tabs in the same local checkout can be selected
-across workspaces. The agent reads project coding guidelines first; if none exist,
-`amux --get-guidelines` prints the bundled general guidelines.
+The server creates at most one review per source task/completion timestamp, even
+when multiple hosts observe the event or a response is lost. The desktop persists
+review creation requests before acknowledging completion events and retries
+unconfirmed creation after 30 seconds, including after restart. Review completion
+does not create another review. Legacy local review receipts never reserve an
+agent or block ordinary queued work.
 
-The injected instruction permits review and finding-task creation only, not code
-changes, commits, pushes or PRs. Findings use `amux tasks create --review-finding`
-and the `autoreview-finding` label. Unassigned findings stay available for human
-triage and are excluded from automatic notification injection and task pickup;
-explicit assignment permits normal delivery.
+Reviews inspect the source task, its comments and actual changes. They must follow
+KISS/YAGNI, create tasks only for concrete actionable defects, and avoid edits,
+commits, pushes and speculative scope expansion. Results are posted on the source
+and review tasks, then the review task is marked done. The legacy `amux reviews`
+commands remain available for old manual receipts but are not needed by this flow.
 
-Review receipts are saved per checkout on this device before terminal input.
-Commits are marked reviewed only when the assigned agent runs the supplied
-`amux --agent <id> reviews complete <review-id>` command after completing the
-review and confirming any finding tasks. Sending input alone is not completion.
-`amux reviews status` shows the receipt. Interrupted or uncertain reviews are not
-automatically replayed; after confirming the old review has stopped, an operator
-can run `amux reviews release <review-id>` to permit another attempt. Different
-devices keep independent review histories.
+A TODO finding is executable queued work; its `autoreview-finding` label is
+descriptive and does not impose a hidden hold. Only explicit **User review**
+waits for a human decision. Automatic task pickup/notifications must be enabled
+for this app to hand queued work to terminals.
+
+The embedded server supplies `POST /v1/projects/{ident}/tasks/{id}/review`.
+External gateways need the same atomic endpoint. An unavailable endpoint leaves
+the durable request pending and reports the problem instead of injecting a
+fallback prompt or creating potentially duplicate ordinary tasks.
+
+Queue diagnostics are written to `queue.log` in the amux data directory, with a
+single rotated `queue.previous.log` (about 1 MiB each). They record native scan
+counts/duration, presence errors, blocked pickup reasons and claim/delivery IDs;
+they omit task bodies and credentials. Scans do not overlap, and stale scans do
+not consume the presence refresh interval.
 
 ## Built-in agent identity
 

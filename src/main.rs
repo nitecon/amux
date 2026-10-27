@@ -473,6 +473,10 @@ fn run(cli: Cli) -> Result<u8> {
                         let mut body = json!({"title": title, "specification": specification});
                         let mut labels = Vec::new();
                         if review_finding { labels.push("autoreview-finding".to_owned()); }
+                        if review_finding && to_agent.is_none() {
+                            body["routing"] = json!({"mode":"unassigned"});
+                            body["canonical_remote"] = json!(amux::gateway_project::configured_origin(&actor.project_directory)?);
+                        }
                         if let Some(os) = os {
                             anyhow::ensure!(gateway.resolve_project(actor.project_directory.clone()).await? == project, "Workspace project changed");
                             labels.push(format!("os:{}", os.as_str()));
@@ -493,6 +497,9 @@ fn run(cli: Cli) -> Result<u8> {
                         } else {
                             gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?
                         };
+                        if review_finding && to_agent.is_none() {
+                            anyhow::ensure!(task["status"] == "todo" && task["owner_origin"].is_null() && task["owner_agent_id"].is_null(), "Finding was not left unowned in the queue; inspect task before retrying");
+                        }
                         if let Some(executor) = &executor {
                             anyhow::ensure!(task["routing"] == json!({"mode":"session", "target":executor}) && task["owner_origin"] == json!(executor.origin),
                                 "executor assignment unconfirmed; inspect task before retrying");

@@ -13,13 +13,12 @@ use uuid::Uuid;
 
 pub const GUIDELINES: &str = include_str!("../docs/general_guidelines.md");
 
-/// Findings remain for human triage until explicitly assigned to an execution.
+/// A label is descriptive. Only an explicit user-review state holds work.
 pub fn held_finding(task: &serde_json::Value) -> bool {
     task["labels"]
         .as_array()
         .is_some_and(|labels| labels.iter().any(|l| l == "autoreview-finding"))
-        && task["owner_origin"].is_null()
-        && task["routing"]["mode"] != "session"
+        && task["status"] == "user_review"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

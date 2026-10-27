@@ -24,9 +24,49 @@ pub(super) struct State {
     pending: Vec<Pick>,
     last_assigned: HashMap<String, (u64, u64)>,
     pub status: String,
+    diagnostic: Option<(String, Instant)>,
 }
 
 impl Desktop {
+    pub(in super::super) fn queue_diagnostic(&mut self, message: String) {
+        if self
+            .delegation
+            .backlog
+            .diagnostic
+            .as_ref()
+            .is_some_and(|(last, at)| last == &message || at.elapsed() < Duration::from_secs(5))
+        {
+            return;
+        }
+        self.delegation.backlog.diagnostic = Some((message.clone(), Instant::now()));
+        let Some(directory) = &self.registry else {
+            return;
+        };
+        let path = directory.join("queue.log");
+        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() >= 1024 * 1024) {
+            let previous = directory.join("queue.previous.log");
+            let _ = std::fs::remove_file(&previous);
+            if std::fs::rename(&path, previous).is_err() {
+                return;
+            }
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        if let Ok(mut file) = options.open(path) {
+            use std::io::Write;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let _ = writeln!(file, "{now} {message}");
+        }
+    }
+
     fn backlog_scope(&self, pick: &Pick) -> Option<QueryScope> {
         let index = self
             .workspaces
@@ -40,9 +80,6 @@ impl Desktop {
     }
 
     fn backlog_ready(&mut self, pick: &Pick, idle_after: Duration) -> bool {
-        if amux::autoreview::reviewing(&pick.candidate.target.directory, &pick.candidate.actor) {
-            return false;
-        }
         if self.backlog_scope(pick).is_none()
             || !self
                 .delegation
@@ -137,17 +174,27 @@ impl Desktop {
     }
 
     pub(super) fn backlog_tick_after(&mut self, idle_after: Duration) -> Task<Message> {
-        if !self.preferences.current.automatic_notifications
-            || self.delegation.connection.is_none()
-            || self.delegation.queue.is_none()
-            || self.delegation.verifying
-            || self.delegation.backlog.flight.is_some()
-            || self.delegation.autoreview.flight.is_some()
-            || self
-                .delegation
-                .scan_completed
-                .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
+        let blocked = if !self.preferences.current.automatic_notifications {
+            Some("automatic task pickup is disabled in Settings")
+        } else if self.delegation.connection.is_none() {
+            Some("gateway stream is disconnected")
+        } else if self.delegation.queue.is_none() {
+            Some("durable delivery journal is unavailable")
+        } else if self.delegation.verifying {
+            Some("notification process verification is pending")
+        } else if self.delegation.backlog.flight.is_some() {
+            Some("queue claim/process verification is pending")
+        } else if self
+            .delegation
+            .scan_completed
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
         {
+            Some("verified agent scan is missing or stale")
+        } else {
+            None
+        };
+        if let Some(reason) = blocked {
+            self.queue_diagnostic(format!("Queue blocked: {reason}"));
             return Task::none();
         }
         let mut queries = Vec::new();
@@ -217,6 +264,7 @@ impl Desktop {
                 .is_some_and(|last| position <= *last);
             (c.target.project.clone(), wrapped, position)
         });
+        let mut selected: Option<(i64, Pick)> = None;
         for candidate in candidates {
             let Some(index) = self
                 .workspaces
@@ -227,7 +275,6 @@ impl Desktop {
             };
             let panel = &self.workspaces[index].gateway;
             if panel.project != candidate.target.project
-                || panel.loading
                 || panel
                     .loaded_at
                     .is_none_or(|at| at.elapsed() > Duration::from_secs(10))
@@ -321,27 +368,32 @@ impl Desktop {
                 self.delegation.backlog.pending.push(pick);
                 continue;
             }
-            let task = panel.tasks.iter().find(|task| {
-                backlog::eligible(task, &candidate.target)
-                    && !self
-                        .delegation
-                        .queue
-                        .as_ref()
-                        .unwrap()
-                        .journal
-                        .backlog
-                        .iter()
-                        .any(|r| {
-                            task["id"] == r.task.to_string()
-                                && backlog::revision(task) == r.revision
-                        })
-            });
+            let task = panel
+                .tasks
+                .iter()
+                .filter(|task| {
+                    backlog::eligible(task, &candidate.target)
+                        && !self
+                            .delegation
+                            .queue
+                            .as_ref()
+                            .unwrap()
+                            .journal
+                            .backlog
+                            .iter()
+                            .any(|r| {
+                                task["id"] == r.task.to_string()
+                                    && backlog::revision(task) == r.revision
+                            })
+                })
+                .min_by_key(|task| task["created_at"].as_i64().unwrap_or(i64::MAX));
             let Some(task) = task else {
                 continue;
             };
             let Some(id) = task["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()) else {
                 continue;
             };
+            let created = task["created_at"].as_i64().unwrap_or(i64::MAX);
             let pick = Pick {
                 request: Uuid::new_v4(),
                 task: id,
@@ -354,9 +406,37 @@ impl Desktop {
                 current_task: None,
             };
             if self.backlog_ready(&pick, idle_after) {
-                queries.push(self.verify_backlog(pick));
-                return Task::batch(queries);
+                if selected.as_ref().is_none_or(|(age, _)| created < *age) {
+                    selected = Some((created, pick));
+                }
+                continue;
             }
+            let state = tab(self, pick.candidate.target.terminal)
+                .map(|tab| {
+                    format!(
+                        "draft={}, output_idle_ms={:?}",
+                        !tab.delegation.input.is_empty(),
+                        tab.terminal
+                            .as_ref()
+                            .and_then(|terminal| terminal.activity_elapsed())
+                            .map(|age| age.as_millis())
+                    )
+                })
+                .unwrap_or_else(|| "terminal unavailable".into());
+            self.queue_diagnostic(format!("Queue waiting: task={} agent={} {state}; requires idle output, no draft, verified process and no other owned task", pick.task, pick.candidate.target.session));
+        }
+        if let Some((_, pick)) = selected {
+            queries.push(self.verify_backlog(pick));
+            return Task::batch(queries);
+        }
+        let queued = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.gateway.tasks)
+            .filter(|task| task["status"] == "todo")
+            .count();
+        if queued > 0 {
+            self.queue_diagnostic(format!("Queue snapshot: {queued} queued rows, {} verified agents; checking OS, ownership, routing, goal and durable receipts", self.delegation.candidates.len()));
         }
         Task::batch(queries)
     }
@@ -505,6 +585,10 @@ impl Desktop {
             } else {
                 "Queue delivery unconfirmed. Inspect the task before assigning it again.".into()
             };
+            self.queue_diagnostic(format!(
+                "{}; task={} agent={}",
+                self.delegation.backlog.status, pick.task, pick.candidate.target.session
+            ));
             return Task::none();
         }
         let Ok(gateway) = self.preferences.current.gateway() else {
@@ -613,6 +697,10 @@ impl Desktop {
                 )
             }
         }
+        self.queue_diagnostic(format!(
+            "{}; task={} agent={}",
+            self.delegation.backlog.status, pick.task, pick.candidate.target.session
+        ));
         self.refresh_task_project(&pick.candidate.target.project)
     }
 }
@@ -661,6 +749,33 @@ mod tests {
         );
         assert!(valid);
         drop(app.backlog_verified_after(pick, valid, Duration::ZERO));
+    }
+
+    #[test]
+    fn fifo_selects_oldest_eligible_work_across_agents_ignoring_rank_and_updates() {
+        let (mut app, first, second, mut tasks) = fixture();
+        tasks[0]["created_at"] = json!(100);
+        tasks[0]["rank"] = json!(-100);
+        tasks[0]["updated_at"] = json!(99999);
+        tasks[1]["created_at"] = json!(10);
+        tasks[1]["rank"] = json!(99999);
+        let original = find(&app, first.terminal).delegation.root.clone();
+        assert!(original.is_some());
+        let author = app
+            .delegation
+            .candidates
+            .iter()
+            .find(|candidate| candidate.target.terminal == first.terminal)
+            .unwrap()
+            .target
+            .session;
+        tasks[1]["labels"] = json!(["task-review", format!("review-exclude:{author}")]);
+        app.workspaces[0].gateway.tasks = tasks.clone();
+        drop(app.backlog_tick_after(Duration::ZERO));
+        let picked = app.delegation.backlog.flight.as_ref().unwrap();
+        assert_eq!(picked.task.to_string(), tasks[1]["id"]);
+        assert_eq!(picked.candidate.target.terminal, second.terminal);
+        assert!(first.lines().is_empty() && second.lines().is_empty());
     }
 
     #[test]
@@ -771,7 +886,11 @@ mod tests {
         let request = Uuid::new_v4();
         app.delegation.autoreview.flight = Some(request);
         drop(app.backlog_tick_after(Duration::ZERO));
-        assert!(app.delegation.backlog.flight.is_none());
+        assert!(
+            app.delegation.backlog.flight.is_some(),
+            "review creation never reserves an agent"
+        );
+        app.delegation.backlog.flight = None;
         // Preparing a review found no unreviewed commits. Only its transient
         // flight is cleared; this must not reserve the agent indefinitely.
         drop(app.autoreview_prepared(request, Ok(None)));
@@ -779,9 +898,10 @@ mod tests {
         refreshed(&mut app);
         drop(app.backlog_tick_after(Duration::ZERO));
         assert!(
-            app.delegation.backlog.flight.is_none(),
-            "finding still needs triage"
+            app.delegation.backlog.flight.is_some(),
+            "queued findings have no hidden label hold"
         );
+        app.delegation.backlog.flight = None;
 
         // The human's authoritative return clears the hold, preserving labels.
         task["labels"] = json!(["bug"]);

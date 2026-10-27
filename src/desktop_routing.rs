@@ -263,6 +263,15 @@ impl Desktop {
         choices
     }
     pub(super) fn routing_tick(&mut self) -> Task<Message> {
+        // Do not spend the 30-second presence poll while a slow native scan
+        // temporarily has no fresh actors. Retry on the next UI tick instead.
+        if self
+            .delegation
+            .scan_completed
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
+        {
+            return Task::none();
+        }
         let Ok(gateway) = self.preferences.current.gateway() else {
             return Task::none();
         };
@@ -365,6 +374,8 @@ impl Desktop {
                     format!("Recipients unavailable; automatic routing available. {error}");
             }
         }
+        let diagnostic = format!("Agent presence: project={} {}", scope.project, panel.status);
+        self.queue_diagnostic(diagnostic);
     }
 
     pub(super) fn routing_form(&self) -> Element<'_, Message> {

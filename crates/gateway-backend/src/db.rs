@@ -1193,6 +1193,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
         )?;
     }
     crate::task_requester::initialize(conn)?;
+    crate::task_reviews::initialize(conn)?;
     crate::task_targets::initialize(conn)?;
     crate::execution_history::initialize(conn)?;
 
@@ -9037,6 +9038,7 @@ fn assign_task_inner(
         )
         .into());
     }
+    crate::task_reviews::ensure_reviewer(&previous.labels, Some(&target.origin))?;
     let caller = crate::task_events::current_origin(conn)?;
     if human {
         if caller.is_some() {
@@ -9244,6 +9246,9 @@ fn update_task_inner(
     }
     // Stored labels predate validation, so only new labels are rejected.
     let current_os = task_required_os(&current.labels).ok().flatten();
+    if let Some(labels) = upd.labels {
+        crate::task_reviews::preserve_metadata(&current.labels, labels)?;
+    }
     let next_os = match upd.labels {
         Some(labels) => task_required_os(labels)?,
         None => current_os,
@@ -9294,6 +9299,9 @@ fn update_task_inner(
     }
     let now = now_ms();
     let new_status = upd.status.unwrap_or(&current.status).to_string();
+    if new_status == "in_progress" {
+        crate::task_reviews::ensure_reviewer(&current.labels, origin.as_ref())?;
+    }
     let owner_explicit = upd.owner_agent_id.is_some();
     let transitioning = upd.status.is_some() && new_status != current.status;
     if transitioning && new_status == "in_progress" && os_mismatch(next_os, origin.as_ref()) {

@@ -2508,8 +2508,8 @@ impl Desktop {
         content = content
             .push(text(&self.embedded.status))
             .push(checkbox(draft.automatic_notifications).label("Send gateway notifications and assign queued work to idle agents in this app").on_toggle(Message::AutomaticNotifications))
-            .push(checkbox(draft.autoreview).label("Autoreview").on_toggle(Message::Autoreview))
-            .push(text("When no tasks are queued, idle agents review up to five unreviewed commits. Findings wait for human triage; reviews must not change code. A different provider is preferred when available. Review history is saved on this device.").size(12))
+            .push(checkbox(draft.autoreview).label("Queue independent completion reviews").on_toggle(Message::Autoreview))
+            .push(text("Completed tasks create one queued review for a different agent. Idle agents pick eligible tasks oldest first, including reviews and confirmed findings. Reviews inspect the source task and associated comments without changing code. Explicit User review still waits for your decision.").size(12))
             .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
             .push(text("Repository matching is required. Settings are saved on this device.").size(12))
             .push(text(&self.workspaces[self.active].gateway.status).size(13));

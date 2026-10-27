@@ -73,6 +73,21 @@ fn retire_review_notifications(
 }
 
 impl Queue {
+    pub fn schedule_review(&mut self, request: crate::delegation::ReviewRequest) -> Result<()> {
+        if self.journal.pending_reviews.contains(&request) {
+            return Ok(());
+        }
+        let mut next = self.journal.clone();
+        next.pending_reviews.push(request);
+        self.commit(next)
+    }
+
+    pub fn finish_review(&mut self, request: &crate::delegation::ReviewRequest) -> Result<()> {
+        let mut next = self.journal.clone();
+        next.pending_reviews.retain(|pending| pending != request);
+        self.commit(next)
+    }
+
     pub fn begin_backlog(&mut self, receipt: crate::backlog::Receipt) -> Result<()> {
         ensure!(
             !self

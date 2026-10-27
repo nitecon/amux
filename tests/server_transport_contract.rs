@@ -253,6 +253,20 @@ fn transport_fixture_worker() {
             .json(&json!({"memories":[{"content":"mTLS memory fixture","memory_type":"project"}]}))
             .send().await.unwrap().json().await.unwrap();
         assert_eq!(memory["results"][0]["action"], "created");
+        let source = task["id"].as_str().unwrap();
+        gateway.claim("transport-fixture", source, &caller).await.unwrap();
+        gateway.request(Method::PATCH, "transport-fixture", &[source], Some(json!({"status":"done"})), Some(&caller)).await.unwrap();
+        let review = gateway.enqueue_completion_review("transport-fixture", Uuid::parse_str(source).unwrap()).await.unwrap().unwrap();
+        let review_id = review["id"].as_str().unwrap();
+        assert_eq!(review["status"], "todo");
+        assert!(review["owner_origin"].is_null() && review["owner_agent_id"].is_null());
+        assert_eq!(gateway.enqueue_completion_review("transport-fixture", Uuid::parse_str(source).unwrap()).await.unwrap().unwrap()["id"], review["id"]);
+        assert!(gateway.claim("transport-fixture", review_id, &caller).await.is_err());
+        assert!(gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"labels":[]})), Some(&caller)).await.is_err());
+        let reviewer = actor(&root);
+        second.claim("transport-fixture", review_id, &reviewer).await.unwrap();
+        second.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"done"})), Some(&reviewer)).await.unwrap();
+        assert!(second.enqueue_completion_review("transport-fixture", Uuid::parse_str(review_id).unwrap()).await.unwrap().is_none());
         let replacement = server_controller::invitation(admin.clone(), true).await.unwrap();
         assert!(replacement.invitation != invitation.invitation);
         assert!(server_controller::pair(root.join("old-invite"), admin.url.clone(), invitation.invitation.clone()).await.is_err());

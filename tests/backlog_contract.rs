@@ -30,6 +30,60 @@ fn target() -> Target {
 }
 
 #[test]
+fn completion_review_requests_survive_restart_and_duplicate_events_without_losing_newer_completions()
+ {
+    use amux::delegation::ReviewRequest;
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    std::fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    let path = directory.path().join("completion-review.json");
+    let first = ReviewRequest {
+        project: "amux".into(),
+        task: Uuid::new_v4(),
+        event: 10,
+    };
+    let mut second = first.clone();
+    second.event = 20;
+    let mut queue = Queue::open(path.clone(), "fixture").unwrap();
+    queue.schedule_review(first.clone()).unwrap();
+    queue.schedule_review(first.clone()).unwrap();
+    queue.schedule_review(second.clone()).unwrap();
+    drop(queue);
+    let mut restored = Queue::open(path.clone(), "fixture").unwrap();
+    assert_eq!(
+        restored.journal.pending_reviews,
+        vec![first.clone(), second.clone()]
+    );
+    restored.finish_review(&first).unwrap();
+    drop(restored);
+    assert_eq!(
+        Queue::open(path, "fixture")
+            .unwrap()
+            .journal
+            .pending_reviews,
+        vec![second]
+    );
+}
+
+#[test]
+fn queued_findings_are_work_and_completion_reviews_exclude_the_original_agent() {
+    let original = target();
+    let mut peer = original.clone();
+    peer.session = Uuid::new_v4();
+    peer.origin.as_mut().unwrap().session_id = peer.session;
+    let mut task = json!({"id":Uuid::new_v4(),"project_ident":"amux","status":"todo","labels":["autoreview-finding"]});
+    assert!(backlog::eligible(&task, &original));
+    task["labels"] = json!([
+        "task-review",
+        format!("review-exclude:{}", original.session)
+    ]);
+    assert!(!backlog::eligible(&task, &original));
+    assert!(backlog::eligible(&task, &peer));
+    task["status"] = json!("user_review");
+    assert!(!backlog::eligible(&task, &peer));
+}
+
+#[test]
 fn platform_requirement_limits_pickup_to_matching_native_os() {
     let mut target = target();
     let task =
