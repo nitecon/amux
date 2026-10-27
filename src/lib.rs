@@ -11,6 +11,7 @@ pub mod notifications;
 #[cfg(feature = "desktop")]
 pub mod readiness;
 pub mod recipient;
+pub mod server;
 pub mod session;
 #[cfg(feature = "desktop")]
 pub mod submission;

@@ -1,0 +1,32 @@
+[package]
+name = "amux-gateway-backend"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "In-process API-compatible gateway backend for amux"
+
+[features]
+default = ["discord", "whatsapp"]
+discord = ["dep:serenity"]
+whatsapp = []
+
+[dependencies]
+axum = { version = "=0.8.8", features = ["json", "http1", "multipart", "form", "query", "ws"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+tracing = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+hmac = "0.12"
+tower = "0.5"
+async-trait = "0.1"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1", features = ["v7"] }
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+serenity = { version = "0.12", optional = true, default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+reqwest = { version = "0.13", features = ["json"] }

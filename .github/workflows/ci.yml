@@ -71,6 +71,7 @@ jobs:
           Copy-Item docs/windows-review.md bundle/REVIEW.md
           Copy-Item docs/notification-validation.md bundle/notification-validation.md
           Copy-Item LICENSE bundle/
+          Add-Content bundle/LICENSE "`nEmbedded gateway backend: nitecon/agent-gateway, commit 986d84544aae086579c72349a1afc366cef6b589 (Apache-2.0). Ported API-only backend; see crates/gateway-backend/UPSTREAM.md in the source distribution.`n"
           Copy-Item vendor/iced_term/LICENSE bundle/ICED_TERM_LICENSE
           # Preserve the existing update archive format while including icon attribution.
           Add-Content bundle/ICED_TERM_LICENSE "`nLucide icons`n"
@@ -88,7 +89,7 @@ jobs:
             binary_sha256 = $hash
             gui_binary = '${{ matrix.gui }}'
             gui_binary_sha256 = $gui
-            version = $package.packages[0].version
+            version = ($package.packages | Where-Object { $_.name -eq 'amux' }).version
             candidate_only = -not ('${{ github.ref }}'.StartsWith('refs/tags/v'))
             native_runtime_acceptance = 'pending CMUX platform review'
           }

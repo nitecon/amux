@@ -27,6 +27,7 @@ sed -e "s/__VERSION__/$version/g" -e "s/__BUNDLE_ID__/$bundle_id/g" \
 # The desktop finds the CLI beside itself, so both live in Contents/MacOS.
 cp "$bin/amux-desktop" "$bin/amux" "$app/Contents/MacOS/"
 cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
+printf '\nEmbedded gateway backend: nitecon/agent-gateway, commit 986d84544aae086579c72349a1afc366cef6b589 (Apache-2.0). Ported API-only backend; see crates/gateway-backend/UPSTREAM.md in the source distribution.\n' >> "$app/Contents/Resources/LICENSE"
 
 # CI release metadata for `amux --update`, sealed by the app signature below.
 # Local builds have none and are never updated in place.

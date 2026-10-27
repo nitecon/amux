@@ -65,10 +65,24 @@ pub enum Layout {
     },
     Split {
         vertical: bool,
+        #[serde(deserialize_with = "split_ratio")]
         ratio: f32,
         a: Box<Layout>,
         b: Box<Layout>,
     },
+}
+
+fn split_ratio<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<f32, D::Error> {
+    // The gateway's arbitrary-precision JSON feature also applies to amux.
+    // Tagged-enum buffering represents those numbers through serde_json::Number.
+    let number = serde_json::Number::deserialize(deserializer)?;
+    number
+        .as_f64()
+        .map(|number| number as f32)
+        .filter(|number| number.is_finite())
+        .ok_or_else(|| serde::de::Error::custom("invalid saved split ratio"))
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedWorkspace {

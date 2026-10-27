@@ -35,6 +35,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Operation {
+    /// Host the API-compatible gateway using its existing .env/environment settings.
+    Server {
+        #[command(subcommand)]
+        command: Option<amux::server::Command>,
+    },
     /// Check or install managed task instructions for local coding agents.
     Harness {
         #[command(subcommand)]
@@ -307,6 +312,7 @@ fn run(cli: Cli) -> Result<u8> {
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
     match cli.command.unwrap_or(Operation::Desktop) {
+        Operation::Server { command } => amux::server::run(command)?,
         Operation::Harness { operation } => {
             let environment = amux::harness::Environment::discover()?;
             match operation {

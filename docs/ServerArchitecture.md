@@ -51,10 +51,20 @@ dirty branch and must not be copied as an authoritative release baseline.
 Embed the backend in this repository so an amux instance can act as the standalone
 gateway with the same configured API-key behavior and native clients. Preserve the
 full backend API surface, not only the routes currently exercised by task commands.
-Keep the current native frontend and omit browser-page serving and external channel
-workers. Any plugin-dependent API behavior must be compared against the existing
-gateway with the same plugin configuration; do not claim parity by substituting
-new generic unsupported responses or silently dropping routes.
+Keep the current native frontend and omit browser-page serving. Retain the existing
+external channel plugins, configuration, ingress and workers during compatibility
+testing and cutover. Compare plugin-dependent API behavior against the existing
+gateway with the same plugin configuration; do not substitute a native adapter,
+new generic unsupported responses or silently drop routes during this phase.
+
+The owner requires repeated switching between the existing gateway and the new
+amux server before full cutover. The test plan must record switch-forward and
+switch-back runs using explicit isolated/copied database profiles, the same API
+contracts and controlled plugin ownership. Do not run two consumers of a live
+channel integration concurrently or reuse the production database for experiments.
+Post-cutover decoupling of project registration and internal messaging from external
+channels is deferred to task `01a17b97-b8c9-73e2-89c5-ae541ca0e814`; it is not part
+of either initial release's compatibility changes.
 
 Prove parity using the pinned upstream contracts and a differential harness running
 the original and embedded routers against isolated database fixtures. Include
@@ -63,6 +73,9 @@ errors, pagination, events/receipts, interrupted requests and database upgrades.
 Validate the actual amux desktop/CLI against the embedded backend, then publish a
 full native release. This release must work with the established gateway URL/key
 workflow before certificate transport is introduced.
+
+See [server/Compatibility.md](server/Compatibility.md) for the compatibility
+entry point, retained configuration and reproducible differential checks.
 
 ### Release 2: native server lifecycle, listening and mTLS
 
@@ -90,8 +103,9 @@ can designate one machine as the network server and switch other installs to
 
 Keep the existing native frontend. Port backend behavior with its current IDs,
 constraints, payloads, and ownership rules before redesigning internals. Exclude
-the gateway web frontend and external notification/channel integrations from this
-work. Internal task events, messages, stream receipts, and cancellation are backend
+the gateway web frontend. Preserve existing external notification/channel integrations
+for the initial compatibility/cutover phase; introducing a native replacement is
+post-cutover work. Internal task events, messages, stream receipts, and cancellation are backend
 contracts and remain in scope. See [MemoryArchitecture.md](MemoryArchitecture.md)
 for memory, indexing, OKF, and terminal-driven context injection.
 
@@ -149,14 +163,13 @@ The following defines the required families; exact methods and payloads come fro
 
 External room provisioning cannot behave identically without its channel plugin.
 The clean gateway also requires a channel plugin for repository registration and
-several message operations, so an empty plugin registry is not a usable standalone
-amux backend. A native internal-message adapter is under owner review; it would
-preserve the API contract while replacing external channel side effects with native
-delivery. Document and test that adapter explicitly rather than claiming an empty
-registry provides equivalent behavior. Preserve existing responses for unknown or
-unconfigured channels; do not replace APIs with generic unsupported stubs. Keep
-external notification workers, browser pages and gateway self-updating out of the
-embedded runtime. Retain backend authentication helpers where APIs depend on them.
+several message operations. The owner selected retaining external plugins for the
+initial releases so operators can switch existing and embedded servers repeatedly.
+An empty registry or a new native adapter does not meet that requirement. Preserve
+existing responses for unknown or unconfigured channels and all configured channel
+behavior. Keep browser pages and gateway self-updating out of the embedded runtime;
+retain backend authentication helpers and external plugin workers/ingress needed
+for compatibility. A later native adapter is explicitly post-cutover refactoring.
 
 ## Runtime and topology
 
