@@ -257,13 +257,11 @@ fn transport_fixture_worker() {
         assert!(replacement.invitation != invitation.invitation);
         assert!(server_controller::pair(root.join("old-invite"), admin.url.clone(), invitation.invitation.clone()).await.is_err());
         assert!(gateway.projects().await.is_ok());
-        assert_no_token(&state, invitation.invitation.as_bytes());
-        assert_no_token(&root.join("peer-one"), invitation.invitation.as_bytes());
         #[cfg(windows)]
         assert!(fs::read(&after.private_key_pem_path).unwrap().starts_with(b"AMUX-DPAPI-1\0"));
         stream.abort(); let _ = stream.await; drop(stolen);
         server.stop().await.unwrap();
-        let next = server_controller::ensure_local_with_executable(state, config, PathBuf::from(env!("CARGO_BIN_EXE_amux"))).await.unwrap();
+        let next = server_controller::ensure_local_with_executable(state.clone(), config, PathBuf::from(env!("CARGO_BIN_EXE_amux"))).await.unwrap();
         let next_admin = next.connection();
         assert_eq!(admin.cluster_id, next_admin.cluster_id);
         assert_ne!(server_controller::status(next_admin.clone()).await.unwrap()["process_nonce"], first_nonce);
@@ -272,5 +270,12 @@ fn transport_fixture_worker() {
         assert!(server_controller::invitation(next_admin, false).await.is_err());
         assert!(gateway.projects().await.is_ok());
         next.stop().await.unwrap();
+        // Windows file locks are mandatory. Scan the durable files only after
+        // the child and both ownership guards have released their handles.
+        drop(next);
+        drop(server);
+        drop(attached);
+        assert_no_token(&state, invitation.invitation.as_bytes());
+        assert_no_token(&root.join("peer-one"), invitation.invitation.as_bytes());
     });
 }
