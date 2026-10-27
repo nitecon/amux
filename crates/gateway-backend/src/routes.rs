@@ -5984,11 +5984,15 @@ pub async fn list_tasks_handler(
     let db = state.db.clone();
     let ident_for_reclaim = ident.clone();
     let ident_for_list = ident;
+    // With the event router running, its Reclaim plugin owns reclaiming.
+    let router = state.remote.attached();
     let tasks = spawn_blocking(move || -> anyhow::Result<Vec<db::TaskSummary>> {
         let conn = db.lock().unwrap();
         // Reclaim stale in-progress tasks before listing so clients see a
         // consistent view.
-        db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
+        if !router {
+            db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
+        }
         let mut tasks = db::list_tasks(&conn, &ident_for_list, &statuses, include_stale)?;
         if filter_goal {
             let goal = selected_goal.as_deref().unwrap_or("").trim();
@@ -6036,9 +6040,13 @@ pub async fn reassign_task_handler(
         )
     })?;
     let database = state.db.clone();
+    // With the event router running, its Reclaim plugin owns reclaiming.
+    let router = state.remote.attached();
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = database.lock().unwrap();
-        db::reclaim_stale_tasks(&conn, &project)?;
+        if !router {
+            db::reclaim_stale_tasks(&conn, &project)?;
+        }
         crate::task_events::mutation(&conn, Some(&origin), |conn| {
             db::reassign_task(conn, &project, &id, &req.target)
         })
@@ -6061,9 +6069,13 @@ pub async fn assign_task_handler(
             "human assignment must not send agent identity headers".into(),
         ));
     }
+    // With the event router running, its Reclaim plugin owns reclaiming.
+    let router = state.remote.attached();
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = state.db.lock().unwrap();
-        db::reclaim_stale_tasks(&conn, &project)?;
+        if !router {
+            db::reclaim_stale_tasks(&conn, &project)?;
+        }
         crate::task_events::mutation(&conn, None, |conn| {
             db::assign_task_from_user(conn, &project, &id, &req.target)
         })
@@ -6279,9 +6291,13 @@ pub async fn get_task_handler(
     let ident_for_reclaim = ident.clone();
     let ident_for_fetch = ident.clone();
     let task_id_clone = task_id;
+    // With the event router running, its Reclaim plugin owns reclaiming.
+    let router = state.remote.attached();
     let detail = spawn_blocking(move || -> anyhow::Result<Option<db::TaskDetail>> {
         let conn = db.lock().unwrap();
-        db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
+        if !router {
+            db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
+        }
         db::get_task_detail(&conn, &ident_for_fetch, &task_id_clone)
     })
     .await??;
@@ -6334,9 +6350,13 @@ pub async fn update_task_handler(
     // blanket From impl as 500. The CHECK constraint on `status` catches the
     // truly invalid values at the SQL layer. Refine to 400 when we add a
     // dedicated error enum.
+    // With the event router running, its Reclaim plugin owns reclaiming.
+    let router = state.remote.attached();
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = db.lock().unwrap();
-        db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
+        if !router {
+            db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
+        }
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
         let before = db::get_task_detail(conn, &ident_for_update, &task_id_clone)?.map(|d| d.task);
 

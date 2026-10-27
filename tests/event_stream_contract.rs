@@ -164,6 +164,16 @@ async fn event(socket: &mut Socket, ack: bool) -> Value {
 #[tokio::test]
 async fn task_mutations_reach_only_subscribed_remote_consumers_at_least_once() {
     let server = Server::start().await;
+    // This test is about delivery; completion reviews would add task.created events.
+    let off = server
+        .http
+        .put(format!("http://{}/v1/plugins/review", server.endpoint))
+        .bearer_auth(KEY)
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert!(off.status().is_success());
     assert!(server.socket("wrong-key").await.is_err());
     let lifecycle = Uuid::new_v4();
     let comments = Uuid::new_v4();
@@ -654,4 +664,143 @@ async fn next_incoming(
         .await
         .expect("no message from the event client")
         .unwrap()
+}
+
+async fn tasks(server: &Server) -> Vec<Value> {
+    let response = server
+        .http
+        .get(format!(
+            "http://{}/v1/projects/{PROJECT}/tasks?status=todo,in_progress,done",
+            server.endpoint
+        ))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    response.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_off() {
+    const REVIEWER: &str = "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0003";
+    let server = Server::start().await;
+    let mut author = desktop(&server).await;
+    activity(&mut author, now_ms() - 60_000, false).await;
+    expect(&mut author, "agent.idle").await;
+    let source = server
+        .send(
+            reqwest::Method::POST,
+            &format!("/v1/projects/{PROJECT}/tasks"),
+            json!({"title": "Build it"}),
+        )
+        .await;
+    let source = source["id"].as_str().unwrap().to_owned();
+    let offer = expect(&mut author, "agent.notify").await;
+    let delivered = json!({"target": SESSION, "status": "delivered", "reason": null});
+    emit(
+        &mut author,
+        "agent.notify_result",
+        delivered,
+        Some(&offer["uid"]),
+    )
+    .await;
+    // The author works and finishes (same origin headers as the claim).
+    server
+        .send(
+            reqwest::Method::PATCH,
+            &format!("/v1/projects/{PROJECT}/tasks/{source}"),
+            json!({"status": "done"}),
+        )
+        .await;
+
+    // A second idle agent receives the review; the author never does.
+    let mut reviewer = server
+        .subscribe_targets(Uuid::new_v4(), &["agent.notify"], &[REVIEWER], None)
+        .await;
+    let agents = json!({"agents": [
+        {"session_id": SESSION, "instance_id": INSTANCE, "provider": "claude", "os": "linux", "project": PROJECT},
+        {"session_id": REVIEWER, "instance_id": INSTANCE, "provider": "claude", "os": "linux", "project": PROJECT},
+    ]});
+    emit(&mut author, "client.heartbeat", agents, None).await;
+    let quiet = json!({"session_id": REVIEWER, "instance_id": INSTANCE, "output_at": now_ms() - 60_000, "draft": false});
+    emit(&mut author, "terminal.activity", quiet, None).await;
+    let review = expect(&mut reviewer, "agent.notify").await;
+    assert_eq!(review["payload"]["heading"], "Queued independent review");
+    let labels = review["payload"]["event"]["task"]["labels"].clone();
+    assert!(
+        labels
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == &json!(format!("review-of:{source}"))),
+        "{labels}"
+    );
+    assert!(
+        labels
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == &json!(format!("review-exclude:{SESSION}")))
+    );
+    let reviews = tasks(&server)
+        .await
+        .into_iter()
+        .filter(|t| t["title"] == "Review: Build it")
+        .count();
+    assert_eq!(reviews, 1, "exactly one review per completion");
+
+    // Review switched off: a further completion queues nothing.
+    let plugins: Value = server
+        .http
+        .get(format!("http://{}/v1/plugins", server.endpoint))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        plugins
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == &json!({"id": "review", "enabled": true}))
+    );
+    let switched = server
+        .http
+        .put(format!("http://{}/v1/plugins/review", server.endpoint))
+        .bearer_auth(KEY)
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert!(switched.status().is_success());
+    let quick = server
+        .send(
+            reqwest::Method::POST,
+            &format!("/v1/projects/{PROJECT}/tasks"),
+            json!({"title": "Quick fix"}),
+        )
+        .await;
+    let quick = quick["id"].as_str().unwrap().to_owned();
+    let path = format!("/v1/projects/{PROJECT}/tasks/{quick}");
+    server
+        .send(
+            reqwest::Method::PATCH,
+            &path,
+            json!({"status": "in_progress"}),
+        )
+        .await;
+    server
+        .send(reqwest::Method::PATCH, &path, json!({"status": "done"}))
+        .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        tasks(&server)
+            .await
+            .iter()
+            .all(|t| t["title"] != "Review: Quick fix"),
+        "a disabled plugin stops at its Enabled pre-exec step"
+    );
 }

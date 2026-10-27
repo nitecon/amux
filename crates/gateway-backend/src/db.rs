@@ -8366,6 +8366,15 @@ const TASK_SELECT_COLS: &str =
 /// appended so the next agent knows to verify prior progress. Runs in a single
 /// transaction.
 pub fn reclaim_stale_tasks(conn: &Connection, project_ident: &str) -> Result<usize> {
+    reclaim_stale_tasks_except(conn, project_ident, &[])
+}
+
+/// [`reclaim_stale_tasks`], keeping work whose owning session is in `busy`.
+pub fn reclaim_stale_tasks_except(
+    conn: &Connection,
+    project_ident: &str,
+    busy: &[String],
+) -> Result<usize> {
     let project_ident = normalize_project_ident(project_ident);
     let now = now_ms();
     let cutoff = now - TASK_RECLAIM_MS;
@@ -8373,7 +8382,7 @@ pub fn reclaim_stale_tasks(conn: &Connection, project_ident: &str) -> Result<usi
     let tx = conn.unchecked_transaction()?;
     let stale_ids: Vec<String> = {
         let mut stmt = tx.prepare(
-            "SELECT id FROM tasks
+            "SELECT id, json_extract(owner_origin_json,'$.session_id') FROM tasks
              WHERE project_ident = ?1
                AND status IN ('todo','in_progress')
                AND (owner_agent_id IS NOT NULL OR owner_origin_json IS NOT NULL OR status='in_progress')
@@ -8382,10 +8391,13 @@ pub fn reclaim_stale_tasks(conn: &Connection, project_ident: &str) -> Result<usi
         )?;
         let rows = stmt
             .query_map(params![project_ident.as_str(), cutoff], |r| {
-                r.get::<_, String>(0)
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
+        rows.into_iter()
+            .filter(|(_, owner)| owner.as_ref().is_none_or(|owner| !busy.contains(owner)))
+            .map(|(id, _)| id)
+            .collect()
     };
 
     if stale_ids.is_empty() {

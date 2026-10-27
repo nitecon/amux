@@ -3,7 +3,7 @@
 //! the client could not make releases the claim so the task is offered again.
 use crate::{
     db,
-    plugins::{notify, presence, tasks},
+    plugins::{notify, presence, tasks, Enabled},
     router::{Event, Plugin, Step, StepContext, StepOutcome, Subscription},
     task_events::{self, AgentOrigin},
 };
@@ -60,6 +60,9 @@ impl Plugin for Assignment {
             depends_on: Vec::new(),
         })
         .collect()
+    }
+    fn pre_exec(&self) -> Vec<Box<dyn Step>> {
+        vec![Box::new(Enabled(PLUGIN))]
     }
     fn exec(&self) -> Vec<Box<dyn Step>> {
         vec![Box::new(Assign)]

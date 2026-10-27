@@ -51,6 +51,11 @@ impl Remote {
         let _ = self.0.bus.set(bus);
     }
 
+    /// Whether the event router runs behind this server.
+    pub fn attached(&self) -> bool {
+        self.0.bus.get().is_some()
+    }
+
     /// The plugin that stores and announces every forwarded event.
     pub fn plugin(&self, forwarded: Vec<&'static str>) -> Box<dyn Plugin> {
         let _ = self.0.forwarded.set(forwarded.iter().copied().collect());

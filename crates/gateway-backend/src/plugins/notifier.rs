@@ -3,7 +3,7 @@
 //! receive results, actors never hear about their own changes, and queued or
 //! user-review work is left to Assignment and the user.
 use crate::{
-    plugins::{notify, presence},
+    plugins::{notify, presence, Enabled},
     router::{Event, Plugin, Step, StepContext, StepOutcome, Subscription},
 };
 use anyhow::Result;
@@ -51,6 +51,9 @@ impl Plugin for Notifier {
             depends_on: Vec::new(),
         })
         .collect()
+    }
+    fn pre_exec(&self) -> Vec<Box<dyn Step>> {
+        vec![Box::new(Enabled(PLUGIN))]
     }
     fn exec(&self) -> Vec<Box<dyn Step>> {
         vec![Box::new(Notify)]

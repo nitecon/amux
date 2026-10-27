@@ -140,6 +140,8 @@ pub fn api_router(state: AppState) -> Router {
         .route("/v1/projects/{ident}/tasks/{id}/subtasks", get(subtasks::get).post(subtasks::create))
         .route("/v1/tasks/stream", get(task_events::connect))
         .route("/v1/events/stream", get(plugins::remote::connect))
+        .route("/v1/plugins", get(plugins::list))
+        .route("/v1/plugins/{id}", put(plugins::set))
         .route("/v1/task-events", get(task_events::events))
         .route("/v1/task-events/consumers", get(task_events::consumers))
         .route("/v1/execution/runs", get(task_events::history))

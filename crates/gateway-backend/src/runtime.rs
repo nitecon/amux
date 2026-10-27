@@ -209,7 +209,6 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
     }
     drop(tx);
     let mut workers = Workers(vec![spawn_inbound_processor(database.clone(), rx)]);
-    workers.0.push(spawn_task_reclaimer(database.clone()));
     let remote = crate::plugins::remote::Remote::default();
     let (bus, router) = crate::router::start(
         database.clone(),
@@ -331,26 +330,6 @@ fn spawn_inbound_processor(
                 Err(error) => tracing::error!("Inbound processor task error: {error}"),
                 Ok(Err(error)) => tracing::error!("Inbound processor db error: {error}"),
                 Ok(Ok(())) => {}
-            }
-        }
-    })
-}
-
-fn spawn_task_reclaimer(db: Db) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            let database = db.clone();
-            match spawn_blocking(move || {
-                let conn = database.lock().unwrap();
-                db::reclaim_all_stale_tasks(&conn)
-            })
-            .await
-            {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => tracing::warn!("Task expiry failed: {error}"),
-                Err(error) => tracing::warn!("Task expiry task failed: {error}"),
             }
         }
     })
