@@ -151,11 +151,17 @@ fn network_pairing_worker() {
         while discovery_port == secure_port {
             discovery_port = free_port();
         }
-        // This is a real address on the loopback subnet, not one of the three
-        // literal hosts the old implementation excluded from system proxies.
+        // Linux/Windows accept this alternate loopback address and exercise
+        // the old proxy interception bug. macOS does not configure that alias;
+        // keep its real TLS/restart/renewal checks on the configured loopback.
+        let name = if cfg!(target_os = "macos") {
+            "127.0.0.1"
+        } else {
+            "127.0.0.2"
+        };
         let config = ServerPreferences {
             network_hosting: true,
-            server_name: "127.0.0.2".into(),
+            server_name: name.into(),
             secure_port,
             discovery_port,
         };
@@ -171,7 +177,9 @@ fn network_pairing_worker() {
         .unwrap();
         let admin = server.connection();
         let endpoint = config.client_url().unwrap();
-        assert_ne!(endpoint, admin.url);
+        if name != "127.0.0.1" {
+            assert_ne!(endpoint, admin.url);
+        }
         assert_eq!(admin.url, format!("https://127.0.0.1:{secure_port}"));
         let original = server_controller::invitation(admin.clone(), true)
             .await

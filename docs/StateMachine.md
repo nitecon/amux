@@ -220,7 +220,7 @@ All events are version 1. Payload schemas are validated by the registry.
 
 | Event | Emitted by | Payload |
 |---|---|---|
-| `clock.tick` | Clock source, every 10 s | `{at}`; the only source of time |
+| `clock.tick` | Clock source, every 15 s | `{at}`; the only source of time |
 | `task.created` / `task.updated` / `task.commented` / `task.assigned` / `task.started` / `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task event source (outbox) | `{project, task, comment, actor}`; `assigned` fires whenever the owner is set or changes (claim or assign) |
 | `client.heartbeat` | remote client (`remote_emit`) | `{agents: [{session_id, instance_id, provider, os, project, name?, goal?, agent_id?, generation?}]}`, every agent the client runs |
 | `terminal.activity` | remote client (`remote_emit`) | `{session_id, instance_id, output_at, draft}`; `output_at` is the last terminal output on the server's clock |
@@ -237,7 +237,7 @@ All events are version 1. Payload schemas are validated by the registry.
 | Task events (source) | outbox rows | `task.*` | — |
 | `remote` | every forwarded event | — (wakes stream connections) | — |
 | `presence` | `client.heartbeat`, `terminal.activity`, `clock.tick` | `agent.online/idle/busy/gone` | `backlog_ready`, idle detection as a scheduling input |
-| `assignment` | `agent.*`, `task.created/unclaimed/user_review/completed/cancelled`, `agent.notify_result` | `agent.notify` | `desktop_backlog.rs`, `backlog.rs` FIFO/eligibility |
+| `assignment` | `clock.tick` (depends on `presence`), `agent.notify_result` | `agent.notify` | `desktop_backlog.rs`, `backlog.rs` FIFO/eligibility |
 | `notifier` | `agent.*`, `task.created/commented/completed` | `agent.notify` | audience selection in `delegation.rs` / `delegation_queue.rs` |
 | `reminder` | `agent.idle/busy/gone`, `clock.tick` | `agent.notify` | in-progress reminders |
 | `review` | `task.completed` | (review task via `task.created`) | `desktop_autoreview.rs`, client review journal |
@@ -252,12 +252,21 @@ Rules carried over from the desktop:
   It is gone 90 s after its client's last heartbeat. Only the client that
   reported an agent may report its activity, and output time only moves
   forward.
-- **Assignment:** each idle agent that owns no in-progress task gets the
-  oldest eligible queued task in its project (OS label, review exclusion, held
-  review findings, goal, delegation, owner and session routing). It claims the
+- **Assignment:** every 15-second tick runs Presence first, then sweeps all
+  reported sessions across every workspace/project. Each currently idle agent
+  that owns no in-progress task gets the oldest eligible queued task in its
+  project (OS label, review exclusion, goal, delegation, owner and session
+  routing). Queued `autoreview-finding` tasks remain ordinary work; **User review**
+  is the explicit parked state. It claims the
   task as that agent through the normal task store, comments why, and sends
   `agent.notify` with `require_idle`. A `skipped` or `failed` result releases
-  the claim so the next idle agent gets it.
+  the claim; the next tick revalidates idle sessions and offers queued work.
+  Sessions are considered oldest terminal output first, then session ID. The
+  sweep fills every eligible free session while work remains; empty or blocked
+  projects do not stop other workspaces. Fresh Presence state is authoritative,
+  including sessions that stayed idle since the previous tick. Activity and task
+  events do not independently trigger assignment. The first clock tick is 15 s
+  after startup; missed ticks are skipped rather than replayed in a burst.
 - **Notifier:** owners hear about activity on their tasks, explicit requesters
   receive comment/completion results, actors never hear about their own
   changes, and queued or user-review work is left to Assignment and the user.

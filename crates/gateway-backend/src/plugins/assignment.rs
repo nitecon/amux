@@ -1,9 +1,9 @@
-//! Assignment: gives each idle agent the oldest eligible queued task in its
-//! project, claims it as that agent, and asks the agent to start. A delivery
+//! Assignment: after Presence evaluates a clock tick, sweeps all reported idle
+//! agents and gives each the oldest eligible task in its project. A delivery
 //! the client could not make releases the claim so the task is offered again.
 use crate::{
     db,
-    plugins::{notify, presence, tasks, Enabled},
+    plugins::{clock, notify, presence, tasks, Enabled},
     router::{Event, Plugin, Step, StepContext, StepOutcome, Subscription},
     task_events::{self, AgentOrigin},
 };
@@ -17,14 +17,7 @@ pub const COMMENT: &str = "Automatically assigned by amux after 30 seconds witho
 
 pub fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS assignment_agents (
-            session_id TEXT PRIMARY KEY,
-            project    TEXT NOT NULL,
-            agent_json TEXT NOT NULL,
-            idle       INTEGER NOT NULL DEFAULT 0,
-            idle_since INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS assignment_offers (
+        "CREATE TABLE IF NOT EXISTS assignment_offers (
             notify_uid TEXT PRIMARY KEY,
             task_id    TEXT NOT NULL,
             project    TEXT NOT NULL,
@@ -41,25 +34,18 @@ impl Plugin for Assignment {
         PLUGIN
     }
     fn subscriptions(&self) -> Vec<Subscription> {
-        [
-            presence::ONLINE,
-            presence::IDLE,
-            presence::BUSY,
-            presence::GONE,
-            "task.created",
-            "task.unclaimed",
-            "task.user_review",
-            "task.completed",
-            "task.cancelled",
-            notify::RESULT,
-        ]
-        .into_iter()
-        .map(|event| Subscription {
-            event,
-            versions: 1..=1,
-            depends_on: Vec::new(),
-        })
-        .collect()
+        [clock::TICK, notify::RESULT]
+            .into_iter()
+            .map(|event| Subscription {
+                event,
+                versions: 1..=1,
+                depends_on: if event == clock::TICK {
+                    vec![presence::PLUGIN]
+                } else {
+                    Vec::new()
+                },
+            })
+            .collect()
     }
     fn pre_exec(&self) -> Vec<Box<dyn Step>> {
         vec![Box::new(Enabled(PLUGIN))]
@@ -76,13 +62,10 @@ impl Step for Assign {
     async fn run(&self, event: &Event, ctx: &StepContext) -> StepOutcome {
         let result = (|| -> Result<()> {
             let conn = ctx.db().lock().unwrap();
-            let project = match event.id.as_str() {
+            match event.id.as_str() {
                 notify::RESULT => release(&conn, event)?,
-                id if id.starts_with("agent.") => track(&conn, event)?,
-                _ => event.payload["project"].as_str().map(str::to_owned),
-            };
-            if let Some(project) = project {
-                assign(&conn, ctx, &project)?;
+                clock::TICK => assign(&conn, ctx, event.emitted_at)?,
+                _ => {}
             }
             Ok(())
         })();
@@ -95,39 +78,10 @@ impl Step for Assign {
     }
 }
 
-/// Keep this plugin's own view of agents; returns the project to assign in.
-fn track(conn: &Connection, event: &Event) -> Result<Option<String>> {
-    let agent = &event.payload["agent"];
-    let session = agent["session_id"].as_str().unwrap_or_default();
-    let project = agent["project"].as_str().unwrap_or_default();
-    match event.id.as_str() {
-        presence::GONE => {
-            conn.execute(
-                "DELETE FROM assignment_agents WHERE session_id=?1",
-                params![session],
-            )?;
-            return Ok(None);
-        }
-        presence::IDLE => conn.execute(
-            "INSERT INTO assignment_agents(session_id,project,agent_json,idle,idle_since)
-             VALUES(?1,?2,?3,1,?4) ON CONFLICT(session_id) DO UPDATE
-             SET project=?2, agent_json=?3, idle=1, idle_since=?4",
-            params![session, project, agent.to_string(), event.emitted_at],
-        )?,
-        _ => conn.execute(
-            "INSERT INTO assignment_agents(session_id,project,agent_json,idle)
-             VALUES(?1,?2,?3,0) ON CONFLICT(session_id) DO UPDATE
-             SET project=?2, agent_json=?3, idle=0, idle_since=NULL",
-            params![session, project, agent.to_string()],
-        )?,
-    };
-    Ok(Some(project.to_owned()))
-}
-
 /// An offer the client did not deliver returns its task to the queue.
-fn release(conn: &Connection, event: &Event) -> Result<Option<String>> {
+fn release(conn: &Connection, event: &Event) -> Result<()> {
     let Some(correlation) = event.correlation else {
-        return Ok(None);
+        return Ok(());
     };
     let offer: Option<(String, String, String)> = conn
         .query_row(
@@ -136,14 +90,14 @@ fn release(conn: &Connection, event: &Event) -> Result<Option<String>> {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((task, project, session)) = offer else {
-        return Ok(None);
+    let Some((task, _project, session)) = offer else {
+        return Ok(());
     };
     if event.payload["status"] == "delivered" {
-        return Ok(None);
+        return Ok(());
     }
     // Only while the agent still holds it untouched.
-    let released = task_events::mutation(conn, None, |tx| {
+    task_events::mutation(conn, None, |tx| {
         Ok(tx.execute(
             "UPDATE tasks SET status='todo', owner_agent_id=NULL, owner_origin_json=NULL,
              started_at=NULL, updated_at=?3
@@ -151,28 +105,28 @@ fn release(conn: &Connection, event: &Event) -> Result<Option<String>> {
             params![task, session, db::now_ms()],
         )?)
     })?;
-    if released > 0 {
-        // The agent did not take it, so do not offer it the same task again at once.
-        conn.execute(
-            "UPDATE assignment_agents SET idle=0 WHERE session_id=?1",
-            params![session],
-        )?;
-    }
-    Ok(Some(project))
+    // Re-evaluate current presence on the next tick, never from this receipt.
+    Ok(())
 }
 
-fn assign(conn: &Connection, ctx: &StepContext, project: &str) -> Result<()> {
+fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
     let agents: Vec<Value> = conn
         .prepare(
-            "SELECT agent_json FROM assignment_agents WHERE project=?1 AND idle=1
-             ORDER BY idle_since, session_id",
+            "SELECT agent_json FROM presence_agents
+             WHERE state='idle' AND draft=0 AND output_at IS NOT NULL
+               AND ?1-output_at >= ?2 AND ?1-seen_at < ?3
+             ORDER BY output_at, session_id",
         )?
-        .query_map(params![project], |row| row.get::<_, String>(0))?
+        .query_map(
+            params![now, presence::IDLE_AFTER_MS, presence::GONE_AFTER_MS],
+            |row| row.get::<_, String>(0),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?
         .iter()
         .map(|agent| serde_json::from_str(agent))
         .collect::<serde_json::Result<_>>()?;
     for agent in agents {
+        let project = agent["project"].as_str().unwrap_or_default();
         let session = agent["session_id"].as_str().unwrap_or_default();
         let busy: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM tasks WHERE status='in_progress'
@@ -227,7 +181,6 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
             .first()
             .is_some_and(|os| agent["os"].as_str() != Some(os))
         || labels.contains(&format!("review-exclude:{session}").as_str())
-        || labels.contains(&"autoreview-finding")
         || task["status"] != "todo"
         || (task["kind"] == "delegated" && task["delegated_to_task_id"].is_string())
         || (!task["goal"].is_null() && task["goal"] != agent["goal"])
@@ -254,7 +207,7 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
 }
 
 /// Claim as the agent, record why, and ask it to start. Returns false when the
-/// task store rejects the claim (e.g. a held review finding).
+/// task store rejects the claim.
 fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> Result<bool> {
     let origin = AgentOrigin {
         session_id: agent["session_id"].as_str().unwrap_or_default().into(),
@@ -280,7 +233,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
             labels: None,
             hostname: None,
         };
-        // The task store enforces OS, reviewer exclusion and held findings;
+        // The task store enforces OS and reviewer exclusion;
         // a rejected claim rolls back and the task is simply not eligible.
         db::update_task(tx, project, id, &update, Some(&actor))?
             .ok_or_else(|| anyhow::anyhow!("task {id} disappeared"))?;
@@ -317,12 +270,6 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         tracing::debug!("Assignment of {id} to {} rejected: {error}", origin.session_id);
         false
     });
-    if claimed {
-        conn.execute(
-            "UPDATE assignment_agents SET idle=0 WHERE session_id=?1",
-            params![origin.session_id],
-        )?;
-    }
     Ok(claimed)
 }
 
@@ -379,7 +326,7 @@ mod tests {
             &task(json!({"labels": [format!("review-exclude:{me}")]})),
             &agent
         ));
-        assert!(!eligible(
+        assert!(eligible(
             &task(json!({"labels": ["autoreview-finding"]})),
             &agent
         ));
@@ -414,7 +361,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_agents_claim_queued_tasks_in_fifo_order() {
+    async fn idle_agents_claim_queued_tasks_in_fifo_order_on_tick_only() {
         let database = db::open(":memory:").unwrap();
         let remote = plugins::remote::Remote::default();
         let (bus, _router) = router::start(
@@ -436,6 +383,14 @@ mod tests {
             }
         }
         let session = "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0001";
+        seed_agent(
+            &database,
+            agent(session),
+            db::now_ms(),
+            40_000,
+            false,
+            "busy",
+        );
         bus.emit(
             "test",
             presence::IDLE,
@@ -446,6 +401,19 @@ mod tests {
         .await
         .unwrap();
         settle(&database).await;
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE status='in_progress'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        tick(&bus, &database).await;
         let conn = database.lock().unwrap();
         let (status, owner): (String, Option<String>) = conn
             .query_row(
@@ -466,5 +434,271 @@ mod tests {
             )
             .unwrap();
         assert_eq!(notified, 1);
+    }
+
+    fn seed_agent(
+        database: &db::Db,
+        agent: Value,
+        seen_at: i64,
+        quiet: i64,
+        draft: bool,
+        state: &str,
+    ) {
+        database.lock().unwrap().execute(
+            "INSERT INTO presence_agents(session_id,source,agent_json,seen_at,output_at,draft,state) VALUES(?1,'client-fixture',?2,?3,?4,?5,?6)",
+            params![agent["session_id"].as_str(), agent.to_string(), seen_at, db::now_ms()-quiet, draft, state],
+        ).unwrap();
+    }
+
+    fn setup() -> (db::Db, router::Bus, tokio::task::JoinHandle<()>) {
+        let database = db::open(":memory:").unwrap();
+        let remote = plugins::remote::Remote::default();
+        let (bus, worker) = router::start(
+            database.clone(),
+            plugins::events(),
+            plugins::plugins(&remote),
+        )
+        .unwrap();
+        for project in ["empty", "p", "q"] {
+            database.lock().unwrap().execute("INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES(?1,'discord','',0)", params![project]).unwrap();
+        }
+        (database, bus, worker)
+    }
+
+    fn queue(database: &db::Db, project: &str, at: i64, labels: &[&str]) -> String {
+        let id = uuid::Uuid::now_v7().to_string();
+        database.lock().unwrap().execute(
+            "INSERT INTO tasks(id,project_ident,title,reporter,created_at,updated_at,rank,labels) VALUES(?1,?2,'queued work','fixture',?3,?4,?4,?5)",
+            params![id, project, at, 1000-at, serde_json::to_string(labels).unwrap()],
+        ).unwrap();
+        id
+    }
+
+    fn session(index: u8, project: &str) -> Value {
+        let mut value = agent(&format!("9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b00{index:02}"));
+        value["project"] = json!(project);
+        value
+    }
+
+    fn state(database: &db::Db, id: &str) -> (String, Option<String>) {
+        database.lock().unwrap().query_row("SELECT status,json_extract(owner_origin_json,'$.session_id') FROM tasks WHERE id=?1", params![id], |row| Ok((row.get(0)?,row.get(1)?))).unwrap()
+    }
+
+    async fn tick(bus: &router::Bus, database: &db::Db) {
+        bus.emit(
+            "clock-fixture",
+            clock::TICK,
+            1,
+            json!({"at":db::now_ms()}),
+            None,
+        )
+        .await
+        .unwrap();
+        settle(database).await;
+    }
+
+    #[tokio::test]
+    async fn one_tick_fills_all_free_sessions_across_workspaces_and_repeated_ticks_do_not_duplicate(
+    ) {
+        let (database, bus, _router) = setup();
+        let now = db::now_ms();
+        for (index, project, quiet) in [
+            (1, "empty", 60_000),
+            (2, "p", 50_000),
+            (3, "p", 40_000),
+            (4, "q", 30_100),
+        ] {
+            // Start busy: Presence must evaluate this same tick before Assignment.
+            seed_agent(
+                &database,
+                session(index, project),
+                now,
+                quiet,
+                false,
+                "busy",
+            );
+        }
+        let incompatible = queue(&database, "p", 0, &["os:windows"]);
+        let third = queue(&database, "p", 3, &[]);
+        let first = queue(&database, "p", 1, &["autoreview-finding"]);
+        let second = queue(&database, "p", 2, &[]);
+        let other = queue(&database, "q", 1, &[]);
+        tick(&bus, &database).await;
+        assert_eq!(
+            state(&database, &first),
+            (
+                "in_progress".into(),
+                session(2, "p")["session_id"].as_str().map(str::to_owned)
+            )
+        );
+        assert_eq!(
+            state(&database, &second),
+            (
+                "in_progress".into(),
+                session(3, "p")["session_id"].as_str().map(str::to_owned)
+            )
+        );
+        assert_eq!(
+            state(&database, &other),
+            (
+                "in_progress".into(),
+                session(4, "q")["session_id"].as_str().map(str::to_owned)
+            )
+        );
+        assert_eq!(state(&database, &third).0, "todo");
+        assert_eq!(state(&database, &incompatible).0, "todo");
+        tick(&bus, &database).await;
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn a_still_idle_session_picks_up_later_work_on_the_next_tick_without_another_idle_transition(
+    ) {
+        let (database, bus, _router) = setup();
+        seed_agent(
+            &database,
+            session(1, "p"),
+            db::now_ms(),
+            40_000,
+            false,
+            "idle",
+        );
+        tick(&bus, &database).await;
+        let first = queue(&database, "p", 1, &[]);
+        bus.emit(
+            "task-fixture",
+            "task.created",
+            1,
+            json!({"project":"p","task":{"id":first,"status":"todo"}}),
+            None,
+        )
+        .await
+        .unwrap();
+        settle(&database).await;
+        assert_eq!(state(&database, &first).0, "todo");
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &first).0, "in_progress");
+        database
+            .lock()
+            .unwrap()
+            .execute("UPDATE tasks SET status='done' WHERE id=?1", params![first])
+            .unwrap();
+        let next = queue(&database, "p", 2, &[]);
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &next).0, "in_progress");
+    }
+
+    #[tokio::test]
+    async fn tick_revalidates_busy_drafting_unknown_and_departed_sessions_without_blocking_other_workspaces(
+    ) {
+        let (database, bus, _router) = setup();
+        let now = db::now_ms();
+        seed_agent(&database, session(1, "p"), now, 40_000, false, "idle");
+        let existing = queue(&database, "p", 0, &[]);
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET status='in_progress',owner_origin_json=?2 WHERE id=?1",
+                params![
+                    existing,
+                    json!({"session_id":session(1,"p")["session_id"]}).to_string()
+                ],
+            )
+            .unwrap();
+        seed_agent(&database, session(2, "p"), now, 40_000, true, "idle");
+        seed_agent(
+            &database,
+            session(3, "p"),
+            now - presence::GONE_AFTER_MS,
+            40_000,
+            false,
+            "idle",
+        );
+        seed_agent(&database, session(4, "p"), now, 0, false, "unknown");
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE presence_agents SET output_at=NULL WHERE session_id=?1",
+                params![session(4, "p")["session_id"].as_str()],
+            )
+            .unwrap();
+        seed_agent(&database, session(5, "p"), now, 0, false, "idle");
+        seed_agent(&database, session(6, "q"), now, 40_000, false, "busy");
+        let blocked = queue(&database, "p", 1, &[]);
+        let available = queue(&database, "q", 1, &[]);
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &blocked).0, "todo");
+        assert_eq!(
+            state(&database, &available).1,
+            session(6, "q")["session_id"].as_str().map(str::to_owned)
+        );
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM presence_agents WHERE session_id=?1",
+                    params![session(3, "p")["session_id"].as_str()],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_offer_returns_to_fifo_but_waits_for_the_next_tick() {
+        let (database, bus, _router) = setup();
+        seed_agent(
+            &database,
+            session(1, "p"),
+            db::now_ms(),
+            40_000,
+            false,
+            "idle",
+        );
+        let task = queue(&database, "p", 1, &[]);
+        tick(&bus, &database).await;
+        let notify: String = database
+            .lock()
+            .unwrap()
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        bus.emit("client-fixture",notify::RESULT,1,json!({"target":session(1,"p")["session_id"],"status":"skipped","reason":"draft changed"}),Some(uuid::Uuid::parse_str(&notify).unwrap())).await.unwrap();
+        settle(&database).await;
+        assert_eq!(state(&database, &task).0, "todo");
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE presence_agents SET draft=1 WHERE session_id=?1",
+                params![session(1, "p")["session_id"].as_str()],
+            )
+            .unwrap();
+        seed_agent(
+            &database,
+            session(2, "p"),
+            db::now_ms(),
+            40_000,
+            false,
+            "busy",
+        );
+        tick(&bus, &database).await;
+        assert_eq!(
+            state(&database, &task).1,
+            session(2, "p")["session_id"].as_str().map(str::to_owned)
+        );
     }
 }
