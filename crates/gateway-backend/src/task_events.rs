@@ -97,6 +97,7 @@ pub fn mutation<T>(
         [],
     )?;
     tx.commit()?;
+    crate::plugins::tasks::wake();
     Ok(result)
 }
 
@@ -215,7 +216,7 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn task_json(alias: &str) -> String {
+pub(crate) fn task_json(alias: &str) -> String {
     let fields = [
         "id",
         "project_ident",
@@ -249,7 +250,7 @@ fn task_json(alias: &str) -> String {
     format!("json_object({})", entries.join(","))
 }
 
-fn comment_json(alias: &str) -> String {
+pub(crate) fn comment_json(alias: &str) -> String {
     let mut entries: Vec<String> = [
         "id",
         "task_id",

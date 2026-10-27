@@ -51,6 +51,8 @@ pub struct AppState {
     pub artifact_auth_enforced: bool,
     /// Set by the background update checker when a newer release is available.
     pub update_available: Arc<std::sync::Mutex<Option<String>>>,
+    /// Remote consumers of the event router; unattached in API-only tests.
+    pub remote: plugins::remote::Remote,
 }
 
 fn resolve_session_user(state: &AppState, headers: &axum::http::HeaderMap) -> Option<db::User> {
@@ -137,6 +139,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/v1/projects/{ident}/tasks/{id}/assign", post(routes::assign_task_handler))
         .route("/v1/projects/{ident}/tasks/{id}/subtasks", get(subtasks::get).post(subtasks::create))
         .route("/v1/tasks/stream", get(task_events::connect))
+        .route("/v1/events/stream", get(plugins::remote::connect))
         .route("/v1/task-events", get(task_events::events))
         .route("/v1/task-events/consumers", get(task_events::consumers))
         .route("/v1/execution/runs", get(task_events::history))

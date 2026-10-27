@@ -62,6 +62,8 @@ pub fn initialize(conn: &Connection) -> Result<()> {
              DROP TRIGGER IF EXISTS task_event_completed;
              DROP TRIGGER IF EXISTS task_event_cancelled;",
         )?;
+        // Router outbox triggers are recreated by `plugins::tasks::initialize`.
+        crate::plugins::tasks::drop_triggers(&tx)?;
         tx.execute_batch(&create)?;
         tx.execute_batch(
             "INSERT INTO tasks_cancel_rebuild SELECT * FROM tasks;
@@ -429,6 +431,8 @@ mod tests {
                 1,
             ))
             .unwrap();
+            // A pre-cancellation database predates the router outbox triggers.
+            crate::plugins::tasks::drop_triggers(&conn).unwrap();
             conn.execute_batch("DROP TRIGGER task_event_created; DROP TRIGGER task_event_commented; DROP TRIGGER task_event_completed; DROP TRIGGER task_event_cancelled;
                 INSERT INTO tasks_old_shape SELECT * FROM tasks; DROP TABLE tasks; ALTER TABLE tasks_old_shape RENAME TO tasks; PRAGMA foreign_keys=ON;").unwrap();
             task_events::initialize(&conn).unwrap();
@@ -642,6 +646,7 @@ mod tests {
             artifact_body_schema_enabled: true,
             artifact_auth_enforced: false,
             update_available: Arc::new(Mutex::new(None)),
+            remote: Default::default(),
         }
     }
 

@@ -346,6 +346,18 @@ impl Bus {
         self.wake.notify_one();
     }
 
+    pub fn db(&self) -> &Db {
+        &self.db
+    }
+
+    /// Whether authenticated remote clients may emit this event.
+    pub fn accepts_remote(&self, id: &str, version: u32) -> bool {
+        self.registry
+            .events
+            .get(&(id.to_owned(), version))
+            .is_some_and(|definition| definition.remote_emit)
+    }
+
     /// Mark runnable deliveries running.
     fn claim(&self, now: i64) -> Result<Claimed> {
         let conn = self.db.lock().unwrap();
@@ -480,7 +492,7 @@ pub fn retry_delay(failures: i64) -> i64 {
     (FIRST_RETRY_MS << (failures - 1).min(5)).min(MAX_RETRY_MS)
 }
 
-fn load(conn: &Connection, seq: i64) -> Result<Event> {
+pub(crate) fn load(conn: &Connection, seq: i64) -> Result<Event> {
     let row = conn.query_row(
         "SELECT uid,id,version,payload,source,emitted_at,correlation FROM router_events WHERE seq=?1",
         params![seq],

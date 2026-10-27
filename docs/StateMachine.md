@@ -100,13 +100,16 @@ struct Event {
 - Server code: `bus.emit(event)` returns once the event is persisted.
 - Plugins emit through the step context (`ctx.emit(event)`), which sets
   `source` and `correlation` automatically.
-- Remote clients emit through one authenticated endpoint/stream frame. The
-  server sets `source` from the authenticated principal; a client cannot forge
+- Remote clients emit with an `emit` frame on `/v1/events/stream` (below). The
+  server sets `source` from the authenticated principal (`client:<node>` for
+  mTLS peers, `client:api-key` for the bearer key); a client cannot forge
   another source. Only event ids marked `remote_emit: true` in the registry are
   accepted from clients.
-- Existing task REST mutations keep their API and emit the matching `task.*`
-  event in the same transaction as the mutation (an outbox row), so an event is
-  never lost or emitted for a rolled-back change.
+- Existing task REST mutations keep their API. SQLite triggers write each task
+  change to `router_task_outbox` in the mutation's own transaction, and the task
+  event source drains it into `task.*` events, so an event is never lost or
+  emitted for a rolled-back change. The legacy-compatible `task_events` journal
+  and `/v1/tasks/stream` are not changed.
 
 ### 3. Plugin (event consumer)
 
@@ -166,15 +169,32 @@ enum StepOutcome { Continue, Stop, Fail(String) }
 
 ### 5. Remote consumers
 
-- Clients (desktop UI, terminal delivery, CLI watchers) subscribe to event ids
-  over the existing authenticated WebSocket stream (`/v1/tasks/stream`,
-  extended), with a durable consumer id and cursor.
-- Events may name a `target` (agent session/instance); the stream delivers
-  targeted events only to that target's consumer.
-- Clients ack each event (`received`, `handled`, `skipped`, `failed`) using the
-  existing ack protocol. A client that cannot act (e.g. the agent turned busy
-  before a paste) acks `skipped`, and the originating plugin decides what to do
-  from the resulting event.
+- Clients (desktop UI, terminal delivery, CLI watchers) connect to
+  `/v1/events/stream`, a WebSocket authenticated like `/v1/tasks/stream`
+  (mTLS peer or bearer key). It is a separate endpoint so the legacy-compatible
+  stream contract stays unchanged.
+- Remote delivery is itself a plugin (`remote`): it subscribes to every
+  forwarded event id, so those events are stored, and wakes connections. Each
+  consumer keeps a durable cursor in `remote_consumers`.
+- Frames, client to server:
+  - `{"type":"subscribe","consumer_id":uuid,"events":[ids],"targets":[session ids],"after":seq?}`.
+    A known consumer resumes after its last ack; a new one starts after the
+    newest stored event unless `after` is given. A newer connection for the
+    same consumer takes over. Only forwarded event ids are accepted.
+  - `{"type":"ack","seq":n}` acknowledges the event in flight.
+  - `{"type":"emit","id","version","payload","correlation"?}` emits a
+    `remote_emit` event; the reply is `{"type":"emitted","uid"}` or an error.
+  - `{"type":"heartbeat"}`.
+- Server to client: `subscribed`, `event` (`seq`, `id`, `version`, `uid`,
+  `payload`, `source`, `emitted_at`, `correlation`), `acked`, `emitted`,
+  `heartbeat`, `error`.
+- One event is in flight per consumer. Until it is acked it is resent with the
+  router backoff (1 s doubling to 30 s), and it is resent after a reconnect.
+- Events whose payload has a `target` (agent session id) go only to consumers
+  that listed that target; other events go to every subscribed consumer.
+- Acks are transport-only. A client reports an outcome (e.g. a notification
+  skipped because the agent turned busy) by emitting an event correlated with
+  the one it answers; the originating plugin consumes that.
 - The UI is just a consumer: e.g. it updates an agent's activity indicator on
   `agent.busy` / `agent.idle`.
 
@@ -200,7 +220,7 @@ enum StepOutcome { Continue, Stop, Fail(String) }
 |---|---|---|
 | `clock.tick` | Clock plugin | coarse interval; the only source of time |
 | `task.created` / `task.updated` / `task.commented` | task mutations | from existing triggers |
-| `task.claimed` / `task.assigned` / `task.started` | task mutations / Assignment | new |
+| `task.assigned` / `task.started` | task mutations | new; `assigned` fires whenever the owner is set or changes (claim or assign) |
 | `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task mutations | `user_review` is new |
 | `client.heartbeat` | remote client | replaces presence-only heartbeat; carries agent list |
 | `terminal.activity` | remote client | per agent: output seen, draft present, process changed |
@@ -247,9 +267,9 @@ journal in `delegation_queue.rs` / `delegation.rs`,
 (`tests/backlog_contract.rs`, `tests/autoreview_contract.rs`, parts of
 `tests/gateway_contract.rs` and `tests/delegation_queue_contract.rs`).
 
-The client detects support through `/v1/tasks/capabilities` (new
-`event_router: 1`). Without it (legacy gateway) the client does nothing
-automatic.
+The client detects support by connecting to `/v1/events/stream`; a legacy
+gateway answers 404, and the client then does nothing automatic. This keeps
+`/v1/tasks/capabilities` identical to the legacy gateway.
 
 ## Delivery plan
 
@@ -259,8 +279,8 @@ ships, other than bug fixes.
 | Phase | Deliverable | Acceptance |
 |---|---|---|
 | 1. Router | Event registry, emitter, plugin/step contracts, `depends_on` graph and validation, parallel runner, persistence, replay, retry, Clock plugin, test plugins | Unit and restart tests: no-subscriber skip, parallel independents, dependency wait, stopped dependency skips dependents, retrying dependency holds dependents, backoff 1 s doubling to 30 s, cycle rejected at startup, at-least-once after kill/restart, idempotent replay. No behaviour change for users. |
-| 2. Event sources and remote consumers | Task mutations emit `task.*` via outbox; stream subscriptions by event id and target; client `client.heartbeat` / `terminal.activity`; UI activity consumer | Real two-client test: every task mutation emits exactly one event; targeted events reach only their target; UI activity follows `agent.*`. |
-| 3. Presence, Assignment, Notifier | Plugins ported from client logic (FIFO, OS, review exclusion, one task per idle agent) | Real-server test: idle agent receives the oldest eligible task; busy or drafting agent does not; `skipped` ack leads to re-offer. |
+| 2. Event sources and remote consumers | Task mutations emit `task.*` via outbox; `remote` plugin and `/v1/events/stream` with subscriptions by event id and target, ack/resend and cursor resume; remote emit of `client.heartbeat` / `terminal.activity` | Real two-client test: every task mutation emits exactly one event; each consumer receives only what it subscribed to; unacked events are resent; reconnect resumes after the last ack; clients can emit only `remote_emit` events with valid payloads. |
+| 3. Client connection, Presence, Assignment, Notifier | Desktop connects to `/v1/events/stream` on embedded/native servers, emits `client.heartbeat` / `terminal.activity`, delivers `agent.notify` and reports the outcome; UI activity consumer; plugins ported from client logic (FIFO, OS, review exclusion, one task per idle agent) | Real-server test: idle agent receives the oldest eligible task; busy or drafting agent does not; a skipped delivery leads to re-offer; UI activity follows `agent.*`. |
 | 4. Review, Reminder, Reclaim | Plugins; 15-minute sweep moves into Reclaim | Completed task creates exactly one review; a busy owner's task is not reclaimed; a gone owner's task is. |
 | 5. Client strip | Remove client scheduling/review code and settings; journal format simplified | Desktop against embedded server behaves as phases 3–4; against a legacy gateway does nothing automatic; full core/desktop suites pass on Linux, Windows, macOS. |
 

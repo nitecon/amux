@@ -240,6 +240,7 @@ impl Fixture {
             artifact_body_schema_enabled: true,
             artifact_auth_enforced: false,
             update_available: Arc::new(Mutex::new(None)),
+            remote: Default::default(),
         };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());

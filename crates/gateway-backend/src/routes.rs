@@ -8343,6 +8343,7 @@ mod tests {
             artifact_body_schema_enabled: true,
             artifact_auth_enforced: false,
             update_available: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            remote: Default::default(),
         }
     }
 

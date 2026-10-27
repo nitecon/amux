@@ -210,13 +210,16 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
     drop(tx);
     let mut workers = Workers(vec![spawn_inbound_processor(database.clone(), rx)]);
     workers.0.push(spawn_task_reclaimer(database.clone()));
+    let remote = crate::plugins::remote::Remote::default();
     let (bus, router) = crate::router::start(
         database.clone(),
         crate::plugins::events(),
-        crate::plugins::plugins(),
+        crate::plugins::plugins(&remote),
     )?;
+    remote.attach(bus.clone());
     workers.0.push(router);
-    workers.0.push(crate::plugins::clock::spawn(bus));
+    workers.0.push(crate::plugins::clock::spawn(bus.clone()));
+    workers.0.push(crate::plugins::tasks::spawn(bus));
     workers.0.push(spawn_retention(
         database.clone(),
         config.retention_days,
@@ -237,6 +240,7 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
         artifact_body_schema_enabled: config.artifact_body_schema_enabled,
         artifact_auth_enforced: config.artifact_auth_enforced,
         update_available: Arc::new(std::sync::Mutex::new(None)),
+        remote,
     };
     task_events::recover(&state.db.lock().unwrap())?;
     let app = api_router(state.clone());
