@@ -173,6 +173,48 @@ impl Gateway {
         Ok(result)
     }
 
+    /// Read one task with only its newest `comments` comments, so a long thread
+    /// cannot push the reply past the response cap. `comment_count` keeps the total.
+    pub async fn task(&self, project: &str, id: uuid::Uuid, comments: usize) -> Result<Value> {
+        let id_text = id.to_string();
+        let result = self
+            .project_request(
+                Method::GET,
+                project,
+                &["tasks", &id_text],
+                None,
+                None,
+                &[("comments", comments.to_string())],
+            )
+            .await?;
+        if canonical_id(&result["id"]) != Some(id) || result["project_ident"] != project {
+            bail!(
+                "gateway did not identify the requested task/project/state; operation is unconfirmed, fetch the task before continuing"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Only the exact owning execution may change a task's lifecycle. Reads no
+    /// comments, so ownership checks work however long the thread grows.
+    pub async fn confirm_owner(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        actor: &AgentIdentity,
+    ) -> Result<()> {
+        let task = self.task(project, id, 0).await?;
+        if task["status"] != "in_progress"
+            || task["owner_origin"]["session_id"] != actor.session_id.to_string()
+            || task["owner_origin"]["instance_id"] != actor.instance_id.to_string()
+        {
+            bail!(
+                "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn project_request(
         &self,
         method: Method,

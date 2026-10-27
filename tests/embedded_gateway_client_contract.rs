@@ -953,6 +953,89 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
     assert_eq!(cancellation_reason, "fixture complete");
 }
 
+#[tokio::test]
+async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    let task = fixture
+        .client
+        .request(
+            Method::POST,
+            PROJECT,
+            &[],
+            Some(json!({"title":"Standing task", "specification":"Long-lived thread"})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    let id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+    fixture
+        .client
+        .claim(PROJECT, &id.to_string(), &fixture.actor)
+        .await
+        .unwrap();
+    let before = {
+        let conn = fixture.database.lock().unwrap();
+        let note = "x".repeat(64 * 1024);
+        for _ in 0..80 {
+            db::insert_comment(&conn, &id.to_string(), "sre-agent", "agent", &note).unwrap();
+        }
+        db::task_comment_count(&conn, &id.to_string()).unwrap()
+    };
+
+    // The fixture really exceeds the cap: an unbounded read still fails closed.
+    let full = fixture
+        .client
+        .request(Method::GET, PROJECT, &[&id.to_string()], None, None)
+        .await
+        .unwrap_err();
+    assert!(full.to_string().contains("exceeds 4 MiB"), "{full:#}");
+
+    let bounded = fixture.client.task(PROJECT, id, 10).await.unwrap();
+    assert_eq!(bounded["comments"].as_array().unwrap().len(), 10);
+    assert_eq!(bounded["comment_count"], before);
+
+    let mut peer = fixture.actor.clone();
+    peer.instance_id = Uuid::from_u128(0x8c6fa383_152b_4f0d_9d6d_cfc0730ce005);
+    assert!(
+        fixture
+            .client
+            .confirm_owner(PROJECT, id, &peer)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("only the confirmed owning execution")
+    );
+
+    fixture
+        .client
+        .confirm_owner(PROJECT, id, &fixture.actor)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            PROJECT,
+            &[&id.to_string()],
+            Some(json!({"status":"todo"})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    let listed = fixture.client.list(PROJECT).await.unwrap();
+    let released = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id.to_string())
+        .unwrap();
+    assert_eq!(released["status"], "todo");
+    assert!(released["owner_agent_id"].is_null(), "{released}");
+    let conn = fixture.database.lock().unwrap();
+    assert!(db::task_comment_count(&conn, &id.to_string()).unwrap() >= before);
+}
+
 async fn next_frame(socket: &mut Socket) -> Value {
     tokio::time::timeout(Duration::from_secs(10), gateway_stream::next_json(socket))
         .await

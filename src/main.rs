@@ -152,6 +152,9 @@ enum TaskOperation {
     },
     Get {
         id: Uuid,
+        /// Show only the newest N comments.
+        #[arg(long, default_value_t = 50)]
+        comments: usize,
     },
     Create {
         title: String,
@@ -429,7 +432,7 @@ fn run(cli: Cli) -> Result<u8> {
                 };
                 if let TaskOperation::List { status, include_stale } = &operation { return gateway.list_filtered(&project, status.as_deref(), *include_stale).await; }
                 if let TaskOperation::Agents { os } = operation { return Ok(serde_json::to_value(gateway.task_agents(&project, &project_dir, os).await?)?); }
-                if let TaskOperation::Get { id } = operation { return gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await; }
+                if let TaskOperation::Get { id, comments } = operation { return gateway.task(&project, id, comments).await; }
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
@@ -497,11 +500,11 @@ fn run(cli: Cli) -> Result<u8> {
                     TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {
-                        confirm_owner(&gateway, &project, id, &actor).await?;
+                        gateway.confirm_owner(&project, id, &actor).await?;
                         gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":format!("Agent reports execution started: session={} instance={}; recorded as a comment, not an atomic gateway lifecycle transition", actor.session_id, actor.instance_id)})), Some(&actor)).await
                     },
                     TaskOperation::Done { id } | TaskOperation::Release { id } => {
-                        confirm_owner(&gateway, &project, id, &actor).await?;
+                        gateway.confirm_owner(&project, id, &actor).await?;
                         let status = if matches!(operation, TaskOperation::Done { .. }) { "done" } else { "todo" };
                         gateway.request(Method::PATCH, &project, &[&id.to_string()], Some(json!({"status":status})), Some(&actor)).await
                     },
@@ -580,26 +583,6 @@ async fn cli_gateway(
 /// already guards bound owner_origin claims, but until it enforces the exact
 /// owner atomically for every claim type, ownership can change between this read
 /// and the mutation.
-async fn confirm_owner(
-    gateway: &Gateway,
-    project: &str,
-    id: Uuid,
-    actor: &AgentIdentity,
-) -> Result<()> {
-    let task = gateway
-        .request(Method::GET, project, &[&id.to_string()], None, None)
-        .await?;
-    if task["status"] != "in_progress"
-        || task["owner_origin"]["session_id"] != actor.session_id.to_string()
-        || task["owner_origin"]["instance_id"] != actor.instance_id.to_string()
-    {
-        bail!(
-            "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
-        );
-    }
-    Ok(())
-}
-
 fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Result<u8> {
     let actor = AgentIdentity::new(provider, &project)?.resume_at(
         &identity::state_directory()?,

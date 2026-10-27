@@ -5732,20 +5732,29 @@ pub struct TaskWithComments {
     pub task: db::Task,
     pub specification: Option<String>,
     pub comments: Vec<db::TaskComment>,
+    /// Total comments on the task; `comments` may hold only the newest of them.
+    pub comment_count: i64,
     pub actions: Vec<TaskAction>,
 }
 
 impl TaskWithComments {
-    fn new(task: db::Task, comments: Vec<db::TaskComment>) -> Self {
+    fn new(task: db::Task, comments: Vec<db::TaskComment>, comment_count: i64) -> Self {
         let specification = task.details.clone();
         let actions = actions_for_status(&task.status);
         Self {
             task,
             specification,
             comments,
+            comment_count,
             actions,
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GetTaskQuery {
+    /// Return only the newest N comments; omitted returns all of them.
+    pub comments: Option<usize>,
 }
 
 const TASK_SPECIFICATION_HINT: &str = "If this is a complex task, make sure it has a proper specification so another agent can pick up the work if you drop it.";
@@ -6286,6 +6295,7 @@ pub async fn delegate_task_handler(
 pub async fn get_task_handler(
     State(state): State<AppState>,
     Path((ident, task_id)): Path<(String, String)>,
+    Query(q): Query<GetTaskQuery>,
 ) -> Result<Json<TaskWithComments>> {
     let db = state.db.clone();
     let ident_for_reclaim = ident.clone();
@@ -6293,17 +6303,23 @@ pub async fn get_task_handler(
     let task_id_clone = task_id;
     // With the event router running, its Reclaim plugin owns reclaiming.
     let router = state.remote.attached();
-    let detail = spawn_blocking(move || -> anyhow::Result<Option<db::TaskDetail>> {
+    let detail = spawn_blocking(move || -> anyhow::Result<Option<(db::TaskDetail, i64)>> {
         let conn = db.lock().unwrap();
         if !router {
             db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
         }
-        db::get_task_detail(&conn, &ident_for_fetch, &task_id_clone)
+        let Some(detail) =
+            db::get_task_detail_recent(&conn, &ident_for_fetch, &task_id_clone, q.comments)?
+        else {
+            return Ok(None);
+        };
+        let total = db::task_comment_count(&conn, &task_id_clone)?;
+        Ok(Some((detail, total)))
     })
     .await??;
 
     match detail {
-        Some(d) => Ok(Json(TaskWithComments::new(d.task, d.comments))),
+        Some((d, total)) => Ok(Json(TaskWithComments::new(d.task, d.comments, total))),
         None => Err(AppError(
             StatusCode::NOT_FOUND,
             format!("task not found in project '{}'", ident),
@@ -7559,9 +7575,10 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                let Json(before) = get_task_handler(State(state.clone()), path())
-                    .await
-                    .unwrap();
+                let Json(before) =
+                    get_task_handler(State(state.clone()), path(), Query(GetTaskQuery::default()))
+                        .await
+                        .unwrap();
                 assert_eq!(before.task.status, "user_review");
                 assert_eq!(
                     before.task.labels.iter().any(|l| l == "autoreview-finding"),
@@ -7604,9 +7621,13 @@ mod tests {
                     )
                     .await
                     .is_err());
-                    let Json(rolled_back) = get_task_handler(State(state.clone()), path())
-                        .await
-                        .unwrap();
+                    let Json(rolled_back) = get_task_handler(
+                        State(state.clone()),
+                        path(),
+                        Query(GetTaskQuery::default()),
+                    )
+                    .await
+                    .unwrap();
                     assert_eq!(rolled_back.task.status, "user_review");
                     assert_eq!(rolled_back.task.labels, before.task.labels);
                     assert_eq!(
@@ -7637,9 +7658,10 @@ mod tests {
                     .await
                     .unwrap();
                 }
-                let Json(resumed) = get_task_handler(State(state.clone()), path())
-                    .await
-                    .unwrap();
+                let Json(resumed) =
+                    get_task_handler(State(state.clone()), path(), Query(GetTaskQuery::default()))
+                        .await
+                        .unwrap();
                 assert_eq!(resumed.task.status, "todo");
                 assert_eq!(
                     resumed.task.labels,
@@ -7787,9 +7809,10 @@ mod tests {
                 .await
                 .unwrap();
             }
-            let Json(detail) = get_task_handler(State(state.clone()), path())
-                .await
-                .unwrap();
+            let Json(detail) =
+                get_task_handler(State(state.clone()), path(), Query(GetTaskQuery::default()))
+                    .await
+                    .unwrap();
             assert_eq!(detail.task.status, "user_review");
             assert!(detail.task.owner_agent_id.is_none());
             assert!(detail.task.owner_origin.is_none());
@@ -8034,7 +8057,8 @@ mod tests {
 
     #[test]
     fn task_detail_response_includes_specification_alias() {
-        let value = serde_json::to_value(TaskWithComments::new(sample_task(), Vec::new())).unwrap();
+        let value =
+            serde_json::to_value(TaskWithComments::new(sample_task(), Vec::new(), 0)).unwrap();
 
         assert_eq!(value["details"], "Long handoff spec");
         assert_eq!(value["specification"], "Long handoff spec");

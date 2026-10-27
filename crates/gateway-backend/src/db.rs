@@ -8834,6 +8834,17 @@ pub fn get_task_detail(
     project_ident: &str,
     task_id: &str,
 ) -> Result<Option<TaskDetail>> {
+    get_task_detail_recent(conn, project_ident, task_id, None)
+}
+
+/// Like [`get_task_detail`], but keeps only the newest `limit` comments (still
+/// ascending) so a long thread cannot outgrow a client's response cap.
+pub fn get_task_detail_recent(
+    conn: &Connection,
+    project_ident: &str,
+    task_id: &str,
+    limit: Option<usize>,
+) -> Result<Option<TaskDetail>> {
     let project_ident = normalize_project_ident(project_ident);
     let task = {
         let sql =
@@ -8850,10 +8861,13 @@ pub fn get_task_detail(
         "SELECT id, task_id, author, author_type, content, created_at, origin_json
          FROM task_comments
          WHERE task_id = ?1
-         ORDER BY created_at ASC",
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?2",
     )?;
-    let comments = stmt
-        .query_map(params![task_id], |r| {
+    // SQLite treats a negative LIMIT as unlimited.
+    let limit = limit.map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX));
+    let mut comments = stmt
+        .query_map(params![task_id, limit], |r| {
             Ok(TaskComment {
                 id: r.get(0)?,
                 task_id: r.get(1)?,
@@ -8865,8 +8879,17 @@ pub fn get_task_detail(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    comments.reverse();
 
     Ok(Some(TaskDetail { task, comments }))
+}
+
+pub fn task_comment_count(conn: &Connection, task_id: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM task_comments WHERE task_id = ?1",
+        params![task_id],
+        |r| r.get(0),
+    )?)
 }
 
 /// Resolve a task ID prefix across all projects.
@@ -11576,6 +11599,40 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(remaining, vec![human_open]);
+    }
+
+    #[test]
+    fn task_detail_recent_keeps_newest_comments_in_order_with_full_count() {
+        let conn = test_conn();
+        insert_project(&conn, &test_project("long")).unwrap();
+        let task = insert_task(
+            &conn,
+            "long",
+            "Long thread",
+            None,
+            None,
+            &[],
+            None,
+            "tester",
+        )
+        .unwrap();
+        for n in 1..=5 {
+            insert_comment(&conn, &task.id, "agent-a", "agent", &format!("note {n}")).unwrap();
+        }
+        let contents = |limit| {
+            get_task_detail_recent(&conn, "long", &task.id, limit)
+                .unwrap()
+                .unwrap()
+                .comments
+                .into_iter()
+                .map(|c| c.content)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(contents(Some(2)), ["note 4", "note 5"]);
+        assert!(contents(Some(0)).is_empty());
+        assert_eq!(contents(None).len(), 5);
+        assert_eq!(contents(None)[0], "note 1");
+        assert_eq!(task_comment_count(&conn, &task.id).unwrap(), 5);
     }
 
     #[test]

@@ -69,7 +69,8 @@ comment UUID attached to the requested task, including explicit start reports
 which are currently ordinary comments. Ambiguous replies leave the operation
 unconfirmed and are not retried.
 
-`started`, `done` and `release` first read the task and continue only if it is
+`started`, `done` and `release` first read the task (without its comments, so
+long threads stay under the response cap) and continue only if it is
 `in_progress` with this exact session and instance as owner. Otherwise no status
 update or start report is sent, including for older claims that lack owner
 session and instance. This read is a client check, not server authorization. The
@@ -87,7 +88,7 @@ a copied or overridden agent ID.
 | agent-tools | amux |
 | --- | --- |
 | `tasks list [--status S] [--include-stale]` | `amux tasks list [--status S] [--include-stale]`; statuses are `todo`, `in_progress`, `user_review`, `done`, `cancelled` |
-| `tasks get ID` | `amux tasks get ID` (`--json` for raw gateway JSON) |
+| `tasks get ID` | `amux tasks get ID [--comments N]`; shows the newest 50 comments by default, numbered within the full thread (`--json` for raw gateway JSON) |
 | `tasks add --title T [--description D] [--specification S] [--label L]… [--hostname H]` | `amux tasks create T [--description D] [--specification S] [--label L]… [--hostname H]`; use `--os` and `--review-finding` instead of `os:` or `autoreview-finding` labels |
 | `tasks add-delegated --target-project P --title T --description D --specification S [--label L]… [--hostname H]` | `amux tasks delegate T --target-project P [--description D] [--specification S] [--label L]… [--hostname H]` |
 | `tasks claim ID` | `amux tasks claim ID` (also refuses tasks that require another OS) |

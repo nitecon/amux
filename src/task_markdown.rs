@@ -110,12 +110,26 @@ fn task(task: &Value) -> String {
         }
     }
     if let Some(comments) = task["comments"].as_array() {
-        let _ = write!(out, "\n## Comments ({})\n", comments.len());
+        // The gateway may send only the newest comments; number them within the full thread.
+        let total = task["comment_count"]
+            .as_u64()
+            .map_or(comments.len(), |n| n as usize)
+            .max(comments.len());
+        let skipped = total - comments.len();
+        if skipped > 0 {
+            let _ = write!(
+                out,
+                "\n## Comments (newest {} of {total}; use --comments N for more)\n",
+                comments.len()
+            );
+        } else {
+            let _ = write!(out, "\n## Comments ({total})\n");
+        }
         for (index, comment) in comments.iter().enumerate() {
             let _ = write!(
                 out,
                 "\n### {}. {}{}\n\n{}\n",
-                index + 1,
+                skipped + index + 1,
                 text(&comment["author"]),
                 time(&comment["created_at"])
                     .map(|t| format!(" — {t}"))
@@ -205,5 +219,19 @@ mod tests {
         assert_eq!(listed, "- [todo] t1 — Fix output · 3 comments\n");
         assert_eq!(render(&json!([])), "No open tasks.\n");
         assert!(render(&json!({"agents": []})).starts_with("```json\n"));
+    }
+
+    #[test]
+    fn bounded_comments_keep_their_thread_numbers() {
+        let out = render(&json!({
+            "id": "t1", "title": "Long thread", "status": "todo", "comment_count": 3680,
+            "comments": [
+                {"author": "A", "content": "older"},
+                {"author": "B", "content": "newest"}
+            ]
+        }));
+        assert!(out.contains("## Comments (newest 2 of 3680; use --comments N for more)\n"));
+        assert!(out.contains("### 3679. A\n\nolder\n"));
+        assert!(out.ends_with("### 3680. B\n\nnewest\n"));
     }
 }
