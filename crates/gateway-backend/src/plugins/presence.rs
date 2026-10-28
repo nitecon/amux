@@ -58,6 +58,32 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Live agents across the gateway: distinct client machines, their OSes and
+/// how many agents are busy. Gone agents are already deleted.
+pub fn summary(conn: &Connection) -> Result<Value> {
+    let (agents, machines, active): (i64, i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COUNT(DISTINCT source), COALESCE(SUM(state='busy'), 0) FROM presence_agents",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let os = conn
+        .prepare(
+            "SELECT DISTINCT json_extract(agent_json,'$.os') AS os FROM presence_agents
+             WHERE os IS NOT NULL ORDER BY os",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(json!({"machines": machines, "os": os, "agents": agents, "active": active}))
+}
+
+/// `GET /v1/presence/summary`.
+pub async fn summary_route(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+) -> std::result::Result<axum::Json<Value>, crate::routes::AppError> {
+    let conn = state.db.lock().unwrap();
+    Ok(axum::Json(summary(&conn)?))
+}
+
 pub struct Presence;
 
 impl Plugin for Presence {
@@ -293,6 +319,28 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap()
+    }
+
+    #[test]
+    fn summary_counts_machines_oses_agents_and_busy_agents() {
+        let database = db::open(":memory:").unwrap();
+        let conn = database.lock().unwrap();
+        for (session, source, os, state) in [
+            ("a", "client:one", "linux", "busy"),
+            ("b", "client:one", "linux", "idle"),
+            ("c", "client:two", "windows", "busy"),
+            ("d", "client:three", "macos", "unknown"),
+        ] {
+            conn.execute(
+                "INSERT INTO presence_agents(session_id,source,agent_json,seen_at,state) VALUES(?1,?2,?3,0,?4)",
+                params![session, source, json!({"os": os}).to_string(), state],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            summary(&conn).unwrap(),
+            json!({"machines": 3, "os": ["linux", "macos", "windows"], "agents": 4, "active": 2})
+        );
     }
 
     #[tokio::test]

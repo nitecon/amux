@@ -5,6 +5,16 @@ use reqwest::{Method, Url};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
+/// `GET /v1/presence/summary`: distinct machines, their OSes, live agents and
+/// how many of them are busy.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct PresenceSummary {
+    pub machines: u64,
+    pub os: Vec<String>,
+    pub agents: u64,
+    pub active: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct GatewayStatus(pub reqwest::StatusCode);
 impl std::fmt::Display for GatewayStatus {
@@ -351,6 +361,20 @@ impl Gateway {
             .iter()
             .filter(|event| event["task"]["id"] == task.to_string())
             .find_map(|event| serde_json::from_value(event["task"]["owner_origin"].clone()).ok()))
+    }
+
+    /// Live agents across the whole gateway, for the desktop status bar.
+    pub async fn presence_summary(&self) -> Result<PresenceSummary> {
+        let value = self
+            .exchange(
+                Method::GET,
+                self.base.join("v1/presence/summary")?,
+                None,
+                None,
+                &[],
+            )
+            .await?;
+        serde_json::from_value(value).context("gateway presence summary is invalid")
     }
 
     /// Check before any mutation: old gateways must not silently drop subscriptions.

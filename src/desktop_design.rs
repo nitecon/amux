@@ -72,6 +72,9 @@ pub(super) struct State {
     files: Option<(Uuid, browser::FileBrowser)>,
     loading: bool,
     revision: u64,
+    /// Gateway-wide presence; `None` until loaded or when the gateway lacks it.
+    pub(super) gateway_stats: Option<amux::gateway::PresenceSummary>,
+    pub(super) gateway_stats_polled: Option<std::time::Instant>,
 }
 #[derive(Debug, Clone)]
 pub(super) struct ProjectData {
@@ -496,15 +499,19 @@ impl Desktop {
                 Space::new().width(Length::Fill),
                 tooltip(
                     container(
-                        text(format!(
-                            "{} · {agents} agents · {busy} active",
-                            self.design_connection()
-                        ))
-                        .size(11)
+                        column![
+                            text(self.design_gateway_line()).size(11),
+                            text(format!("This machine: {agents} agents · {busy} active"))
+                                .size(11)
+                                .color(MUTED)
+                        ]
+                        .spacing(1)
                     )
-                    .padding([5, 10])
+                    .padding([3, 10])
                     .style(|_| surface(CARD, true)),
-                    "Active means terminal output within the last 5 seconds.",
+                    "Gateway: agents on every connected machine; active means busy on the \
+                     gateway (updated every 15 seconds). This machine: active means terminal \
+                     output within the last 5 seconds.",
                     tooltip::Position::Bottom
                 ),
                 Space::new().width(Length::Fill),

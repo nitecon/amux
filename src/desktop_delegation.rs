@@ -518,6 +518,69 @@ impl Desktop {
                 .collect::<Vec<_>>(),
         )
     }
+    /// Poll gateway-wide presence every 30 seconds while the gateway is used.
+    pub(super) fn gateway_stats_tick(&mut self) -> Task<Message> {
+        if !self.preferences.current.has_connection()
+            || !self.server_schedules()
+            || self
+                .design
+                .gateway_stats_polled
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(30))
+        {
+            return Task::none();
+        }
+        let Ok(gateway) = self.preferences.current.gateway() else {
+            return Task::none();
+        };
+        self.design.gateway_stats_polled = Some(Instant::now());
+        Task::perform(
+            async move {
+                gateway
+                    .presence_summary()
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            Message::GatewayStats,
+        )
+    }
+
+    /// First status-bar line: connection state, then gateway-wide stats.
+    pub(super) fn design_gateway_line(&self) -> String {
+        let connection = self.design_connection();
+        let Some(stats) = self
+            .design
+            .gateway_stats
+            .as_ref()
+            .filter(|_| self.delegation.events.connected)
+        else {
+            return connection;
+        };
+        let os = stats
+            .os
+            .iter()
+            .map(|os| match os.as_str() {
+                "linux" => "Linux",
+                "windows" => "Windows",
+                "macos" => "macOS",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let machines = match stats.machines {
+            1 => "1 machine".to_owned(),
+            n => format!("{n} machines"),
+        };
+        let mut line = format!("{connection} · {machines}");
+        if !os.is_empty() {
+            line.push_str(&format!(" · {os}"));
+        }
+        line.push_str(&format!(
+            " · {} agents · {} active",
+            stats.agents, stats.active
+        ));
+        line
+    }
+
     pub(super) fn design_connection(&self) -> String {
         if !self.preferences.current.has_connection() {
             "Gateway: Not configured".into()

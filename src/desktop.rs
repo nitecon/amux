@@ -106,6 +106,7 @@ enum Message {
     ProjectResolved(QueryScope, Result<String, String>),
     RefreshTasks,
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
+    GatewayStats(Result<amux::gateway::PresenceSummary, String>),
     RoutingLoaded(
         QueryScope,
         Result<(amux::task_routing::Directory, Option<String>), String>,
@@ -939,6 +940,7 @@ impl Desktop {
             Message::TaskChanged(scope, id, request, change, result) => {
                 return self.task_changed(scope, id, request, change, result);
             }
+            Message::GatewayStats(result) => self.design.gateway_stats = result.ok(),
             Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
             Message::TaskTarget(choice) => {
                 let panel = &mut self.workspaces[self.active].gateway;
@@ -1635,7 +1637,11 @@ impl Desktop {
                 let gateway_ticks = if self.embedded.busy || self.embedded.stopping {
                     Task::none()
                 } else {
-                    Task::batch([self.delegation_tick(), self.routing_tick()])
+                    Task::batch([
+                        self.delegation_tick(),
+                        self.routing_tick(),
+                        self.gateway_stats_tick(),
+                    ])
                 };
                 return Task::batch([gateway_ticks, updates]);
             }

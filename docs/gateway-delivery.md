@@ -111,6 +111,11 @@ Server plugins can be switched off with `PUT /v1/plugins/{id}`
 (`assignment`, `notifier`, `reminder`, `review`, `reclaim`); `GET /v1/plugins`
 lists them.
 
+`GET /v1/presence/summary` returns live presence across the gateway:
+`{"machines", "os", "agents", "active"}`, where machines are distinct client
+connections and active agents are busy. The desktop status bar polls it every
+30 seconds for its first line; the second line counts this machine's agents.
+
 ## Built-in agent identity
 
 amux derives a local project UUID from the normalized Git upstream and canonical

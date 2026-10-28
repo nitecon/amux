@@ -1028,3 +1028,33 @@ fn in_progress_work_saved_at_exit_reminds_its_idle_owner_after_restart() {
         "local reminders are not server offers"
     );
 }
+
+#[test]
+fn status_bar_shows_gateway_wide_stats_only_while_connected() {
+    let mut app = desktop();
+    app.preferences.current = amux::gateway_preferences::GatewayPreferences {
+        mode: amux::gateway_preferences::GatewayMode::Client,
+        enrolled: Some(amux::gateway_preferences::EnrolledConnection {
+            url: "https://gateway.example:24182".into(),
+            cluster_id: Uuid::new_v4().to_string(),
+            node_id: Uuid::new_v4().to_string(),
+            profile_path: PathBuf::from("unused-node-profile.json"),
+        }),
+        automatic_notifications: true,
+        ..Default::default()
+    };
+    app.design.gateway_stats = Some(amux::gateway::PresenceSummary {
+        machines: 5,
+        os: vec!["linux".into(), "macos".into(), "windows".into()],
+        agents: 77,
+        active: 23,
+    });
+    assert_eq!(app.design_gateway_line(), "Gateway: Connecting");
+    app.delegation.events.connected = true;
+    assert_eq!(
+        app.design_gateway_line(),
+        "Gateway: Connected · 5 machines · Linux, macOS, Windows · 77 agents · 23 active"
+    );
+    let _ = app.update(Message::GatewayStats(Err("old gateway".into())));
+    assert_eq!(app.design_gateway_line(), "Gateway: Connected");
+}
