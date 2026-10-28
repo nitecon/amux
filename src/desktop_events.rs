@@ -130,10 +130,22 @@ impl Desktop {
     }
 
     pub(super) fn events_stop(&mut self) {
-        let status = std::mem::take(&mut self.delegation.events.status);
+        let old = std::mem::take(&mut self.delegation.events);
+        // Server notices end with the subscription; restart reminders are
+        // local, so they survive a resubscription until delivered.
+        let pending = old
+            .delivering
+            .map(|delivery| delivery.event)
+            .into_iter()
+            .chain(old.pending)
+            .filter(|event| event["local"] == true)
+            .collect();
         self.delegation.events = State {
-            status,
+            status: old.status,
             retry_at: Some(Instant::now()),
+            pending,
+            restart: old.restart,
+            restart_loaded: old.restart_loaded,
             ..State::default()
         };
         for workspace in &mut self.workspaces {

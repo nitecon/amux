@@ -962,7 +962,7 @@ fn in_progress_work_saved_at_exit_reminds_its_idle_owner_after_restart() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
     app.registry = Some(agent.directory.clone());
-    let mut frames = router(&mut app);
+    let _frames = router(&mut app);
     project(&mut app, &agent, "alpha");
     scan(&mut app);
     let owner = json!({"session_id": session(&app, &agent), "instance_id": Uuid::new_v4(), "provider": "codex", "os": "linux"});
@@ -983,6 +983,9 @@ fn in_progress_work_saved_at_exit_reminds_its_idle_owner_after_restart() {
     app.workspaces[0].gateway.tasks.clear();
     app.workspaces[0].gateway.loaded_at = None;
     app.load_restart_tasks();
+    // Resubscribing as restored agents are found keeps the saved work.
+    app.events_stop();
+    let _frames = router(&mut app);
     assert_eq!(
         app.delegation.events.restart.len(),
         2,
@@ -1004,8 +1007,14 @@ fn in_progress_work_saved_at_exit_reminds_its_idle_owner_after_restart() {
         "finished work is dropped"
     );
 
-    // It waits while the agent is working, then reaches it once idle.
+    // It waits while the agent is working, then reaches it once idle,
+    // also across a resubscription; server notices are not kept.
     drop(app.events_deliver());
+    assert_eq!(app.delegation.events.pending.len(), 1);
+    let offer = notify(&app, &agent, 7, false);
+    receive(&mut app, offer);
+    app.events_stop();
+    let mut frames = router(&mut app);
     assert_eq!(app.delegation.events.pending.len(), 1);
     std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
     deliver(&mut app);
