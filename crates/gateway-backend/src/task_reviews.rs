@@ -95,6 +95,22 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     {
         labels.push(format!("review-exclude:{owner}"));
     }
+    // Agents that commented may have done the work before ownership changed.
+    let contributors = conn
+        .prepare(
+            "SELECT json_extract(origin_json,'$.session_id') FROM task_comments
+             WHERE task_id=?1 AND author_type='agent'
+               AND json_extract(origin_json,'$.session_id') IS NOT NULL
+             ORDER BY created_at",
+        )?
+        .query_map(params![source.id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for session in contributors {
+        let label = format!("review-exclude:{session}");
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
     let specification = format!("Review the completed work for task {}: {}.\nRead that task and its associated comments for implementation and validation evidence. Inspect the actual changes. Follow repository instructions and KISS/YAGNI: report concrete introduced defects, not speculative enhancements or style preferences. Review only; do not implement changes. For confirmed actionable defects, check for duplicates and create normal queued finding tasks with concise evidence and suggested corrections. Post review results (including no findings) on the source task and this review task, then mark this review task done. Do not run the legacy reviews complete command. Completing a review does not create another review.", source.id, source.title);
     // This helper only inserts an unowned ordinary task; no dispatch protocol
     // record or submitting-agent claim is created.
@@ -231,6 +247,34 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+    #[test]
+    fn agents_that_commented_before_a_handoff_are_also_excluded() {
+        let database = db::open(":memory:").unwrap();
+        let conn = database.lock().unwrap();
+        conn.execute("INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES ('example','none','',0)", []).unwrap();
+        let (worker, finisher) = (actor(), actor());
+        let source = task_events::mutation(&conn, Some(&worker), |conn| {
+            db::insert_task(conn, "example", "Handed off", None, None, &[], None, "w")
+        })
+        .unwrap();
+        update(&conn, &source.id, "in_progress", &worker).unwrap();
+        task_events::mutation(&conn, Some(&worker), |conn| {
+            db::insert_comment(conn, &source.id, "worker", "agent", "pushed the fix")
+        })
+        .unwrap();
+        update(&conn, &source.id, "todo", &worker).unwrap();
+        update(&conn, &source.id, "in_progress", &finisher).unwrap();
+        update(&conn, &source.id, "done", &finisher).unwrap();
+        let review =
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
+                .unwrap()
+                .unwrap();
+        for agent in [&worker, &finisher] {
+            let label = format!("review-exclude:{}", agent.session_id);
+            assert_eq!(review.labels.iter().filter(|l| **l == label).count(), 1);
+            assert!(update(&conn, &review.id, "in_progress", agent).is_err());
+        }
     }
     #[test]
     fn concurrent_hosts_create_one_review_and_rollback_leaves_no_orphan() {

@@ -92,8 +92,9 @@ result. When the user returns work to TODO, normal eligibility resumes.
 ## Completion reviews
 
 When a task completes, the server's `review` plugin queues one ordinary review
-task for a different agent (the completing agent is excluded, including by the
-task store's claim and assignment checks). Reviews use the same FIFO assignment
+task for a different agent (the completing agent and every agent that commented
+on the task are excluded, including by the task store's claim and assignment
+checks). Reviews use the same FIFO assignment
 as other work. The server creates at most one review per source completion, and
 completing a review does not create another review.
 
