@@ -163,7 +163,11 @@ impl Desktop {
             Action::Specification(action) if panel.ready() && panel.mode == Mode::Edit => {
                 edit_text(&mut panel.specification, action)
             }
-            Action::Comment(action) if panel.ready() => edit_text(&mut panel.comment, action),
+            // A read-only refresh must not interrupt the local draft. Keep
+            // mutations gated by ready(), and freeze an unresolved submission.
+            Action::Comment(action) if panel.task.is_some() && !panel.unresolved() => {
+                edit_text(&mut panel.comment, action)
+            }
             Action::Target(choice @ Choice::Session(..)) if panel.ready() => {
                 panel.recipient = Some(choice)
             }
@@ -788,6 +792,62 @@ mod tests {
             app.workspaces[0].gateway.detail.task.as_ref().unwrap()["id"],
             id.to_string()
         );
+    }
+
+    #[test]
+    fn comment_typing_survives_delayed_manual_and_automatic_detail_refreshes() {
+        for automatic in [false, true] {
+            let mut app = app();
+            let id = Uuid::new_v4();
+            open(&mut app, id);
+            let type_text = |app: &mut Desktop, text: &str| {
+                for character in text.chars() {
+                    let _ = app.manage_task(Action::Comment(text_editor::Action::Edit(
+                        text_editor::Edit::Insert(character),
+                    )));
+                }
+            };
+            type_text(&mut app, "Before ");
+            if automatic {
+                assert!(app.workspaces[0].gateway.detail.refresh_with_list());
+                let _ = app.refresh_open_task(0);
+            } else {
+                let _ = app.manage_task(Action::Refresh);
+            }
+            let request = app.workspaces[0].gateway.detail.loading.unwrap();
+            type_text(&mut app, "during ");
+            let _ = app.manage_task(Action::PostComment);
+            assert!(app.workspaces[0].gateway.detail.pending.is_none());
+            let scope = app.scope(0);
+            let mut refreshed = task(id, &scope.project);
+            refreshed["comments"] = json!([{"content": "Another user's comment"}]);
+            app.task_detail_loaded(scope, id, request, Ok(refreshed));
+            type_text(&mut app, "after");
+            let panel = &app.workspaces[0].gateway.detail;
+            assert_eq!(panel.comment.text().trim_end(), "Before during after");
+            assert_eq!(
+                panel.task.as_ref().unwrap()["comments"][0]["content"],
+                "Another user's comment"
+            );
+            let _ = app.manage_task(Action::PostComment);
+            let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+            type_text(&mut app, " blocked");
+            assert_eq!(
+                app.workspaces[0].gateway.detail.comment.text().trim_end(),
+                "Before during after"
+            );
+            let scope = app.scope(0);
+            let _ = app.task_changed(scope, id, pending, Change::Comment, Ok(json!({})));
+            assert!(
+                app.workspaces[0]
+                    .gateway
+                    .detail
+                    .comment
+                    .text()
+                    .trim()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
