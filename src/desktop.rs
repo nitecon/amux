@@ -91,6 +91,7 @@ enum Message {
     AutomaticNotifications(bool),
     AutoResume(bool),
     ExitNotifications(bool),
+    AutoUpdate(bool),
     Delegation(u64, desktop_delegation::Event),
     Updates(bool),
     CheckUpdates,
@@ -411,6 +412,7 @@ impl Desktop {
             delegation: desktop_delegation::Bridge::default(),
         };
         app.notify_exits = app.preferences.current.notify_exits;
+        app.load_restart_tasks();
         if app.notify_exits {
             app.notifier = Some(Notifier::native());
         }
@@ -971,6 +973,7 @@ impl Desktop {
             Message::WindowReady => {}
             Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
             Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
+            Message::AutoUpdate(value) => self.preferences.draft.auto_update = value,
             Message::AutomaticNotifications(value) => {
                 self.preferences.draft.automatic_notifications = value
             }
@@ -1391,6 +1394,10 @@ impl Desktop {
                     }
                 }
                 self.updates.refresh_restart();
+                // Auto update downloads now; the bell then offers the restart.
+                if self.preferences.current.auto_update {
+                    return self.install_update();
+                }
             }
             Message::InstallUpdate => return self.install_update(),
             Message::UpdateInstalled(result) => {
@@ -1711,6 +1718,7 @@ impl Desktop {
             return Task::none();
         };
         self.dirty = true;
+        self.save_restart_tasks();
         if !self.save() {
             self.updates.error = "Layout could not be saved; restart cancelled.".into();
             return Task::none();
@@ -1867,6 +1875,7 @@ impl Desktop {
                 self.status = "Wait for the server operation to finish before closing amux.".into();
             } else {
                 self.dirty = true;
+                self.save_restart_tasks();
                 if self.save() {
                     if self
                         .embedded

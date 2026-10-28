@@ -847,7 +847,14 @@ impl Desktop {
                             text(format!("Running v{}", env!("CARGO_PKG_VERSION")))
                                 .size(11)
                                 .color(MUTED),
-                            control("bell", "View updates", Message::Updates(true), true)
+                            if self.preferences.current.auto_update
+                                && self.updates.restart.required
+                                && self.updates.restart.path.is_some()
+                            {
+                                control("bell", "Restart now", Message::RestartUpdated, true)
+                            } else {
+                                control("bell", "View updates", Message::Updates(true), true)
+                            }
                         ]
                         .spacing(12),
                     )
@@ -1606,6 +1613,8 @@ impl Desktop {
                 text("Workspaces & Terminals").size(18),
                 checkbox(self.preferences.draft.notify_exits).label("Notify on process exit").on_toggle(Message::ExitNotifications),
                 text("Notifications report terminal process exits.").size(12).color(MUTED),
+                checkbox(self.preferences.draft.auto_update).label("Install updates automatically").on_toggle(Message::AutoUpdate),
+                text("Updates download in the background. Click the update alert to restart amux and resume its sessions.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.auto_resume).label("Resume agent sessions on startup").on_toggle(Message::AutoResume),
                 text("Saved running terminals reopen on startup. This option also reopens agent tabs with their native conversation resume.").size(12),
                 text("Repository matching is required for gateway delivery.").size(12).color(CYAN)

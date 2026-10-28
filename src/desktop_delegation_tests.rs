@@ -955,3 +955,67 @@ fn offers_are_judged_against_the_reported_output_time() {
     assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &event)]);
     assert_eq!(results(&mut frames), ["delivered"]);
 }
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn in_progress_work_saved_at_exit_reminds_its_idle_owner_after_restart() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    let owner = json!({"session_id": session(&app, &agent), "instance_id": Uuid::new_v4(), "provider": "codex", "os": "linux"});
+    let task = |id: &str, status: &str, owner: &Value| {
+        json!({"id": id, "kind": "normal", "title": format!("Task {id}"), "status": status,
+               "project_ident": "alpha", "owner_origin": owner, "owner_agent_id": null})
+    };
+    let (kept, finished) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let elsewhere = json!({"session_id": Uuid::new_v4(), "instance_id": Uuid::new_v4(), "provider": "codex", "os": "linux"});
+    app.workspaces[0].gateway.tasks = vec![
+        task(&kept, "in_progress", &owner),
+        task(&finished, "in_progress", &owner),
+        task(&Uuid::new_v4().to_string(), "in_progress", &elsewhere),
+    ];
+    app.save_restart_tasks();
+
+    // After restart: nothing is sent until the task list confirms ownership.
+    app.workspaces[0].gateway.tasks.clear();
+    app.workspaces[0].gateway.loaded_at = None;
+    app.load_restart_tasks();
+    assert_eq!(
+        app.delegation.events.restart.len(),
+        2,
+        "only this desktop's agents"
+    );
+    assert!(!agent.directory.join("restart-tasks.json").exists());
+    app.restart_reminders();
+    assert!(app.delegation.events.pending.is_empty());
+    app.workspaces[0].gateway.tasks = vec![
+        task(&kept, "in_progress", &owner),
+        task(&finished, "done", &owner),
+    ];
+    app.workspaces[0].gateway.loaded_at = Some(Instant::now());
+    app.restart_reminders();
+    assert!(app.delegation.events.restart.is_empty());
+    assert_eq!(
+        app.delegation.events.pending.len(),
+        1,
+        "finished work is dropped"
+    );
+
+    // It waits while the agent is working, then reaches it once idle.
+    drop(app.events_deliver());
+    assert_eq!(app.delegation.events.pending.len(), 1);
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+    deliver(&mut app);
+    let line = &wait_lines(&agent, 1)[0];
+    assert!(
+        line.contains("In-progress task reminder") && line.contains(&kept),
+        "{line}"
+    );
+    assert!(
+        results(&mut frames).is_empty(),
+        "local reminders are not server offers"
+    );
+}

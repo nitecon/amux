@@ -26,6 +26,9 @@ const ACTIVITY_REFRESH: Duration = Duration::from_secs(10);
 const ACTIVITY_RESEND: Duration = Duration::from_secs(30);
 const MAX_AGE_MS: i64 = 5 * 60_000;
 const RECENT: usize = 64;
+/// In-progress tasks saved at exit; startup reminds owners that went idle.
+const RESTART_TASKS: &str = "restart-tasks.json";
+const RESTART_WINDOW: Duration = Duration::from_secs(10 * 60);
 const CARDS: usize = 20;
 
 #[derive(Default)]
@@ -46,6 +49,9 @@ pub(super) struct State {
     delivered: VecDeque<String>,
     /// Recent notifications and their outcomes, for the Events panel.
     cards: VecDeque<(String, delegation::Event, String, String)>,
+    /// Tasks local agents owned when amux last exited, and when they were loaded.
+    pub(super) restart: Vec<Value>,
+    pub(super) restart_loaded: Option<Instant>,
 }
 
 impl State {
@@ -256,7 +262,112 @@ impl Desktop {
             return Task::none();
         }
         self.events_report();
+        self.restart_reminders();
         self.events_deliver()
+    }
+
+    /// Save the in-progress tasks owned by this desktop's agents before exit.
+    pub(in super::super) fn save_restart_tasks(&self) {
+        let Some(directory) = &self.registry else {
+            return;
+        };
+        let sessions: Vec<String> = self
+            .delegation
+            .candidates
+            .iter()
+            .map(|c| c.target.session.to_string())
+            .collect();
+        let owned: Vec<&Value> = self
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.gateway.tasks)
+            .filter(|t| {
+                t["status"] == "in_progress"
+                    && t["owner_origin"]["session_id"]
+                        .as_str()
+                        .is_some_and(|s| sessions.iter().any(|own| own == s))
+            })
+            .collect();
+        let path = directory.join(RESTART_TASKS);
+        if owned.is_empty() {
+            let _ = std::fs::remove_file(path);
+        } else if let Ok(json) = serde_json::to_vec(&owned) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    /// Load (and consume) the tasks saved by the previous exit.
+    pub(in super::super) fn load_restart_tasks(&mut self) {
+        let Some(path) = self.registry.as_ref().map(|d| d.join(RESTART_TASKS)) else {
+            return;
+        };
+        if let Some(Value::Array(tasks)) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        {
+            self.delegation.events.restart = tasks;
+            self.delegation.events.restart_loaded = Some(Instant::now());
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Once a saved task's current state is loaded and it is still owned by a
+    /// running agent here, queue a reminder. It waits until that agent is idle,
+    /// so an agent that resumed the work is not interrupted.
+    pub(super) fn restart_reminders(&mut self) {
+        let events = &mut self.delegation.events;
+        if events
+            .restart_loaded
+            .is_some_and(|at| at.elapsed() > RESTART_WINDOW)
+        {
+            events.restart.clear();
+        }
+        if events.restart.is_empty() {
+            return;
+        }
+        let saved = std::mem::take(&mut self.delegation.events.restart);
+        let now = self.events_now();
+        for task in saved {
+            let current = self
+                .workspaces
+                .iter()
+                .filter(|w| w.gateway.loaded_at.is_some())
+                .flat_map(|w| &w.gateway.tasks)
+                .find(|t| t["id"] == task["id"]);
+            let session = task["owner_origin"]["session_id"].clone();
+            let running = self
+                .delegation
+                .candidates
+                .iter()
+                .any(|c| session.as_str() == Some(c.target.session.to_string().as_str()));
+            let Some(current) = current.filter(|_| running) else {
+                // Not loaded yet, or its agent has not been found yet.
+                self.delegation.events.restart.push(task);
+                continue;
+            };
+            if current["status"] != "in_progress"
+                || current["owner_origin"]["session_id"] != session
+            {
+                continue;
+            }
+            let id = current["id"].as_str().unwrap_or_default();
+            let instructions = format!(
+                "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {id}.",
+                session.as_str().unwrap_or_default()
+            );
+            let project = current["project_ident"].clone();
+            // A local notice; its sequence only needs to be a valid event number.
+            self.delegation.events.pending.push_back(json!({
+                "id": "agent.notify", "uid": Uuid::new_v4().to_string(), "seq": 1,
+                "emitted_at": now, "local": true,
+                "payload": {
+                    "target": session, "project": project, "mode": "assigned", "require_idle": true,
+                    "heading": "In-progress task reminder", "instructions": instructions,
+                    "event": {"kind": "task_created", "project_ident": project, "created_at": now,
+                              "task": current, "comment": null, "origin": null},
+                },
+            }));
+        }
     }
 
     pub(super) fn events_report(&mut self) {
@@ -447,13 +558,15 @@ impl Desktop {
                 cards.pop_front();
             }
         }
-        let payload = json!({"target": target, "status": status, "reason": reason});
-        let correlation = event["uid"].as_str();
-        self.events_send(event_client::emit(
-            "agent.notify_result",
-            payload,
-            correlation,
-        ));
+        if event["local"] != true {
+            let payload = json!({"target": target, "status": status, "reason": reason});
+            let correlation = event["uid"].as_str();
+            self.events_send(event_client::emit(
+                "agent.notify_result",
+                payload,
+                correlation,
+            ));
+        }
         let events = &mut self.delegation.events;
         events
             .delivered
@@ -492,7 +605,7 @@ impl Desktop {
             self.events_result(&event, "skipped", "notification expired");
             return Task::none();
         }
-        let offer = payload["mode"] == "assigned";
+        let offer = payload["mode"] == "assigned" && event["local"] != true;
         let now = self.events_now();
         let reported = self
             .delegation

@@ -79,6 +79,8 @@ pub struct GatewayPreferences {
     pub automatic_notifications: bool,
     pub notify_exits: bool,
     pub auto_resume: bool,
+    /// Download updates in the background so a restart can apply them.
+    pub auto_update: bool,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -94,6 +96,7 @@ impl Default for GatewayPreferences {
             automatic_notifications: false,
             notify_exits: false,
             auto_resume: true,
+            auto_update: false,
             machine_id: String::new(),
             machine_key: String::new(),
         }
