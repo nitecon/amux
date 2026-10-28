@@ -62,8 +62,9 @@ idle agent at a time.
 
 If the desktop cannot deliver the offer (the agent became busy, started typing,
 or its process changed), it reports the outcome and the server releases the claim
-so the next idle agent gets the task. An agent idle for ten minutes that still
-owns in-progress work receives one `In-progress task reminder` per task revision.
+so the next idle agent gets the task. When an in-progress task has had no update
+or comment for ten minutes, its connected owner receives `Task update requested`
+(again every ten minutes while it stays quiet); a progress comment resets the wait.
 Claimed work returns to the queue after 15 minutes without task activity unless
 the server sees its owner busy.
 

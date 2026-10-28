@@ -239,7 +239,7 @@ All events are version 1. Payload schemas are validated by the registry.
 | `presence` | `client.heartbeat`, `terminal.activity`, `clock.tick` | `agent.online/idle/busy/gone` | `backlog_ready`, idle detection as a scheduling input |
 | `assignment` | `clock.tick` (depends on `presence`), `agent.notify_result` | `agent.notify` | `desktop_backlog.rs`, `backlog.rs` FIFO/eligibility |
 | `notifier` | `agent.*`, `task.created/commented/completed` | `agent.notify` | audience selection in `delegation.rs` / `delegation_queue.rs` |
-| `reminder` | `agent.idle/busy/gone`, `clock.tick` | `agent.notify` | in-progress reminders |
+| `reminder` | `clock.tick` | `agent.notify` | update requests for in-progress work quiet for 10 min |
 | `review` | `task.completed` | (review task via `task.created`) | `desktop_autoreview.rs`, client review journal |
 | `reclaim` | `agent.idle/busy/gone`, `clock.tick` | (`task.unclaimed` via the task store) | the 15-minute sweep and per-request reclaims |
 | UI (remote) | `agent.*` | — | local activity indicator |
