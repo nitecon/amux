@@ -451,7 +451,10 @@ impl Desktop {
                     }
                     panel.task = Some(value);
                 }
-                panel.mode = Mode::View;
+                // Posting a comment does not save or cancel metadata drafts.
+                if !matches!(change, Change::Comment) || panel.mode != Mode::Edit {
+                    panel.mode = Mode::View;
+                }
                 panel.status = match change {
                     Change::Edit => "Task saved",
                     Change::Comment if returned == Some(true) => {
@@ -847,6 +850,55 @@ mod tests {
                     .trim()
                     .is_empty()
             );
+        }
+    }
+
+    #[test]
+    fn posting_a_comment_keeps_metadata_drafts_until_explicit_save_or_cancel() {
+        for save in [false, true] {
+            let mut app = app();
+            let id = Uuid::new_v4();
+            open(&mut app, id);
+            let _ = app.manage_task(Action::Edit);
+            let _ = app.manage_task(Action::Title("Unsaved title".into()));
+            let insert = || text_editor::Action::Edit(text_editor::Edit::Insert('X'));
+            let _ = app.manage_task(Action::Description(insert()));
+            let _ = app.manage_task(Action::Specification(insert()));
+            let description = app.workspaces[0].gateway.detail.description.text();
+            let specification = app.workspaces[0].gateway.detail.specification.text();
+            let _ = app.manage_task(Action::Comment(insert()));
+            let _ = app.manage_task(Action::PostComment);
+            let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+            let scope = app.scope(0);
+            let _ = app.task_changed(scope.clone(), id, pending, Change::Comment, Ok(json!({})));
+            let reload = app.workspaces[0].gateway.detail.loading.unwrap();
+            let project = scope.project.clone();
+            app.task_detail_loaded(scope.clone(), id, reload, Ok(task(id, &project)));
+            let panel = &app.workspaces[0].gateway.detail;
+            assert!(panel.mode == Mode::Edit);
+            assert_eq!(panel.title, "Unsaved title");
+            assert_eq!(panel.description.text(), description);
+            assert_eq!(panel.specification.text(), specification);
+            assert!(panel.comment.text().trim().is_empty());
+            assert_eq!(panel.task.as_ref().unwrap()["title"], "Original");
+
+            if save {
+                let _ = app.manage_task(Action::Save);
+                let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+                let mut saved = task(id, &project);
+                saved["title"] = json!("Unsaved title");
+                saved["description"] = json!(description);
+                saved["specification"] = json!(specification);
+                let _ = app.task_changed(scope, id, pending, Change::Edit, Ok(saved));
+                let panel = &app.workspaces[0].gateway.detail;
+                assert!(panel.mode == Mode::View);
+                assert_eq!(panel.task.as_ref().unwrap()["title"], "Unsaved title");
+            } else {
+                let _ = app.manage_task(Action::Cancel);
+                assert!(app.workspaces[0].gateway.detail.mode == Mode::View);
+                let _ = app.manage_task(Action::Edit);
+                assert_eq!(app.workspaces[0].gateway.detail.title, "Original");
+            }
         }
     }
 
