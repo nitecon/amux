@@ -302,7 +302,8 @@ impl Gateway {
         remote: Option<&str>,
         routing: &Routing,
     ) -> Result<Uuid> {
-        let mut body = json!({"title": title, "specification": context});
+        let mut body = json!({"title": title, "specification": context,
+            "hostname": sysinfo::System::host_name()});
         if let Some(remote) = remote {
             ensure!(
                 gateway_project::repository(remote).is_some(),

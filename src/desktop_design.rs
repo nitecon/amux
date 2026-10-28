@@ -1498,6 +1498,11 @@ impl Desktop {
                     .map(|s| s.source_project.as_str())
                     .filter(|s| !s.is_empty())
                     .unwrap_or(&gateway.project);
+                let owner_host = summary
+                    .map(|s| s.owner_host.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|host| format!(" · Owner host: {host}"))
+                    .unwrap_or_default();
                 let initials = sender
                     .split_whitespace()
                     .take(2)
@@ -1523,7 +1528,7 @@ impl Desktop {
                         .size(10)
                         .color(MUTED),
                     text(format!(
-                        "Task project: {} · Recorded task host: {host}",
+                        "Task project: {} · Recorded task host: {host}{owner_host}",
                         gateway.project
                     ))
                     .size(10)

@@ -39,6 +39,48 @@ pub enum Kind {
     Completed,
 }
 
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn notification_hosts_remain_distinct_for_creation_comments_and_completion() {
+        for kind in ["task_created", "task_commented", "task_completed"] {
+            let mut wire = json!({"id":1,"kind":kind,"project_ident":"amux","created_at":1,
+                "sender_name":"Remote agent","sender_hostname":"Defcon1","owner_hostname":"Defcon2",
+                "comment":{"author":"Remote agent","content":"Progress"},
+                "task":{"id":Uuid::new_v4(),"title":"Work","status":"in_progress","hostname":"CreationMachine"}});
+            let event = Event::parse(&wire).unwrap().unwrap();
+            let text = event.terminal_text();
+            assert!(
+                text.contains("From: Remote agent / Defcon1 / amux"),
+                "{text}"
+            );
+            assert!(text.contains("Owner host: Defcon2"), "{text}");
+            assert!(
+                text.contains("Recorded task host: CreationMachine"),
+                "{text}"
+            );
+            // Legacy events still render, without inventing a sender machine
+            // from the task's creation host for a later comment/completion.
+            wire.as_object_mut().unwrap().remove("sender_hostname");
+            wire.as_object_mut().unwrap().remove("owner_hostname");
+            let event = Event::parse(&wire).unwrap().unwrap();
+            let summary = event.summary.unwrap();
+            assert_eq!(
+                summary.sender_host,
+                if kind == "task_created" {
+                    "CreationMachine"
+                } else {
+                    ""
+                }
+            );
+            assert!(summary.owner_host.is_empty());
+        }
+    }
+}
+
 /// Bounded display data from the event snapshot, never an instruction source.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventSummary {
@@ -50,6 +92,8 @@ pub struct EventSummary {
     pub task_host: String,
     #[serde(default)]
     pub sender_host: String,
+    #[serde(default)]
+    pub owner_host: String,
     #[serde(default)]
     pub source_project: String,
 }
@@ -298,8 +342,13 @@ impl Event {
             .required_os
             .map(|os| format!(" | OS: {}", os.as_str()))
             .unwrap_or_default();
+        let owner_host = summary
+            .map(|s| s.owner_host.as_str())
+            .filter(|host| !host.is_empty())
+            .map(|host| format!(" | Owner host: {}", xml(host)))
+            .unwrap_or_default();
         format!(
-            "<gateway>{} | State: {}{platform} | From: {} / {} / {} | Task project: {} | Recorded task host: {} | TaskID: {} | Title: {} | Preview: {}{closed}</gateway>",
+            "<gateway>{} | State: {}{platform} | From: {} / {} / {} | Task project: {} | Recorded task host: {}{owner_host} | TaskID: {} | Title: {} | Preview: {}{closed}</gateway>",
             xml(self.heading()),
             xml(self.state()),
             xml(sender),
@@ -381,27 +430,35 @@ impl EventSummary {
             title: preview(task["title"].as_str().unwrap_or(""), 160),
             preview: preview(body, 200),
             sender: preview(
-                sender.unwrap_or(if value["origin"].is_null() {
-                    "User / system"
-                } else {
-                    "Unknown agent"
-                }),
+                value["sender_name"]
+                    .as_str()
+                    .or(sender)
+                    .unwrap_or(if value["origin"].is_null() {
+                        "User / system"
+                    } else {
+                        "Unknown agent"
+                    }),
                 128,
             ),
             task_host: preview(task["hostname"].as_str().unwrap_or(""), 128),
             sender_host: preview(
-                if kind == Kind::Created && value["kind"] != "task_unclaimed" {
-                    if delegated {
-                        value["delegation"]["requester_hostname"].as_str()
-                    } else {
-                        task["hostname"].as_str()
-                    }
-                } else {
-                    None
-                }
-                .unwrap_or(""),
+                value["sender_hostname"]
+                    .as_str()
+                    .or_else(|| {
+                        if kind == Kind::Created && value["kind"] != "task_unclaimed" {
+                            if delegated {
+                                value["delegation"]["requester_hostname"].as_str()
+                            } else {
+                                task["hostname"].as_str()
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(""),
                 128,
             ),
+            owner_host: preview(value["owner_hostname"].as_str().unwrap_or(""), 128),
             source_project: preview(
                 if kind == Kind::Created && delegated {
                     value["delegation"]["source_project_ident"].as_str()
@@ -422,6 +479,7 @@ impl EventSummary {
             (&self.sender, 131),
             (&self.task_host, 131),
             (&self.sender_host, 131),
+            (&self.owner_host, 131),
             (&self.source_project, 163),
         ] {
             ensure!(

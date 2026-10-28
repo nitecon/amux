@@ -1112,6 +1112,10 @@ fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recip
         serde_json::to_value(routing).unwrap()
     );
     assert_eq!(requests[3].body["specification"], "exact\ncontext");
+    assert_eq!(
+        requests[3].body["hostname"],
+        json!(sysinfo::System::host_name())
+    );
 }
 
 #[test]

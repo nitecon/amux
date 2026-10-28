@@ -127,7 +127,7 @@ fn announce(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
             "event": {"kind": kind, "project_ident": project, "created_at": event.emitted_at,
                       "task": payload["task"], "comment": payload["comment"], "origin": payload["actor"]},
         });
-        ctx.emit_in(conn, notify::NOTIFY, 1, notification)?;
+        notify::emit(conn, ctx, notification)?;
     }
     Ok(())
 }

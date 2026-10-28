@@ -121,7 +121,7 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         None,
         Some(&specification),
         &labels,
-        None,
+        sysinfo::System::host_name().as_deref(),
         "amux-autoreview",
     )?;
     conn.execute(
@@ -216,6 +216,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(review.status, "todo");
+        assert_eq!(review.hostname, sysinfo::System::host_name());
         assert!(review.owner_origin.is_none() && review.owner_agent_id.is_none());
         assert!(review.labels.contains(&"os:linux".into()));
         assert!(update(&conn, &review.id, "in_progress", &author).is_err());

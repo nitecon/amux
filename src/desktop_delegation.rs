@@ -605,7 +605,7 @@ impl Desktop {
                     .into_iter()
                     .find_map(|choice| match choice {
                         super::desktop_routing::Choice::Session(target, name)
-                            if target.origin == origin =>
+                            if target.origin.session_id == origin.session_id =>
                         {
                             Some(name)
                         }

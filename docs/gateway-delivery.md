@@ -138,6 +138,14 @@ directly, without OS ancestry lookup. This also works when a provider filters th
 terminal's environment variables. Assigned launch environment values remain
 supported. An unknown or ambiguous assignment is rejected.
 
+Amux advertises each session's machine automatically. Notifications snapshot the
+sender and owner hostnames from these registrations; agents need no hostname
+argument or reporting step. Server-generated offers identify amux and the server's
+machine. Completion reviews record their creation on the server. The task's
+recorded creation host stays separate from its owner's machine. Remote owner
+labels use the latest live registration for the session after a restart; task
+mutation and delivery authorization still require the exact execution identity.
+
 Use the bundled `amux agents` command to inspect local running peers. The desktop
 makes the bundled CLI available on terminal PATH.
 Gateway task commands use the saved gateway preferences and resolve the project

@@ -40,7 +40,7 @@ mod tests {
         }
     }
     #[test]
-    fn external_owner_label_uses_the_exact_live_owner_machine() {
+    fn external_owner_label_uses_the_live_session_machine_after_restart() {
         let mut app = super::super::tests::desktop();
         let owner = target();
         let mut directory = directory(owner.clone());
@@ -69,6 +69,21 @@ mod tests {
             .target
             .origin
             .instance_id = Uuid::new_v4();
+        assert!(app.design_task_owner(&task).contains("Defcon2"));
+        assert_eq!(
+            app.external_task_owner(&task),
+            "Richard Stallman - Claude · Defcon2 (external)"
+        );
+        app.workspaces[0]
+            .gateway
+            .routing
+            .directory
+            .as_mut()
+            .unwrap()
+            .targets[0]
+            .target
+            .origin
+            .session_id = Uuid::new_v4();
         assert_eq!(
             app.external_task_owner(&task),
             "Richard Stallman - Claude · machine unavailable (external)"
@@ -198,10 +213,15 @@ impl Desktop {
             .as_ref()
             .filter(|_| panel.fresh())
             .and_then(|directory| {
-                directory.targets.iter().find(|entry| {
-                    Some(&entry.target.origin) == origin.as_ref()
-                        && entry.expires_at > unix_ms() as i64
-                })
+                directory
+                    .targets
+                    .iter()
+                    .filter(|entry| {
+                        origin.as_ref().is_some_and(|origin| {
+                            entry.target.origin.session_id == origin.session_id
+                        }) && entry.expires_at > unix_ms() as i64
+                    })
+                    .max_by_key(|entry| entry.seen_at)
             });
         let owner = entry
             .and_then(|entry| entry.display_name.as_deref())

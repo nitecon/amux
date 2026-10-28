@@ -279,7 +279,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
             "event": {"kind": "task_created", "project_ident": project, "created_at": db::now_ms(),
                       "task": current, "comment": null, "origin": null},
         });
-        let uid = ctx.emit_in(tx, notify::NOTIFY, 1, payload)?;
+        let uid = notify::emit(tx, ctx, payload)?;
         tx.execute(
             "INSERT INTO assignment_offers(notify_uid,task_id,project,session_id) VALUES(?1,?2,?3,?4)",
             params![uid.to_string(), id, project, session],

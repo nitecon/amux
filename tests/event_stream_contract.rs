@@ -516,6 +516,14 @@ async fn idle_agents_are_assigned_the_oldest_task_and_undelivered_offers_are_rel
 #[tokio::test]
 async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
     let server = Server::start().await;
+    let targets = format!("/v1/projects/{PROJECT}/task-targets");
+    server
+        .send(
+            reqwest::Method::POST,
+            &targets,
+            json!({"generation":Uuid::new_v4(),"hostname":"OwnerMachine"}),
+        )
+        .await;
     let mut socket = desktop(&server).await;
     activity(&mut socket, now_ms() - 60_000, false).await;
     let offer = expect(&mut socket, "agent.idle").await;
@@ -524,11 +532,19 @@ async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
         .send(
             reqwest::Method::POST,
             &format!("/v1/projects/{PROJECT}/tasks"),
-            json!({"title": "Owned"}),
+            json!({"title": "Owned", "hostname":"CreationMachine"}),
         )
         .await;
     let id = created["id"].as_str().unwrap();
-    expect(&mut socket, "agent.notify").await;
+    let assigned = expect(&mut socket, "agent.notify").await;
+    assert_eq!(
+        assigned["payload"]["event"]["owner_hostname"],
+        "OwnerMachine"
+    );
+    assert_eq!(
+        assigned["payload"]["event"]["sender_hostname"],
+        json!(sysinfo::System::host_name())
+    );
     // The agent's own comment (same origin headers) is not echoed back.
     server
         .send(
@@ -537,7 +553,23 @@ async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
             json!({"content": "mine"}),
         )
         .await;
-    // A user's comment reaches the owner.
+    // Amux advertised the other agent's machine; the comment needs no hostname.
+    let remote = server
+        .http
+        .post(format!("http://{}{targets}", server.endpoint))
+        .bearer_auth(KEY)
+        .header("X-Agent-Session-Id", "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0011")
+        .header(
+            "X-Agent-Instance-Id",
+            "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0012",
+        )
+        .header("X-Agent-Provider", "codex")
+        .header("X-Agent-OS", "windows")
+        .json(&json!({"generation":Uuid::new_v4(),"hostname":"SenderMachine"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(remote.status().is_success());
     let response = server
         .http
         .post(format!(
@@ -545,6 +577,13 @@ async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
             server.endpoint
         ))
         .bearer_auth(KEY)
+        .header("X-Agent-Session-Id", "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0011")
+        .header(
+            "X-Agent-Instance-Id",
+            "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0012",
+        )
+        .header("X-Agent-Provider", "codex")
+        .header("X-Agent-OS", "windows")
         .json(&json!({"content": "please also check docs"}))
         .send()
         .await
@@ -553,6 +592,18 @@ async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
     let told = expect(&mut socket, "agent.notify").await;
     assert_eq!(told["payload"]["mode"], "recipient");
     assert_eq!(told["payload"]["event"]["kind"], "task_commented");
+    let mut wire = told["payload"]["event"].clone();
+    wire["id"] = told["seq"].clone();
+    let rendered = amux::delegation::Event::parse(&wire)
+        .unwrap()
+        .unwrap()
+        .terminal_text();
+    assert!(rendered.contains("/ SenderMachine /"), "{rendered}");
+    assert!(rendered.contains("Owner host: OwnerMachine"), "{rendered}");
+    assert!(
+        rendered.contains("Recorded task host: CreationMachine"),
+        "{rendered}"
+    );
     assert_eq!(
         told["payload"]["event"]["comment"]["content"],
         "please also check docs"

@@ -92,7 +92,7 @@ fn remind(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             "event": {"kind": "task_created", "project_ident": project, "created_at": now,
                       "task": task, "comment": null, "origin": null},
         });
-        ctx.emit_in(conn, notify::NOTIFY, 1, payload)?;
+        notify::emit(conn, ctx, payload)?;
         conn.execute(
             "INSERT INTO reminder_nudges(task_id,sent_at) VALUES(?1,?2)
              ON CONFLICT(task_id) DO UPDATE SET sent_at=?2",

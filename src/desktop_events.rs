@@ -368,6 +368,7 @@ impl Desktop {
                 session.as_str().unwrap_or_default()
             );
             let project = current["project_ident"].clone();
+            let hostname = sysinfo::System::host_name();
             // A local notice; its sequence only needs to be a valid event number.
             self.delegation.events.pending.push_back(json!({
                 "id": "agent.notify", "uid": Uuid::new_v4().to_string(), "seq": 1,
@@ -376,6 +377,7 @@ impl Desktop {
                     "target": session, "project": project, "mode": "assigned", "require_idle": true,
                     "heading": "In-progress task reminder", "instructions": instructions,
                     "event": {"kind": "task_created", "project_ident": project, "created_at": now,
+                              "sender_name": "amux", "sender_hostname": hostname, "owner_hostname": hostname,
                               "task": current, "comment": null, "origin": null},
                 },
             }));
