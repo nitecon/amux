@@ -190,7 +190,7 @@ fn done_and_release_refuse_without_exact_confirmed_ownership() {
             assert!(!ok, "{op} with {case} must be refused: {stderr}");
             assert_eq!(requests.len(), 1, "{op} with {case}: only the read is sent");
             assert!(
-                requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK} ")),
+                requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK}?comments=0 ")),
                 "{op} with {case}: {}",
                 requests[0]
             );
@@ -206,7 +206,9 @@ fn exact_owner_completes_or_releases_after_the_read() {
         });
         assert!(ok, "{op}: {stderr}");
         assert_eq!(requests.len(), 2);
-        assert!(requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK} ")));
+        assert!(
+            requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK}?comments=0 "))
+        );
         assert!(requests[1].starts_with(&format!("PATCH /v1/projects/demo/tasks/{TASK} ")));
         assert!(requests[1].ends_with(&format!("{{\"status\":\"{status}\"}}")));
     }

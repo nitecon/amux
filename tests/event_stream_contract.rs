@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 const KEY: &str = "event-stream-fixture-key";
 const PROJECT: &str = "event-stream-fixture";
+/// Long enough for one 15 s clock tick, which is when Assignment runs.
+const WAIT: Duration = Duration::from_secs(20);
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Server {
@@ -128,7 +130,7 @@ async fn send(socket: &mut Socket, value: Value) {
 /// The next non-heartbeat frame.
 async fn frame(socket: &mut Socket) -> Value {
     loop {
-        let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+        let message = tokio::time::timeout(WAIT, socket.next())
             .await
             .expect("no frame from the event stream")
             .unwrap()
@@ -660,7 +662,7 @@ async fn a_gateway_without_the_event_router_is_reported_as_unsupported() {
 async fn next_incoming(
     incoming: &mut tokio::sync::mpsc::Receiver<amux::event_client::Incoming>,
 ) -> amux::event_client::Incoming {
-    tokio::time::timeout(Duration::from_secs(10), incoming.recv())
+    tokio::time::timeout(WAIT, incoming.recv())
         .await
         .expect("no message from the event client")
         .unwrap()
