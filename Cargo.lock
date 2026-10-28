@@ -2174,6 +2174,7 @@ dependencies = [
  "anyhow",
  "iced",
  "iced_core",
+ "iced_futures",
  "iced_graphics",
  "open",
  "tokio",

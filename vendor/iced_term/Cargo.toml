@@ -29,6 +29,9 @@ repository = "https://github.com/Harzu/iced_term"
 name = "iced_term"
 path = "src/lib.rs"
 
+[dev-dependencies.iced_futures]
+version = "0.14.0"
+
 [dependencies.alacritty_terminal]
 version = "0.25.1"
 

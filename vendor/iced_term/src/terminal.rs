@@ -268,6 +268,52 @@ fn terminal_subscription_stream(
     .boxed()
 }
 
+#[cfg(test)]
+mod subscription_restart_tests {
+    use super::*;
+    use std::time::Duration;
+    #[test]
+    fn tracker_retains_the_old_receiver_when_a_replacement_reuses_its_id() {
+        use iced::advanced::subscription::into_recipes;
+        use iced_futures::subscription::Tracker;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut tracker = Tracker::new();
+            let (output, mut received) = iced::futures::channel::mpsc::channel(10);
+            let (old_sender, old_receiver) = mpsc::channel(4);
+            let old = TerminalSubscriptionData {
+                id: 41,
+                event_receiver: Arc::new(Mutex::new(old_receiver)),
+            };
+            for future in tracker.update(into_recipes(Subscription::run_with(old.clone(), terminal_subscription_stream)).into_iter(), output.clone()) {
+                tokio::spawn(future);
+            }
+            let (new_sender, new_receiver) = mpsc::channel(4);
+            let mut replacement = TerminalSubscriptionData {
+                id: 41,
+                event_receiver: Arc::new(Mutex::new(new_receiver)),
+            };
+            // Trace the production restart sequence: replace without an intervening
+            // empty subscription. The tracker does not install the new receiver.
+            assert!(tracker.update(into_recipes(Subscription::run_with(replacement.clone(), terminal_subscription_stream)).into_iter(), output.clone()).is_empty());
+            old_sender.send(AlacrittyEvent::Exit).await.unwrap();
+            let old_exit = tokio::time::timeout(Duration::from_secs(2), received.next()).await.unwrap().unwrap();
+            assert!(matches!(old_exit, Event::BackendCall(41, backend::Command::ProcessAlacrittyEvent(AlacrittyEvent::Exit))));
+
+            replacement.id = 42;
+            let futures = tracker.update(into_recipes(Subscription::run_with(replacement, terminal_subscription_stream)).into_iter(), output);
+            assert_eq!(futures.len(), 1, "a fresh runtime ID installs the replacement receiver");
+            for future in futures { tokio::spawn(future); }
+            new_sender.send(AlacrittyEvent::Title("replacement output".into())).await.unwrap();
+            let event = tokio::time::timeout(Duration::from_secs(2), received.next()).await.unwrap().unwrap();
+            assert!(matches!(event, Event::BackendCall(42, backend::Command::ProcessAlacrittyEvent(AlacrittyEvent::Title(title))) if title == "replacement output"));
+            new_sender.send(AlacrittyEvent::Exit).await.unwrap();
+            let exit = tokio::time::timeout(Duration::from_secs(2), received.next()).await.unwrap().unwrap();
+            assert!(matches!(exit, Event::BackendCall(42, backend::Command::ProcessAlacrittyEvent(AlacrittyEvent::Exit))));
+        });
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod amux_tests {
     use super::*;

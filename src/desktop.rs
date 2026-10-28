@@ -1100,15 +1100,19 @@ impl Desktop {
                     .unwrap_or_else(|| workspace.directory.clone());
                 let title = tab.title.clone();
                 let resume = self.resume_restarted_tab(terminal_id, provider, &directory);
-                // Retire the old PTY first; the relaunch keeps its amux terminal
-                // identity even when the native conversation starts fresh.
+                // Keep the assigned agent number, but retire the runtime event ID.
+                // Iced retains a subscription by that ID across one update; reusing
+                // it keeps the old receiver and lets delayed old Exit events stop
+                // the replacement. A fresh ID fences both subscription and callbacks.
+                let replacement_id = self.next_id;
+                self.next_id += 1;
                 let pane = self.workspaces[self.active]
                     .panes
                     .get_mut(pane_id)
                     .expect("pane exists");
                 drop(pane.tabs.remove(index));
                 let mut tab = self.open_terminal(
-                    terminal_id,
+                    replacement_id,
                     &directory,
                     Some(provider),
                     None,
@@ -3141,6 +3145,75 @@ mod tests {
             short_title(&"界".repeat(80)),
             format!("{}…", "界".repeat(32))
         );
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn delayed_exit_from_retired_runtime_cannot_stop_replacement() {
+        use iced::futures::StreamExt;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut app = desktop();
+        let focused = app.workspaces[0].focused;
+        let old_id = app.workspaces[0].panes.get(focused).unwrap().tabs[0].id;
+        let old = Terminal::new(
+            old_id,
+            iced_term::settings::Settings {
+                backend: iced_term::settings::BackendSettings {
+                    #[cfg(windows)]
+                    program: "cmd.exe".into(),
+                    #[cfg(windows)]
+                    args: vec!["/d".into(), "/c".into(), "exit 0".into()],
+                    #[cfg(target_os = "linux")]
+                    program: "/bin/sh".into(),
+                    #[cfg(target_os = "linux")]
+                    args: vec!["-c".into(), "exit 0".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut events = iced::advanced::subscription::into_recipes(old.subscription())
+            .pop()
+            .unwrap()
+            .stream(iced::futures::stream::empty().boxed());
+        let exit = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = events.next().await.expect("PTY must report its exit");
+                    if matches!(
+                        event,
+                        iced_term::Event::BackendCall(
+                            _,
+                            iced_term::BackendCommand::ProcessAlacrittyEvent(
+                                iced_term::AlacrittyEvent::Exit
+                            )
+                        )
+                    ) {
+                        break event;
+                    }
+                }
+            })
+            .await
+            .expect("old PTY did not exit")
+        });
+        drop(old);
+        let directory = std::env::current_dir().unwrap();
+        let replacement_id = app.next_id;
+        let replacement =
+            app.open_terminal(replacement_id, &directory, None, None, false, Some(42));
+        assert!(
+            replacement.terminal.is_some(),
+            "replacement PTY must be live"
+        );
+        app.workspaces[0].panes.get_mut(focused).unwrap().tabs[0] = replacement;
+        let _ = app.update(Message::Terminal(exit));
+        let replacement = &app.workspaces[0].panes.get(focused).unwrap().tabs[0];
+        assert!(
+            replacement.terminal.is_some(),
+            "delayed old Exit stopped the new PTY"
+        );
+        assert_eq!(replacement.delegation.terminal_number, 42);
     }
 
     #[cfg(target_os = "linux")]
