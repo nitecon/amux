@@ -788,6 +788,8 @@ fn client(source: &ReleaseSource) -> Result<reqwest::Client> {
         .user_agent(concat!("amux/", env!("CARGO_PKG_VERSION")))
         .https_only(source.api_url.starts_with("https://"))
         .connect_timeout(Duration::from_secs(20))
+        // A stalled connection fails fast; the total allows slow archive downloads.
+        .read_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(600))
         .build()?)
 }

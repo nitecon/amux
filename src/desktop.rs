@@ -1383,6 +1383,7 @@ impl Desktop {
             Message::UpdatesChecked(result) => {
                 self.updates.checking = false;
                 self.updates.checked_at = Some(Instant::now());
+                let checked = result.is_ok();
                 match result {
                     Ok(report) => {
                         self.updates.restart = report.restart.clone();
@@ -1395,7 +1396,8 @@ impl Desktop {
                 }
                 self.updates.refresh_restart();
                 // Auto update downloads now; the bell then offers the restart.
-                if self.preferences.current.auto_update {
+                // A failed check leaves only the previous report; never install from it.
+                if checked && self.preferences.current.auto_update {
                     return self.install_update();
                 }
             }
@@ -2894,6 +2896,27 @@ mod tests {
                 .install_status
                 .contains("private fixture failure")
         );
+    }
+
+    #[test]
+    fn auto_update_never_installs_after_a_failed_check() {
+        let mut app = desktop();
+        app.preferences.current.auto_update = true;
+        app.updates.report = Some(update_report());
+        let report = app.updates.report.as_mut().unwrap();
+        report.method = amux::updates::InstallMethod::Direct {
+            dir: PathBuf::from("fixture-not-executed"),
+            revision: "a".repeat(40),
+        };
+        report.guidance = amux::updates::Guidance::CliUpdate {
+            command: "amux --update".into(),
+        };
+        app.updates.running = Some(std::sync::Arc::new(amux::updates::Running::at(
+            PathBuf::from("fixture-not-executed"),
+        )));
+        let _ = app.update(Message::UpdatesChecked(Err("latest unreadable".into())));
+        assert!(!app.updates.installing);
+        assert!(app.updates.error.contains("latest unreadable"));
     }
 
     fn update_report() -> amux::updates::UpdateCheck {
