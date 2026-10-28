@@ -26,6 +26,10 @@ use std::{
     fs::{self, File},
     io::{self, Cursor, Read},
     path::{Component, Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -70,7 +74,13 @@ impl ReleaseSource {
 pub struct Running {
     pub exe: PathBuf,
     stamp: Option<Stamp>,
+    /// `OPEN`, `SWAPPING` or `CLOSING`, shared by clones.
+    phase: Arc<AtomicU8>,
 }
+
+const OPEN: u8 = 0;
+const SWAPPING: u8 = 1;
+const CLOSING: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Stamp {
@@ -93,7 +103,35 @@ impl Running {
 
     pub fn at(exe: PathBuf) -> Self {
         let stamp = stamp(&exe);
-        Self { exe, stamp }
+        Self {
+            exe,
+            stamp,
+            phase: Arc::default(),
+        }
+    }
+
+    /// Stop later installs from changing files so the app can exit. False
+    /// while an install is swapping files; a download in flight is abandoned.
+    pub fn close(&self) -> bool {
+        self.phase
+            .compare_exchange(OPEN, CLOSING, Ordering::SeqCst, Ordering::SeqCst)
+            != Err(SWAPPING)
+    }
+
+    /// Undo [`Running::close`] when the app stays open after all.
+    pub fn reopen(&self) {
+        let _ = self
+            .phase
+            .compare_exchange(CLOSING, OPEN, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+/// Holds [`SWAPPING`] until the install returns.
+struct Swapping<'a>(&'a AtomicU8);
+
+impl Drop for Swapping<'_> {
+    fn drop(&mut self) {
+        self.0.store(OPEN, Ordering::SeqCst);
     }
 }
 
@@ -304,6 +342,15 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
         archive.name
     );
 
+    // Closing may abandon everything above; from here on files change.
+    ensure!(
+        running
+            .phase
+            .compare_exchange(OPEN, SWAPPING, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok(),
+        "amux is closing; nothing was changed"
+    );
+    let _swapping = Swapping(&running.phase);
     let staging = tempfile::Builder::new()
         .prefix(".amux-update-")
         .tempdir_in(&root)

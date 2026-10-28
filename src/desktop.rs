@@ -1369,7 +1369,13 @@ impl Desktop {
                             ServerExit::Restart => self.restart_updated(),
                         };
                     }
-                    Err(error) => self.embedded.status = format!("Could not stop server: {error}"),
+                    Err(error) => {
+                        // The app stays open, so later updates may install again.
+                        if let Some(running) = &self.updates.running {
+                            running.reopen();
+                        }
+                        self.embedded.status = format!("Could not stop server: {error}")
+                    }
                 }
             }
             Message::Updates(open) => {
@@ -1870,15 +1876,20 @@ impl Desktop {
         if window == self.main_window {
             if self.workspace_dialog.busy {
                 self.status = "Wait for the repository clone to finish before closing amux.".into();
-            } else if self.updates.installing {
-                self.status =
-                    "An update is installing. Wait for it to finish before closing amux.".into();
             } else if self.embedded.busy || self.embedded.stopping {
                 self.status = "Wait for the server operation to finish before closing amux.".into();
+            } else if !self.updates.running.as_ref().is_none_or(|r| r.close()) {
+                // An update download is abandoned; only swapping files must finish.
+                self.status =
+                    "An update is installing. Wait for it to finish before closing amux.".into();
             } else {
                 self.dirty = true;
                 self.save_restart_tasks();
-                if self.save() {
+                if !self.save() {
+                    if let Some(running) = &self.updates.running {
+                        running.reopen();
+                    }
+                } else {
                     if self
                         .embedded
                         .local
@@ -2885,8 +2896,6 @@ mod tests {
         assert_eq!(app.update(Message::InstallUpdate).units(), 0);
         let _ = app.update(Message::RestartUpdated);
         assert!(!app.restarting);
-        let _ = app.update(Message::Close(app.main_window));
-        assert!(app.status.contains("installing"));
         let _ = app.update(Message::UpdateInstalled(Err(
             "private fixture failure".into()
         )));

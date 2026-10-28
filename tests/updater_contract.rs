@@ -437,6 +437,30 @@ async fn preview_update_follows_publication_time_and_reports_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn closing_app_abandons_the_download_and_changes_nothing() {
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    Bundle::new(INSTALLED).install(&dir);
+    let server = Server::start();
+    server.publish(&preview_releases(&server));
+    let before = snapshot(&dir);
+    let running = Running::at(dir.join(CLI));
+    assert!(running.close());
+    let error = updates::update(&running.clone(), &server.source())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("closing"), "{error:#}");
+    assert_eq!(snapshot(&dir), before);
+    running.reopen();
+    updates::update(&running, &server.source()).await.unwrap();
+    assert_eq!(installed_revision(&dir), NEWER);
+    assert!(
+        running.close(),
+        "a finished install no longer blocks closing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unpublished_revision_is_never_offered_an_update() {
     let root = fixture_root();
     let dir = root.path().join("bundle");
