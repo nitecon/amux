@@ -627,6 +627,37 @@ impl Desktop {
         self.open_terminal(id, directory, provider, script, false, None)
     }
 
+    // Native --last/--continue is shared by tabs in the same directory. Only
+    // the newest tab may use it; older tabs start fresh and recover via tasks.
+    fn resume_restarted_tab(
+        &self,
+        id: u64,
+        provider: Provider,
+        directory: &std::path::Path,
+    ) -> bool {
+        let directory = directory
+            .canonicalize()
+            .unwrap_or_else(|_| directory.into());
+        !self.workspaces.iter().any(|workspace| {
+            workspace.panes.iter().any(|(_, pane)| {
+                pane.tabs.iter().any(|tab| {
+                    if tab.id <= id || tab.delegation.provider.or(tab.provider) != Some(provider) {
+                        return false;
+                    }
+                    let other_directory = tab
+                        .terminal
+                        .as_ref()
+                        .and_then(|terminal| {
+                            amux::session::working_directory(terminal.child_pid()?)
+                        })
+                        .or_else(|| tab.delegation.directory.clone())
+                        .unwrap_or_else(|| workspace.directory.clone());
+                    other_directory.canonicalize().unwrap_or(other_directory) == directory
+                })
+            })
+        })
+    }
+
     fn open_terminal(
         &mut self,
         id: u64,
@@ -1068,15 +1099,22 @@ impl Desktop {
                     .or_else(|| tab.delegation.directory.clone())
                     .unwrap_or_else(|| workspace.directory.clone());
                 let title = tab.title.clone();
-                // Retire the old PTY first; the relaunch keeps its terminal number, so
-                // the same session (and, once it exits, instance) continues.
+                let resume = self.resume_restarted_tab(terminal_id, provider, &directory);
+                // Retire the old PTY first; the relaunch keeps its amux terminal
+                // identity even when the native conversation starts fresh.
                 let pane = self.workspaces[self.active]
                     .panes
                     .get_mut(pane_id)
                     .expect("pane exists");
                 drop(pane.tabs.remove(index));
-                let mut tab =
-                    self.open_terminal(terminal_id, &directory, Some(provider), None, true, number);
+                let mut tab = self.open_terminal(
+                    terminal_id,
+                    &directory,
+                    Some(provider),
+                    None,
+                    resume,
+                    number,
+                );
                 if tab.terminal.is_some() {
                     tab.title = title;
                 } else {
@@ -2613,6 +2651,41 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
             delegation: desktop_delegation::Bridge::default(),
+        }
+    }
+
+    #[test]
+    fn restart_resumes_only_newest_matching_provider_and_directory_across_workspaces() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut app = desktop();
+            let directory = app.workspaces[0].directory.clone();
+            for (index, workspace) in app.workspaces.iter_mut().enumerate() {
+                workspace.directory = directory.clone();
+                let tab = &mut workspace.panes.get_mut(workspace.focused).unwrap().tabs[0];
+                tab.id = index as u64;
+                tab.provider = Some(provider);
+            }
+            assert!(!app.resume_restarted_tab(0, provider, &directory));
+            assert!(app.resume_restarted_tab(1, provider, &directory));
+
+            let other_provider = match provider {
+                Provider::Codex => Provider::Claude,
+                Provider::Claude => Provider::Codex,
+            };
+            let newer = &mut app.workspaces[1];
+            newer.panes.get_mut(newer.focused).unwrap().tabs[0].provider = Some(other_provider);
+            assert!(app.resume_restarted_tab(0, provider, &directory));
+            let newer = &mut app.workspaces[1];
+            newer.panes.get_mut(newer.focused).unwrap().tabs[0].provider = None;
+            assert!(app.resume_restarted_tab(0, provider, &directory));
+            // An agent discovered inside a shell tab also shares native resume.
+            let newer = &mut app.workspaces[1];
+            newer.panes.get_mut(newer.focused).unwrap().tabs[0]
+                .delegation
+                .provider = Some(provider);
+            assert!(!app.resume_restarted_tab(0, provider, &directory));
+            app.workspaces[1].directory = directory.join("other-project");
+            assert!(app.resume_restarted_tab(0, provider, &directory));
         }
     }
 
