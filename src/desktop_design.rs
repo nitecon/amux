@@ -2100,7 +2100,7 @@ mod tests {
         assert!(app.design.tab_menu.is_none());
         let p = app.workspaces[0].panes.get(pane).unwrap();
         assert_eq!(p.tabs.len(), 1);
-        assert_eq!(p.tabs[0].id, tab);
+        assert_ne!(p.tabs[0].id, tab, "a restarted PTY gets a fresh runtime ID");
         assert_eq!(p.tabs[0].provider, Some(Provider::Claude));
         assert_eq!(p.tabs[0].delegation.terminal_number, 42);
     }
