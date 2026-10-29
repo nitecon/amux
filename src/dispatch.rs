@@ -227,6 +227,16 @@ struct Store {
     directory: PathBuf,
 }
 
+struct JournalLock(File);
+
+impl Drop for JournalLock {
+    fn drop(&mut self) {
+        // Closing our descriptor alone can leave the lock held by a duplicate
+        // inherited during a concurrent fork. End this operation explicitly.
+        let _ = self.0.unlock();
+    }
+}
+
 impl Store {
     fn open(state: &Path) -> Result<Self> {
         let directory = state.join("dispatch");
@@ -252,6 +262,7 @@ impl Store {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        let _lock = JournalLock(lock);
         let path = self.directory.join("journal.json");
         let mut journal = match File::open(&path) {
             Ok(file) => {
@@ -1097,5 +1108,48 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
             dispatcher.act(executor, task, &operation, args).await
         }
         Command::Replay { request } => dispatcher.replay(executor, request).await,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn operation_unlocks_even_when_a_duplicate_descriptor_remains_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.lock");
+        for fail in [false, true] {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            file.try_lock().unwrap();
+            // A duplicate shares flock ownership, as does a descriptor inherited
+            // by a forked child before it execs. Keep it open after our operation.
+            let duplicate = file.try_clone().unwrap();
+            let contender = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            assert!(contender.try_lock().is_err());
+            let result = (|| -> Result<()> {
+                let _lock = JournalLock(file);
+                if fail {
+                    bail!("injected journal failure");
+                }
+                Ok(())
+            })();
+            assert_eq!(result.is_err(), fail);
+            contender
+                .try_lock()
+                .expect("operation must unlock before inherited descriptors close");
+            contender.unlock().unwrap();
+            drop(duplicate);
+        }
     }
 }

@@ -7,7 +7,6 @@
 use super::super::tests::desktop;
 use super::*;
 #[cfg(any(target_os = "linux", windows))]
-use amux::delegation_readiness::{self, InputState};
 use amux::event_client::Incoming;
 use iced_term::TerminalGridObservation;
 use serde_json::{Value, json};
@@ -369,12 +368,6 @@ fn grid(app: &Desktop, id: u64) -> Option<TerminalGridObservation> {
     find(app, id).terminal.as_ref()?.grid_observation(32_768)
 }
 
-#[cfg(any(target_os = "linux", windows))]
-fn classify(app: &Desktop, id: u64) -> InputState {
-    let tab = find(app, id);
-    delegation_readiness::classify(&grid(app, id).unwrap(), tab.provider.unwrap())
-}
-
 fn wait(app: &Desktop, done: impl Fn(&Desktop) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done(app) {
@@ -484,6 +477,14 @@ fn text(app: &Desktop, agent: &Agent, event: &Value) -> String {
     events::notification_text(event, candidate).unwrap()
 }
 
+fn verification(app: &Desktop, verified: bool) -> Event {
+    let delivery = app.delegation.events.delivering.as_ref().unwrap();
+    Event::Verified {
+        token: delivery.token,
+        verified,
+    }
+}
+
 /// Start pending deliveries and complete each through native verification.
 fn deliver(app: &mut Desktop) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -498,7 +499,7 @@ fn deliver(app: &mut Desktop) {
             .map(|delivery| events::verify(&delivery.candidate));
         if let Some(verified) = verified {
             let epoch = app.delegation.epoch;
-            drop(app.delegation_message(epoch, Event::Verified(verified)));
+            drop(app.delegation_message(epoch, verification(app, verified)));
         }
     }
 }
@@ -560,7 +561,9 @@ fn native_delivery_submits_the_exact_notification_once_and_reports_it() {
     app.registry = Some(agent.directory.clone());
     let mut frames = router(&mut app);
     project(&mut app, &agent, "alpha");
-    wait(&app, |app| classify(app, 0) == InputState::EmptyReady);
+    wait(&app, |app| {
+        grid(app, 0).is_some_and(|g| g.observation.lines[0].starts_with("fixture agent"))
+    });
     scan(&mut app);
     let event = notify(&app, &agent, 1, false);
     receive(&mut app, event.clone());
@@ -588,7 +591,7 @@ fn native_bracketed_paste_prompt_receives_the_notification_as_one_paste() {
             g.observation
                 .mode
                 .contains(iced_term::TermMode::BRACKETED_PASTE)
-        }) && classify(app, 0) == InputState::EmptyReady
+        })
     });
     scan(&mut app);
     let event = notify(&app, &agent, 1, false);
@@ -617,7 +620,7 @@ fn native_delivery_submits_immediately_and_restores_teed_user_input() {
     human(&mut app, 0, b"more");
     let verified = events::verify(&app.delegation.events.delivering.as_ref().unwrap().candidate);
     let epoch = app.delegation.epoch;
-    drop(app.delegation_message(epoch, Event::Verified(verified)));
+    drop(app.delegation_message(epoch, verification(&app, verified)));
     assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &event)]);
     wait(&app, |app| {
         grid(app, 0).is_some_and(|g| {
@@ -685,6 +688,394 @@ fn work_offers_skip_a_busy_or_drafting_agent_and_report_it() {
     assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &event)]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn buffered_human_input_blocks_work_offers_before_the_provider_echoes_it() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "ready");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+    let pid = app
+        .delegation
+        .candidates
+        .iter()
+        .find(|candidate| candidate.target.terminal == 0)
+        .unwrap()
+        .target
+        .pid;
+    struct Resume(u32);
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            // SAFETY: resume the fixture process stopped by this test, even on failure.
+            unsafe {
+                libc::kill(self.0 as libc::pid_t, libc::SIGCONT);
+            }
+        }
+    }
+    let before = grid(&app, 0).unwrap().observation;
+    // SAFETY: the exact native fixture was discovered in this owned terminal.
+    assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) }, 0);
+    let resume = Resume(pid);
+    std::thread::sleep(Duration::from_millis(20));
+    human(&mut app, 0, b"buffered draft");
+    let unchanged = grid(&app, 0).unwrap().observation.lines == before.lines;
+    let event = notify(&app, &agent, 1, true);
+    receive(&mut app, event);
+    deliver(&mut app);
+    let outcomes = results(&mut frames);
+    let draft = find(&app, 0).delegation.input.clone();
+    drop(resume);
+    assert!(
+        unchanged,
+        "a stopped provider still shows its old empty screen"
+    );
+    assert_eq!(outcomes, ["skipped"]);
+    assert_eq!(draft, b"buffered draft");
+    assert!(
+        agent.lines().is_empty(),
+        "the work offer never reached the provider"
+    );
+    human(&mut app, 0, b"\x15");
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn compatibility_snapshot_survives_same_connection_close_and_restart_pause() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let _frames = router(&mut app);
+    app.delegation.events.server_restart_reminders = Some(false);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    app.workspaces[0].gateway.tasks = vec![
+        json!({"id":Uuid::new_v4(),"status":"in_progress","owner_origin":app.delegation.candidates[0].target.origin}),
+    ];
+    app.save_restart_tasks();
+    let path = agent.directory.join("restart-tasks.json");
+    let saved = std::fs::read(&path).unwrap();
+    // Shutdown of a local listener keeps the source/owners for the callback's
+    // second save. Closing the window must preserve that same snapshot.
+    app.events_stop();
+    app.embedded.stopping = true;
+    drop(app.update(super::super::Message::ServerStopped(
+        super::super::ServerExit::Close,
+        Ok(()),
+    )));
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    app.pause_for_restart();
+    assert!(app.restarting);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        saved,
+        "restart pause cannot delete its just-saved journal"
+    );
+    // Changing actual server/identity still clears compatibility state.
+    app.reset_delegation();
+    assert!(!path.exists());
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn async_verification_rechecks_the_current_logical_instance_and_project() {
+    for changed in ["instance", "project"] {
+        let mut app = desktop();
+        let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+        app.registry = Some(agent.directory.clone());
+        let mut frames = router(&mut app);
+        project(&mut app, &agent, "alpha");
+        scan(&mut app);
+        let mut notice = notify(&app, &agent, 1, false);
+        notice["payload"]["event"]["task"]["owner_origin"] =
+            json!(app.delegation.candidates[0].target.origin);
+        receive(&mut app, notice);
+        drop(app.events_deliver());
+        assert!(app.delegation.events.delivering.is_some());
+        let verified = verification(&app, true);
+        // The same native process/root can outlive a changed project binding
+        // or logical identity. Its earlier native verification is still true.
+        let candidate = &mut app.delegation.candidates[0];
+        if changed == "project" {
+            candidate.target.project = "rebound".into();
+        } else {
+            candidate.actor.instance_id = Uuid::new_v4();
+            candidate.target.origin.as_mut().unwrap().instance_id = candidate.actor.instance_id;
+        }
+        drop(app.delegation_message(app.delegation.epoch, verified));
+        assert_eq!(results(&mut frames), ["skipped"], "{changed}");
+        assert!(agent.lines().is_empty(), "{changed}");
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn queued_notices_cannot_rebind_to_another_execution_project_or_requester_generation() {
+    for changed in ["instance", "project", "requester_generation"] {
+        let mut app = desktop();
+        let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+        app.registry = Some(agent.directory.clone());
+        let frames = router(&mut app);
+        project(&mut app, &agent, "alpha");
+        scan(&mut app);
+        let candidate = app.delegation.candidates[0].clone();
+        let mut event = notify(&app, &agent, 1, false);
+        if changed == "requester_generation" {
+            event["payload"]["event"]["kind"] = json!("task_completed");
+            event["payload"]["event"]["task"]["status"] = json!("done");
+            event["payload"]["event"]["task"]["requester"] = json!({"origin":candidate.target.origin,"generation":candidate.target.executor_generation()});
+        } else {
+            event["payload"]["mode"] = json!("assigned");
+            event["payload"]["event"]["task"]["owner_origin"] = json!(candidate.target.origin);
+        }
+        receive(&mut app, event);
+        app.events_stop();
+        drop(frames);
+        let mut frames = router(&mut app);
+        let candidate = &mut app.delegation.candidates[0];
+        match changed {
+            "instance" => {
+                let replacement = Uuid::new_v4();
+                candidate.actor.instance_id = replacement;
+                candidate.target.origin.as_mut().unwrap().instance_id = replacement;
+            }
+            "project" => candidate.target.project = "other-project".into(),
+            _ => candidate.target.generation.push_str("-replacement"),
+        }
+        drop(app.events_deliver());
+        assert_eq!(results(&mut frames), ["skipped"], "{changed}");
+        assert!(agent.lines().is_empty(), "{changed}");
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn explicit_continuity_receiver_keeps_previous_owner_facts_without_rebinding_assignment() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    let current = app.delegation.candidates[0].actor.instance_id;
+    let previous = Uuid::new_v4();
+    let mut event = notify(&app, &agent, 1, false);
+    event["payload"]["event"]["task"]["owner_origin"] = json!({"session_id":session(&app,&agent),"instance_id":previous,"provider":"codex","os":"linux"});
+    event["payload"]["receiver"] =
+        json!({"session_id":session(&app,&agent),"instance_id":current,"project":"alpha"});
+    event["payload"]["instructions"] =
+        json!("Informational continuity only, not an ownership handoff.");
+    receive(&mut app, event.clone());
+    deliver(&mut app);
+    assert_eq!(
+        event["payload"]["event"]["task"]["owner_origin"]["instance_id"],
+        previous.to_string()
+    );
+    assert!(wait_lines(&agent, 1)[0].contains("not an ownership handoff"));
+    assert_eq!(results(&mut frames), ["delivered"]);
+    // A resumed native attachment may change generation while retaining the
+    // same logical owner. Ordinary owner notices must still reach it.
+    let mut resumed = notify(&app, &agent, 2, false);
+    resumed["payload"]["event"]["task"]["owner_origin"] =
+        json!(app.delegation.candidates[0].target.origin);
+    receive(&mut app, resumed);
+    app.delegation.candidates[0]
+        .target
+        .generation
+        .push_str("-resumed-attachment");
+    deliver(&mut app);
+    assert_eq!(results(&mut frames), ["delivered"]);
+    assert_eq!(wait_lines(&agent, 2).len(), 2);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn older_router_fallback_waits_for_negotiation_and_current_servers_never_run_it() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    let task = json!({"id":Uuid::new_v4(),"kind":"normal","title":"Saved work","status":"in_progress","project_ident":"alpha",
+        "owner_origin":{"session_id":session(&app,&agent),"instance_id":Uuid::new_v4(),"provider":"codex","os":"linux"}});
+    app.workspaces[0].gateway.tasks = vec![task.clone()];
+    app.workspaces[0].gateway.loaded_at = Some(Instant::now());
+    app.save_restart_tasks();
+    app.load_restart_tasks();
+    let journal = agent.directory.join("restart-tasks.json");
+    assert!(
+        journal.exists(),
+        "loading waits for a protocol decision before retiring the journal"
+    );
+    app.restart_reminders();
+    assert!(app.delegation.events.pending.is_empty());
+    drop(app.events_incoming(Incoming::Unsupported));
+    app.restart_reminders();
+    assert!(
+        app.delegation.events.pending.is_empty(),
+        "404 has no automatic fallback"
+    );
+    let _frames = router(&mut app);
+    drop(app.events_incoming(Incoming::Connected {
+        clock: None,
+        server_restart_reminders: false,
+    }));
+    app.restart_reminders();
+    assert!(!journal.exists());
+    assert_eq!(
+        app.delegation.events.pending.len(),
+        1,
+        "successful older-router subscription enables HEAD continuity"
+    );
+    assert_eq!(app.delegation.events.pending[0]["local"], true);
+    assert!(
+        app.delegation.events.pending[0]["payload"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("not an ownership handoff")
+    );
+    app.events_stop();
+    assert_eq!(app.delegation.events.pending.len(), 1);
+    let mut frames = router(&mut app);
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+    deliver(&mut app);
+    assert!(wait_lines(&agent, 1)[0].contains("not an ownership handoff"));
+    assert!(
+        results(&mut frames).is_empty(),
+        "older-router local continuity is never reported as a work offer"
+    );
+    app.delegation.events.restart = vec![task.clone()];
+    app.restart_reminders();
+    assert_eq!(app.delegation.events.pending.len(), 1);
+    drop(app.events_incoming(Incoming::Connected {
+        clock: None,
+        server_restart_reminders: true,
+    }));
+    app.delegation.events.restart = vec![task];
+    app.restart_reminders();
+    assert!(
+        app.delegation.events.pending.is_empty(),
+        "supporting server owns scheduling exclusively"
+    );
+    app.save_restart_tasks();
+    assert!(
+        !journal.exists(),
+        "supporting server does not need a client journal"
+    );
+    std::fs::write(&journal, b"old compatibility snapshot").unwrap();
+    app.reset_delegation();
+    assert!(
+        !journal.exists(),
+        "server/identity reset retires old compatibility work"
+    );
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn redelivered_notifications_are_deduplicated_during_process_verification() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    let event = notify(&app, &agent, 1, false);
+    receive(&mut app, event.clone());
+    drop(app.events_deliver());
+    assert!(app.delegation.events.delivering.is_some());
+    receive(&mut app, event.clone());
+    assert!(app.delegation.events.pending.is_empty());
+    deliver(&mut app);
+    receive(&mut app, event.clone());
+    assert!(app.delegation.events.pending.is_empty());
+    assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &event)]);
+    assert_eq!(results(&mut frames), ["delivered"]);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn verification_from_a_previous_subscription_cannot_settle_replay_of_the_same_event() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    let current = notify(&app, &agent, 1, false);
+    receive(&mut app, current.clone());
+    drop(app.events_deliver());
+    let stale = verification(&app, false);
+
+    // Resubscribing resets delivery state without replacing the bridge epoch.
+    app.events_stop();
+    drop(frames);
+    let mut frames = router(&mut app);
+    // The unacknowledged event can be replayed with exactly the same UID.
+    receive(&mut app, current.clone());
+    drop(app.events_deliver());
+    drop(app.delegation_message(app.delegation.epoch, stale));
+    assert_eq!(
+        app.delegation.events.delivering.as_ref().unwrap().event["uid"],
+        current["uid"]
+    );
+    assert!(results(&mut frames).is_empty());
+    deliver(&mut app);
+    assert_eq!(results(&mut frames), ["delivered"]);
+    assert_eq!(wait_lines(&agent, 1), [text(&app, &agent, &current)]);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn notification_conditions_are_rechecked_after_process_verification() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+
+    // The agent was idle when verification started. A user starts a draft
+    // before it returns, so the work offer must go back to the server.
+    let offer = notify(&app, &agent, 1, true);
+    receive(&mut app, offer);
+    drop(app.events_deliver());
+    assert!(app.delegation.events.delivering.is_some());
+    human(&mut app, 0, b"new draft");
+    drop(app.delegation_message(app.delegation.epoch, verification(&app, true)));
+    assert_eq!(results(&mut frames), ["skipped"]);
+    assert!(agent.lines().is_empty());
+    human(&mut app, 0, b"\x15");
+
+    // An informational notice instead returns to the local queue when the
+    // agent becomes busy during verification.
+    let mut event = notify(&app, &agent, 2, false);
+    event["payload"]["require_idle"] = json!(true);
+    receive(&mut app, event);
+    // Clearing the previous draft wrote output; let that settle first.
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+    drop(app.events_deliver());
+    assert!(app.delegation.events.delivering.is_some());
+    human(&mut app, 0, b"another draft");
+    drop(app.delegation_message(app.delegation.epoch, verification(&app, true)));
+    assert_eq!(app.delegation.events.pending.len(), 1);
+    assert!(results(&mut frames).is_empty());
+    assert!(agent.lines().is_empty());
+    app.delegation.events.pending.clear();
+
+    // Verification can also outlive a notification's deadline, even when it
+    // does not require idle. Model the elapsed time on the in-flight event.
+    let expired = notify(&app, &agent, 3, false);
+    receive(&mut app, expired);
+    drop(app.events_deliver());
+    app.delegation.events.delivering.as_mut().unwrap().event["emitted_at"] = json!(0);
+    drop(app.delegation_message(app.delegation.epoch, verification(&app, true)));
+    assert_eq!(results(&mut frames), ["skipped"]);
+    assert!(agent.lines().is_empty());
+}
+
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn unverified_processes_and_other_agents_never_receive_input() {
@@ -702,7 +1093,7 @@ fn unverified_processes_and_other_agents_never_receive_input() {
     receive(&mut app, event);
     drop(app.events_deliver());
     let epoch = app.delegation.epoch;
-    drop(app.delegation_message(epoch, Event::Verified(false)));
+    drop(app.delegation_message(epoch, verification(&app, false)));
     assert_eq!(results(&mut frames), ["failed"]);
     // A notification only reaches the agent it names.
     let event = notify(&app, &mine, 2, false);
@@ -886,7 +1277,7 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
                 .map(|delivery| events::verify(&delivery.candidate));
             if let Some(verified) = verified {
                 let epoch = app.delegation.epoch;
-                drop(app.delegation_message(epoch, Event::Verified(verified)));
+                drop(app.delegation_message(epoch, verification(&app, verified)));
             }
         }
         // Create the task once the server sees the agent idle (30 s without output).
@@ -958,74 +1349,128 @@ fn offers_are_judged_against_the_reported_output_time() {
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn in_progress_work_saved_at_exit_reminds_its_idle_owner_after_restart() {
+fn server_restart_notices_wait_for_idle_across_resubscription_and_report_outcome() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
     app.registry = Some(agent.directory.clone());
-    let _frames = router(&mut app);
+    let frames = router(&mut app);
     project(&mut app, &agent, "alpha");
     scan(&mut app);
-    let owner = json!({"session_id": session(&app, &agent), "instance_id": Uuid::new_v4(), "provider": "codex", "os": "linux"});
-    let task = |id: &str, status: &str, owner: &Value| {
-        json!({"id": id, "kind": "normal", "title": format!("Task {id}"), "status": status,
-               "project_ident": "alpha", "owner_origin": owner, "owner_agent_id": null})
-    };
-    let (kept, finished) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
-    let elsewhere = json!({"session_id": Uuid::new_v4(), "instance_id": Uuid::new_v4(), "provider": "codex", "os": "linux"});
-    app.workspaces[0].gateway.tasks = vec![
-        task(&kept, "in_progress", &owner),
-        task(&finished, "in_progress", &owner),
-        task(&Uuid::new_v4().to_string(), "in_progress", &elsewhere),
-    ];
-    app.save_restart_tasks();
-
-    // After restart: nothing is sent until the task list confirms ownership.
-    app.workspaces[0].gateway.tasks.clear();
-    app.workspaces[0].gateway.loaded_at = None;
-    app.load_restart_tasks();
-    // Resubscribing as restored agents are found keeps the saved work.
-    app.events_stop();
-    let _frames = router(&mut app);
-    assert_eq!(
-        app.delegation.events.restart.len(),
-        2,
-        "only this desktop's agents"
-    );
-    assert!(!agent.directory.join("restart-tasks.json").exists());
-    app.restart_reminders();
-    assert!(app.delegation.events.pending.is_empty());
-    app.workspaces[0].gateway.tasks = vec![
-        task(&kept, "in_progress", &owner),
-        task(&finished, "done", &owner),
-    ];
-    app.workspaces[0].gateway.loaded_at = Some(Instant::now());
-    app.restart_reminders();
-    assert!(app.delegation.events.restart.is_empty());
-    assert_eq!(
-        app.delegation.events.pending.len(),
-        1,
-        "finished work is dropped"
-    );
-
-    // It waits while the agent is working, then reaches it once idle,
-    // also across a resubscription; server notices are not kept.
+    let mut reminder = notify(&app, &agent, 1, false);
+    reminder["payload"]["require_idle"] = json!(true);
+    reminder["payload"]["heading"] = json!("In-progress task reminder");
+    reminder["payload"]["instructions"] = json!("Continue it, mark it done, or release it.");
+    receive(&mut app, reminder.clone());
     drop(app.events_deliver());
-    assert_eq!(app.delegation.events.pending.len(), 1);
-    let offer = notify(&app, &agent, 7, false);
-    receive(&mut app, offer);
+    assert_eq!(app.delegation.events.pending.len(), 1, "busy owner waits");
     app.events_stop();
+    drop(frames);
     let mut frames = router(&mut app);
     assert_eq!(app.delegation.events.pending.len(), 1);
     std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
     deliver(&mut app);
-    let line = &wait_lines(&agent, 1)[0];
+    let lines = wait_lines(&agent, 1);
+    assert!(lines[0].contains("In-progress task reminder"));
+    assert!(lines[0].contains("Continue it, mark it done, or release it."));
+    assert_eq!(results(&mut frames), ["delivered"]);
+
+    // An ack lost during reconnect must not paste an already delivered notice again.
+    app.events_stop();
+    let _frames = router(&mut app);
+    receive(&mut app, reminder);
+    assert!(app.delegation.events.pending.is_empty());
+
+    // A real bridge reset is a different logical connection and clears queued input.
+    let queued = notify(&app, &agent, 2, false);
+    receive(&mut app, queued);
+    app.delegation.stop();
+    assert!(app.delegation.events.pending.is_empty());
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn client_run_heartbeat_is_stable_across_resubscription_and_changes_with_desktop() {
+    let mut app = desktop();
+    let mut frames = router(&mut app);
+    app.events_report();
+    let heartbeat = std::iter::from_fn(|| frames.try_recv().ok())
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
+    let run = heartbeat["payload"]["client_run"].as_str().unwrap();
+    assert_eq!(Uuid::parse_str(run).unwrap(), app.client_run);
+    app.events_stop();
+    let mut frames = router(&mut app);
+    app.events_report();
+    let heartbeat = std::iter::from_fn(|| frames.try_recv().ok())
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
+    assert_eq!(heartbeat["payload"]["client_run"], run);
+    assert_ne!(desktop().client_run, app.client_run);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn heartbeat_advertises_only_a_confirmed_live_execution_repository_binding() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    app.workspaces[0].gateway.project = "alpha".into();
+    let candidate = app.delegation.candidates[0].clone();
+    let mut frames = router(&mut app);
+    app.events_report();
+    let heartbeat = std::iter::from_fn(|| frames.try_recv().ok())
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
     assert!(
-        line.contains("In-progress task reminder") && line.contains(&kept),
-        "{line}"
+        heartbeat["payload"]["agents"][0]
+            .get("canonical_remote")
+            .is_none()
     );
+    for remote in [Some("https://github.com/example/repo".to_owned()), None] {
+        let panel = &mut app.workspaces[0].gateway.routing;
+        panel.checked = Some(Instant::now());
+        panel.directory = Some(amux::task_routing::Directory {
+            canonical_remote: remote.clone(),
+            targets: vec![amux::task_routing::Available {
+                target: amux::task_routing::SessionTarget {
+                    origin: candidate.target.origin.clone().unwrap(),
+                    generation: candidate.target.executor_generation(),
+                },
+                seen_at: unix_ms() as i64,
+                expires_at: unix_ms() as i64 + 120_000,
+                display_name: None,
+                hostname: None,
+            }],
+        });
+        app.events_report();
+        let heartbeat = std::iter::from_fn(|| frames.try_recv().ok())
+            .find(|frame| frame["id"] == "client.heartbeat")
+            .unwrap();
+        assert_eq!(
+            heartbeat["payload"]["agents"][0].get("canonical_remote"),
+            Some(&json!(remote))
+        );
+    }
+    app.workspaces[0]
+        .gateway
+        .routing
+        .directory
+        .as_mut()
+        .unwrap()
+        .targets[0]
+        .target
+        .generation = Uuid::new_v4();
+    app.events_report();
+    let heartbeat = std::iter::from_fn(|| frames.try_recv().ok())
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
     assert!(
-        results(&mut frames).is_empty(),
-        "local reminders are not server offers"
+        heartbeat["payload"]["agents"][0]
+            .get("canonical_remote")
+            .is_none(),
+        "another execution is not confirmation"
     );
 }
 

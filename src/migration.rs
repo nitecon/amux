@@ -96,6 +96,31 @@ fn inventory(conn: &Connection) -> Result<BTreeMap<String, u64>> {
         .collect()
 }
 
+fn unused_database(conn: &Connection) -> Result<bool> {
+    // These singletons contain only transaction context or controller time.
+    // Events, queued input, identities, settings and unknown tables remain
+    // protected even when the application has no projects or tasks yet.
+    Ok(inventory(conn)?.iter().all(|(name, count)| {
+        *count == 0
+            || (*count == 1
+                && matches!(
+                    name.as_str(),
+                    "task_mutation_context" | "presence_clock" | "retention_runs"
+                ))
+    }))
+}
+
+fn retired_projection(name: &str) -> Option<&'static str> {
+    match name {
+        // Presence::initialize migrates accepted reports into the canonical
+        // directory; stale observations cannot override newer advertisements.
+        "presence_agents" => Some("accepted identity reports merged into task_target_presence"),
+        // Notifier and Reclaim now read the canonical Presence directory.
+        "notifier_agents" | "reclaim_busy" => Some("obsolete copy of Presence state removed"),
+        _ => None,
+    }
+}
+
 fn verify(conn: &Connection) -> Result<BTreeMap<String, u64>> {
     let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     ensure!(
@@ -180,12 +205,16 @@ fn validate_stage(
     let original = directory.path().join("original.sqlite");
     fs::copy(&database, &original)?;
     // Exercise real backend schema upgrades on the private copy only. Keep every
-    // source table/row; reject incompatible migrations before touching the target.
+    // source records except explicitly retired derived projections; the original
+    // snapshot is retained separately. Reject other losses before touching target.
     let upgraded = db::open(database.to_str().context("Database path is not UTF8")?)?;
     let tables = verify(&upgraded.lock().unwrap())?;
     let lost = before
         .iter()
-        .filter(|(name, count)| tables.get(*name).is_none_or(|after| after < *count))
+        .filter(|(name, count)| match tables.get(*name) {
+            Some(after) => after < *count,
+            None => retired_projection(name).is_none(),
+        })
         .map(|(name, count)| format!("{name}: {count} → {:?}", tables.get(name)))
         .collect::<Vec<_>>();
     ensure!(
@@ -195,14 +224,15 @@ fn validate_stage(
     );
     let schema_notes = before
         .iter()
-        .filter_map(|(name, count)| {
-            let after = tables.get(name)?;
-            (*after > *count).then(|| {
-                format!(
+        .filter_map(|(name, count)| match tables.get(name) {
+            Some(after) if *after > *count => Some(format!(
                     "{name}: {count} source records preserved; {} compatibility records added",
                     after - count
-                )
-            })
+                )),
+            None => retired_projection(name).map(|explanation| {
+                format!("{name}: {count} legacy records; {explanation}. Complete original snapshot retained, including stale or conflicting reports")
+            }),
+            _ => None,
         })
         .collect();
     upgraded
@@ -353,10 +383,7 @@ pub fn install(preview: &Preview, state: &Path) -> Result<Installed> {
             });
         let conn = read_only(&target)?;
         ensure!(
-            untouched_import
-                || inventory(&conn)?
-                    .iter()
-                    .all(|(name, count)| *count == 0 || name == "task_mutation_context"),
+            untouched_import || unused_database(&conn)?,
             "Local server already contains data or has changed since import. Migration requires an unused server; existing data was not overwritten"
         );
         drop(conn);

@@ -7802,37 +7802,8 @@ pub struct TaskDetail {
     pub comments: Vec<TaskComment>,
 }
 
-/// Rejected task labels are a client request error, not a state conflict.
-#[derive(Debug)]
-pub struct InvalidTaskLabels(pub String);
-impl std::fmt::Display for InvalidTaskLabels {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for InvalidTaskLabels {}
-
-/// Ordinary tasks restrict their executing agent OS with at most one canonical
-/// `os:windows|os:linux|os:macos` label; no OS label means unrestricted.
-pub fn task_required_os(labels: &[String]) -> Result<Option<&str>> {
-    let mut required = None;
-    for label in labels
-        .iter()
-        .filter(|l| l.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("os:")))
-    {
-        let os = &label[3..];
-        if !matches!(label.get(..3), Some("os:")) || !matches!(os, "windows" | "linux" | "macos") {
-            return Err(InvalidTaskLabels(format!(
-                "unsupported OS label '{label}': use os:windows, os:linux or os:macos"
-            ))
-            .into());
-        }
-        if required.replace(os).is_some() {
-            return Err(InvalidTaskLabels("a task may carry at most one os: label".into()).into());
-        }
-    }
-    Ok(required)
-}
+// Keep the task-store API and typed error identity stable for existing callers.
+pub use crate::task_platform::{required_os as task_required_os, InvalidTaskLabels};
 
 fn os_mismatch(required: Option<&str>, origin: Option<&crate::task_events::AgentOrigin>) -> bool {
     required.is_some_and(|os| origin.is_none_or(|o| o.os != os))
@@ -8438,7 +8409,8 @@ pub fn reclaim_stale_tasks_except(
     Ok(stale_ids.len())
 }
 
-/// Timer-driven sweep; list/detail reads also reconcile before returning tasks.
+/// Explicit storage utility for sweeping every project. The running server's
+/// automatic expiry is owned by the event-driven Reclaim controller.
 pub fn reclaim_all_stale_tasks(conn: &Connection) -> Result<usize> {
     let mut total = 0;
     for project in all_projects(conn)? {
@@ -9075,7 +9047,7 @@ fn assign_task_inner(
         )
         .into());
     }
-    crate::task_reviews::ensure_reviewer(&previous.labels, Some(&target.origin))?;
+    crate::task_reviews::ensure_reviewer(&previous.labels, Some(&target.origin), None)?;
     let caller = crate::task_events::current_origin(conn)?;
     if human {
         if caller.is_some() {
@@ -9337,7 +9309,10 @@ fn update_task_inner(
     let now = now_ms();
     let new_status = upd.status.unwrap_or(&current.status).to_string();
     if new_status == "in_progress" {
-        crate::task_reviews::ensure_reviewer(&current.labels, origin.as_ref())?;
+        crate::task_reviews::ensure_reviewer(&current.labels, origin.as_ref(), actor_agent_id)?;
+    }
+    if let Some(Some(owner)) = upd.owner_agent_id {
+        crate::task_reviews::ensure_reviewer(&current.labels, None, Some(owner))?;
     }
     let owner_explicit = upd.owner_agent_id.is_some();
     let transitioning = upd.status.is_some() && new_status != current.status;
@@ -9809,6 +9784,10 @@ pub fn reorder_tasks_in_column(
         if old_status == "cancelled" {
             return Err(crate::task_dispatch::Conflict("cancelled tasks are terminal").into());
         }
+        let old_labels = parse_labels(old_labels);
+        if target_status == "in_progress" {
+            crate::task_reviews::ensure_reviewer(&old_labels, origin.as_ref(), actor_agent_id)?;
+        }
 
         // Compute new timestamps + owner by mirroring the transition logic
         // in `update_task`. Fields we do not change are preserved explicitly
@@ -9892,7 +9871,7 @@ pub fn reorder_tasks_in_column(
             &old_status,
             target_status,
             origin.is_none() && actor_agent_id.is_none(),
-            &parse_labels(old_labels),
+            &old_labels,
             None,
         );
         let mut assignments = vec![

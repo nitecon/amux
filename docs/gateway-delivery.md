@@ -53,7 +53,7 @@ five-minute lifetime. See [CLI and native controls](gateway-cli.md#requesting-ta
 The server's `assignment` plugin gives each idle agent (no terminal output for 30
 seconds, no draft, no owned in-progress task) the oldest eligible queued task in
 its project. Creation time defines FIFO. Eligibility respects the task's OS label,
-review exclusion, held review findings, goal, delegation, owner and exact session
+review exclusion, explicit User review, goal, delegation, owner and exact session
 routing. The server claims the task as that agent through the normal task store,
 comments why, and sends a `Queued task review` (or `Queued independent review`)
 notification asking the agent to check whether the task is still required,
@@ -61,12 +61,24 @@ implement it, ask the user, or close it with a reason. One task is handed to an
 idle agent at a time.
 
 If the desktop cannot deliver the offer (the agent became busy, started typing,
-or its process changed), it reports the outcome and the server releases the claim
-so the next idle agent gets the task. When an in-progress task has had no update
+or its process changed), it reports the outcome. The server releases an untouched
+offer only for its captured reporting source and target; a delayed result cannot
+undo subsequent progress or another claim. The next idle agent can then receive
+the task. When an in-progress task has had no update
 or comment for ten minutes, its connected owner receives `Task update requested`
 (again every ten minutes while it stays quiet); a progress comment resets the wait.
 Claimed work returns to the queue after 15 minutes without task activity unless
 the server sees its owner busy.
+
+After the desktop restarts, the server also reminds resumed sessions about
+their remaining in-progress tasks. A fresh execution receives an explicit
+prior-execution notice without acquiring ownership. These informational
+reminders wait for idle; reconnecting the same desktop does not produce another
+restart reminder. Supporting servers advertise `server_restart_reminders` at
+subscription. An older event router without this flag uses the retained local
+restart journal instead; a legacy gateway returning 404 enables no fallback.
+The reminder plugin switch gates periodic nudges, while startup continuity
+remains available.
 
 OS-restricted tasks use one explicit `os:windows`, `os:linux` or `os:macos`
 label; only agents on that OS receive them. See the project-agent and OS-routing
@@ -112,8 +124,9 @@ Server plugins can be switched off with `PUT /v1/plugins/{id}`
 lists them.
 
 `GET /v1/presence/summary` returns live presence across the gateway:
-`{"machines", "os", "agents", "active"}`, where machines are distinct client
-connections and active agents are busy. The desktop status bar polls it every
+`{"machines", "os", "agents", "active"}`, where machines are distinct authenticated
+reporting sources and active agents are busy. Connections sharing the bearer
+principal share one reporting source. The desktop status bar polls it every
 30 seconds for its first line; the second line counts this machine's agents.
 
 ## Built-in agent identity

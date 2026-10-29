@@ -893,10 +893,7 @@ mod tests {
         routing::{get, post},
         Router,
     };
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
+    use std::{collections::HashMap, sync::Arc};
     use tower::ServiceExt;
 
     fn id() -> String {
@@ -942,7 +939,6 @@ mod tests {
             artifact_operations: db::ArtifactOperationsEnvelope::production_defaults(),
             artifact_body_schema_enabled: true,
             artifact_auth_enforced: false,
-            update_available: Arc::new(Mutex::new(None)),
             remote: Default::default(),
         }
     }
@@ -2672,6 +2668,143 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn review_exclusions_fence_native_and_legacy_claims_owners_and_atomic_reorders() {
+        let state = fixture(db::open(":memory:").unwrap());
+        let author = Agent::new(&id(), "unused");
+        let peer = Agent::new(&id(), "unused");
+        let queue = |labels: &[String]| {
+            db::insert_unassigned_dispatch_task(
+                &state.db.lock().unwrap(),
+                "example",
+                "review fixture",
+                None,
+                None,
+                labels,
+                None,
+                "fixture",
+            )
+            .unwrap()
+        };
+        for native in [false, true] {
+            let excluded = if native {
+                author.target.origin.session_id.as_str()
+            } else {
+                "legacy-author"
+            };
+            let peer_id = if native {
+                peer.target.origin.session_id.as_str()
+            } else {
+                "legacy-peer"
+            };
+            let mut blocked = if native {
+                ordinary_headers(&author)
+            } else {
+                human_headers()
+            };
+            let mut eligible = if native {
+                ordinary_headers(&peer)
+            } else {
+                human_headers()
+            };
+            if !native {
+                blocked.insert("x-agent-id", excluded.parse().unwrap());
+                eligible.insert("x-agent-id", peer_id.parse().unwrap());
+            }
+            let labels = vec!["task-review".into(), format!("review-exclude:{excluded}")];
+            let review = queue(&labels);
+            let first = queue(&[]);
+            let path = format!("/v1/projects/example/tasks/{}", review.id);
+            let before = {
+                let conn = state.db.lock().unwrap();
+                [first.id.as_str(), review.id.as_str()].map(|id| {
+                    serde_json::to_value(
+                        db::get_task_detail(&conn, "example", id)
+                            .unwrap()
+                            .unwrap()
+                            .task,
+                    )
+                    .unwrap()
+                })
+            };
+            for (headers, body) in [
+                (blocked.clone(), json!({"status":"in_progress"})),
+                (blocked.clone(), json!({"owner_agent_id":excluded})),
+                (human_headers(), json!({"owner_agent_id":excluded})),
+            ] {
+                let (status, result) = desktop_http(&state, headers, "PATCH", &path, body).await;
+                assert_eq!(status, StatusCode::CONFLICT, "native={native}: {result}");
+                assert!(result.to_string().contains("different agent"), "{result}");
+            }
+            let (status, result) = desktop_http(
+                &state,
+                blocked,
+                "POST",
+                "/v1/projects/example/tasks/reorder?status=in_progress",
+                json!({"order":[first.id,review.id]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "native={native}: {result}");
+            assert!(result.to_string().contains("different agent"), "{result}");
+            {
+                let conn = state.db.lock().unwrap();
+                let after = [first.id.as_str(), review.id.as_str()].map(|id| {
+                    serde_json::to_value(
+                        db::get_task_detail(&conn, "example", id)
+                            .unwrap()
+                            .unwrap()
+                            .task,
+                    )
+                    .unwrap()
+                });
+                assert_eq!(
+                    after, before,
+                    "failed batch must roll back its earlier eligible row"
+                );
+            }
+            if native {
+                let (status, result) = desktop_http(
+                    &state,
+                    human_headers(),
+                    "POST",
+                    &format!("{path}/assign"),
+                    json!({"target":author.target}),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{result}");
+                assert!(result.to_string().contains("different agent"), "{result}");
+            }
+            let (status, result) = desktop_http(
+                &state,
+                eligible.clone(),
+                "PATCH",
+                &path,
+                json!({"status":"in_progress"}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "native={native}: {result}");
+            let (status, result) = desktop_http(
+                &state,
+                eligible,
+                "POST",
+                "/v1/projects/example/tasks/reorder?status=in_progress",
+                json!({"order":[first.id]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "native={native}: {result}");
+            let explicit = queue(&labels);
+            let (status, result) = desktop_http(
+                &state,
+                human_headers(),
+                "PATCH",
+                &format!("/v1/projects/example/tasks/{}", explicit.id),
+                json!({"owner_agent_id":peer_id}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "native={native}: {result}");
+        }
+    }
+
+    #[tokio::test]
     async fn presence_heartbeat_never_extends_user_or_agent_task_assignment() {
         let state = fixture(db::open(":memory:").unwrap());
         repository_fixture(&state);
@@ -2755,7 +2888,36 @@ mod tests {
                 .unwrap(),
             2
         );
-        // Reassign does its normal stale sweep first; the stale owner cannot resurrect a claim.
+        // Presence advertisements leave task leases untouched. The Clock-driven
+        // controller performs decay before a stale owner attempts reassignment.
+        let (bus, worker) = crate::router::start(
+            state.db.clone(),
+            crate::plugins::events(),
+            vec![
+                Box::new(crate::plugins::presence::Presence),
+                Box::new(crate::plugins::reclaim::Reclaim),
+            ],
+        )
+        .unwrap();
+        bus.emit(
+            "clock-fixture",
+            crate::plugins::clock::TICK,
+            1,
+            json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            loop {
+                let open: i64 = state.db.lock().unwrap().query_row(
+                    "SELECT COUNT(*) FROM router_deliveries WHERE state IN ('pending','running','retrying')",[],|row|row.get(0),
+                ).unwrap();
+                if open==0 { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("Clock-driven reclaim did not settle");
+        worker.abort();
         assert_eq!(
             desktop_http(
                 &state,

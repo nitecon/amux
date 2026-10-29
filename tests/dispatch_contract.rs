@@ -671,6 +671,7 @@ fn corrupt_oversized_or_locked_journals_are_preserved_and_refused() {
         ))
         .unwrap_err();
     assert!(format!("{error:#}").contains("busy"), "{error:#}");
+    holder.unlock().unwrap();
     drop(holder);
     assert!(finish(server).is_empty(), "zero HTTP requests");
     assert!(dispatcher.uncertain().unwrap().is_empty());

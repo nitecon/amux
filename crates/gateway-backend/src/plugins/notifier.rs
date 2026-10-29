@@ -3,12 +3,13 @@
 //! receive results, actors never hear about their own changes, and queued or
 //! user-review work is left to Assignment and the user.
 use crate::{
+    db,
     plugins::{notify, presence, Enabled},
     router::{Event, Plugin, Step, StepContext, StepOutcome, Subscription},
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 
 pub const PLUGIN: &str = "notifier";
@@ -20,12 +21,12 @@ const TASK_EVENTS: [(&str, &str); 3] = [
 ];
 
 pub fn initialize(conn: &Connection) -> Result<()> {
+    // Presence owns live identity; discard the legacy unordered projection.
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS notifier_agents (
-            session_id TEXT PRIMARY KEY,
-            project    TEXT NOT NULL,
-            agent_json TEXT NOT NULL
-        );",
+        "DROP TABLE IF EXISTS notifier_agents;
+         CREATE TABLE IF NOT EXISTS notifier_processed (
+            event_seq INTEGER PRIMARY KEY REFERENCES router_events(seq) ON DELETE CASCADE
+         );",
     )?;
     Ok(())
 }
@@ -37,20 +38,15 @@ impl Plugin for Notifier {
         PLUGIN
     }
     fn subscriptions(&self) -> Vec<Subscription> {
-        [
-            presence::ONLINE,
-            presence::IDLE,
-            presence::BUSY,
-            presence::GONE,
-        ]
-        .into_iter()
-        .chain(TASK_EVENTS.iter().map(|(id, _)| *id))
-        .map(|event| Subscription {
-            event,
-            versions: 1..=1,
-            depends_on: Vec::new(),
-        })
-        .collect()
+        TASK_EVENTS
+            .iter()
+            .map(|(id, _)| *id)
+            .map(|event| Subscription {
+                event,
+                versions: 1..=1,
+                depends_on: Vec::new(),
+            })
+            .collect()
     }
     fn pre_exec(&self) -> Vec<Box<dyn Step>> {
         vec![Box::new(Enabled(PLUGIN))]
@@ -68,11 +64,7 @@ impl Step for Notify {
         let result = (|| -> Result<()> {
             let conn = ctx.db().lock().unwrap();
             let tx = conn.unchecked_transaction()?;
-            if event.id.starts_with("agent.") {
-                track(&tx, event)?;
-            } else {
-                announce(&tx, ctx, event)?;
-            }
+            announce(&tx, ctx, event)?;
             tx.commit()?;
             Ok(())
         })();
@@ -84,39 +76,26 @@ impl Step for Notify {
     }
 }
 
-fn track(conn: &Connection, event: &Event) -> Result<()> {
-    let agent = &event.payload["agent"];
-    let session = agent["session_id"].as_str().unwrap_or_default();
-    if event.id == presence::GONE {
-        conn.execute(
-            "DELETE FROM notifier_agents WHERE session_id=?1",
-            params![session],
-        )?;
-    } else {
-        conn.execute(
-            "INSERT INTO notifier_agents(session_id,project,agent_json) VALUES(?1,?2,?3)
-             ON CONFLICT(session_id) DO UPDATE SET project=?2, agent_json=?3",
-            params![session, agent["project"].as_str(), agent.to_string()],
-        )?;
-    }
-    Ok(())
-}
-
 fn announce(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
     let Some((_, kind)) = TASK_EVENTS.iter().find(|(id, _)| *id == event.id) else {
         return Ok(());
     };
+    // Notification emission and this receipt share the caller's transaction.
+    // A restart after commit but before router completion must not emit again.
+    if conn.execute(
+        "INSERT OR IGNORE INTO notifier_processed(event_seq) VALUES(?1)",
+        [event.seq],
+    )? == 0
+    {
+        return Ok(());
+    }
     let payload = &event.payload;
     let project = payload["project"].as_str().unwrap_or_default();
-    let agents: Vec<Value> = conn
-        .prepare("SELECT agent_json FROM notifier_agents WHERE project=?1 ORDER BY session_id")?
-        .query_map(params![project], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .iter()
-        .map(|agent| serde_json::from_str(agent))
-        .collect::<serde_json::Result<_>>()?;
+    let agents = presence::agents(conn, db::now_ms())?;
     for agent in agents
         .iter()
+        .map(|report| &report.agent)
+        .filter(|agent| agent["project"] == project)
         .filter(|agent| recipient(kind, payload, agent))
     {
         // Requester results are informational and wait until the agent is idle.
@@ -152,16 +131,18 @@ pub fn recipient(kind: &str, payload: &Value, agent: &Value) -> bool {
     let task = &payload["task"];
     let owner = &task["owner_origin"];
     let requester = &task["requester"];
-    let os: Vec<&str> = task["labels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter_map(|label| label.strip_prefix("os:"))
-        .collect();
-    if os
-        .first()
-        .is_some_and(|os| agent["os"].as_str() != Some(os))
+    let labels: Vec<String> = if task["labels"].is_null() {
+        Vec::new()
+    } else {
+        let Ok(labels) = serde_json::from_value(task["labels"].clone()) else {
+            return false;
+        };
+        labels
+    };
+    let Ok(os) = crate::task_platform::required_os(&labels) else {
+        return false;
+    };
+    if os.is_some_and(|os| agent["os"].as_str() != Some(os))
         || (!task["goal"].is_null() && task["goal"] != agent["goal"])
         || same(&payload["actor"], agent)
     {
@@ -194,6 +175,8 @@ pub fn recipient(kind: &str, payload: &Value, agent: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{plugins, router};
+    use rusqlite::params;
 
     const ME: &str = "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0001";
 
@@ -208,6 +191,228 @@ mod tests {
             .unwrap()
             .extend(task.as_object().unwrap().clone());
         json!({"project": "p", "task": base, "actor": actor})
+    }
+
+    fn persist(conn: &Connection, mut event: Event) -> Event {
+        event.uid = uuid::Uuid::now_v7();
+        conn.execute(
+            "INSERT INTO router_events(uid,id,version,payload,source,emitted_at)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                event.uid.to_string(),
+                event.id,
+                event.version,
+                event.payload.to_string(),
+                event.source,
+                event.emitted_at
+            ],
+        )
+        .unwrap();
+        event.seq = conn.last_insert_rowid();
+        event
+    }
+
+    #[tokio::test]
+    async fn announcements_use_current_presence_after_disable_identity_change_and_departure() {
+        let database = db::open(":memory:").unwrap();
+        let remote = plugins::remote::Remote::default();
+        let (bus, worker) = router::start(
+            database.clone(),
+            plugins::events(),
+            plugins::plugins(&remote),
+        )
+        .unwrap();
+        worker.abort();
+        let ctx = router::test_context(&bus, PLUGIN);
+        let now = db::now_ms();
+        {
+            let conn = database.lock().unwrap();
+            presence::seed_report(&conn, "client", agent(), now, None, false, "unknown");
+            // The old projection is removed during initialization, including
+            // upgrades where it contains a departed or replaced execution.
+            conn.execute_batch("CREATE TABLE notifier_agents(session_id TEXT); INSERT INTO notifier_agents VALUES('departed');").unwrap();
+            initialize(&conn).unwrap();
+        }
+        let mut event = Event {
+            seq: 0,
+            id: "task.commented".into(),
+            version: 1,
+            uid: uuid::Uuid::nil(),
+            payload: payload(
+                json!({"owner_origin": {"session_id": ME, "instance_id": "i"}}),
+                Value::Null,
+            ),
+            source: "tasks".into(),
+            emitted_at: now,
+            correlation: None,
+        };
+        event = persist(&database.lock().unwrap(), event);
+        let notices = || {
+            database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM router_events WHERE id='agent.notify'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(notices(), 1, "Presence alone supplies recipients");
+        {
+            let conn = database.lock().unwrap();
+            db::set_setting(&conn, "plugin.notifier.enabled", "false").unwrap();
+            let mut replacement = agent();
+            replacement["instance_id"] = json!("replacement");
+            presence::seed_report(&conn, "client", replacement, now, None, false, "unknown");
+        }
+        assert_eq!(Enabled(PLUGIN).run(&event, &ctx).await, StepOutcome::Stop);
+        db::set_setting(&database.lock().unwrap(), "plugin.notifier.enabled", "true").unwrap();
+        assert_eq!(
+            Enabled(PLUGIN).run(&event, &ctx).await,
+            StepOutcome::Continue
+        );
+        event = persist(&database.lock().unwrap(), event);
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(
+            notices(),
+            1,
+            "old execution is no longer a recipient after re-enabling"
+        );
+        event.payload["task"]["owner_origin"]["instance_id"] = json!("replacement");
+        event = persist(&database.lock().unwrap(), event);
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(
+            notices(),
+            2,
+            "replacement is visible without replaying presence notifications"
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE task_target_presence SET report_seen_at=?1",
+                params![now - presence::GONE_AFTER_MS],
+            )
+            .unwrap();
+        event = persist(&database.lock().unwrap(), event);
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(
+            notices(),
+            2,
+            "expired reports are excluded before the next Presence sweep"
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM task_target_presence", [])
+            .unwrap();
+        event = persist(&database.lock().unwrap(), event);
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(
+            notices(),
+            2,
+            "departed sessions leave no notification projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn notifications_and_receipt_commit_once_and_failed_batches_retry_atomically() {
+        let database = db::open(":memory:").unwrap();
+        let remote = plugins::remote::Remote::default();
+        let (bus, worker) = router::start(
+            database.clone(),
+            plugins::events(),
+            plugins::plugins(&remote),
+        )
+        .unwrap();
+        worker.abort();
+        let ctx = router::test_context(&bus, PLUGIN);
+        let now = db::now_ms();
+        let event = {
+            let conn = database.lock().unwrap();
+            presence::seed_report(&conn, "client", agent(), now, None, false, "unknown");
+            presence::seed_report(
+                &conn,
+                "client",
+                json!({"session_id":"requester","instance_id":"peer","project":"p","generation":"g"}),
+                now,
+                None,
+                false,
+                "unknown",
+            );
+            conn.execute_batch(
+                "CREATE TRIGGER fail_second_notification BEFORE INSERT ON router_events
+                 WHEN NEW.id='agent.notify' AND json_extract(NEW.payload,'$.target')='requester'
+                 BEGIN SELECT RAISE(ABORT,'notification storage unavailable'); END;",
+            )
+            .unwrap();
+            persist(
+                &conn,
+                Event {
+                    seq: 0,
+                    id: "task.commented".into(),
+                    version: 1,
+                    uid: uuid::Uuid::nil(),
+                    payload: payload(
+                        json!({"owner_origin":{"session_id":ME,"instance_id":"i"},
+                    "requester":{"origin":{"session_id":"requester","instance_id":"peer"},"generation":"g"}}),
+                        Value::Null,
+                    ),
+                    source: "tasks".into(),
+                    emitted_at: now,
+                    correlation: None,
+                },
+            )
+        };
+        let counts = || {
+            let conn = database.lock().unwrap();
+            (
+                conn.query_row(
+                    "SELECT COUNT(*) FROM router_events WHERE id='agent.notify'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                conn.query_row("SELECT COUNT(*) FROM notifier_processed", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            )
+        };
+        assert!(
+            matches!(Notify.run(&event,&ctx).await,StepOutcome::Fail(error) if error.contains("notification storage unavailable"))
+        );
+        assert_eq!(
+            counts(),
+            (0, 0),
+            "failed second recipient rolls back first notification and receipt"
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_second_notification")
+            .unwrap();
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(counts(), (2, 1));
+        initialize(&database.lock().unwrap()).unwrap();
+        assert_eq!(Notify.run(&event, &ctx).await, StepOutcome::Continue);
+        assert_eq!(
+            counts(),
+            (2, 1),
+            "committed cause cannot notify twice after restart/replay"
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM router_events WHERE seq=?1", [event.seq])
+            .unwrap();
+        assert_eq!(
+            counts(),
+            (2, 0),
+            "router retention also removes the plugin receipt"
+        );
     }
 
     #[test]

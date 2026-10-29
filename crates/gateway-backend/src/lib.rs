@@ -27,6 +27,7 @@ pub mod subtasks;
 pub mod task_cancel;
 pub mod task_dispatch;
 pub mod task_events;
+pub mod task_platform;
 pub mod task_requester;
 pub mod task_reviews;
 pub mod task_targets;
@@ -49,8 +50,6 @@ pub struct AppState {
     pub artifact_operations: db::ArtifactOperationsEnvelope,
     pub artifact_body_schema_enabled: bool,
     pub artifact_auth_enforced: bool,
-    /// Set by the background update checker when a newer release is available.
-    pub update_available: Arc<std::sync::Mutex<Option<String>>>,
     /// Remote consumers of the event router; unattached in API-only tests.
     pub remote: plugins::remote::Remote,
 }

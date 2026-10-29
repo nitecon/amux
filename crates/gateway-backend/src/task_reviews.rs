@@ -20,12 +20,19 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn ensure_reviewer(labels: &[String], origin: Option<&task_events::AgentOrigin>) -> Result<()> {
-    if origin.is_some_and(|origin| {
-        labels
-            .iter()
-            .any(|label| label.strip_prefix("review-exclude:") == Some(origin.session_id.as_str()))
-    }) {
+pub fn ensure_reviewer(
+    labels: &[String],
+    origin: Option<&task_events::AgentOrigin>,
+    actor_agent_id: Option<&str>,
+) -> Result<()> {
+    if labels
+        .iter()
+        .filter_map(|label| label.strip_prefix("review-exclude:"))
+        .any(|excluded| {
+            origin.is_some_and(|origin| origin.session_id == excluded)
+                || actor_agent_id == Some(excluded)
+        })
+    {
         return Err(Conflict("completion reviews require a different agent").into());
     }
     Ok(())

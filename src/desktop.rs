@@ -340,6 +340,7 @@ struct Desktop {
     notifier: Option<Notifier>,
     notification_status: String,
     delegation: desktop_delegation::Bridge,
+    client_run: Uuid,
 }
 
 pub fn run(directory: PathBuf) -> anyhow::Result<()> {
@@ -411,9 +412,10 @@ impl Desktop {
             snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false, restarting: false,
             notify_exits: false, notifier: None, notification_status: String::new(),
             delegation: desktop_delegation::Bridge::default(),
+            client_run: Uuid::new_v4(),
         };
-        app.notify_exits = app.preferences.current.notify_exits;
         app.load_restart_tasks();
+        app.notify_exits = app.preferences.current.notify_exits;
         if app.notify_exits {
             app.notifier = Some(Notifier::native());
         }
@@ -1761,6 +1763,8 @@ impl Desktop {
     }
 
     fn pause_for_restart(&mut self) {
+        // This exits the same logical client; preserve the snapshot just saved
+        // for an older router server's next startup.
         self.delegation.stop();
         self.restarting = true;
     }
@@ -1969,7 +1973,9 @@ impl Desktop {
         };
         self.embedded.stopping = true;
         self.embedded.invitation = None;
-        self.delegation.stop();
+        // The close/restart callback saves again after shutdown. Keep the
+        // observed owners and negotiated capability for that final save.
+        self.events_stop();
         Task::perform(
             async move { server.stop().await.map_err(|error| error.to_string()) },
             move |result| Message::ServerStopped(action, result),
@@ -2031,7 +2037,7 @@ impl Desktop {
             self.embedded.status = "Enter the server address and peering key.".into();
             return Task::none();
         }
-        self.delegation.stop();
+        self.reset_delegation();
         self.embedded.busy = true;
         self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
         let epoch = self.embedded.epoch;
@@ -2111,7 +2117,7 @@ impl Desktop {
             self.embedded.invitation = None;
             self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
             let epoch = self.embedded.epoch;
-            self.delegation.stop();
+            self.reset_delegation();
             return Task::perform(
                 async move { server.stop().await.map_err(|error| error.to_string()) },
                 move |result| Message::ServerReconfigured(epoch, result),
@@ -2158,7 +2164,7 @@ impl Desktop {
             panel.tasks.clear();
             panel.status = "Gateway preferences changed. Refresh to connect.".into();
         }
-        self.delegation.stop();
+        self.reset_delegation();
         self.preferences.current = draft;
         self.embedded.invitation = None;
         self.embedded.pair_invitation.clear();
@@ -2683,6 +2689,7 @@ mod tests {
             notifier: None,
             notification_status: String::new(),
             delegation: desktop_delegation::Bridge::default(),
+            client_run: Uuid::new_v4(),
         }
     }
 

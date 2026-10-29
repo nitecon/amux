@@ -5991,17 +5991,9 @@ pub async fn list_tasks_handler(
     let filter_goal = !q.all_goals.unwrap_or(false) && (selected_goal.is_some() || agent);
 
     let db = state.db.clone();
-    let ident_for_reclaim = ident.clone();
     let ident_for_list = ident;
-    // With the event router running, its Reclaim plugin owns reclaiming.
-    let router = state.remote.attached();
     let tasks = spawn_blocking(move || -> anyhow::Result<Vec<db::TaskSummary>> {
         let conn = db.lock().unwrap();
-        // Reclaim stale in-progress tasks before listing so clients see a
-        // consistent view.
-        if !router {
-            db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
-        }
         let mut tasks = db::list_tasks(&conn, &ident_for_list, &statuses, include_stale)?;
         if filter_goal {
             let goal = selected_goal.as_deref().unwrap_or("").trim();
@@ -6049,13 +6041,8 @@ pub async fn reassign_task_handler(
         )
     })?;
     let database = state.db.clone();
-    // With the event router running, its Reclaim plugin owns reclaiming.
-    let router = state.remote.attached();
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = database.lock().unwrap();
-        if !router {
-            db::reclaim_stale_tasks(&conn, &project)?;
-        }
         crate::task_events::mutation(&conn, Some(&origin), |conn| {
             db::reassign_task(conn, &project, &id, &req.target)
         })
@@ -6078,13 +6065,8 @@ pub async fn assign_task_handler(
             "human assignment must not send agent identity headers".into(),
         ));
     }
-    // With the event router running, its Reclaim plugin owns reclaiming.
-    let router = state.remote.attached();
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = state.db.lock().unwrap();
-        if !router {
-            db::reclaim_stale_tasks(&conn, &project)?;
-        }
         crate::task_events::mutation(&conn, None, |conn| {
             db::assign_task_from_user(conn, &project, &id, &req.target)
         })
@@ -6298,16 +6280,10 @@ pub async fn get_task_handler(
     Query(q): Query<GetTaskQuery>,
 ) -> Result<Json<TaskWithComments>> {
     let db = state.db.clone();
-    let ident_for_reclaim = ident.clone();
     let ident_for_fetch = ident.clone();
     let task_id_clone = task_id;
-    // With the event router running, its Reclaim plugin owns reclaiming.
-    let router = state.remote.attached();
     let detail = spawn_blocking(move || -> anyhow::Result<Option<(db::TaskDetail, i64)>> {
         let conn = db.lock().unwrap();
-        if !router {
-            db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
-        }
         let Some(detail) =
             db::get_task_detail_recent(&conn, &ident_for_fetch, &task_id_clone, q.comments)?
         else {
@@ -6353,7 +6329,6 @@ pub async fn update_task_handler(
     let agent_request = actor.is_some() || origin.is_some();
     let selected_goal = task_goal_header(&headers);
     let db = state.db.clone();
-    let ident_for_reclaim = ident.clone();
     let ident_for_update = ident.clone();
     let task_id_clone = task_id;
     let status = req.status;
@@ -6366,13 +6341,8 @@ pub async fn update_task_handler(
     // blanket From impl as 500. The CHECK constraint on `status` catches the
     // truly invalid values at the SQL layer. Refine to 400 when we add a
     // dedicated error enum.
-    // With the event router running, its Reclaim plugin owns reclaiming.
-    let router = state.remote.attached();
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = db.lock().unwrap();
-        if !router {
-            db::reclaim_stale_tasks(&conn, &ident_for_reclaim)?;
-        }
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
         let before = db::get_task_detail(conn, &ident_for_update, &task_id_clone)?.map(|d| d.task);
 
@@ -8386,13 +8356,79 @@ mod tests {
             artifact_operations,
             artifact_body_schema_enabled: true,
             artifact_auth_enforced: false,
-            update_available: std::sync::Arc::new(std::sync::Mutex::new(None)),
             remote: Default::default(),
         }
     }
 
     fn test_state() -> AppState {
         test_state_with_operations(db::ArtifactOperationsEnvelope::production_defaults())
+    }
+
+    #[tokio::test]
+    async fn task_reads_never_reclaim_work_and_clock_controller_owns_expiry() {
+        let state = test_state();
+        let id = "01a17e58-0000-7000-8000-000000000001";
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO tasks(id,project_ident,title,reporter,created_at,updated_at,status,owner_agent_id,started_at)
+                VALUES(?1,'demo','stale work','user',0,0,'in_progress','owner',0)", [id]).unwrap();
+        }
+        let Json(tasks) = list_tasks_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("demo".into()),
+            Query(serde_json::from_value(serde_json::json!({})).unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, "in_progress");
+        let Json(detail) = get_task_handler(
+            State(state.clone()),
+            Path(("demo".into(), id.into())),
+            Query(GetTaskQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(detail.task.status, "in_progress");
+        assert_eq!(detail.task.owner_agent_id.as_deref(), Some("owner"));
+        assert!(detail.comments.is_empty());
+
+        let (bus, worker) = crate::router::start(
+            state.db.clone(),
+            crate::plugins::events(),
+            vec![
+                Box::new(crate::plugins::presence::Presence),
+                Box::new(crate::plugins::reclaim::Reclaim),
+            ],
+        )
+        .unwrap();
+        bus.emit(
+            "test",
+            crate::plugins::clock::TICK,
+            1,
+            serde_json::json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let detail = db::get_task_detail(&state.db.lock().unwrap(), "demo", id)
+                .unwrap()
+                .unwrap();
+            if detail.task.status == "todo" {
+                assert!(detail.task.owner_agent_id.is_none());
+                assert_eq!(detail.comments.len(), 1);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Reclaim did not reconcile expiry"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        worker.abort();
     }
 
     fn hardened_test_state() -> AppState {

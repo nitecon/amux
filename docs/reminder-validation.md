@@ -1,128 +1,76 @@
 # Native reminder validation
 
-The provisional readiness profile supports Linux with native Codex 0.163.0.
-Other providers/platforms and unknown prompt versions defer.
+Current task scheduling and reminders belong to the server event router and its
+Assignment, Reminder and Presence controllers. The desktop reports terminal
+activity and delivers `agent.notify` through its verified native input boundary.
+See [StateMachine](StateMachine.md#client-after-the-change) and
+[gateway delivery](gateway-delivery.md) for the running architecture.
 
-In a running Codex pane, enable **Allow gateway reminders + Enter**, refresh the workspace's
-gateway project, then select **Remind agent #…** beside an unclaimed task.
-The selection binds to that exact terminal/session/instance, even if focus later
-changes. It queues literal input and Enter for the supported empty prompt. Consent
-defaults off and is never saved. Changing the gateway project withdraws consent
-and retires pending input; closing or exiting the recipient also retires it.
+The previous selected-task **Remind agent** control and consented dispatch-recovery
+scheduler are retired. The reusable `recipient`, `readiness`, `delivery`,
+`submission` and `delegation_readiness` library modules remain, with their safety
+contract tests and planned memory-context reuse. They are not wired into the
+current automatic task-notification path. Earlier consent/recovery GUI artifacts
+describe that historical integration, not a current application control.
 
-Gateway projects and query results belong to individual workspaces. A delayed
-response cannot populate another workspace or a changed project binding. Queued
-selections refresh task status every ten seconds; snapshots older than fifteen
-seconds and failed queries pause submission. A task that leaves `todo` retires
-its pending reminder. The reminder contains only canonical task/project identity
-and asks the agent to fetch the current record and check eligibility before
-deciding whether to claim. Task titles and notification bodies are not pasted.
+Current production-path validation uses controlled native process fixtures in
+`src/desktop_delegation_tests.rs`, `tests/delegation_process_contract.rs`,
+`tests/terminal_contract.rs` and `tests/terminal_lifecycle_contract.rs`. These
+exercise exact process generations and peer isolation, checked bracketed input,
+draft preservation, buffered human input before echo, repeated notifications,
+idle-gated offers, expiry, connection changes and server-reported outcomes.
+They launch controlled fixtures and submit no real model turns. A queued PTY
+write proves neither provider understanding nor task ownership or execution.
 
-With provisioned `AMUX_GATEWAY_MACHINE_ID` and `AMUX_GATEWAY_MACHINE_KEY`, a
-consenting supported pane also registers its exact native executor and queries
-recovery every ten seconds. This requires the complete-history contract from
-agent-gateway `017ff5c` or later, including `history_complete: true`; missing or
-invalid history pauses automatic reminders. Consent off performs no background
-registration or recovery. Machine credentials identify the machine separately
-from the executor's unique session and process generation.
+Restart contracts also cover current-server authority, older-router journal
+fallback after capability negotiation, 404 inactivity, same-session continuity
+across a fresh instance without ownership transfer, independent shared-bearer
+clients, and queued receiver fences across execution/project changes.
 
-A supported empty prompt permits an explicit transport receipt for eligible
-pending work. Receipt alone never queues input: a subsequent fresh recovery
-query must confirm it. Receipt does not claim or start work. A lost or rejected
-receipt response blocks a new receipt intent; inspect `amux dispatch requests`
-and the canonical gateway record before using explicit stable-ID replay.
+Safety still depends on the exact current native process and terminal. Neither
+screen text nor a directory match grants permission to deliver input. Human
+input is tracked before its echo; an old empty-looking screen cannot make a
+work offer eligible. The desktop rechecks conditions after asynchronous process
+verification, preserves teed drafts, and never synthesizes Ctrl+C to interrupt a
+provider. Input acceptance remains separate from controller and task outcomes.
 
-Recovery reminders use canonical task/project identities and authenticated
-prior claimant, machine and execution context when present. They ask the agent
-to check existing progress, with the outcome unknown; they never authorize
-restarting work. Work held by a current live peer is excluded. Delayed replies
-are bound to the workspace, project revision, consent epoch, terminal and exact
-native actor. Withdrawal aborts pending requests and retires pending input;
-accepted gateway tasks remain on the gateway. Unsupported profiles defer.
-
-A directory lease expiry does not prove that a local executor stopped. A CLI
-executor or a consent-off pane can remain busy without heartbeats. Recovery of
-another local generation requires its retained private registration record and
-positive native exit or generation-replacement evidence. Missing, corrupt or
-unreadable local proof defers that recovery; old installations may therefore
-need explicit inspection and handoff. Of the eligible registered Codex recipients
-in a fresh directory snapshot, one deterministic recipient gets that context.
-This never transfers the old claim or authorizes restarting work.
-
-The bounded delivery ledger reclaims capacity only from exact recipient
-addresses whose native launcher or agent generation is provably gone. It keeps
-all input fences for live or unverifiable recipients, including uncertain
-attempts, and refuses new input when those fences fill its capacity.
-
-The submission coordinator checks native identity, foreground ownership,
-unread terminal input, exact styled empty prompt, settling and consent/input
-checkpoints. It persists an uncertain attempt before enqueueing a bracketed
-paste and Enter. A second readiness check follows persistence. Input known not
-to have reached the input API can return to pending; after any input attempt,
-errors remain uncertain. Duplicate attempts retain the same delivery fence.
-
-Native input-channel acceptance is recorded as Enqueued. It proves neither
-physical PTY delivery nor agent understanding, task ownership or execution start.
-Further reminders wait for the unique input marker to appear before considering
-another idle prompt; this is input-path observation, not semantic acknowledgment.
-
-Two separate opt-in checks require installed, authenticated native Codex:
+Three optional input-only installed-provider probes exercise the retained
+recipient/readiness primitives and native agent registration. They require
+installed, authenticated providers. They type and clear unsubmitted input only:
+no Enter, model request, gateway mutation or task claim is sent.
 
 ```sh
-# Input only: never sends Enter or starts a model turn.
 cargo test --locked --test installed_provider_contract -- --ignored --nocapture
-
-# Sends ONE real model request for an exact reply, requesting no tools or files.
-cargo test --locked --test provider_turn_contract -- --ignored --nocapture
-```
-
-The first checks partial input, identical placeholder text moved to Home,
-buffered input while the provider is stopped, clearing and consent withdrawal.
-The second uses a local transport fixture rather than a gateway task. It checks
-busy deferral, continuation readiness, checked enqueueing and duplicate
-suppression. Its local summary is `artifacts/native-turn-evidence.json`.
-Neither check establishes cross-machine gateway handoff or platform acceptance.
-Normal tests and CI do not submit provider turns.
-
-The separate Claude input-only check requires installed, authenticated native
-Claude Code 2.1.308:
-
-```sh
 cargo test --locked --test claude_provider_contract -- --ignored --nocapture
-```
-
-It binds the real native installer image (`claude/versions/2.1.308`), types and
-clears input without Enter, and checks that partial text and whitespace defer.
-With `NO_COLOR=1`, typed placeholder text moved to Home has the same composer
-text, cursor and styles as an empty prompt; the footer changes. This evidence
-does not establish a safe Claude readiness profile or busy/continuation behavior.
-Claude reminder input remains disabled. The compact local result is
-`artifacts/claude-native-input-evidence.json`.
-
-A separate opt-in Linux check launches two native Codex 0.163.0 sessions and one
-Claude 2.1.308 session concurrently in the same project:
-
-```sh
 cargo test --locked --test installed_three_agents_contract -- --ignored --nocapture
 ```
 
-It checks distinct registered sessions, instances and agent processes, rejects
-peer recipient addresses, observes unsubmitted input only in its selected pane,
-then closes that pane while preserving both peers. It sends no Enter, model
-request or gateway mutation. Its compact local summary is
-`artifacts/three-installed-agents-evidence.json`. This is native PTY evidence;
-it does not establish GUI focus behavior, gateway claim/delegation acceptance,
-or Windows acceptance.
+The Codex input probe checks exact native binding, default-off consent,
+buffered/partial input, placeholder styling and readiness-proof invalidation.
+The Claude probe preserves the observation that typed placeholder text moved to
+Home can have the same text, cursor and styles as an empty composer; its retained
+readiness gate still defers that input. The three-agent probe checks distinct
+registered identities, exact recipient fences, input only at the selected
+terminal and retirement of one pane while peers survive.
 
-The local optimized Linux GUI check in
-`artifacts/desktop-recovery-native/evidence.json` uses controlled Codex-profile
-native processes and a real private gateway at `017ff5c`. Its build manifest
-records the exact source base, desktop patch hash and immutable binary hashes.
-Three same-project sessions have distinct IDs and generations. Consent off
-registers none; human partial input prevents receipt and input. Clearing the
-prompt then hiding the recipient permits one bracketed reminder and Enter only
-in that recipient. Both peers remain untouched, the task stays TODO/unowned and
-unstarted, and repeated queries do not duplicate input. Source tests additionally
-reject late consent/project/actor callbacks and expired recovery snapshots.
-These checks submit no model turns and establish neither installed-provider
-understanding, native Windows readiness nor deployed cross-machine acceptance.
+A separate optional library-coordinator probe sends ONE real model request for
+an exact response, requesting no tools or file changes:
+
+```sh
+cargo test --locked --test provider_turn_contract -- --ignored --nocapture
+```
+
+It tests the retained `submit_literal`/`ReadinessGate` path against installed
+Codex 0.163.0: busy deferral, continuation readiness, checked enqueue and duplicate
+suppression. It does not exercise the current desktop event-notification path.
+Normal tests and CI never run these opt-in installed-provider/model-turn checks.
+Neither these probes nor controlled fixtures establish deployed cross-machine
+execution, generic provider readiness or automatic memory-context acceptance.
+
+Historical evidence under `artifacts/native-turn-evidence.json`,
+`artifacts/desktop-recovery-native/`, `artifacts/claude-native-input-evidence.json`
+and `artifacts/three-installed-agents-evidence.json` retains its original build
+and scope limitations. Retained library coordinator tests do not validate the
+current desktop notification path. New acceptance evidence must identify the
+exact primitive or active event delivery path and artifact it exercised; native
+Windows and installed-provider end-to-end review remain separate acceptance work.

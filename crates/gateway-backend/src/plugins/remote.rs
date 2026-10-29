@@ -28,10 +28,12 @@ use std::{
     time::Duration,
 };
 use tokio::{sync::Notify, time::Instant};
+use uuid::Uuid;
 
 pub const PLUGIN: &str = "remote";
 pub const HEARTBEAT: &str = "client.heartbeat";
 pub const ACTIVITY: &str = "terminal.activity";
+pub(crate) const REPLAY_WINDOW_MS: i64 = 86_400_000;
 const FRAME_BYTES: usize = 65536;
 const SCAN: i64 = 100;
 
@@ -119,10 +121,18 @@ pub fn events() -> Vec<EventDefinition> {
     ]
 }
 
-/// Every agent the client currently runs:
+/// Every agent the client currently runs. Optional `client_run` identifies one
+/// desktop lifetime and stays stable across transport reconnects.
 /// `{"agents":[{"session_id","instance_id","provider","os","project",
 ///   "name"?,"goal"?,"agent_id"?,"generation"?}]}`
 fn heartbeat(payload: &Value) -> std::result::Result<(), String> {
+    if !payload["client_run"].is_null()
+        && payload["client_run"]
+            .as_str()
+            .is_none_or(|run| Uuid::parse_str(run).is_err())
+    {
+        return Err("client_run must be a UUID when present".into());
+    }
     let agents = payload["agents"]
         .as_array()
         .ok_or("agents must be a list")?;
@@ -162,9 +172,25 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             connection_id TEXT,
             cursor        INTEGER NOT NULL,
             last_seen_at  INTEGER NOT NULL
-        );",
+        );
+        CREATE INDEX IF NOT EXISTS idx_remote_consumers_cursor ON remote_consumers(cursor);",
     )?;
     Ok(())
+}
+
+/// Expire abandoned registrations and return the oldest remaining replay cursor.
+/// Called inside the Retention controller's cleanup transaction. Recent offline
+/// consumers retain replay; a live connection renews its lease on client input.
+pub(crate) fn retention_cursor(conn: &Connection, now: i64) -> Result<Option<i64>> {
+    conn.execute(
+        "DELETE FROM remote_consumers WHERE last_seen_at<=?1",
+        params![now.saturating_sub(REPLAY_WINDOW_MS)],
+    )?;
+    Ok(
+        conn.query_row("SELECT MIN(cursor) FROM remote_consumers", [], |row| {
+            row.get(0)
+        })?,
+    )
 }
 
 #[derive(Deserialize)]
@@ -268,6 +294,12 @@ async fn serve(mut socket: WebSocket, state: AppState, peer: Option<crate::secur
             _ = tick.tick() => None,
         };
         if let Some(reply) = reply {
+            if let Some(subscribed) = &consumer {
+                let renewed = renew(&bus.db().lock().unwrap(), &connection, &subscribed.id);
+                if !renewed.unwrap_or(false) {
+                    break;
+                }
+            }
             let frame = reply
                 .unwrap_or_else(|error| json!({"type": "error", "message": error.to_string()}));
             if send(&mut socket, &frame).await.is_err() {
@@ -380,7 +412,10 @@ async fn handle(
                 events: events.into_iter().collect(),
                 targets: targets.into_iter().collect(),
             });
-            Ok(json!({"type": "subscribed", "consumer_id": consumer_id, "cursor": *cursor}))
+            Ok(
+                json!({"type": "subscribed", "consumer_id": consumer_id, "cursor": *cursor,
+                "server_restart_reminders": bus.subscribes(crate::plugins::reminder::PLUGIN, HEARTBEAT, 1)}),
+            )
         }
         Input::Ack { seq } => {
             let subscribed = consumer
@@ -433,8 +468,8 @@ fn subscribe(
 ) -> Result<i64> {
     let known: Option<i64> = conn
         .query_row(
-            "SELECT cursor FROM remote_consumers WHERE consumer_id=?1",
-            params![consumer],
+            "SELECT cursor FROM remote_consumers WHERE consumer_id=?1 AND last_seen_at>?2",
+            params![consumer, db::now_ms().saturating_sub(REPLAY_WINDOW_MS)],
             |row| row.get(0),
         )
         .optional()?;
@@ -463,6 +498,14 @@ fn owns(conn: &Connection, connection: &str, consumer: &str) -> Result<bool> {
         .optional()?
         .flatten();
     Ok(owner.as_deref() == Some(connection))
+}
+
+/// Only the current connection can renew its consumer's replay lease.
+fn renew(conn: &Connection, connection: &str, consumer: &str) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE remote_consumers SET last_seen_at=?3 WHERE consumer_id=?1 AND connection_id=?2",
+        params![consumer, connection, db::now_ms()],
+    )? == 1)
 }
 
 fn advance(conn: &Connection, consumer: &str, seq: i64) -> Result<()> {
@@ -501,6 +544,167 @@ fn next(conn: &Connection, consumer: &Consumer, cursor: &mut i64) -> Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heartbeat_client_lifetime_is_optional_and_validated() {
+        assert!(heartbeat(&json!({"agents":[]})).is_ok());
+        assert!(heartbeat(&json!({"agents":[],"client_run":Uuid::now_v7().to_string()})).is_ok());
+        assert!(heartbeat(&json!({"agents":[],"client_run":"not a UUID"})).is_err());
+        assert!(heartbeat(&json!({"agents":[],"client_run":1})).is_err());
+    }
+
+    fn settled_event(conn: &Connection, seq: i64) {
+        conn.execute(
+            "INSERT INTO router_events(seq,uid,id,version,payload,source,emitted_at)
+             VALUES(?1,?2,'task.created',1,'{}','fixture',0)",
+            params![seq, uuid::Uuid::now_v7().to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO router_deliveries(event_seq,plugin,state,next_attempt_at,updated_at)
+             VALUES(?1,'remote','completed',0,0)",
+            params![seq],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn offline_unacked_consumer_replays_old_event_after_reopening_and_ack_releases_retention() {
+        const DAY_MS: i64 = 86_400_000;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("remote.sqlite");
+        let consumer_id = uuid::Uuid::now_v7().to_string();
+        let subscribed = Consumer {
+            id: consumer_id.clone(),
+            events: ["task.created".to_owned()].into(),
+            targets: HashSet::new(),
+        };
+        let original = {
+            let database = db::open(path.to_str().unwrap()).unwrap();
+            let conn = database.lock().unwrap();
+            settled_event(&conn, 1);
+            let mut cursor = subscribe(&conn, "original", &consumer_id, Some(0)).unwrap();
+            let event = next(&conn, &subscribed, &mut cursor).unwrap().unwrap();
+            // A recent offline consumer retains its unacknowledged delivery,
+            // even when that event itself is older than the retention window.
+            conn.execute(
+                "UPDATE remote_consumers SET connection_id=NULL,last_seen_at=?1",
+                params![db::now_ms() - 1],
+            )
+            .unwrap();
+            assert_eq!(
+                router::prune(
+                    &conn,
+                    2 * DAY_MS,
+                    retention_cursor(&conn, db::now_ms()).unwrap()
+                )
+                .unwrap(),
+                0
+            );
+            event
+        };
+        let database = db::open(path.to_str().unwrap()).unwrap();
+        let conn = database.lock().unwrap();
+        let mut cursor = subscribe(&conn, "reconnected", &consumer_id, None).unwrap();
+        assert_eq!(
+            cursor, 0,
+            "same persisted consumer resumes its unacked cursor"
+        );
+        assert_eq!(
+            next(&conn, &subscribed, &mut cursor).unwrap().unwrap(),
+            original
+        );
+        assert_eq!(
+            router::prune(
+                &conn,
+                2 * DAY_MS,
+                retention_cursor(&conn, db::now_ms()).unwrap()
+            )
+            .unwrap(),
+            0
+        );
+        advance(&conn, &consumer_id, original.seq).unwrap();
+        assert_eq!(
+            router::prune(
+                &conn,
+                2 * DAY_MS,
+                retention_cursor(&conn, db::now_ms()).unwrap()
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            subscribe(&conn, "again", &consumer_id, None).unwrap(),
+            original.seq
+        );
+    }
+
+    #[test]
+    fn expired_consumers_resume_at_tail_and_only_current_connections_renew() {
+        let database = db::open(":memory:").unwrap();
+        let conn = database.lock().unwrap();
+        settled_event(&conn, 1);
+        settled_event(&conn, 2);
+        subscribe(&conn, "old", "consumer", Some(0)).unwrap();
+        conn.execute(
+            "UPDATE remote_consumers SET last_seen_at=?1",
+            params![db::now_ms() - REPLAY_WINDOW_MS],
+        )
+        .unwrap();
+        assert_eq!(
+            subscribe(&conn, "new", "consumer", None).unwrap(),
+            2,
+            "expired default subscriptions start at the tail before cleanup too"
+        );
+        conn.execute("UPDATE remote_consumers SET last_seen_at=0", [])
+            .unwrap();
+        assert!(!renew(&conn, "old", "consumer").unwrap());
+        assert!(renew(&conn, "new", "consumer").unwrap());
+        assert_eq!(retention_cursor(&conn, db::now_ms()).unwrap(), Some(2));
+        assert_eq!(
+            subscribe(&conn, "explicit", "consumer", Some(0)).unwrap(),
+            0,
+            "explicit replay remains available within retained history"
+        );
+    }
+
+    #[test]
+    fn nonmatching_consumer_advances_and_releases_the_shared_retention_boundary() {
+        let database = db::open(":memory:").unwrap();
+        let conn = database.lock().unwrap();
+        for seq in 1..=3 {
+            settled_event(&conn, seq);
+        }
+        subscribe(&conn, "fast", "fast-consumer", Some(3)).unwrap();
+        let mut cursor = subscribe(&conn, "slow", "slow-consumer", Some(0)).unwrap();
+        assert_eq!(retention_cursor(&conn, db::now_ms()).unwrap(), Some(0));
+        assert_eq!(
+            router::prune(
+                &conn,
+                i64::MAX,
+                retention_cursor(&conn, db::now_ms()).unwrap()
+            )
+            .unwrap(),
+            0
+        );
+        let unrelated = Consumer {
+            id: "slow-consumer".into(),
+            events: ["agent.notify".to_owned()].into(),
+            targets: HashSet::new(),
+        };
+        assert!(next(&conn, &unrelated, &mut cursor).unwrap().is_none());
+        assert_eq!(cursor, 3);
+        assert_eq!(retention_cursor(&conn, db::now_ms()).unwrap(), Some(3));
+        assert_eq!(
+            router::prune(
+                &conn,
+                i64::MAX,
+                retention_cursor(&conn, db::now_ms()).unwrap()
+            )
+            .unwrap(),
+            3
+        );
+    }
 
     #[test]
     fn consumers_skip_unsubscribed_and_other_agents_targeted_events() {

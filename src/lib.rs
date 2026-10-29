@@ -5,6 +5,7 @@ pub mod gateway;
 pub mod gateway_preferences;
 pub mod gateway_project;
 pub mod gateway_transport;
+mod git;
 pub mod harness;
 pub mod identity;
 pub mod migration;

@@ -11,6 +11,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 
 pub const PLUGIN: &str = "assignment";
 pub const COMMENT: &str = "Automatically assigned by amux after 30 seconds without output from this agent's terminal. Evaluate whether this task is still required. If a user decision is needed, record the question and move the task to User review. Close obsolete work with a reason; otherwise start execution. Respect platform requirements.";
@@ -21,13 +22,39 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             notify_uid TEXT PRIMARY KEY,
             task_id    TEXT NOT NULL,
             project    TEXT NOT NULL,
-            session_id TEXT NOT NULL
+            session_id TEXT NOT NULL,
+            reporter_source TEXT
         );
+        CREATE INDEX IF NOT EXISTS assignment_offers_task ON assignment_offers(task_id);
         CREATE TABLE IF NOT EXISTS assignment_refusals (
             session_id TEXT PRIMARY KEY,
             output_at  INTEGER NOT NULL
-        );",
+        );
+        CREATE TRIGGER IF NOT EXISTS assignment_offer_task_updated AFTER UPDATE ON tasks BEGIN
+            DELETE FROM assignment_offers WHERE task_id=NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS assignment_offer_task_deleted AFTER DELETE ON tasks BEGIN
+            DELETE FROM assignment_offers WHERE task_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS assignment_offer_commented AFTER INSERT ON task_comments BEGIN
+            DELETE FROM assignment_offers WHERE task_id=NEW.task_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS assignment_offer_comment_updated AFTER UPDATE ON task_comments BEGIN
+            DELETE FROM assignment_offers WHERE task_id IN (OLD.task_id,NEW.task_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS assignment_offer_comment_deleted AFTER DELETE ON task_comments BEGIN
+            DELETE FROM assignment_offers WHERE task_id=OLD.task_id;
+        END;",
     )?;
+    let has_source: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('assignment_offers') WHERE name='reporter_source')",
+        [], |row|row.get(0),
+    )?;
+    if !has_source {
+        // Legacy offers retain their task/row but cannot authorize a callback:
+        // their original authenticated reporter was never captured.
+        conn.execute_batch("ALTER TABLE assignment_offers ADD COLUMN reporter_source TEXT")?;
+    }
     Ok(())
 }
 
@@ -87,65 +114,71 @@ fn release(conn: &Connection, event: &Event) -> Result<()> {
     let Some(correlation) = event.correlation else {
         return Ok(());
     };
-    let offer: Option<(String, String, String)> = conn
-        .query_row(
-            "DELETE FROM assignment_offers WHERE notify_uid=?1 RETURNING task_id, project, session_id",
-            params![correlation.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    let Some((task, _project, session)) = offer else {
-        return Ok(());
-    };
-    if event.payload["status"] == "delivered" {
-        return Ok(());
-    }
-    // Only while the agent still holds it untouched.
+    // Consume the offer only if the task release and refusal both commit. A
+    // failed run must retain the offer so the router can retry compensation.
     task_events::mutation(conn, None, |tx| {
-        Ok(tx.execute(
+        let offer: Option<(String, String)> = tx
+            .query_row(
+                "DELETE FROM assignment_offers WHERE notify_uid=?1 AND session_id=?2 AND reporter_source=?3
+                 RETURNING task_id, session_id",
+                params![correlation.to_string(),event.payload["target"].as_str(),event.source],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((task, session)) = offer else {
+            return Ok(());
+        };
+        if event.payload["status"] == "delivered" {
+            return Ok(());
+        }
+        // Only while the agent still holds it untouched.
+        tx.execute(
             "UPDATE tasks SET status='todo', owner_agent_id=NULL, owner_origin_json=NULL,
              started_at=NULL, updated_at=?3
              WHERE id=?1 AND status='in_progress' AND json_extract(owner_origin_json,'$.session_id')=?2",
             params![task, session, db::now_ms()],
-        )?)
-    })?;
-    // The refusing session stays idle and oldest, so it would win the same task
-    // every tick. Skip it until its terminal shows new output.
-    conn.execute(
-        "INSERT OR REPLACE INTO assignment_refusals(session_id, output_at)
-         SELECT session_id, output_at FROM presence_agents
-         WHERE session_id=?1 AND output_at IS NOT NULL",
-        params![session],
-    )?;
-    Ok(())
+        )?;
+        // The refusing session stays idle and oldest, so it would win the same
+        // task every tick. Skip it until its terminal shows new output.
+        if let Some(output_at) = presence::last_output(tx, &session)? {
+            tx.execute(
+                "INSERT OR REPLACE INTO assignment_refusals(session_id, output_at) VALUES(?1,?2)",
+                params![session, output_at],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
-    // New output (or a departed session) ends a refusal.
-    conn.execute(
-        "DELETE FROM assignment_refusals WHERE NOT EXISTS (
-             SELECT 1 FROM presence_agents p
-             WHERE p.session_id=assignment_refusals.session_id
-               AND p.output_at=assignment_refusals.output_at)",
-        [],
-    )?;
-    let agents: Vec<Value> = conn
-        .prepare(
-            "SELECT agent_json FROM presence_agents
-             WHERE state='idle' AND draft=0 AND output_at IS NOT NULL
-               AND ?1-output_at >= ?2 AND ?1-seen_at < ?3
-               AND session_id NOT IN (SELECT session_id FROM assignment_refusals)
-             ORDER BY output_at, session_id",
-        )?
-        .query_map(
-            params![now, presence::IDLE_AFTER_MS, presence::GONE_AFTER_MS],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?
+    let agents = presence::agents(conn, now)?;
+    let outputs: HashMap<_, _> = agents
         .iter()
-        .map(|agent| serde_json::from_str(agent))
-        .collect::<serde_json::Result<_>>()?;
-    for agent in agents {
+        .map(|agent| (agent.session_id.as_str(), agent.output_at))
+        .collect();
+    // New output (or a departed session) ends a refusal.
+    let refusals = conn
+        .prepare("SELECT session_id,output_at FROM assignment_refusals")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut refused = HashSet::new();
+    for (session, output_at) in refusals {
+        if outputs.get(session.as_str()) == Some(&Some(output_at)) {
+            refused.insert(session);
+        } else {
+            conn.execute(
+                "DELETE FROM assignment_refusals WHERE session_id=?1",
+                params![session],
+            )?;
+        }
+    }
+    for report in agents {
+        if !report.idle(now) || refused.contains(&report.session_id) {
+            continue;
+        }
+        let agent = report.agent;
         let project = agent["project"].as_str().unwrap_or_default();
         let session = agent["session_id"].as_str().unwrap_or_default();
         let busy: bool = conn.query_row(
@@ -185,22 +218,20 @@ fn queued(conn: &Connection, project: &str) -> Result<Vec<Value>> {
 
 /// Port of the desktop backlog eligibility rules.
 pub fn eligible(task: &Value, agent: &Value) -> bool {
-    let labels: Vec<&str> = task["labels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
+    let labels: Vec<String> = if task["labels"].is_null() {
+        Vec::new()
+    } else {
+        let Ok(labels) = serde_json::from_value(task["labels"].clone()) else {
+            return false;
+        };
+        labels
+    };
     let session = agent["session_id"].as_str().unwrap_or_default();
-    let os = labels
-        .iter()
-        .filter_map(|label| label.strip_prefix("os:"))
-        .collect::<Vec<_>>();
-    if os.len() > 1
-        || os
-            .first()
-            .is_some_and(|os| agent["os"].as_str() != Some(os))
-        || labels.contains(&format!("review-exclude:{session}").as_str())
+    let Ok(os) = crate::task_platform::required_os(&labels) else {
+        return false;
+    };
+    if os.is_some_and(|os| agent["os"].as_str() != Some(os))
+        || labels.contains(&format!("review-exclude:{session}"))
         || task["status"] != "todo"
         || (task["kind"] == "delegated" && task["delegated_to_task_id"].is_string())
         || (!task["goal"].is_null() && task["goal"] != agent["goal"])
@@ -229,6 +260,9 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
 /// Claim as the agent, record why, and ask it to start. Returns false when the
 /// task store rejects the claim.
 fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> Result<bool> {
+    let reporter_source = agent["source"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("assignment agent is missing its authenticated report source")
+    })?;
     let origin = AgentOrigin {
         session_id: agent["session_id"].as_str().unwrap_or_default().into(),
         instance_id: agent["instance_id"].as_str().unwrap_or_default().into(),
@@ -255,11 +289,15 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         };
         // The task store enforces OS and reviewer exclusion;
         // a rejected claim rolls back and the task is simply not eligible.
-        db::update_task(tx, project, id, &update, Some(&actor))?
-            .ok_or_else(|| anyhow::anyhow!("task {id} disappeared"))?;
+        if db::update_task(tx, project, id, &update, Some(&actor))?.is_none() {
+            return Ok(false);
+        }
         db::insert_comment(tx, id, "amux", "system", COMMENT)?;
         let current: String = tx.query_row(
-            &format!("SELECT {} FROM tasks t WHERE t.id=?1", task_events::task_json("t")),
+            &format!(
+                "SELECT {} FROM tasks t WHERE t.id=?1",
+                task_events::task_json("t")
+            ),
             params![id],
             |row| row.get(0),
         )?;
@@ -280,17 +318,27 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
                       "task": current, "comment": null, "origin": null},
         });
         let uid = notify::emit(tx, ctx, payload)?;
+        // Insert last: any later task or comment mutation invalidates the offer
+        // atomically, so a delayed delivery result cannot undo touched work.
         tx.execute(
-            "INSERT INTO assignment_offers(notify_uid,task_id,project,session_id) VALUES(?1,?2,?3,?4)",
-            params![uid.to_string(), id, project, session],
+            "INSERT INTO assignment_offers(notify_uid,task_id,project,session_id,reporter_source) VALUES(?1,?2,?3,?4,?5)",
+            params![uid.to_string(), id, project, session,reporter_source],
         )?;
         Ok(true)
-    })
-    .unwrap_or_else(|error| {
-        tracing::debug!("Assignment of {id} to {} rejected: {error}", origin.session_id);
-        false
     });
-    Ok(claimed)
+    match claimed {
+        Err(error)
+            if error.is::<crate::task_dispatch::Conflict>()
+                || error.is::<task_events::OwnershipConflict>() =>
+        {
+            tracing::debug!(
+                "Assignment of {id} to {} rejected: {error}",
+                origin.session_id
+            );
+            Ok(false)
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]
@@ -301,7 +349,7 @@ mod tests {
 
     fn agent(session: &str) -> Value {
         json!({"session_id": session, "instance_id": "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0002",
-               "provider": "claude", "os": "linux", "project": "p"})
+               "provider": "claude", "os": "linux", "project": "p","source":"client-fixture"})
     }
 
     async fn settle(database: &db::Db) {
@@ -464,10 +512,15 @@ mod tests {
         draft: bool,
         state: &str,
     ) {
-        database.lock().unwrap().execute(
-            "INSERT INTO presence_agents(session_id,source,agent_json,seen_at,output_at,draft,state) VALUES(?1,'client-fixture',?2,?3,?4,?5,?6)",
-            params![agent["session_id"].as_str(), agent.to_string(), seen_at, db::now_ms()-quiet, draft, state],
-        ).unwrap();
+        presence::seed_report(
+            &database.lock().unwrap(),
+            "client-fixture",
+            agent,
+            seen_at,
+            Some(db::now_ms() - quiet),
+            draft,
+            state,
+        );
     }
 
     fn setup() -> (db::Db, router::Bus, tokio::task::JoinHandle<()>) {
@@ -515,6 +568,449 @@ mod tests {
         .await
         .unwrap();
         settle(database).await;
+    }
+
+    fn skipped_result(notify: &str) -> Event {
+        Event {
+            seq: 0,
+            id: notify::RESULT.into(),
+            version: 1,
+            uid: uuid::Uuid::now_v7(),
+            payload: json!({"target":session(1,"p")["session_id"], "status":"skipped", "reason":"busy"}),
+            source: "client-fixture".into(),
+            emitted_at: db::now_ms(),
+            correlation: Some(notify.parse().unwrap()),
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_receipts_require_captured_source_and_target_even_after_presence_is_gone() {
+        let (database, bus, worker) = setup();
+        worker.abort();
+        let agent = session(1, "p");
+        seed_agent(
+            &database,
+            agent.clone(),
+            db::now_ms(),
+            40_000,
+            false,
+            "idle",
+        );
+        let task = queue(&database, "p", 1, &[]);
+        let ctx = router::test_context(&bus, PLUGIN);
+        let conn = database.lock().unwrap();
+        assert!(claim(&conn, &ctx, &agent, &queued(&conn, "p").unwrap()[0]).unwrap());
+        let notify: String = conn
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        for status in ["delivered", "skipped", "failed"] {
+            let mut result = skipped_result(&notify);
+            result.payload["status"] = json!(status);
+            result.source = "client:other".into();
+            release(&conn, &result).unwrap();
+            result.source = "client-fixture".into();
+            result.payload["target"] = json!("another-session");
+            release(&conn, &result).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1,
+                "invalid {status} receipt must not consume the offer"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT status FROM tasks WHERE id=?1",
+                    params![task],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+                "in_progress"
+            );
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM assignment_refusals", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        conn.execute("DELETE FROM task_target_presence", [])
+            .unwrap();
+        release(&conn, &skipped_result(&notify)).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM tasks WHERE id=?1",
+                params![task],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "todo",
+            "captured reporter may compensate after its live report is gone"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_offer_upgrade_preserves_rows_and_claims_without_granting_callback_authority() {
+        let (database, bus, worker) = setup();
+        let task = queue(&database, "p", 1, &[]);
+        let agent = session(1, "p");
+        bus.emit(
+            "client-fixture",
+            plugins::remote::HEARTBEAT,
+            1,
+            json!({"agents":[agent]}),
+            None,
+        )
+        .await
+        .unwrap();
+        settle(&database).await;
+        bus.emit("client-fixture",plugins::remote::ACTIVITY,1,json!({"session_id":agent["session_id"],"instance_id":agent["instance_id"],"output_at":db::now_ms()-40_000,"draft":false}),None).await.unwrap();
+        settle(&database).await;
+        tick(&bus, &database).await;
+        worker.abort();
+        let conn = database.lock().unwrap();
+        let notify: String = conn
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let retained_source: String = conn.query_row(
+            "SELECT json_extract(p.payload,'$.agent.source') FROM router_events p,router_events n
+             WHERE n.uid=?1 AND p.seq<n.seq AND p.source='plugin:presence' AND p.id='agent.idle'
+               AND json_extract(p.payload,'$.agent.session_id')=?2 ORDER BY p.seq DESC LIMIT 1",
+            params![notify,agent["session_id"].as_str()],|row|row.get(0),
+        ).unwrap();
+        assert_eq!(
+            retained_source, "client-fixture",
+            "HEAD-style pending offer retains authentic source transition history"
+        );
+        let before = serde_json::to_value(
+            db::get_task_detail(&conn, "p", &task)
+                .unwrap()
+                .unwrap()
+                .task,
+        )
+        .unwrap();
+        conn.execute_batch("ALTER TABLE assignment_offers DROP COLUMN reporter_source")
+            .unwrap();
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        for status in ["delivered", "skipped", "failed"] {
+            let mut result = skipped_result(&notify);
+            result.payload["status"] = json!(status);
+            release(&conn, &result).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM assignment_offers WHERE reporter_source IS NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        let after = serde_json::to_value(
+            db::get_task_detail(&conn, "p", &task)
+                .unwrap()
+                .unwrap()
+                .task,
+        )
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "migration and unprovable callbacks leave the claim intact"
+        );
+        // HEAD had no offer-invalidation triggers. A same-ms progress comment
+        // leaves every task field equal to the notification snapshot; source
+        // history alone cannot prove the old claim remained untouched.
+        conn.execute_batch(
+            "DROP TRIGGER assignment_offer_commented; DROP TRIGGER assignment_offer_task_updated;",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO task_comments(id,task_id,author,author_type,content,created_at)
+             SELECT ?1,id,'owner','agent','Progress before upgrade',updated_at FROM tasks WHERE id=?2",
+             params![uuid::Uuid::now_v7().to_string(),task]).unwrap();
+        conn.execute(
+            "UPDATE tasks SET updated_at=updated_at WHERE id=?1",
+            params![task],
+        )
+        .unwrap();
+        initialize(&conn).unwrap();
+        release(&conn, &skipped_result(&notify)).unwrap();
+        let touched = serde_json::to_value(
+            db::get_task_detail(&conn, "p", &task)
+                .unwrap()
+                .unwrap()
+                .task,
+        )
+        .unwrap();
+        assert_eq!(
+            touched, before,
+            "same-ms progress has no immutable revision in a legacy offer"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM assignment_offers WHERE reporter_source IS NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "retained source history must not reauthorize a touched legacy offer"
+        );
+        conn.execute(
+            "UPDATE tasks SET title='Progress recorded' WHERE id=?1",
+            params![task],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "normal task mutation still retires legacy offers"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_skip_preserves_progress_even_when_comment_timestamp_matches_claim() {
+        let (database, bus, worker) = setup();
+        worker.abort();
+        let task = queue(&database, "p", 1, &[]);
+        let ctx = router::test_context(&bus, PLUGIN);
+        let conn = database.lock().unwrap();
+        assert!(claim(
+            &conn,
+            &ctx,
+            &session(1, "p"),
+            &queued(&conn, "p").unwrap()[0]
+        )
+        .unwrap());
+        let notify: String = conn
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO task_comments(id,task_id,author,author_type,content,created_at)
+             SELECT ?1,id,'agent','agent','Working on this now',updated_at FROM tasks WHERE id=?2",
+            params![uuid::Uuid::now_v7().to_string(), task],
+        )
+        .unwrap();
+        release(&conn, &skipped_result(&notify)).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM tasks WHERE id=?1",
+                params![task],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "in_progress"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_skip_cannot_release_a_new_claim_by_the_same_session() {
+        let (database, bus, worker) = setup();
+        worker.abort();
+        let task = queue(&database, "p", 1, &[]);
+        let ctx = router::test_context(&bus, PLUGIN);
+        let conn = database.lock().unwrap();
+        assert!(claim(
+            &conn,
+            &ctx,
+            &session(1, "p"),
+            &queued(&conn, "p").unwrap()[0]
+        )
+        .unwrap());
+        let first: String = conn
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute("UPDATE tasks SET status='todo',owner_agent_id=NULL,owner_origin_json=NULL,started_at=NULL WHERE id=?1", params![task]).unwrap();
+        assert!(claim(
+            &conn,
+            &ctx,
+            &session(1, "p"),
+            &queued(&conn, "p").unwrap()[0]
+        )
+        .unwrap());
+        let second: String = conn
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_ne!(first, second);
+        release(&conn, &skipped_result(&first)).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM tasks WHERE id=?1",
+                params![task],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "in_progress"
+        );
+        assert_eq!(
+            conn.query_row("SELECT notify_uid FROM assignment_offers", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            second
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_rejections_skip_the_task_but_storage_failures_are_retryable() {
+        let (database, bus, worker) = setup();
+        worker.abort();
+        let task = queue(&database, "p", 1, &[]);
+        let ctx = router::test_context(&bus, PLUGIN);
+        let conn = database.lock().unwrap();
+        let queued = queued(&conn, "p").unwrap().remove(0);
+        let mut incompatible = session(1, "p");
+        incompatible["os"] = json!("windows");
+        conn.execute(
+            "UPDATE tasks SET labels='[\"os:linux\"]' WHERE id=?1",
+            params![task],
+        )
+        .unwrap();
+        assert!(!claim(&conn, &ctx, &incompatible, &queued).unwrap());
+        conn.execute_batch(
+            "CREATE TRIGGER fail_offer BEFORE INSERT ON assignment_offers
+             BEGIN SELECT RAISE(ABORT, 'offer storage unavailable'); END;",
+        )
+        .unwrap();
+        let error = claim(&conn, &ctx, &session(1, "p"), &queued).unwrap_err();
+        assert!(error.to_string().contains("offer storage unavailable"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM tasks WHERE id=?1",
+                params![task],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "todo"
+        );
+        for table in ["assignment_offers", "task_comments"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM router_events WHERE id='agent.notify'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        conn.execute_batch("DROP TRIGGER fail_offer").unwrap();
+        assert!(claim(&conn, &ctx, &session(1, "p"), &queued).unwrap());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_release_retains_the_offer_and_replays_compensation_atomically() {
+        let (database, bus, worker) = setup();
+        worker.abort();
+        seed_agent(
+            &database,
+            session(1, "p"),
+            db::now_ms(),
+            40_000,
+            false,
+            "idle",
+        );
+        let task = queue(&database, "p", 1, &[]);
+        let ctx = router::test_context(&bus, PLUGIN);
+        let conn = database.lock().unwrap();
+        assert!(claim(
+            &conn,
+            &ctx,
+            &session(1, "p"),
+            &queued(&conn, "p").unwrap()[0]
+        )
+        .unwrap());
+        let notify: String = conn
+            .query_row("SELECT notify_uid FROM assignment_offers", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let result = skipped_result(&notify);
+        conn.execute_batch(
+            "CREATE TRIGGER fail_refusal BEFORE INSERT ON assignment_refusals
+             BEGIN SELECT RAISE(ABORT, 'refusal storage unavailable'); END;",
+        )
+        .unwrap();
+        assert!(release(&conn, &result)
+            .unwrap_err()
+            .to_string()
+            .contains("refusal storage unavailable"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM tasks WHERE id=?1",
+                params![task],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "in_progress"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        conn.execute_batch("DROP TRIGGER fail_refusal").unwrap();
+        release(&conn, &result).unwrap();
+        release(&conn, &result).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM tasks WHERE id=?1",
+                params![task],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "todo"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_offers", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_refusals", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -648,7 +1144,7 @@ mod tests {
             .lock()
             .unwrap()
             .execute(
-                "UPDATE presence_agents SET output_at=NULL WHERE session_id=?1",
+                "UPDATE task_target_presence SET output_at=NULL WHERE session_id=?1",
                 params![session(4, "p")["session_id"].as_str()],
             )
             .unwrap();
@@ -667,7 +1163,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .query_row(
-                    "SELECT COUNT(*) FROM presence_agents WHERE session_id=?1",
+                    "SELECT COUNT(*) FROM task_target_presence WHERE session_id=?1 AND report_seen_at IS NOT NULL",
                     params![session(3, "p")["session_id"].as_str()],
                     |row| row.get::<_, i64>(0)
                 )
@@ -743,7 +1239,7 @@ mod tests {
             .lock()
             .unwrap()
             .execute(
-                "UPDATE presence_agents SET output_at=output_at+1 WHERE session_id=?1",
+                "UPDATE task_target_presence SET output_at=output_at+1 WHERE session_id=?1",
                 params![session(1, "p")["session_id"].as_str()],
             )
             .unwrap();

@@ -1,3 +1,4 @@
+use reqwest::Url;
 use sha2::{Digest, Sha256};
 
 /// Normalize an existing project identifier supplied by a client.
@@ -74,6 +75,61 @@ pub fn sanitize_ident(raw: &str) -> String {
     }
 }
 
+/// Shared client/server repository identity: host, non-default port and path.
+/// Rejects ambiguous local paths, unsupported protocols and secret-bearing URLs.
+pub fn canonical_remote(value: &str) -> Option<String> {
+    if value.len() > 4096 || value.chars().any(char::is_control) {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None;
+    }
+    let canonical = !value.contains("://")
+        && value.split_once('/').is_some_and(|(authority, _)| {
+            !authority.contains('@')
+                && (authority.contains('.')
+                    || authority.starts_with('[')
+                    || authority.split(':').next() == Some("localhost"))
+                && authority
+                    .rsplit_once(':')
+                    .is_none_or(|(_, port)| authority.ends_with(']') || port.parse::<u16>().is_ok())
+        });
+    let url = if value.contains("://") {
+        Url::parse(value).ok()?
+    } else if canonical {
+        // A canonical host:port/path has no protocol defaults to discard.
+        // SSH is non-special to URL parsing, so even :80/:443 stay explicit.
+        Url::parse(&format!("ssh://{value}")).ok()?
+    } else {
+        let (host, path) = value.split_once(':')?;
+        if host.contains('/') {
+            return None;
+        }
+        Url::parse(&format!("ssh://{host}/{path}")).ok()?
+    };
+    if !matches!(url.scheme(), "https" | "http" | "ssh" | "git")
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let path = url.path().trim_matches('/').to_ascii_lowercase();
+    let path = path.strip_suffix(".git").unwrap_or(&path);
+    if path.is_empty() {
+        return None;
+    }
+    let port = url.port().filter(|p| {
+        canonical || !(url.scheme() == "ssh" && *p == 22 || url.scheme() == "git" && *p == 9418)
+    });
+    Some(match port {
+        Some(port) => format!("{host}:{port}/{path}"),
+        None => format!("{host}/{path}"),
+    })
+}
+
 /// A repository reference parsed from a git remote URL or canonical ident.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRef {
@@ -120,68 +176,18 @@ fn provider_for_host(host: &str) -> String {
 /// Returns `None` for anything that is not host + at least two path segments,
 /// which includes bare filesystem paths and plain project names.
 pub fn parse_remote(raw: &str) -> Option<RepoRef> {
-    let mut s = raw.trim().to_string();
-    if s.is_empty() {
+    let canonical = canonical_remote(raw.trim())?;
+    let (authority, path) = canonical.split_once('/')?;
+    let (namespace, name) = path.rsplit_once('/')?;
+    if namespace.is_empty() || name.is_empty() {
         return None;
     }
-    for proto in ["https://", "http://", "ssh://", "git://"] {
-        if let Some(rest) = s.strip_prefix(proto) {
-            s = rest.to_string();
-            break;
-        }
-    }
-    // Filesystem paths are never remotes.
-    if s.starts_with('/') || s.starts_with('~') || s.starts_with('.') || s.contains(":\\") {
-        return None;
-    }
-    // scp-style `user@host:path` -> `host/path`.
-    if let Some(at) = s.find('@') {
-        let before_slash = s.find('/').map(|i| at < i).unwrap_or(true);
-        if before_slash {
-            s = s[at + 1..].to_string();
-        }
-    }
-    if let Some(colon) = s.find(':') {
-        let slash = s.find('/');
-        if slash.map(|i| colon < i).unwrap_or(true) {
-            // Drop an explicit port (`host:2222/path`) or turn scp `host:path`
-            // into `host/path`.
-            let tail = &s[colon + 1..];
-            let port_len = tail.chars().take_while(|c| c.is_ascii_digit()).count();
-            if port_len > 0 && tail[port_len..].starts_with('/') {
-                s = format!("{}{}", &s[..colon], &tail[port_len..]);
-            } else {
-                s = format!("{}/{}", &s[..colon], tail.trim_start_matches('/'));
-            }
-        }
-    }
-    let s = s.trim_end_matches('/');
-    let mut segments: Vec<&str> = s.split('/').filter(|seg| !seg.is_empty()).collect();
-    if segments.len() < 3 {
-        return None;
-    }
-    let host = segments.remove(0);
-    if !host.contains('.') && host != "localhost" {
-        return None;
-    }
-    let name = segments
-        .pop()
-        .map(|n| n.trim_end_matches(".git").to_lowercase())
-        .filter(|n| !n.is_empty())?;
-    let namespace = segments
-        .iter()
-        .map(|seg| seg.to_lowercase())
-        .collect::<Vec<_>>()
-        .join("/");
-    if namespace.is_empty() {
-        return None;
-    }
-    let host = host.to_lowercase();
+    let url = Url::parse(&format!("https://{authority}")).ok()?;
     Some(RepoRef {
-        provider: provider_for_host(&host),
-        canonical: format!("{host}/{namespace}/{name}"),
-        namespace,
-        name,
+        provider: provider_for_host(url.host_str()?),
+        namespace: namespace.to_owned(),
+        name: name.to_owned(),
+        canonical,
     })
 }
 
@@ -231,6 +237,42 @@ mod tests {
             "",
         ] {
             assert!(parse_remote(raw).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn repository_identity_preserves_distinct_endpoints_and_rejects_url_metadata() {
+        let plain = parse_remote("https://git.example.com/team/repo.git").unwrap();
+        for remote in [
+            "ssh://git@git.example.com:2222/team/repo.git",
+            "https://git.example.com:8443/team/repo.git",
+        ] {
+            let custom = parse_remote(remote).unwrap();
+            assert_ne!(custom.canonical, plain.canonical);
+            assert_eq!(custom.provider, "git.example.com");
+            assert_eq!(custom.full_name(), "team/repo");
+            assert_eq!(parse_remote(&custom.canonical).unwrap(), custom);
+        }
+        assert_eq!(
+            parse_remote("ssh://git@git.example.com:22/team/repo.git").unwrap(),
+            plain
+        );
+        for port in [22, 80, 443, 9418] {
+            let canonical = format!("git.example.com:{port}/team/repo");
+            assert_eq!(canonical_remote(&canonical), Some(canonical));
+        }
+        assert_eq!(
+            parse_remote("git://git.example.com:9418/team/repo.git").unwrap(),
+            plain
+        );
+        for remote in [
+            "https://git.example.com/team/repo?branch=main",
+            "https://git.example.com/team/repo#main",
+            "https://user:secret@git.example.com/team/repo",
+            "file:///team/repo",
+            "C:/team/repo",
+        ] {
+            assert!(parse_remote(remote).is_none(), "{remote}");
         }
     }
 

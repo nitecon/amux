@@ -1,12 +1,7 @@
 //! Checkout identity is upstream plus canonical directory; gateway names stay human-readable.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{
-    io::Read,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant},
-};
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,54 +64,13 @@ pub fn resolve(directory: &Path) -> Result<ProjectIdentity> {
 }
 
 fn checkout_root(directory: &Path) -> Option<PathBuf> {
-    let mut command = Command::new("git");
-    command
-        .args([
-            "--no-optional-locks",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-C",
-        ])
-        .arg(directory)
-        .args(["rev-parse", "--show-toplevel"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(key);
-        }
-    }
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
-    }
-    let mut child = command.spawn().ok()?;
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-        if let Some(status) = child.try_wait().ok()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    if !status.success() {
-        return None;
-    }
-    let mut output = String::new();
-    child
-        .stdout
-        .take()?
-        .take(4097)
-        .read_to_string(&mut output)
-        .ok()?;
-    if output.len() > 4096 {
+    let (status, output) = crate::git::observe(
+        directory,
+        &["rev-parse", "--show-toplevel"],
+        "checkout root",
+    )
+    .ok()?;
+    if !status.success() || output.len() > 4096 {
         return None;
     }
     let root = PathBuf::from(output.trim_end_matches(['\r', '\n']));

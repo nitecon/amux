@@ -26,10 +26,10 @@ const ACTIVITY_REFRESH: Duration = Duration::from_secs(10);
 const ACTIVITY_RESEND: Duration = Duration::from_secs(30);
 const MAX_AGE_MS: i64 = 5 * 60_000;
 const RECENT: usize = 64;
-/// In-progress tasks saved at exit; startup reminds owners that went idle.
+const CARDS: usize = 20;
+// Compatibility only: older router servers have no startup-continuity controller.
 const RESTART_TASKS: &str = "restart-tasks.json";
 const RESTART_WINDOW: Duration = Duration::from_secs(10 * 60);
-const CARDS: usize = 20;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -38,6 +38,9 @@ pub(super) struct State {
     clock: Option<amux::gateway_stream::GatewayClock>,
     targets: Vec<String>,
     pub(super) connected: bool,
+    pub(super) server_restart_reminders: Option<bool>,
+    pub(super) restart: Vec<Value>,
+    restart_loaded: Option<Instant>,
     pub(super) status: String,
     retry_at: Option<Instant>,
     heartbeat_at: Option<Instant>,
@@ -49,9 +52,6 @@ pub(super) struct State {
     delivered: VecDeque<String>,
     /// Recent notifications and their outcomes, for the Events panel.
     cards: VecDeque<(String, delegation::Event, String, String)>,
-    /// Tasks local agents owned when amux last exited, and when they were loaded.
-    pub(super) restart: Vec<Value>,
-    pub(super) restart_loaded: Option<Instant>,
 }
 
 impl State {
@@ -62,6 +62,8 @@ impl State {
 
 #[derive(Debug, Clone)]
 pub(super) struct Delivery {
+    /// A new attempt needs its own fence even when the server replays the same event.
+    pub(super) token: Uuid,
     pub(super) event: Value,
     pub(super) candidate: Candidate,
 }
@@ -106,8 +108,8 @@ impl Desktop {
         }
     }
 
-    /// Embedded and native servers run the event router and decide assignment,
-    /// review and notifications; only a legacy gateway leaves this to clients.
+    /// Embedded and native servers own assignment, review and notifications.
+    /// Legacy connections have no automatic controller path.
     pub(super) fn server_schedules(&self) -> bool {
         self.preferences.current.mode != amux::gateway_preferences::GatewayMode::Legacy
     }
@@ -129,21 +131,22 @@ impl Desktop {
             .map_or_else(|| unix_ms() as i64, |clock| clock.now_ms())
     }
 
-    pub(super) fn events_stop(&mut self) {
+    pub(in super::super) fn events_stop(&mut self) {
         let old = std::mem::take(&mut self.delegation.events);
-        // Server notices end with the subscription; restart reminders are
-        // local, so they survive a resubscription until delivered.
+        // Reconnecting this logical client keeps notices already acknowledged
+        // to the server. Bridge::stop clears them when its connection changes.
         let pending = old
             .delivering
             .map(|delivery| delivery.event)
             .into_iter()
             .chain(old.pending)
-            .filter(|event| event["local"] == true)
             .collect();
         self.delegation.events = State {
             status: old.status,
             retry_at: Some(Instant::now()),
             pending,
+            delivered: old.delivered,
+            server_restart_reminders: old.server_restart_reminders,
             restart: old.restart,
             restart_loaded: old.restart_loaded,
             ..State::default()
@@ -278,11 +281,24 @@ impl Desktop {
         self.events_deliver()
     }
 
+    /// A connection or identity reset must not carry compatibility work into
+    /// another server. Ordinary event resubscriptions use events_stop instead.
+    pub(in super::super) fn reset_delegation(&mut self) {
+        self.delegation.stop();
+        if let Some(directory) = &self.registry {
+            let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
+        }
+    }
+
     /// Save the in-progress tasks owned by this desktop's agents before exit.
     pub(in super::super) fn save_restart_tasks(&self) {
         let Some(directory) = &self.registry else {
             return;
         };
+        if self.delegation.events.server_restart_reminders == Some(true) {
+            let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
+            return;
+        }
         let sessions: Vec<String> = self
             .delegation
             .candidates
@@ -308,7 +324,7 @@ impl Desktop {
         }
     }
 
-    /// Load (and consume) the tasks saved by the previous exit.
+    /// Load compatibility work without retiring it until protocol negotiation.
     pub(in super::super) fn load_restart_tasks(&mut self) {
         let Some(path) = self.registry.as_ref().map(|d| d.join(RESTART_TASKS)) else {
             return;
@@ -320,13 +336,17 @@ impl Desktop {
             self.delegation.events.restart = tasks;
             self.delegation.events.restart_loaded = Some(Instant::now());
         }
-        let _ = std::fs::remove_file(path);
     }
 
     /// Once a saved task's current state is loaded and it is still owned by a
     /// running agent here, queue a reminder. It waits until that agent is idle,
     /// so an agent that resumed the work is not interrupted.
     pub(super) fn restart_reminders(&mut self) {
+        if !self.delegation.events.connected
+            || self.delegation.events.server_restart_reminders != Some(false)
+        {
+            return;
+        }
         let events = &mut self.delegation.events;
         if events
             .restart_loaded
@@ -351,8 +371,9 @@ impl Desktop {
                 .delegation
                 .candidates
                 .iter()
-                .any(|c| session.as_str() == Some(c.target.session.to_string().as_str()));
-            let Some(current) = current.filter(|_| running) else {
+                .find(|c| session.as_str() == Some(c.target.session.to_string().as_str()))
+                .cloned();
+            let Some(current) = current.filter(|_| running.is_some()) else {
                 // Not loaded yet, or its agent has not been found yet.
                 self.delegation.events.restart.push(task);
                 continue;
@@ -362,25 +383,37 @@ impl Desktop {
             {
                 continue;
             }
+            let Some(candidate) = running else {
+                continue;
+            };
             let id = current["id"].as_str().unwrap_or_default();
-            let instructions = format!(
-                "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {id}.",
-                session.as_str().unwrap_or_default()
-            );
+            let instructions = if current["owner_origin"]["instance_id"].as_str()
+                == Some(candidate.actor.instance_id.to_string().as_str())
+            {
+                format!(
+                    "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {id}.",
+                    session.as_str().unwrap_or_default()
+                )
+            } else {
+                "This terminal's previous execution still owns this task. Inspect its prior progress. This is an informational continuity reminder, not an ownership handoff. Use the existing recovery or reassignment flow before attempting task mutations or resuming execution.".to_owned()
+            };
             let project = current["project_ident"].clone();
             let hostname = sysinfo::System::host_name();
             // A local notice; its sequence only needs to be a valid event number.
-            self.delegation.events.pending.push_back(json!({
+            let mut notice = json!({
                 "id": "agent.notify", "uid": Uuid::new_v4().to_string(), "seq": 1,
                 "emitted_at": now, "local": true,
                 "payload": {
                     "target": session, "project": project, "mode": "assigned", "require_idle": true,
+                    "receiver": {"session_id": session,"instance_id": candidate.actor.instance_id,"project":project},
                     "heading": "In-progress task reminder", "instructions": instructions,
                     "event": {"kind": "task_created", "project_ident": project, "created_at": now,
                               "sender_name": "amux", "sender_hostname": hostname, "owner_hostname": hostname,
                               "task": current, "comment": null, "origin": null},
                 },
-            }));
+            });
+            notice["receiver"] = notification_receiver(&notice, Some(&candidate));
+            self.delegation.events.pending.push_back(notice);
         }
     }
 
@@ -396,7 +429,7 @@ impl Desktop {
         let agents: Vec<Value> = candidates
             .iter()
             .map(|c| {
-                json!({
+                let mut agent = json!({
                     "session_id": c.target.session.to_string(),
                     "instance_id": c.actor.instance_id.to_string(),
                     "provider": c.actor.provider.command(),
@@ -405,7 +438,35 @@ impl Desktop {
                     "name": c.name,
                     "agent_id": c.target.agent_id,
                     "generation": c.target.executor_generation().to_string(),
-                })
+                });
+                // A returned live target confirms this execution's repository
+                // binding. Unconfirmed reports retain the v1 heartbeat shape.
+                if let Some(directory) = self
+                    .workspaces
+                    .iter()
+                    .find(|workspace| {
+                        workspace.id == c.target.workspace
+                            && workspace.gateway.project == c.target.project
+                    })
+                    .filter(|workspace| {
+                        workspace
+                            .gateway
+                            .routing
+                            .checked
+                            .is_some_and(|at| at.elapsed() < Duration::from_secs(60))
+                    })
+                    .and_then(|workspace| workspace.gateway.routing.directory.as_ref())
+                    .filter(|directory| {
+                        directory.targets.iter().any(|entry| {
+                            entry.expires_at > now
+                                && c.target.origin.as_ref() == Some(&entry.target.origin)
+                                && entry.target.generation == c.target.executor_generation()
+                        })
+                    })
+                {
+                    agent["canonical_remote"] = json!(directory.canonical_remote);
+                }
+                agent
             })
             .collect();
         let events = &mut self.delegation.events;
@@ -417,7 +478,11 @@ impl Desktop {
             events.heartbeat_at = Some(Instant::now());
             events.heartbeat_agents = agents.clone();
             events.activity.clear();
-            let frame = event_client::emit("client.heartbeat", json!({"agents": agents}), None);
+            let frame = event_client::emit(
+                "client.heartbeat",
+                json!({"agents": agents, "client_run": self.client_run}),
+                None,
+            );
             self.events_send(frame);
         }
         for c in candidates {
@@ -460,11 +525,31 @@ impl Desktop {
 
     pub(super) fn events_incoming(&mut self, incoming: Incoming) -> Task<Message> {
         match incoming {
-            Incoming::Connected(clock) => {
+            Incoming::Connected {
+                clock,
+                server_restart_reminders,
+            } => {
                 let events = &mut self.delegation.events;
                 events.connected = true;
                 events.clock = clock;
                 events.heartbeat_at = None;
+                events.server_restart_reminders = Some(server_restart_reminders);
+                if server_restart_reminders {
+                    events.restart.clear();
+                    events.pending.retain(|event| event["local"] != true);
+                    if events
+                        .delivering
+                        .as_ref()
+                        .is_some_and(|delivery| delivery.event["local"] == true)
+                    {
+                        events.delivering = None;
+                    }
+                }
+                // Only retire the saved compatibility snapshot after negotiation
+                // chooses the authoritative startup-reminder path.
+                if let Some(directory) = &self.registry {
+                    let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
+                }
                 events.status = "Connected to the event router".into();
                 self.toasts.connection_restored();
             }
@@ -488,15 +573,24 @@ impl Desktop {
         Task::none()
     }
 
-    fn events_event(&mut self, event: Value) -> Task<Message> {
+    fn events_event(&mut self, mut event: Value) -> Task<Message> {
         let id = event["id"].as_str().unwrap_or_default();
         if id == "agent.notify" {
             // Acknowledge once queued here, so one agent's wait never holds up
             // the stream; like before the router, pending notices end with the app.
             self.events_send(event_client::ack(&event));
+            let candidate = self.delegation.candidates.iter().find(|candidate| {
+                event["payload"]["target"].as_str()
+                    == Some(candidate.target.session.to_string().as_str())
+            });
+            event["receiver"] = notification_receiver(&event, candidate);
             let uid = event["uid"].as_str().unwrap_or_default().to_owned();
             let events = &mut self.delegation.events;
             if !events.delivered.contains(&uid)
+                && !events
+                    .delivering
+                    .as_ref()
+                    .is_some_and(|delivery| delivery.event["uid"] == event["uid"])
                 && !events
                     .pending
                     .iter()
@@ -615,9 +709,49 @@ impl Desktop {
             self.events_result(&event, "skipped", "agent is not running here");
             return Task::none();
         };
-        if self.events_now() - event["emitted_at"].as_i64().unwrap_or(0) > MAX_AGE_MS {
-            self.events_result(&event, "skipped", "notification expired");
+        if !self.events_ready(&event, &candidate) {
             return Task::none();
+        }
+        let epoch = self.delegation.epoch;
+        let c = candidate.clone();
+        let token = Uuid::new_v4();
+        self.delegation.events.delivering = Some(Delivery {
+            token,
+            event,
+            candidate,
+        });
+        Task::perform(
+            async move {
+                let verified = tokio::task::spawn_blocking(move || verify(&c))
+                    .await
+                    .unwrap_or(false);
+                Event::Verified { token, verified }
+            },
+            move |e| Message::Delegation(epoch, e),
+        )
+    }
+
+    /// Check changing delivery conditions both before verification and just
+    /// before writing to the terminal. Verification yields to other UI events.
+    fn events_ready(&mut self, event: &Value, candidate: &Candidate) -> bool {
+        let payload = &event["payload"];
+        let receiver = &event["receiver"];
+        if receiver["session_id"].as_str() != Some(candidate.target.session.to_string().as_str())
+            || receiver["instance_id"].as_str()
+                != Some(candidate.actor.instance_id.to_string().as_str())
+            || receiver["project"].as_str() != Some(candidate.target.project.as_str())
+            || receiver["project"] != payload["project"]
+            || receiver.get("generation").is_some_and(|generation| {
+                generation.as_str()
+                    != Some(candidate.target.executor_generation().to_string().as_str())
+            })
+        {
+            self.events_result(event, "skipped", "recipient execution or project changed");
+            return false;
+        }
+        if self.events_now() - event["emitted_at"].as_i64().unwrap_or(0) > MAX_AGE_MS {
+            self.events_result(event, "skipped", "notification expired");
+            return false;
         }
         let offer = payload["mode"] == "assigned" && event["local"] != true;
         let now = self.events_now();
@@ -643,36 +777,52 @@ impl Desktop {
             // A work offer goes back so the server can offer it elsewhere;
             // an informational notice waits for the agent to go quiet.
             if offer {
-                self.events_result(&event, "skipped", "agent is busy");
+                self.events_result(event, "skipped", "agent is busy");
             } else {
-                self.delegation.events.pending.push_back(event);
+                self.delegation.events.pending.push_back(event.clone());
             }
-            return Task::none();
+            return false;
         }
-        let epoch = self.delegation.epoch;
-        let c = candidate.clone();
-        self.delegation.events.delivering = Some(Delivery { event, candidate });
-        Task::perform(
-            async move {
-                let verified = tokio::task::spawn_blocking(move || verify(&c))
-                    .await
-                    .unwrap_or(false);
-                Event::Verified(verified)
-            },
-            move |e| Message::Delegation(epoch, e),
-        )
+        true
     }
 
     /// Finish the delivery in flight once its process has been verified natively.
-    pub(super) fn events_verified(&mut self, verified: bool) -> Task<Message> {
-        let Some(Delivery { event, candidate }) = self.delegation.events.delivering.take() else {
+    pub(super) fn events_verified(&mut self, token: Uuid, verified: bool) -> Task<Message> {
+        if self
+            .delegation
+            .events
+            .delivering
+            .as_ref()
+            .is_none_or(|delivery| delivery.token != token)
+        {
+            return Task::none();
+        }
+        let Some(Delivery {
+            event, candidate, ..
+        }) = self.delegation.events.delivering.take()
+        else {
             return Task::none();
         };
         if !verified {
             self.events_result(&event, "failed", "agent process changed");
             return Task::none();
         }
-        let Some(message) = notification_text(&event, &candidate) else {
+        let Some(current) = self
+            .delegation
+            .candidates
+            .iter()
+            .find(|current| current.target.same_attachment(&candidate.target))
+            .cloned()
+        else {
+            self.events_result(&event, "skipped", "recipient attachment changed");
+            return Task::none();
+        };
+        // Native verification belongs to the captured attachment; logical
+        // ownership/project may have changed while that verification yielded.
+        if !self.events_ready(&event, &current) {
+            return Task::none();
+        }
+        let Some(message) = notification_text(&event, &current) else {
             self.events_result(&event, "skipped", "notification cannot be rendered");
             return Task::none();
         };
@@ -724,23 +874,63 @@ pub(super) fn verify(c: &Candidate) -> bool {
     )
 }
 
+/// Freeze the intended logical execution before a reconnect can replace it.
+/// New continuity notices explicitly name their current receiver while keeping
+/// the previous owner's task facts intact. Older frames use their owner or
+/// requester binding, or the currently observed target when neither is present.
+fn notification_receiver(event: &Value, candidate: Option<&Candidate>) -> Value {
+    let payload = &event["payload"];
+    if let Some(receiver) = payload.get("receiver") {
+        return receiver.clone();
+    }
+    let task = &payload["event"]["task"];
+    let mut source = payload["event"].clone();
+    source["id"] = event["seq"].clone();
+    let requester = delegation::Event::parse(&source)
+        .ok()
+        .flatten()
+        .is_some_and(|event| {
+            candidate.is_some_and(|candidate| candidate.target.requester_result(&event))
+        });
+    let owner = &task["owner_origin"];
+    let origin = if requester {
+        &task["requester"]["origin"]
+    } else if owner["session_id"] == payload["target"] && owner["instance_id"].is_string() {
+        owner
+    } else if task["requester"]["origin"]["session_id"] == payload["target"] {
+        &task["requester"]["origin"]
+    } else {
+        return candidate.map_or(Value::Null, |candidate| {
+            json!({
+                "session_id": candidate.target.session,
+                "instance_id": candidate.actor.instance_id,
+                "project": candidate.target.project,
+            })
+        });
+    };
+    let mut receiver = json!({"session_id":origin["session_id"],"instance_id":origin["instance_id"],"project":payload["project"]});
+    if requester || origin == &task["requester"]["origin"] && origin != owner {
+        receiver["generation"] = task["requester"]["generation"].clone();
+    }
+    receiver
+}
+
 /// The terminal text, rendered by the same formatter as stream notifications.
 pub(super) fn notification_text(event: &Value, candidate: &Candidate) -> Option<String> {
     let payload = &event["payload"];
     let mut source = payload["event"].clone();
     source["id"] = event["seq"].clone();
     let mut parsed = delegation::Event::parse(&source).ok()??;
-    if payload["mode"] == "assigned" {
-        if let (Some(heading), Some(summary)) =
-            (payload["heading"].as_str(), parsed.summary.as_mut())
-        {
-            summary.heading = heading.into();
-        }
-        let text = parsed.assigned_terminal_text(candidate.target.session, &candidate.name);
-        return Some(match payload["instructions"].as_str() {
-            Some(instructions) => format!("{text} {instructions}"),
-            None => text,
-        });
+    if let (Some(heading), Some(summary)) = (payload["heading"].as_str(), parsed.summary.as_mut()) {
+        summary.heading = heading.into();
     }
-    Some(parsed.recipient_terminal_text(&candidate.target, &candidate.name))
+    let text = if payload["mode"] == "assigned" {
+        parsed.assigned_terminal_text(candidate.target.session, &candidate.name)
+    } else {
+        parsed.recipient_terminal_text(&candidate.target, &candidate.name)
+    };
+    Some(match payload["instructions"].as_str() {
+        Some(instructions) => format!("{text} {instructions}"),
+        None => text,
+    })
 }

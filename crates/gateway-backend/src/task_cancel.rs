@@ -301,10 +301,7 @@ mod tests {
         Router,
     };
     use serde_json::{json, Value};
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
+    use std::{collections::HashMap, sync::Arc};
     use tower::ServiceExt;
 
     fn origin(n: u8) -> AgentOrigin {
@@ -645,7 +642,6 @@ mod tests {
             artifact_operations: db::ArtifactOperationsEnvelope::production_defaults(),
             artifact_body_schema_enabled: true,
             artifact_auth_enforced: false,
-            update_available: Arc::new(Mutex::new(None)),
             remote: Default::default(),
         }
     }

@@ -115,7 +115,10 @@ pub(super) enum Event {
     Project(PathBuf, Result<String, String>),
     Router(amux::event_client::Incoming),
     /// Native verification result for the delivery in flight.
-    Verified(bool),
+    Verified {
+        token: Uuid,
+        verified: bool,
+    },
 }
 
 #[derive(Default)]
@@ -279,7 +282,7 @@ impl Desktop {
         }
         match event {
             Event::Router(incoming) => return self.events_incoming(incoming),
-            Event::Verified(verified) => return self.events_verified(verified),
+            Event::Verified { token, verified } => return self.events_verified(token, verified),
             Event::Scanned { serial, found } => {
                 if self.delegation.scan_inflight == Some(serial) {
                     self.delegation.scan_inflight = None;

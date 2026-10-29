@@ -111,3 +111,62 @@ fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// Native text/style observation is independent of provider prompt classifiers.
+#[test]
+fn native_grid_observation_reports_faint_and_background_styles() {
+    use iced_term::{NamedColor, TerminalCellStyle, TerminalColor};
+    use std::time::{Duration, Instant};
+    let script = r"printf '\033[2J\033[H\033[48;5;238m› \033[2mAsk Codex\033[0m\nplain'; sleep 10";
+    let terminal = Terminal::new(
+        970_101,
+        settings::Settings {
+            backend: settings::BackendSettings {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), script.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let _lifetime =
+        amux::terminal_lifetime::TerminalLifetime::capture(terminal.child_pid().unwrap()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let grid = loop {
+        if let Some(grid) = terminal.grid_observation(32_768)
+            && grid
+                .observation
+                .lines
+                .get(1)
+                .is_some_and(|l| l.starts_with("plain"))
+        {
+            break grid;
+        }
+        assert!(Instant::now() < deadline, "fixture output never observed");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let screen = &grid.observation;
+    assert_eq!(grid.styles.len(), screen.lines.len());
+    assert!(screen.lines[0].starts_with("› Ask Codex"));
+    assert_eq!(grid.styles[0][0].background, TerminalColor::Indexed(238));
+    assert!(!grid.styles[0][0].flags.contains(TerminalCellFlags::DIM));
+    assert!(grid.styles[0][2].flags.contains(TerminalCellFlags::DIM));
+    assert_eq!(grid.styles[0][2].background, TerminalColor::Indexed(238));
+    assert_eq!(
+        grid.styles[1][0],
+        TerminalCellStyle {
+            foreground: TerminalColor::Named(NamedColor::Foreground),
+            background: TerminalColor::Named(NamedColor::Background),
+            flags: TerminalCellFlags::empty(),
+        }
+    );
+    assert_eq!(
+        grid.styles[screen.cursor_row as usize],
+        screen.cursor_line_styles
+    );
+    assert!(
+        terminal.observation(4).is_none(),
+        "budget still bounds observations"
+    );
+}

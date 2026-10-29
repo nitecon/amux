@@ -559,6 +559,8 @@ impl Target {
                     && self.executor_generation() == requester.generation
             })
     }
+    /// Compatibility filter for raw task-stream consumers. Native router
+    /// notifications are targeted by the server and use named terminal delivery.
     pub fn mismatch_reason(&self, event: &Event) -> Option<&'static str> {
         use crate::task_routing::Routing;
         if self.project != event.project {

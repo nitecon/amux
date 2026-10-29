@@ -3,12 +3,11 @@
 use crate::{
     api_router,
     channel::{ChannelPlugin, PluginEvent},
-    db::{self, Db},
-    task_events, AppState,
+    db, task_events, AppState,
 };
 use anyhow::{Context, Result};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{net::TcpListener, sync::mpsc, task::spawn_blocking};
+use tokio::{net::TcpListener, sync::mpsc};
 
 /// Existing gateway environment configuration. Credentials deliberately have no Debug output.
 pub struct RuntimeConfig {
@@ -203,27 +202,35 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
     );
 
     let (tx, rx) = mpsc::channel::<PluginEvent>(256);
+    let mut workers = Workers(Vec::new());
+    let remote = crate::plugins::remote::Remote::default();
+    let mut controllers = crate::plugins::plugins(&remote);
+    controllers.push(Box::new(crate::plugins::retention::Retention::new(
+        config.retention_days,
+        config.bot_retention_days,
+    )));
+    let (bus, router) =
+        crate::router::start(database.clone(), crate::plugins::events(), controllers)?;
+    remote.attach(bus.clone());
+    workers.0.push(router);
+    // Drain input before starting transports: synchronous backfill may exceed
+    // the bounded queue capacity during ChannelPlugin::start.
+    workers.0.push(spawn_inbound_source(bus.clone(), rx));
     for plugin in plugins.values() {
         plugin.start(tx.clone()).await?;
         tracing::info!("Started channel plugin: {}", plugin.name());
     }
     drop(tx);
-    let mut workers = Workers(vec![spawn_inbound_processor(database.clone(), rx)]);
-    let remote = crate::plugins::remote::Remote::default();
-    let (bus, router) = crate::router::start(
-        database.clone(),
-        crate::plugins::events(),
-        crate::plugins::plugins(&remote),
-    )?;
-    remote.attach(bus.clone());
-    workers.0.push(router);
+    bus.emit(
+        "runtime",
+        crate::plugins::retention::STARTUP,
+        1,
+        serde_json::json!({}),
+        None,
+    )
+    .await?;
     workers.0.push(crate::plugins::clock::spawn(bus.clone()));
     workers.0.push(crate::plugins::tasks::spawn(bus));
-    workers.0.push(spawn_retention(
-        database.clone(),
-        config.retention_days,
-        config.bot_retention_days,
-    ));
 
     let state = AppState {
         db: database,
@@ -238,7 +245,6 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
         artifact_operations: config.artifact_operations,
         artifact_body_schema_enabled: config.artifact_body_schema_enabled,
         artifact_auth_enforced: config.artifact_auth_enforced,
-        update_available: Arc::new(std::sync::Mutex::new(None)),
         remote,
     };
     task_events::recover(&state.db.lock().unwrap())?;
@@ -271,8 +277,8 @@ impl Drop for Workers {
     }
 }
 
-fn spawn_inbound_processor(
-    db: Db,
+fn spawn_inbound_source(
+    bus: crate::router::Bus,
     mut rx: mpsc::Receiver<PluginEvent>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -282,85 +288,31 @@ fn spawn_inbound_processor(
                 room_id,
                 message,
             } = event;
-            let database = db.clone();
-            let result = spawn_blocking(move || {
-                let conn = database.lock().unwrap();
-                let project = match db::get_project_by_room(&conn, &channel_name, &room_id)? {
-                    Some(project) => project,
-                    None => {
-                        tracing::warn!(
-                            "Received message for unknown room {room_id} on {channel_name}"
-                        );
-                        return Ok::<_, anyhow::Error>(());
+            let source = format!("channel:{channel_name}");
+            let payload = serde_json::json!({
+                "channel_name": channel_name,
+                "room_id": room_id,
+                "message": {"id": message.id, "content": message.content, "author_kind": message.author_kind},
+            });
+            // Keep this input until durable acceptance. The bounded channel
+            // applies backpressure; its transport acceptance remains in-memory.
+            loop {
+                match bus
+                    .emit(
+                        &source,
+                        crate::plugins::inbound::RECEIVED,
+                        1,
+                        payload.clone(),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(error) => {
+                        tracing::warn!("Inbound event persistence failed; retrying: {error}");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
-                };
-                if db::message_external_id_exists(&conn, &project.ident, &message.id)? {
-                    tracing::debug!(
-                        "Skipping duplicate inbound message {} for project {}",
-                        message.id,
-                        project.ident
-                    );
-                    return Ok::<_, anyhow::Error>(());
                 }
-                let incoming = db::Message {
-                    id: 0,
-                    project_ident: project.ident.clone(),
-                    source: "user".into(),
-                    external_message_id: Some(message.id.clone()),
-                    content: message.content,
-                    sent_at: db::now_ms(),
-                    confirmed_at: None,
-                    parent_message_id: None,
-                    agent_id: None,
-                    message_type: "message".into(),
-                    subject: None,
-                    hostname: None,
-                    event_at: None,
-                    deliver_to_agents: false,
-                    author_kind: Some(message.author_kind),
-                    resolved_at: None,
-                    resolved_by: None,
-                };
-                db::insert_message(&conn, &incoming)?;
-                db::update_last_msg_id(&conn, &project.ident, &message.id)?;
-                Ok(())
-            })
-            .await;
-            match result {
-                Err(error) => tracing::error!("Inbound processor task error: {error}"),
-                Ok(Err(error)) => tracing::error!("Inbound processor db error: {error}"),
-                Ok(Ok(())) => {}
-            }
-        }
-    })
-}
-
-fn spawn_retention(
-    db: Db,
-    retention_days: u64,
-    bot_retention_days: u64,
-) -> tokio::task::JoinHandle<()> {
-    let retention_ms = retention_days as i64 * 24 * 60 * 60 * 1000;
-    let bot_retention_ms = bot_retention_days as i64 * 24 * 60 * 60 * 1000;
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(86_400));
-        loop {
-            interval.tick().await;
-            let database = db.clone();
-            let now = db::now_ms();
-            let cutoff = now - retention_ms;
-            let bot_cutoff = now - bot_retention_ms;
-            match spawn_blocking(move || {
-                let conn = database.lock().unwrap();
-                // Router events are delivery bookkeeping, not history.
-                crate::router::prune(&conn, now - 86_400_000)?;
-                db::purge_old_messages_with_policy(&conn, cutoff, bot_cutoff)
-            })
-            .await
-            {
-                Ok(Ok(count)) => tracing::info!("Purged {count} old messages"),
-                Ok(Err(error)) => tracing::warn!("Purge error: {error}"),
-                Err(error) => tracing::warn!("Purge task error: {error}"),
             }
         }
     })
@@ -385,6 +337,75 @@ fn parse_flag(key: &str, value: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn inbound_source_drains_startup_backlog_and_retries_persistence_with_backpressure() {
+        let database = db::open(":memory:").unwrap();
+        {
+            let conn = database.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES('p','discord','room',0);
+                 CREATE TRIGGER fail_ingress BEFORE INSERT ON router_events
+                 BEGIN SELECT RAISE(ABORT,'injected bus persistence failure'); END;",
+            ).unwrap();
+        }
+        let (bus, router) = crate::router::start(
+            database.clone(),
+            vec![crate::plugins::inbound::definition()],
+            vec![Box::new(crate::plugins::inbound::Inbound)],
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel(256);
+        let source = spawn_inbound_source(bus, rx);
+        // Like a ChannelPlugin::start with synchronous backfill larger than the
+        // queue: the already running source must drain input during startup.
+        let producer = tokio::spawn(async move {
+            for id in 0..300 {
+                tx.send(PluginEvent::Message {
+                    channel_name: "discord".into(),
+                    room_id: "room".into(),
+                    message: crate::channel::InboundMessage {
+                        id: id.to_string(),
+                        content: "hello".into(),
+                        sender: "human".into(),
+                        author_kind: "human".into(),
+                    },
+                })
+                .await
+                .unwrap();
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !producer.is_finished(),
+            "failed persistence holds input and fills the bounded queue"
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_ingress")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            producer.await.unwrap();
+            source.await.unwrap();
+        })
+        .await
+        .unwrap();
+        let count: i64 = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM router_events WHERE id=?1",
+                [crate::plugins::inbound::RECEIVED],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 300,
+            "all startup input reached durable acceptance exactly once"
+        );
+        router.abort();
+    }
 
     #[test]
     fn existing_boolean_environment_spellings_are_preserved() {

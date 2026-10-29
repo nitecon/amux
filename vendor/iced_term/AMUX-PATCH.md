@@ -54,12 +54,16 @@ establish provider readiness. The optional ignored root test
 `installed_provider_contract` requires installed, authenticated Codex and checks
 unsubmitted input and clearing through the native event stream; it never sends
 Enter or submits a model turn.
-It also verifies that typing the placeholder and moving to Home cannot pass the
-provisional native prompt profile. The desktop uses this profile for explicitly
-selected, consenting-agent task reminders; automatic assignment/recovery remains
-incomplete. The separate opt-in `provider_turn_contract` test
-submits one real no-tools/no-files reply request to check busy/continuation and
-the durable checked-input coordinator; it is ignored in normal tests and CI.
+It also checks the retained provisional readiness primitive against typed
+placeholder text moved to Home. The recipient/readiness/durable-submission
+library safeguards remain available for planned memory-context reuse, with the
+optional `provider_turn_contract` test submitting one real no-tools/no-files
+reply request to check their busy/continuation and checked-input behavior.
+These primitives are not wired into the current desktop event-notification
+scheduler. Its production delivery uses separate native event/process fixtures;
+see [reminder validation](../../docs/reminder-validation.md) for the boundary
+between current-path tests, retained library contracts and opt-in provider probes.
+Installed-provider checks remain ignored in normal tests and CI.
 
 `Terminal::try_enqueue_input` reports the existing native input channel's send
 result, unlike the widget's fire-and-forget input path. An error can follow

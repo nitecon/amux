@@ -17,7 +17,10 @@ const UNSUPPORTED_RETRY: Duration = Duration::from_secs(300);
 #[derive(Debug, Clone)]
 pub enum Incoming {
     /// Subscribed; times sent to the server should use its clock.
-    Connected(Option<GatewayClock>),
+    Connected {
+        clock: Option<GatewayClock>,
+        server_restart_reminders: bool,
+    },
     Event(Value),
     /// The server rejected a frame, e.g. an invalid emit.
     Rejected(String),
@@ -95,7 +98,19 @@ async fn session(
     if reply["type"] != "subscribed" {
         return Err("Event subscription rejected".into());
     }
-    if incoming.send(Incoming::Connected(clock)).await.is_err() {
+    let server_restart_reminders = match reply.get("server_restart_reminders") {
+        None => false,
+        Some(Value::Bool(supported)) => *supported,
+        Some(_) => return Err("Invalid server restart-reminder capability".into()),
+    };
+    if incoming
+        .send(Incoming::Connected {
+            clock,
+            server_restart_reminders,
+        })
+        .await
+        .is_err()
+    {
         return Ok(());
     }
     let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);

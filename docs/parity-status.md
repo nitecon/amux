@@ -45,7 +45,7 @@ checks did not run.
 | 16 | Session geometry, order, topology, selection, history replay | Workspaces, split topology, tabs and active workspace saved atomically (`src/session.rs`); restored processes stay stopped | Partial: no window geometry, no scrollback replay, no browser locations | Local (`tests/session_contract.rs`, GUI restore smoke) | None |
 | 17 | Last cwd, launch-environment persistence, previous-session restore, unclean-launch backup | Workspace directory saved; corrupt or unknown snapshots preserved, not overwritten | Partial: no live cwd tracking, no environment persistence | Local (`tests/session_contract.rs`) | None |
 | 18 | CLI/control API, socket discovery, caller identity, peer auth | CLI: `agent`, `whoami`, `agents`, `tasks`, `messages`, `dispatch` (`src/main.rs`); caller identity by registered process ancestry and credential-bound dispatch (`src/identity.rs`, `dispatch.rs`) | Partial: no socket or named-pipe control API for the desktop | Local (`tests/caller_contract.rs`, `launcher_contract.rs`, `gateway_contract.rs`, `identity_contract.rs`, `messages_contract.rs`, `dispatch_contract.rs`) | None |
-| 19 | Gateway routing, recipient/process-generation fences, input protection, injection consent | Explicit task selection and consented exact-session gateway recovery, with readiness, checked submission and durable dedup (`src/recipient.rs`, `readiness.rs`, `submission.rs`, `delivery.rs`, `desktop_recovery.rs`) | Partial: Linux with Codex 0.163 only; complete gateway history and provisioned machine credentials required; native Windows/Claude readiness and deployed cross-machine acceptance remain open | Local (opt-in real Codex turn; private real-gateway/native GUI fixtures at `137a431`; see [reminder-validation.md](reminder-validation.md)) | None |
+| 19 | Gateway routing, recipient/process-generation fences, input protection, injection consent | Server event router/controllers (`crates/gateway-backend/src/router.rs`, `plugins/`) and verified desktop delivery (`src/delegation_process.rs`, `desktop_events.rs`); recipient/readiness/submission/delivery library safeguards retained for planned reuse, without restoring selected-task recovery UI | Partial: controlled native event delivery and input preservation implemented; installed-provider understanding and deployed cross-machine acceptance remain open | Local (current native event/process/PTY fixtures; optional installed input-only probes; see [reminder-validation.md](reminder-validation.md)) | Local controlled fixtures; interactive installed-provider acceptance pending |
 | 20 | SSH workspaces | None | Missing | None | None |
 | 21 | Mosh and Mosh-tmux lane | None | Missing | None | None |
 | 22 | Listening-port attribution and forwarding | None | Missing | None | None |
@@ -65,7 +65,7 @@ Reproduce the local evidence from the repository root:
 
 ```sh
 cargo test --locked --no-default-features --tests   # core identity, gateway, session tests
-cargo test --locked --bin amux --test terminal_contract --test recipient_contract --test terminal_lifecycle_contract
+cargo test --locked --bin amux --test terminal_contract --test recipient_contract --test delegation_process_contract --test terminal_lifecycle_contract
 cargo test --locked --test notifications_contract --test native_notification_contract
 ```
 
@@ -103,9 +103,10 @@ which ships on macOS; the vendored widget already has macOS key bindings
 - **Agent teardown:** the launcher's parent-death fence uses Linux `prctl`
   (`src/main.rs`); terminal cleanup has Linux session and Windows Job Object
   guards. macOS has neither native implementation.
-- **Input readiness:** native input evidence returns none outside Linux
-  (`src/recipient.rs`), and the readiness profile covers Linux with Codex only.
-  Reminders would always defer.
+- **Native delivery:** current process verification (`src/delegation_process.rs`)
+  and final input checks (`src/desktop_events.rs`) require positive native
+  identity evidence. macOS has no accepted implementation; event transport alone
+  does not establish safe local terminal delivery.
 - **Build and runtime:** there is no macOS CI job, no native build, and no runtime
   acceptance. Packaging, code signing and notarization are not started.
 

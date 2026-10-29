@@ -18,7 +18,9 @@ pub fn stored(task: &Value) -> Result<Option<SessionTarget>> {
 }
 
 impl Gateway {
-    /// A current read retires delayed notices after an explicit watcher removal/change.
+    /// Optional current-state check for raw task-stream consumers. The native
+    /// event router selects audiences on the server; desktop delivery does not
+    /// invoke this compatibility helper.
     pub async fn requester_is_current(&self, event: &Event, target: &Target) -> Result<bool> {
         if !target.requester_result(event) {
             return Ok(false);

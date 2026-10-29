@@ -27,7 +27,9 @@ the router and existing plugins are not modified.
 
 - The router knows nothing about tasks, agents, idle/busy, reviews or timers.
   It only routes events to subscribers.
-- Plugins never call each other. They communicate only by emitting events.
+- Plugins never invoke another controller's reconciliation steps. Events drive
+  changes; explicit read contracts expose authoritative observations such as
+  Presence's live-agent snapshot.
 - An event with no subscribers is skipped and not stored.
 - Delivery is at least once. Every plugin must be idempotent.
 - Independent plugins run in parallel; ordering is expressed only through
@@ -43,7 +45,10 @@ the router and existing plugins are not modified.
   gateway do no automatic scheduling or review at all; the user asks an agent
   to do the work manually.
 - **Out of scope:** changing the existing task REST API contract; the external
-  channel plugins (Discord/WhatsApp) stay as they are.
+  channel plugins' wire protocols (Discord/WhatsApp) stay as they are. Their
+  internal message ingestion uses the same durable controller machinery.
+  TLS credential repair, parent leases and socket keepalives belong to
+  transport hosting, independent of domain controllers.
 
 ## Core router
 
@@ -67,7 +72,7 @@ Responsibilities, and nothing more:
 - Resolve subscribers from the registry.
 - Schedule plugin execution per the `depends_on` graph.
 - Record per-plugin delivery state (`pending`, `running`, `retrying`,
-  `completed`, `stopped`, `skipped`) and retry/replay unfinished work.
+  `completed`, `stopped`, `skipped`, `failed`) and retry/replay unfinished work.
 - Forward events to remote consumers that subscribed to them.
 
 It holds no timers (time comes from a Clock plugin) and no domain state.
@@ -117,6 +122,8 @@ struct Event {
 trait Plugin {
     fn id(&self) -> &'static str;
     fn subscriptions(&self) -> Vec<Subscription>;
+    fn retry_policy(&self) -> RetryPolicy; // defaults to Forever
+    fn fifo(&self) -> bool; // defaults to false
     fn pre_exec(&self) -> Vec<Box<dyn Step>>;
     fn exec(&self) -> Vec<Box<dyn Step>>;
     fn post_exec(&self) -> Vec<Box<dyn Step>>;
@@ -133,6 +140,7 @@ trait Step {
 }
 
 enum StepOutcome { Continue, Stop, Fail(String) }
+enum RetryPolicy { Forever, MaxAttempts(NonZeroU32) }
 ```
 
 - Phases run in order: all `pre_exec`, then `exec`, then `post_exec`. Steps
@@ -142,15 +150,21 @@ enum StepOutcome { Continue, Stop, Fail(String) }
 - `Stop` ends the plugin for this event without running later steps, and its
   dependents are `skipped` (e.g. an eligibility check that finds nothing to do,
   or a veto).
-- `Fail` aborts this run; the whole plugin run is retried from its first step
-  (see delivery), so steps must be idempotent.
+- `Fail` aborts this run. The plugin's retry policy either retries from its
+  first step or records a terminal `failed` delivery with its last error.
+  Steps must be idempotent because retries and restart recovery replay runs.
+  `MaxAttempts` counts failed runs including the initial run; one lets it fail
+  without retrying. `Forever` preserves the default controller behaviour.
 - A plugin may subscribe to one or more events. Each subscription is an
   independent subscriber: it receives and consumes its own event stream. The
-  router never correlates or waits across different events; a plugin that
-  cares about several events handles de-duplication and ordering itself (in
-  its own state).
+  router does not correlate different event types. A plugin can opt into
+  global FIFO delivery: its oldest unfinished event blocks its later events,
+  including during retries. Other plugins remain parallel. Indexed head
+  selection keeps a blocked FIFO backlog out of runnable claim pages.
 - A plugin's state lives in its own tables; it never reads another plugin's
-  tables.
+  tables directly. Presence exposes a typed live-agent snapshot read contract
+  (`presence::agents`) for controllers, rather than separate copies of the
+  same busy/idle state. Assignment, Reminder, Reclaim and Notifier use it.
 
 ### 4. `depends_on` (replaces ranking)
 
@@ -160,12 +174,15 @@ enum StepOutcome { Continue, Stop, Fail(String) }
 - `depends_on` is optional. A subscription without it runs as soon as the event
   arrives, in parallel with everything else, and is never held or skipped by
   another plugin's retry or `Stop`. Only plugins that opt in wait.
-- If a dependency returns `Stop`, its dependents are `skipped` for that event.
+- If a dependency returns `Stop` or exhausts its retry policy, its dependents
+  are `skipped` for that event.
   This is the veto mechanism: e.g. a threat-model plugin that assignment
   depends on can block an assignment.
 - While a dependency is retrying after `Fail`, its dependents wait.
-- The graph is validated when plugins are registered at startup: cycles and
-  dependencies on unregistered plugins are startup errors.
+- The graph is validated when plugins are registered at startup: cycles,
+  subscriptions matching no declared version, and dependencies missing any
+  consumed event version are startup errors. Recovery skips unfinished
+  deliveries whose plugin no longer subscribes to their event version.
 
 ### 5. Remote consumers
 
@@ -178,13 +195,16 @@ enum StepOutcome { Continue, Stop, Fail(String) }
   consumer keeps a durable cursor in `remote_consumers`.
 - Frames, client to server:
   - `{"type":"subscribe","consumer_id":uuid,"events":[ids],"targets":[session ids],"after":seq?}`.
-    A known consumer resumes after its last ack; a new one starts after the
-    newest stored event unless `after` is given. A newer connection for the
+    A consumer seen within the last 24 hours resumes after its last ack; a new
+    or expired one starts after the newest stored event unless `after` is given. A newer connection for the
     same consumer takes over. Only forwarded event ids are accepted.
   - `{"type":"ack","seq":n}` acknowledges the event in flight.
   - `{"type":"emit","id","version","payload","correlation"?}` emits a
     `remote_emit` event; the reply is `{"type":"emitted","uid"}` or an error.
   - `{"type":"heartbeat"}`.
+- A successful `subscribed` frame includes `server_restart_reminders`, based
+  on whether Reminder subscribes to heartbeat v1. Absence means an older router
+  and selects the client compatibility journal; it does not enable assignment.
 - Server to client: `subscribed`, `event` (`seq`, `id`, `version`, `uid`,
   `payload`, `source`, `emitted_at`, `correlation`), `acked`, `emitted`,
   `heartbeat`, `error`.
@@ -206,13 +226,27 @@ enum StepOutcome { Continue, Stop, Fail(String) }
   consumer delivery.
 - Failed plugin runs are retried with exponential backoff: first retry after
   1 s, doubling each time (1, 2, 4, 8, 16 s), capped at 30 s between attempts.
-  Retries continue at the 30 s cap until the run completes or stops; nothing is
-  dropped. When a delivery first reaches the cap, the router emits
+  By default retries continue at the 30 s cap until the run completes or stops.
+  A plugin may instead declare `MaxAttempts`; exhausted deliveries retain
+  their failure and settle their dependents. When a retrying delivery first reaches the cap, the router emits
   `router.retrying` for visibility.
 - The same backoff applies to remote consumer deliveries that are not acked.
 - Plugins must be idempotent, keyed on `event_uid` (e.g. review creation
   already deduplicates by source task and `done_at`).
-- Retention: completed events are pruned by the existing retention worker.
+- Retention: settled events are pruned by the Clock-driven Retention plugin
+  only after every unexpired remote consumer has advanced past them. Client
+  traffic renews a consumer's 24-hour replay lease. Recent offline consumers
+  protect their unread range; Retention deletes expired registrations in the
+  same transaction as cleanup, so abandoned desktops cannot retain history
+  forever. An expired consumer resumes at the tail by default; explicit `after`
+  can request whatever history remains. Unfinished plugin deliveries survive
+  consumer expiry.
+- The router scans pending work in bounded pages, runs at most 64 deliveries
+  concurrently and owns their tasks. Delayed work does not hide other
+  plugins’ runnable deliveries; an opted-in FIFO plugin holds its own tail.
+  Shutdown cancels controller execution; interrupted deliveries replay after
+  restart. Recording an outcome retries independently after storage failures,
+  so a failed bookkeeping write does not rerun completed plugin steps.
 
 ## Event catalogue
 
@@ -221,8 +255,10 @@ All events are version 1. Payload schemas are validated by the registry.
 | Event | Emitted by | Payload |
 |---|---|---|
 | `clock.tick` | Clock source, every 15 s | `{at}`; the only source of time |
+| `retention.startup` | server runtime | `{}`; requests immediate startup cleanup |
+| `channel.message_received` | channel input adapter | `{channel_name, room_id, message: {id, content, author_kind}}`; internal only |
 | `task.created` / `task.updated` / `task.commented` / `task.assigned` / `task.started` / `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task event source (outbox) | `{project, task, comment, actor}`; `assigned` fires whenever the owner is set or changes (claim or assign) |
-| `client.heartbeat` | remote client (`remote_emit`) | `{agents: [{session_id, instance_id, provider, os, project, name?, goal?, agent_id?, generation?}]}`, every agent the client runs |
+| `client.heartbeat` | remote client (`remote_emit`) | `{client_run?: uuid, agents: [{session_id, instance_id, provider, os, project, name?, goal?, agent_id?, generation?, canonical_remote?}]}`, every agent the client runs; `client_run` identifies one desktop lifetime across reconnects |
 | `terminal.activity` | remote client (`remote_emit`) | `{session_id, instance_id, output_at, draft}`; `output_at` is the last terminal output on the server's clock |
 | `agent.online` / `agent.idle` / `agent.busy` / `agent.gone` | Presence | `{agent}` as reported in the heartbeat, plus its `source` |
 | `agent.notify` | Assignment, Notifier, Reminder | `{target, project, mode, event, heading, instructions, require_idle}`; `event` is the task-event shape terminals already render, `mode` is `assigned` (already claimed for the agent) or `recipient` |
@@ -235,13 +271,16 @@ All events are version 1. Payload schemas are validated by the registry.
 |---|---|---|---|
 | Clock (source) | (timer) | `clock.tick` | client 1 s scheduling ticks |
 | Task events (source) | outbox rows | `task.*` | — |
+| Channel input (source) | bounded transport queue | `channel.message_received` | direct message/cursor database writes in runtime |
+| `inbound` | `channel.message_received` | — | direct runtime message ingestion |
 | `remote` | every forwarded event | — (wakes stream connections) | — |
 | `presence` | `client.heartbeat`, `terminal.activity`, `clock.tick` | `agent.online/idle/busy/gone` | `backlog_ready`, idle detection as a scheduling input |
 | `assignment` | `clock.tick` (depends on `presence`), `agent.notify_result` | `agent.notify` | `desktop_backlog.rs`, `backlog.rs` FIFO/eligibility |
-| `notifier` | `agent.*`, `task.created/commented/completed` | `agent.notify` | audience selection in `delegation.rs` / `delegation_queue.rs` |
-| `reminder` | `clock.tick` | `agent.notify` | update requests for in-progress work quiet for 10 min |
+| `notifier` | `task.created/commented/completed` | `agent.notify` | audience selection in `delegation.rs` / `delegation_queue.rs` |
+| `reminder` | `clock.tick`, `client.heartbeat` (depends on `presence`) | `agent.notify` | periodic updates and current-server restart reminders |
 | `review` | `task.completed` | (review task via `task.created`) | `desktop_autoreview.rs`, client review journal |
-| `reclaim` | `agent.idle/busy/gone`, `clock.tick` | (`task.unclaimed` via the task store) | the 15-minute sweep and per-request reclaims |
+| `reclaim` | `clock.tick` (depends on `presence`) | (`task.unclaimed` via the task store) | the 15-minute sweep and per-request reclaims |
+| `retention` | `retention.startup`, `clock.tick` | — | independent daily server cleanup timer |
 | UI (remote) | `agent.*` | — | local activity indicator |
 | Future: threat modelling | e.g. `task.completed` | its own events | — |
 
@@ -251,7 +290,9 @@ Rules carried over from the desktop:
   and it has no draft; until its first activity report its state is unknown.
   It is gone 90 s after its client's last heartbeat. Only the client that
   reported an agent may report its activity, and output time only moves
-  forward.
+  forward. Durable source-heartbeat and session-activity sequence checks
+  reject reordered or replayed reports. Evaluation time never moves backward;
+  a delayed heartbeat may restore a session only while that report is fresh.
 - **Assignment:** every 15-second tick runs Presence first, then sweeps all
   reported sessions across every workspace/project. Each currently idle agent
   that owns no in-progress task gets the oldest eligible queued task in its
@@ -269,19 +310,84 @@ Rules carried over from the desktop:
   including sessions that stayed idle since the previous tick. Activity and task
   events do not independently trigger assignment. The first clock tick is 15 s
   after startup; missed ticks are skipped rather than replayed in a burst.
+  Claim conflicts skip an ineligible task; storage failures fail the delivery
+  for retry. A rejected notification consumes its offer and releases the task
+  in one transaction, preserving compensation context if either write fails.
+  Results must match the offer's captured authenticated source and target as
+  well as its notification UID, even after Presence disappears. Legacy offers
+  without captured reporter authority retain their claims but cannot authorize
+  a callback transition; ordinary task actions or expiry retire them.
+  Any subsequent task or comment mutation invalidates the old offer in that
+  mutation's transaction, so a delayed rejection cannot undo progress or a
+  newer claim, even when timestamps match.
 - **Notifier:** owners hear about activity on their tasks, explicit requesters
   receive comment/completion results, actors never hear about their own
   changes, and queued or user-review work is left to Assignment and the user.
-- **Reminder:** an agent idle for ten minutes that still owns in-progress work
-  is reminded once per task revision.
+  Recipients come from live Presence at execution time, including replayed
+  task events; there is no separately maintained identity projection. A source
+  event's completion marker commits with all notifications, so replay after a
+  crash cannot emit a second set of notification UIDs. Retiring the source
+  event also removes that marker.
+- **Reminder:** in-progress work with no task update, comment or reminder for
+  ten minutes prompts its connected exact owner. Delivery requires idle.
+  A new `client_run` also prompts a resumed
+  session about its in-progress work, once per execution and desktop lifetime.
+  A fresh instance gets an explicit prior-execution notice addressed to that
+  receiver; this does not transfer task ownership. Restart notices are
+  informational and wait for idle. Reconnects do not create a new run, stale
+  heartbeats cannot reintroduce one, and emission plus deduplication commit
+  together. Clients sharing a reporting source retain independent run markers.
+  Older clients without `client_run` keep periodic reminders.
 - **Reclaim:** claimed work returns to the queue after 15 minutes without task
   activity, except while its owner is busy. With the router running, the
-  per-request reclaims in the task API are not used.
+  Clock-driven controller owns expiry. REST reads and task mutations never
+  perform an implicit reclaim, including API-only component instances.
+- **Retention:** cleans messages under the existing retention policy at
+  startup and daily through Clock. Cleanup and its last-success marker commit
+  together; failures retry through the router. Unfinished events are retained.
+- **Inbound:** input persistence retries with bounded queue backpressure.
+  Once accepted by the bus, insertion and backfill cursor advancement commit
+  together and retry durably. Inbound opts into global FIFO, preserving the
+  previous serial ingestion order and unread message IDs. A retry holds later
+  input while other controllers continue. Deliveries cannot rewind the cursor;
+  provider duplicates do not insert or advance it. The adapter starts before
+  channel backfill to avoid filling the startup queue before it can drain.
+
+### Agent identity and leases
+
+The server has one identity directory in `task_target_presence`. The legacy
+REST target adapter and event-driven Presence use explicit read/write contracts
+for this shared domain resource; controllers do not maintain identity copies.
+
+- A routing advertisement retains its validated repository binding, exact
+  origin/generation and 120-second lease. Manual routing uses this contract.
+- An event report has its own authenticated source, activity state and
+  90-second lease on the same identity row. Automatic controllers use this
+  observation contract; a REST-only advertisement supplies no idle evidence.
+- Existing v1 event-only clients remain supported. Observation-only rows do
+  not grant validated REST routing authority. Native reports include their
+  confirmed repository binding when available.
+- Advertisement and event updates only write their own lane; delayed REST
+  advertisements cannot erase newer busy/source observations. Registered
+  hostname history survives lease expiry and event departure as display
+  provenance, independently of routing authority. Event-only observations
+  cannot forge a registered hostname.
+- Credential-bound `task_sessions` represents enrollment and revocation,
+  rather than a second presence directory, and stays separately scoped.
+
+Repository normalization lives in `projects::canonical_remote` and is reused
+by the client: default protocol ports normalize, custom endpoints remain
+distinct, and URLs with query/fragment/password metadata are rejected. Ordinary
+task OS requirements live in the backend `task_platform` domain module. Client
+JSON/CLI adapters and server controllers use that validation rather than
+maintaining separate eligibility rules. Local read-only Git process handling
+is shared by checkout and gateway identity observation.
 
 Plugins whose behaviour a user may want off (`assignment`, `notifier`,
-`reminder`, `review`, `reclaim`) start with an `Enabled` pre-exec step that
-stops the run when the server setting `plugin.<id>.enabled` is `false`. They
-are enabled by default.
+`reminder`, `review`, `reclaim`) use an `Enabled` pre-exec step for the server
+setting `plugin.<id>.enabled`. They are enabled by default. For Reminder this
+switch gates periodic nudges only; startup continuity remains available, as
+in the original desktop restart behavior.
 
 ## Client after the change
 
@@ -295,15 +401,28 @@ The client keeps only what the server cannot observe or do:
   safety: native process re-verify, draft clear/restore in one ordered write,
   bracketed paste, never Ctrl+C. The client acknowledges each `agent.notify` as
   soon as it is queued locally, so one agent's wait never holds up the stream;
-  as before the router, pending notices end with the app and are not replayed.
+  pending notices end with the app and are not replayed. A resubscription to
+  the same logical connection preserves queued notices and delivered-UID
+  suppression; a connection/identity reset clears them.
   `require_idle` notices are only delivered while the agent is idle: an
   `assigned` work offer to a busy agent is reported `skipped` so the server can
   offer it elsewhere, and an informational notice (a requester result) waits
   for the agent to go quiet within its five-minute lifetime.
+  Eligibility is checked again after asynchronous process verification. Each
+  verification attempt carries its own token, and in-flight notifications
+  participate in duplicate suppression. The intended session, instance and
+  project are frozen on receipt and checked again before paste; requester
+  notices also retain their execution-generation fence. A changed native
+  attachment can resume only for the same logical owner execution.
 - The UI as a consumer: server `agent.idle` / `agent.busy` drive each terminal's
   activity indicator, and `task.*` events refresh that project's task panel.
 - Manual task UI and CLI (`desktop_tasks.rs`, `task_routing.rs`,
   `desktop_routing.rs`).
+- One process-lifetime `client_run` value reported in heartbeats. A successful
+  subscription advertises `server_restart_reminders`; supporting servers own
+  restart eligibility and task lookup. When an older event router omits this
+  flag, the retained local restart journal provides informational continuity
+  after idle. Negotiation selects one authority; a 404 enables no fallback.
 
 Removed from the client in phase 5: the desktop backlog scheduler, client
 autoreview and its journal, the legacy task-stream delivery journal
@@ -314,9 +433,56 @@ recovery path (`desktop_recovery.rs`) with its delivery ledger,
 text). `delegation_connection.rs` remains as the client for the
 legacy-compatible `/v1/tasks/stream`, which the server still serves.
 
+The `delivery`, `readiness`, `submission`, `recipient` and
+`delegation_readiness` library primitives and their contract probes remain
+available for the planned memory/context work. Removing the old desktop
+integration did not retire these APIs. Current automatic task notifications
+use the event delivery boundary above, rather than that provisional prompt
+classifier or local ledger. Raw legacy stream filters remain compatibility
+helpers, with no automatic scheduling authority.
+
 The client detects support by connecting to `/v1/events/stream`; a legacy
 gateway answers 404, and the client then does nothing automatic. This keeps
 `/v1/tasks/capabilities` identical to the legacy gateway.
+
+## Architecture checks
+
+The application and backend test suites exercise these boundaries directly:
+
+| Invariant | Evidence in the repository |
+|---|---|
+| Durable outcomes, dependency ordering, finite/indefinite retries, bounded claims and owned worker shutdown | `router.rs` unit tests |
+| One identity directory, independent leases, compatible v1 reports, stale-report fencing and schema upgrades | Presence unit tests and task-routing contracts |
+| Controllers own expiry, reminders, retention and ingestion; task reads do not reconcile ownership | Reclaim/Reminder/Retention/Inbound tests and the task-read purity regression |
+| Notification batches and assignment compensation are atomic and replay-safe | Notifier and Assignment fault-injection tests |
+| Clients observe/report and deliver safely across reconnects and process changes | Native desktop delivery tests and `tests/event_stream_contract.rs` |
+| Repository identities and OS requirements agree across client/store/controllers | Project and platform tests; Git/project identity contracts |
+| Database upgrades retain user data and reject overwriting active work | `tests/migration_contract.rs` |
+
+Run `cargo test -p amux -p amux-gateway-backend`,
+`cargo clippy -p amux -p amux-gateway-backend --all-targets -- -D warnings`,
+and `cargo fmt --all -- --check` for the application/backend gates.
+
+## Historical behavior preservation
+
+The consistency refactor was checked against the changes that introduced the
+behavior, not only the current call graph:
+
+| Prior contract | Preserved behavior and checks |
+|---|---|
+| `4839646`, `b9de9d1`: restart continuity | Stable-session reminders survive instance replacement and same-client resubscription; old-router fallback remains, without ownership transfer. |
+| `b6428fc`: periodic owner nudges | Exact live owners receive periodic updates; disabling periodic reminders does not suppress startup continuity. |
+| `32a29df`: automatic hostname provenance | Trusted registration metadata survives routing lease expiry; event-only reports cannot invent it. |
+| `921ea75`, `21662f6`: native delivery and planned primitive reuse | Immediate native notifications remain; public safety primitives and installed-provider probes are retained for context work. |
+| `eae8ff1`: server-owned task scheduling | The retired desktop assignment/review/recovery UI stays retired; its removal does not retire unrelated library APIs. |
+| Serial channel ingestion | Opt-in FIFO preserves message ID/unread ordering across retries, while other controllers run independently. |
+
+One upgrade limitation is deliberate: pre-upgrade assignment offers lacking
+captured reporter authority cannot authorize rejection callbacks. Source history
+alone cannot prove that the claim has had no later mutation. Their claims and
+rows are retained for ordinary task actions or expiry rather than inferring
+authority. The callable storage reclaim utility remains available; request-time
+implicit reclaim is replaced by the running server’s controller.
 
 ## Delivery plan
 
@@ -357,3 +523,8 @@ backend modules.
 
 - Whether `router.retrying` should surface in the UI (it is available to any
   remote consumer either way).
+- Channel providers retain their existing acceptance behavior: their enqueue
+  acknowledgment precedes durable bus persistence. The input adapter retains
+  and retries accepted input while running; a crash before persistence still
+  relies on provider redelivery/backfill. Strengthening provider acknowledgments
+  would change the transport contract and is outside this refactor.

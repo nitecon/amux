@@ -34,7 +34,7 @@ Pinned source revisions are the same as the server design:
 | Gateway at `f0604142ada28bbdf7e1a97572079012565cf56d` | `crates/gateway/src/db.rs`, memory and pattern handlers in `routes.rs` | Shared memory CRUD/push/pull/discovery; canonical IDs, per-project revisions, hashes, provenance, client mappings and tombstones; global patterns with comments/version/state. Artifact chunks also have text/vector fields. |
 | agent-memory at `41a3b76401b5044e4dea7bfdb494965954aaee7b` | `memory/src/db/{mod,queries,models}.rs`, `concepts`, `okf`, `search`, `embedding.rs`, `gateway_sync.rs`, `sync.rs`, `render`, `project.rs` | Durable memory history, working context, OKF import/export and graph projection, FTS5/BM25, vector search, reciprocal-rank fusion, optional reranking, scope/trust modifiers, bounded graph expansion, and revision-aware synchronization. |
 | agent-tools at `84993127c310ebf62a4ef656a0ebb58a7c30c2c1` | `crates/agent-knowledge/src/{store,knowledge,okf}.rs`, `crates/agent-symbols`, index orchestration in `crates/agent-cli/src/main.rs` | Project code/symbol index, references/imports, markdown sections, authored OKF, derived code concepts, provenance, relationships and observations. |
-| Amux | [desktop.rs](../src/desktop.rs), [readiness.rs](../src/readiness.rs), [recipient.rs](../src/recipient.rs), [submission.rs](../src/submission.rs), [delivery.rs](../src/delivery.rs), [vendored terminal](../vendor/iced_term/src/terminal.rs) | Terminal event/observation path, recipient fencing, guarded input queue, durable delivery attempts and existing native UI. |
+| Amux | [desktop_events.rs](../src/desktop_events.rs), [delegation_process.rs](../src/delegation_process.rs), [readiness.rs](../src/readiness.rs), [recipient.rs](../src/recipient.rs), [submission.rs](../src/submission.rs), [delivery.rs](../src/delivery.rs), [vendored terminal](../vendor/iced_term/src/terminal.rs) | Current terminal observation/notification boundary and retained library primitives for recipient fencing, guarded input and durable attempts. The library primitives are planned memory reuse, not the current task-notification scheduler. |
 
 The gateway's memory store is not the local hybrid search engine. Its project
 revision indexes are not a substitute for the code index or OKF graph. Porting only
@@ -148,10 +148,12 @@ Do not tunnel a memory query through the task-event WebSocket protocol.
 
 ## Observing terminal activity
 
-The vendored terminal already exposes bounded live-screen/grid observations.
-`desktop.rs` forwards native updates to `ReadinessGate::note_terminal_output`.
+The vendored terminal exposes bounded live-screen/grid observations. The current
+desktop observes terminal output and tees user input, reporting activity through
+`desktop_events.rs` and `event_client.rs` to the server's Presence controller.
 The backend coalesces wakeups, and observations exclude scrollback; polling the
-screen is not a lossless stream of every output byte.
+screen is not a lossless stream of every output byte. Future memory observation
+should consume this existing boundary without restoring a client scheduler.
 
 For the initial implementation, consume bounded stable visible-text changes and
 user-submitted prompt boundaries, tagged with terminal ID, recipient generation,
@@ -185,19 +187,35 @@ cannot safely inject into an arbitrary running tool, shell, editor, password pro
 or agent approval dialog. A busy agent may receive context at its next safe turn;
 there is no universal mid-reasoning insertion interface.
 
-Amux's existing `ReadinessGate` is explicitly provisional Linux/Codex 0.163.0
-support, with exact terminal layout, process/recipient checks and settling rules.
-It is not a general Linux/Windows/Claude/Gemini solution. Build and validate each
-provider/platform adapter; unsupported cases retain a pending native context
-preview instead of guessing readiness. Do not hard-code terminal appearance as
-the only long-term identity guarantee.
+Current task notifications pass through the server event router and the desktop's
+`desktop_events.rs` input boundary. Native process discovery and verification
+live in `delegation_process.rs`; teed drafts and terminal output reports feed the
+server's idle/busy decisions. Input verification and delivery are checked again
+before the final write. Local pending task notices are ephemeral; the server
+owns durable events and controller delivery outcomes.
 
-Reuse recipient checkpoints and durable attempt fencing from `delivery.rs`, but
-give memory context its own candidate/envelope type and deduplication namespace.
-`submit_literal` currently accepts only one compact ASCII line of at most 1,024
-bytes, wraps it as a gateway message, and appends Enter. A larger memory envelope
-requires a deliberate bounded submission path, not silently widening that function
-or misreporting context as a task notification.
+The former selected-task reminder UI and client dispatch-recovery scheduler are
+removed. Their underlying library primitives remain available: `ReadinessGate`
+(`readiness.rs`), exact recipient/checkpoints (`recipient.rs`), durable attempt
+fencing (`delivery.rs`) and checked native submission (`submission.rs`). They
+are not wired into current automatic task notifications and are not a second
+scheduler. Their contract and installed-provider probes retain useful safety
+evidence for the planned memory-context work.
+
+`ReadinessGate` is provisional Linux/Codex 0.163.0 support with exact layout,
+native process/foreground checks and settling rules. It is not a general
+Linux/Windows/Claude/Gemini solution. Build and validate each provider/platform
+adapter; unsupported cases retain a pending native context preview instead of
+guessing readiness. Terminal appearance alone never proves recipient identity.
+
+Reuse the retained recipient checkpoints and durable attempt fences for memory
+context, with its own candidate/envelope type and deduplication namespace.
+`submit_literal` still accepts only a compact ASCII line of at most 1,024 bytes,
+wraps it as a gateway message and appends Enter. Larger memory envelopes require
+a deliberate bounded submission path, not silently widening this function or
+misreporting context as a task notification. Controllers own context intent and
+outcomes; the client must still fence uncertain writes at the actual native
+input boundary. Do not reintroduce an independent client recovery scheduler.
 
 Each envelope includes a delivery UUID, source IDs/URIs and revisions, project,
 selection reason, and bounded quoted context. Strip terminal controls and unsafe

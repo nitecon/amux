@@ -1,12 +1,14 @@
 //! Built-in event sources and plugins registered with the event router.
 pub mod assignment;
 pub mod clock;
+pub mod inbound;
 pub mod notifier;
 pub mod notify;
 pub mod presence;
 pub mod reclaim;
 pub mod reminder;
 pub mod remote;
+pub mod retention;
 pub mod review;
 pub mod tasks;
 
@@ -26,7 +28,11 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 
 pub fn events() -> Vec<EventDefinition> {
-    let mut events = vec![clock::definition()];
+    let mut events = vec![
+        clock::definition(),
+        retention::definition(),
+        inbound::definition(),
+    ];
     events.extend(tasks::events());
     events.extend(remote::events());
     events.extend(presence::events());
@@ -46,6 +52,7 @@ fn forwarded() -> Vec<&'static str> {
 pub fn plugins(remote: &remote::Remote) -> Vec<Box<dyn Plugin>> {
     vec![
         remote.plugin(forwarded()),
+        Box::new(inbound::Inbound),
         Box::new(presence::Presence),
         Box::new(assignment::Assignment),
         Box::new(notifier::Notifier),
@@ -127,6 +134,7 @@ pub async fn set(
 
 /// Plugin-owned tables.
 pub fn initialize(conn: &Connection) -> anyhow::Result<()> {
+    inbound::initialize(conn)?;
     tasks::initialize(conn)?;
     remote::initialize(conn)?;
     presence::initialize(conn)?;
@@ -134,5 +142,6 @@ pub fn initialize(conn: &Connection) -> anyhow::Result<()> {
     notifier::initialize(conn)?;
     reminder::initialize(conn)?;
     reclaim::initialize(conn)?;
+    retention::initialize(conn)?;
     Ok(())
 }

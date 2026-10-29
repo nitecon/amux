@@ -8,18 +8,38 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
+    num::NonZeroU32,
     ops::RangeInclusive,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
-use tokio::{sync::Notify, task::spawn_blocking};
+use tokio::{
+    sync::Notify,
+    task::{spawn_blocking, JoinHandle, JoinSet},
+};
 use uuid::Uuid;
 
 /// Emitted once when a delivery first reaches the retry cap.
 pub const RETRYING: &str = "router.retrying";
 const FIRST_RETRY_MS: i64 = 1_000;
 const MAX_RETRY_MS: i64 = 30_000;
-const TERMINAL: &str = "('completed','stopped','skipped')";
+const MAX_CONCURRENT_DELIVERIES: usize = 64;
+const CLAIM_PAGE: i64 = 256;
+const TERMINAL: &str = "('completed','stopped','skipped','failed')";
+const DELIVERY_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS router_deliveries (
+    event_seq       INTEGER NOT NULL REFERENCES router_events(seq) ON DELETE CASCADE,
+    plugin          TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK(state IN
+        ('pending','running','retrying','completed','stopped','skipped','failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    last_error      TEXT,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY(event_seq, plugin)
+);";
 
 pub fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -32,20 +52,32 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             source      TEXT NOT NULL,
             emitted_at  INTEGER NOT NULL,
             correlation TEXT
-        );
-        CREATE TABLE IF NOT EXISTS router_deliveries (
-            event_seq       INTEGER NOT NULL REFERENCES router_events(seq) ON DELETE CASCADE,
-            plugin          TEXT NOT NULL,
-            state           TEXT NOT NULL CHECK(state IN
-                ('pending','running','retrying','completed','stopped','skipped')),
-            attempts        INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at INTEGER NOT NULL,
-            last_error      TEXT,
-            updated_at      INTEGER NOT NULL,
-            PRIMARY KEY(event_seq, plugin)
-        );
-        CREATE INDEX IF NOT EXISTS idx_router_deliveries_open
-            ON router_deliveries(state, next_attempt_at);",
+        );",
+    )?;
+    conn.execute_batch(DELIVERY_SCHEMA)?;
+    // SQLite cannot extend a CHECK constraint in place. Keep existing delivery
+    // progress when upgrading databases created before terminal failures.
+    let schema: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='router_deliveries'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !schema.contains("'failed'") {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch("ALTER TABLE router_deliveries RENAME TO router_deliveries_legacy;")?;
+        tx.execute_batch(DELIVERY_SCHEMA)?;
+        tx.execute_batch(
+            "INSERT INTO router_deliveries SELECT * FROM router_deliveries_legacy;
+             DROP TABLE router_deliveries_legacy;",
+        )?;
+        tx.commit()?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_router_deliveries_open
+        ON router_deliveries(state, next_attempt_at);
+        CREATE INDEX IF NOT EXISTS idx_router_deliveries_plugin_open
+        ON router_deliveries(plugin, event_seq)
+        WHERE state IN ('pending','running','retrying');",
     )?;
     Ok(())
 }
@@ -92,8 +124,26 @@ pub enum StepOutcome {
     Continue,
     /// End this run successfully and skip dependents.
     Stop,
-    /// Retry the whole run from its first step.
+    /// Fail this run; the plugin's retry policy decides whether to run again.
     Fail(String),
+}
+
+/// Delivery-level failure policy. Retried runs start again at their first step.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum RetryPolicy {
+    #[default]
+    Forever,
+    /// Total failed runs allowed, including the initial run. One means no retry.
+    MaxAttempts(NonZeroU32),
+}
+
+impl RetryPolicy {
+    fn exhausted(self, failures: i64) -> bool {
+        match self {
+            Self::Forever => false,
+            Self::MaxAttempts(limit) => failures >= i64::from(limit.get()),
+        }
+    }
 }
 
 #[async_trait]
@@ -104,6 +154,14 @@ pub trait Step: Send + Sync {
 pub trait Plugin: Send + Sync {
     fn id(&self) -> &'static str;
     fn subscriptions(&self) -> Vec<Subscription>;
+    /// Process this plugin's deliveries in event sequence order. An unfinished
+    /// run, including a retry, holds later events; other plugins remain parallel.
+    fn fifo(&self) -> bool {
+        false
+    }
+    fn retry_policy(&self) -> RetryPolicy {
+        RetryPolicy::Forever
+    }
     fn pre_exec(&self) -> Vec<Box<dyn Step>> {
         Vec::new()
     }
@@ -166,6 +224,8 @@ struct Registered {
     phases: [Vec<Box<dyn Step>>; 3],
     /// event id -> depends_on
     depends_on: HashMap<&'static str, Vec<&'static str>>,
+    retry_policy: RetryPolicy,
+    fifo: bool,
 }
 
 struct Registry {
@@ -197,13 +257,11 @@ impl Registry {
             let id = plugin.id();
             let mut depends_on = HashMap::new();
             for subscription in plugin.subscriptions() {
-                if !registry
-                    .events
-                    .keys()
-                    .any(|(event, _)| event == subscription.event)
-                {
+                if !registry.events.keys().any(|(event, version)| {
+                    event == subscription.event && subscription.versions.contains(version)
+                }) {
                     bail!(
-                        "plugin {id} subscribes to undeclared event {}",
+                        "plugin {id} subscribes to no declared version of event {}",
                         subscription.event
                     );
                 }
@@ -220,9 +278,19 @@ impl Registry {
                     .push((id, subscription.versions));
             }
             let phases = [plugin.pre_exec(), plugin.exec(), plugin.post_exec()];
+            let retry_policy = plugin.retry_policy();
+            let fifo = plugin.fifo();
             if registry
                 .plugins
-                .insert(id, Registered { phases, depends_on })
+                .insert(
+                    id,
+                    Registered {
+                        phases,
+                        depends_on,
+                        retry_policy,
+                        fifo,
+                    },
+                )
                 .is_some()
             {
                 bail!("plugin {id} is registered twice");
@@ -234,17 +302,25 @@ impl Registry {
 
     fn validate(&self) -> Result<()> {
         for (event, subscribers) in &self.subscribers {
-            let subscribed: HashSet<_> = subscribers.iter().map(|(plugin, _)| *plugin).collect();
-            for plugin in &subscribed {
-                for dependency in &self.plugins[plugin].depends_on[event] {
-                    if !subscribed.contains(dependency) {
-                        bail!("plugin {plugin} depends on {dependency}, which does not subscribe to {event}");
+            for (_, version) in self.events.keys().filter(|(id, _)| id == event) {
+                let subscribed: HashSet<_> = subscribers
+                    .iter()
+                    .filter(|(_, versions)| versions.contains(version))
+                    .map(|(plugin, _)| *plugin)
+                    .collect();
+                for plugin in &subscribed {
+                    for dependency in &self.plugins[plugin].depends_on[event] {
+                        if !subscribed.contains(dependency) {
+                            bail!(
+                                "plugin {plugin} depends on {dependency}, which does not subscribe to {event} v{version}"
+                            );
+                        }
                     }
                 }
-            }
-            let mut done = HashSet::new();
-            for plugin in &subscribed {
-                self.acyclic(event, plugin, &mut Vec::new(), &mut done)?;
+                let mut done = HashSet::new();
+                for plugin in &subscribed {
+                    self.acyclic(event, plugin, &mut Vec::new(), &mut done)?;
+                }
             }
         }
         Ok(())
@@ -282,6 +358,7 @@ pub struct Bus {
     db: Db,
     registry: Arc<Registry>,
     wake: Arc<Notify>,
+    active: Arc<AtomicBool>,
 }
 
 impl Bus {
@@ -379,6 +456,18 @@ impl Bus {
         &self.db
     }
 
+    /// Whether a registered plugin consumes this event version.
+    pub fn subscribes(&self, plugin: &str, event: &str, version: u32) -> bool {
+        self.registry
+            .subscribers
+            .get(event)
+            .is_some_and(|subscribers| {
+                subscribers
+                    .iter()
+                    .any(|(id, versions)| *id == plugin && versions.contains(&version))
+            })
+    }
+
     /// Whether authenticated remote clients may emit this event.
     pub fn accepts_remote(&self, id: &str, version: u32) -> bool {
         self.registry
@@ -388,67 +477,124 @@ impl Bus {
     }
 
     /// Mark runnable deliveries running.
-    fn claim(&self, now: i64) -> Result<Claimed> {
+    fn claim(&self, now: i64, capacity: usize) -> Result<Claimed> {
+        if capacity == 0 {
+            return Ok(Claimed {
+                runs: Vec::new(),
+                next: None,
+                skipped: false,
+            });
+        }
         let conn = self.db.lock().unwrap();
+        if !self.active.load(Ordering::SeqCst) {
+            return Ok(Claimed {
+                runs: Vec::new(),
+                next: None,
+                skipped: false,
+            });
+        }
         let tx = conn.unchecked_transaction()?;
-        let open = {
-            let mut statement = tx.prepare(
-                "SELECT d.event_seq, d.plugin, e.id, d.next_attempt_at
-                 FROM router_deliveries d JOIN router_events e ON e.seq = d.event_seq
-                 WHERE d.state IN ('pending','retrying') ORDER BY d.event_seq, d.plugin",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        let (mut runs, mut next, mut skipped) = (Vec::new(), None::<i64>, false);
-        for (seq, plugin, event, due) in open {
-            let Some((plugin, registered)) = self.registry.plugins.get_key_value(plugin.as_str())
-            else {
-                continue;
-            };
-            let (mut ready, mut blocked) = (true, false);
-            for dependency in registered
-                .depends_on
-                .get(event.as_str())
-                .into_iter()
-                .flatten()
-            {
-                let state: Option<String> = tx
-                    .query_row(
-                        "SELECT state FROM router_deliveries WHERE event_seq=?1 AND plugin=?2",
-                        params![seq, dependency],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                match state.as_deref() {
-                    None | Some("completed") => {}
-                    Some("stopped" | "skipped") => blocked = true,
-                    _ => ready = false,
-                }
+        // Cache one indexed head per FIFO plugin. Filtering in SQL prevents a
+        // blocked controller's backlog from filling every page of parallel work.
+        let mut fifo_heads = serde_json::Map::new();
+        let mut parallel = Vec::new();
+        for (plugin, registered) in &self.registry.plugins {
+            if registered.fifo {
+                let head: Option<i64> = tx.query_row(
+                    "SELECT MIN(event_seq) FROM router_deliveries WHERE plugin=?1
+                     AND state IN ('pending','running','retrying')",
+                    params![plugin],
+                    |row| row.get(0),
+                )?;
+                fifo_heads.insert((*plugin).to_owned(), json!(head));
+            } else {
+                parallel.push(*plugin);
             }
-            if blocked {
-                tx.execute(
+        }
+        let fifo_heads = Value::Object(fifo_heads).to_string();
+        let parallel = json!(parallel).to_string();
+        let (mut runs, mut next, mut skipped) = (Vec::new(), None::<i64>, false);
+        let mut after = (0_i64, String::new());
+        while runs.len() < capacity {
+            let open = {
+                let mut statement = tx.prepare(
+                    "SELECT d.event_seq, d.plugin, e.id, d.next_attempt_at
+                 FROM json_each(?4) fifo
+                 JOIN router_deliveries d ON d.plugin=fifo.key AND d.event_seq=fifo.value
+                 JOIN router_events e ON e.seq=d.event_seq
+                 WHERE d.state IN ('pending','retrying') AND (d.event_seq,d.plugin)>(?1,?2)
+                 UNION ALL
+                 SELECT d.event_seq, d.plugin, e.id, d.next_attempt_at
+                 FROM json_each(?5) parallel
+                 CROSS JOIN router_deliveries d INDEXED BY idx_router_deliveries_plugin_open
+                 JOIN router_events e ON e.seq=d.event_seq
+                 WHERE d.plugin=parallel.value AND d.state IN ('pending','running','retrying')
+                 AND d.state!='running' AND (d.event_seq,d.plugin)>(?1,?2)
+                 ORDER BY 1, 2 LIMIT ?3",
+                )?;
+                let rows = statement.query_map(
+                    params![after.0, after.1, CLAIM_PAGE, fifo_heads, parallel],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            if open.is_empty() {
+                break;
+            }
+            for (seq, plugin, event, due) in open {
+                if runs.len() == capacity {
+                    break;
+                }
+                after = (seq, plugin.clone());
+                let Some((plugin, registered)) =
+                    self.registry.plugins.get_key_value(plugin.as_str())
+                else {
+                    continue;
+                };
+                let (mut ready, mut blocked) = (true, false);
+                for dependency in registered
+                    .depends_on
+                    .get(event.as_str())
+                    .into_iter()
+                    .flatten()
+                {
+                    let state: Option<String> = tx
+                        .query_row(
+                            "SELECT state FROM router_deliveries WHERE event_seq=?1 AND plugin=?2",
+                            params![seq, dependency],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    match state.as_deref() {
+                        Some("completed") => {}
+                        None | Some("stopped" | "skipped" | "failed") => blocked = true,
+                        _ => ready = false,
+                    }
+                }
+                if blocked {
+                    tx.execute(
                     "UPDATE router_deliveries SET state='skipped', last_error='dependency did not complete',
                      updated_at=?3 WHERE event_seq=?1 AND plugin=?2",
                     params![seq, plugin, now],
                 )?;
-                skipped = true;
-            } else if ready && due > now {
-                next = Some(next.map_or(due, |next| next.min(due)));
-            } else if ready {
-                tx.execute(
-                    "UPDATE router_deliveries SET state='running', updated_at=?3
+                    skipped = true;
+                } else if ready && due > now {
+                    next = Some(next.map_or(due, |next| next.min(due)));
+                } else if ready {
+                    tx.execute(
+                        "UPDATE router_deliveries SET state='running', updated_at=?3
                      WHERE event_seq=?1 AND plugin=?2",
-                    params![seq, plugin, now],
-                )?;
-                runs.push((load(&tx, seq)?, *plugin));
+                        params![seq, plugin, now],
+                    )?;
+                    runs.push((load(&tx, seq)?, *plugin));
+                }
             }
         }
         tx.commit()?;
@@ -477,6 +623,17 @@ impl Bus {
                     |row| row.get(0),
                 )?;
                 let delay = retry_delay(attempts);
+                if self.registry.plugins[plugin]
+                    .retry_policy
+                    .exhausted(attempts)
+                {
+                    conn.execute(
+                        "UPDATE router_deliveries SET state='failed', attempts=?3,
+                         last_error=?4, updated_at=?5 WHERE event_seq=?1 AND plugin=?2",
+                        params![seq, plugin, attempts, error, now],
+                    )?;
+                    return Ok(());
+                }
                 conn.execute(
                     "UPDATE router_deliveries SET state='retrying', attempts=?3, next_attempt_at=?4,
                      last_error=?5, updated_at=?6 WHERE event_seq=?1 AND plugin=?2",
@@ -561,50 +718,70 @@ pub fn start(
         db,
         registry,
         wake: Arc::new(Notify::new()),
+        active: Arc::new(AtomicBool::new(true)),
     };
     Ok((bus.clone(), tokio::spawn(route(bus))))
 }
 
-/// Runs interrupted by a restart run again; deliveries for plugins that are no
-/// longer registered can never run, so they are skipped.
+/// Runs interrupted by a restart run again; deliveries whose subscription was
+/// removed can never run, so they are skipped.
 fn recover(conn: &Connection, registry: &Registry) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
     let now = db::now_ms();
-    conn.execute(
+    tx.execute(
         "UPDATE router_deliveries SET state='pending', updated_at=?1 WHERE state='running'",
         params![now],
     )?;
-    let plugins = conn
+    let deliveries = tx
         .prepare(&format!(
-            "SELECT DISTINCT plugin FROM router_deliveries WHERE state NOT IN {TERMINAL}"
+            "SELECT d.event_seq, d.plugin, e.id, e.version FROM router_deliveries d
+             JOIN router_events e ON e.seq=d.event_seq WHERE d.state NOT IN {TERMINAL}"
         ))?
-        .query_map([], |row| row.get::<_, String>(0))?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, u32>(3)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for plugin in plugins
-        .iter()
-        .filter(|plugin| !registry.plugins.contains_key(plugin.as_str()))
-    {
-        conn.execute(
-            &format!(
-                "UPDATE router_deliveries SET state='skipped', last_error='plugin is not registered',
-                 updated_at=?2 WHERE plugin=?1 AND state NOT IN {TERMINAL}"
-            ),
-            params![plugin, now],
-        )?;
+    for (seq, plugin, event, version) in deliveries {
+        let subscribed = registry
+            .subscribers
+            .get(event.as_str())
+            .is_some_and(|subscribers| {
+                subscribers
+                    .iter()
+                    .any(|(id, versions)| *id == plugin && versions.contains(&version))
+            });
+        if !subscribed {
+            tx.execute(
+                "UPDATE router_deliveries SET state='skipped', last_error='subscription is not registered',
+                 updated_at=?3 WHERE event_seq=?1 AND plugin=?2",
+                params![seq, plugin, now],
+            )?;
+        }
     }
+    tx.commit()?;
     Ok(())
 }
 
 async fn route(bus: Bus) {
+    // Own executions so shutting down the router also stops its controllers.
+    let mut workers = JoinSet::new();
+    let _lifetime = RouterLifetime(bus.active.clone());
     loop {
         let claimer = bus.clone();
-        let next = match spawn_blocking(move || claimer.claim(db::now_ms())).await {
+        let capacity = MAX_CONCURRENT_DELIVERIES - workers.len();
+        let next = match spawn_blocking(move || claimer.claim(db::now_ms(), capacity)).await {
             Ok(Ok(Claimed {
                 runs,
                 next,
                 skipped,
             })) => {
                 for (event, plugin) in runs {
-                    tokio::spawn(execute(bus.clone(), event, plugin));
+                    workers.spawn(execute(bus.clone(), event, plugin));
                 }
                 if skipped {
                     bus.wake();
@@ -624,9 +801,28 @@ async fn route(bus: Bus) {
             Duration::from_millis((at - db::now_ms()).max(0) as u64)
         });
         tokio::select! {
+            _ = workers.join_next(), if !workers.is_empty() => {}
             _ = bus.wake.notified() => {}
             _ = tokio::time::sleep(wait) => {}
         }
+    }
+}
+
+struct RouterLifetime(Arc<AtomicBool>);
+
+impl Drop for RouterLifetime {
+    fn drop(&mut self) {
+        // Blocking work queued on the DB mutex can outlive task cancellation.
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// A plugin task must not outlive its owning delivery when the router stops.
+struct PluginRun(JoinHandle<StepOutcome>);
+
+impl Drop for PluginRun {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -638,7 +834,7 @@ async fn execute(bus: Bus, event: Event, plugin: &'static str) {
         cause: event.uid,
     };
     let registry = bus.registry.clone();
-    let outcome = tokio::spawn(async move {
+    let mut run = PluginRun(tokio::spawn(async move {
         for phase in &registry.plugins[plugin].phases {
             for step in phase {
                 match step.run(&event, &ctx).await {
@@ -648,37 +844,48 @@ async fn execute(bus: Bus, event: Event, plugin: &'static str) {
             }
         }
         StepOutcome::Continue
-    })
-    .await
-    .unwrap_or_else(|error| StepOutcome::Fail(format!("plugin panicked: {error}")));
-    let finisher = bus.clone();
-    let finished = spawn_blocking(move || {
-        let conn = finisher.db.lock().unwrap();
-        let tx = conn.unchecked_transaction()?;
-        finisher.finish(&tx, seq, plugin, outcome, db::now_ms())?;
-        tx.commit()?;
-        anyhow::Ok(())
-    })
-    .await;
-    match finished {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            tracing::warn!("Event router could not record {plugin} for event {seq}: {error}")
+    }));
+    let outcome = (&mut run.0)
+        .await
+        .unwrap_or_else(|error| StepOutcome::Fail(format!("plugin panicked: {error}")));
+    // A transient recording failure must not strand a delivery in `running`
+    // until restart or repeat its already-completed side effects.
+    loop {
+        let finisher = bus.clone();
+        let outcome = outcome.clone();
+        let finished = spawn_blocking(move || {
+            let conn = finisher.db.lock().unwrap();
+            if !finisher.active.load(Ordering::SeqCst) {
+                return anyhow::Ok(());
+            }
+            let tx = conn.unchecked_transaction()?;
+            finisher.finish(&tx, seq, plugin, outcome, db::now_ms())?;
+            tx.commit()?;
+            anyhow::Ok(())
+        })
+        .await;
+        match finished {
+            Ok(Ok(())) => break,
+            Ok(Err(error)) => {
+                tracing::warn!("Event router could not record {plugin} for event {seq}: {error}")
+            }
+            Err(error) => tracing::warn!("Event router record task failed: {error}"),
         }
-        Err(error) => tracing::warn!("Event router record task failed: {error}"),
+        tokio::time::sleep(Duration::from_millis(FIRST_RETRY_MS as u64)).await;
     }
     bus.wake();
 }
 
-/// Remove finished events older than `cutoff_ms`.
-pub fn prune(conn: &Connection, cutoff_ms: i64) -> Result<usize> {
+/// Remove finished events older than `cutoff_ms`, through an optional external
+/// retention boundary. The caller owns any outstanding delivery obligations.
+pub fn prune(conn: &Connection, cutoff_ms: i64, through_seq: Option<i64>) -> Result<usize> {
     Ok(conn.execute(
         &format!(
-            "DELETE FROM router_events WHERE emitted_at < ?1 AND NOT EXISTS (
+            "DELETE FROM router_events WHERE emitted_at < ?1 AND (?2 IS NULL OR seq<=?2) AND NOT EXISTS (
              SELECT 1 FROM router_deliveries d WHERE d.event_seq = router_events.seq
              AND d.state NOT IN {TERMINAL})"
         ),
-        params![cutoff_ms],
+        params![cutoff_ms, through_seq],
     )?)
 }
 
@@ -686,7 +893,7 @@ pub fn prune(conn: &Connection, cutoff_ms: i64) -> Result<usize> {
 mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     };
     use std::time::Instant;
@@ -758,6 +965,9 @@ mod tests {
         pre: Vec<Record>,
         exec: Vec<Record>,
         post: Vec<Record>,
+        retry_policy: RetryPolicy,
+        versions: RangeInclusive<u32>,
+        fifo: bool,
     }
 
     fn plugin(id: &'static str, depends_on: &[&'static str], exec: Vec<Record>) -> TestPlugin {
@@ -768,6 +978,9 @@ mod tests {
             pre: Vec::new(),
             exec,
             post: Vec::new(),
+            retry_policy: RetryPolicy::Forever,
+            versions: 1..=1,
+            fifo: false,
         }
     }
 
@@ -786,12 +999,18 @@ mod tests {
         fn subscriptions(&self) -> Vec<Subscription> {
             vec![Subscription {
                 event: self.event,
-                versions: 1..=1,
+                versions: self.versions.clone(),
                 depends_on: self.depends_on.clone(),
             }]
         }
         fn pre_exec(&self) -> Vec<Box<dyn Step>> {
             boxed(&self.pre)
+        }
+        fn retry_policy(&self) -> RetryPolicy {
+            self.retry_policy
+        }
+        fn fifo(&self) -> bool {
+            self.fifo
         }
         fn exec(&self) -> Vec<Box<dyn Step>> {
             boxed(&self.exec)
@@ -826,6 +1045,7 @@ mod tests {
             db,
             registry: Arc::new(Registry::new(events(), plugins).unwrap()),
             wake: Arc::new(Notify::new()),
+            active: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -1038,6 +1258,439 @@ mod tests {
     }
 
     #[test]
+    fn paged_claims_reach_runnable_work_after_delayed_backlog_and_respect_capacity() {
+        let db = db::open(":memory:").unwrap();
+        let bus = idle_bus(db.clone(), boxes(vec![plugin("a", &[], Vec::new())]));
+        let total = CLAIM_PAGE + 3;
+        let now = {
+            let conn = db.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            for _ in 0..total {
+                bus.emit_in(&tx, "test", EVENT, 1, json!({}), None).unwrap();
+            }
+            let now = db::now_ms();
+            tx.execute(
+                "UPDATE router_deliveries SET next_attempt_at=?1 WHERE event_seq<=?2",
+                params![now + 10_000, CLAIM_PAGE],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            now
+        };
+        let claimed = bus.claim(now + 100, 2).unwrap();
+        assert_eq!(
+            claimed
+                .runs
+                .iter()
+                .map(|(event, _)| event.seq)
+                .collect::<Vec<_>>(),
+            [CLAIM_PAGE + 1, CLAIM_PAGE + 2]
+        );
+        assert_eq!(claimed.next, Some(now + 10_000));
+        let claimed = bus.claim(now + 100, 2).unwrap();
+        assert_eq!(claimed.runs[0].0.seq, total);
+        assert_eq!(claimed.runs.len(), 1);
+        assert_eq!(claimed.next, Some(now + 10_000));
+        assert!(bus.claim(now + 100, 2).unwrap().runs.is_empty());
+        assert_eq!(bus.claim(now + 10_000, 2).unwrap().runs.len(), 2);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM router_deliveries WHERE state='pending'"
+            ),
+            CLAIM_PAGE - 2
+        );
+    }
+
+    #[test]
+    fn fifo_holds_running_and_retrying_heads_without_blocking_parallel_work() {
+        let db = db::open(":memory:").unwrap();
+        let serial = TestPlugin {
+            fifo: true,
+            ..plugin("serial", &[], Vec::new())
+        };
+        let parallel = TestPlugin {
+            event: OTHER,
+            ..plugin("parallel", &[], Vec::new())
+        };
+        let bus = idle_bus(db.clone(), boxes(vec![serial, parallel]));
+        let now = db::now_ms();
+        {
+            let conn = db.lock().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            for _ in 0..CLAIM_PAGE + 32 {
+                bus.emit_in(&tx, "test", EVENT, 1, json!({}), None).unwrap();
+            }
+            bus.emit_in(&tx, "test", OTHER, 1, json!({}), None).unwrap();
+            tx.commit().unwrap();
+        }
+        let claimed = bus.claim(now + 1000, 2).unwrap();
+        assert_eq!(
+            claimed
+                .runs
+                .iter()
+                .map(|(event, plugin)| (event.seq, *plugin))
+                .collect::<Vec<_>>(),
+            [(1, "serial"), (CLAIM_PAGE + 33, "parallel")]
+        );
+        assert!(
+            bus.claim(now + 1000, 2).unwrap().runs.is_empty(),
+            "a running head holds later FIFO input"
+        );
+        bus.finish(
+            &db.lock().unwrap(),
+            1,
+            "serial",
+            StepOutcome::Fail("transient".into()),
+            now + 1000,
+        )
+        .unwrap();
+        let waiting = bus.claim(now + 1000, 2).unwrap();
+        assert!(waiting.runs.is_empty());
+        assert_eq!(waiting.next, Some(now + 2000));
+        let retry = bus.claim(now + 2000, 2).unwrap();
+        assert_eq!(
+            retry
+                .runs
+                .iter()
+                .map(|(event, _)| event.seq)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+        bus.finish(
+            &db.lock().unwrap(),
+            1,
+            "serial",
+            StepOutcome::Continue,
+            now + 2000,
+        )
+        .unwrap();
+        let next = bus.claim(now + 2000, 2).unwrap();
+        assert_eq!(
+            next.runs
+                .iter()
+                .map(|(event, _)| event.seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+    }
+
+    #[test]
+    fn bounded_failures_settle_dependents_and_survive_recovery() {
+        for limit in [1, 3] {
+            let db = db::open(":memory:").unwrap();
+            let limited = TestPlugin {
+                retry_policy: RetryPolicy::MaxAttempts(NonZeroU32::new(limit).unwrap()),
+                ..plugin("a", &[], Vec::new())
+            };
+            let bus = idle_bus(
+                db.clone(),
+                boxes(vec![
+                    limited,
+                    plugin("b", &["a"], Vec::new()),
+                    plugin("c", &[], Vec::new()),
+                ]),
+            );
+            bus.emit_in(&db.lock().unwrap(), "test", EVENT, 1, json!({}), None)
+                .unwrap();
+            assert_eq!(
+                bus.claim(0, MAX_CONCURRENT_DELIVERIES).unwrap().runs.len(),
+                0
+            ); // Not due yet.
+            let mut now = db::now_ms();
+            assert_eq!(
+                bus.claim(now, MAX_CONCURRENT_DELIVERIES)
+                    .unwrap()
+                    .runs
+                    .len(),
+                2
+            );
+            bus.finish(&db.lock().unwrap(), 1, "c", StepOutcome::Continue, now)
+                .unwrap();
+            for attempt in 1..=limit {
+                bus.finish(
+                    &db.lock().unwrap(),
+                    1,
+                    "a",
+                    StepOutcome::Fail("broken".into()),
+                    now,
+                )
+                .unwrap();
+                if attempt < limit {
+                    assert!(bus
+                        .claim(now, MAX_CONCURRENT_DELIVERIES)
+                        .unwrap()
+                        .runs
+                        .is_empty());
+                    now += retry_delay(i64::from(attempt));
+                    assert_eq!(
+                        bus.claim(now, MAX_CONCURRENT_DELIVERIES)
+                            .unwrap()
+                            .runs
+                            .len(),
+                        1
+                    );
+                }
+            }
+            assert!(bus
+                .claim(now, MAX_CONCURRENT_DELIVERIES)
+                .unwrap()
+                .runs
+                .is_empty());
+            assert_eq!(
+                states(&db),
+                [
+                    ("a".into(), "failed".into(), i64::from(limit)),
+                    ("b".into(), "skipped".into(), 0),
+                    ("c".into(), "completed".into(), 0),
+                ]
+            );
+            let conn = db.lock().unwrap();
+            let error: String = conn
+                .query_row(
+                    "SELECT last_error FROM router_deliveries WHERE plugin='a'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(error, "broken");
+            recover(&conn, &bus.registry).unwrap();
+            drop(conn);
+            assert!(bus
+                .claim(i64::MAX, MAX_CONCURRENT_DELIVERIES)
+                .unwrap()
+                .runs
+                .is_empty());
+            assert_eq!(prune(&db.lock().unwrap(), i64::MAX, None).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn upgrade_preserves_legacy_delivery_progress_and_foreign_keys() {
+        let db = db::open(":memory:").unwrap();
+        let bus = idle_bus(db.clone(), boxes(vec![plugin("a", &[], Vec::new())]));
+        let conn = db.lock().unwrap();
+        let uid = bus
+            .emit_in(&conn, "test", EVENT, 1, json!({}), None)
+            .unwrap();
+        // Reproduce the previous schema without its new terminal state.
+        conn.execute_batch("ALTER TABLE router_deliveries RENAME TO saved_deliveries;
+            CREATE TABLE router_deliveries (
+                event_seq INTEGER NOT NULL REFERENCES router_events(seq) ON DELETE CASCADE,
+                plugin TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending','running','retrying','completed','stopped','skipped')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL, last_error TEXT, updated_at INTEGER NOT NULL,
+                PRIMARY KEY(event_seq, plugin));
+            INSERT INTO router_deliveries SELECT * FROM saved_deliveries;
+            DROP TABLE saved_deliveries;
+            UPDATE router_deliveries SET state='retrying', attempts=2, last_error='offline';").unwrap();
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        assert_eq!(load(&conn, 1).unwrap().uid, uid);
+        let progress: (String, i64, String) = conn
+            .query_row(
+                "SELECT state, attempts, last_error FROM router_deliveries",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(progress, ("retrying".into(), 2, "offline".into()));
+        conn.execute("UPDATE router_deliveries SET state='failed'", [])
+            .unwrap();
+        conn.execute("DELETE FROM router_events", []).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM router_deliveries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn dependencies_must_cover_each_subscribed_event_version() {
+        let definitions = || {
+            let mut definitions = events();
+            definitions.push(EventDefinition {
+                id: EVENT,
+                version: 2,
+                remote_emit: false,
+                validate: object,
+            });
+            definitions
+        };
+        let a = || plugin("a", &[], Vec::new());
+        let b = || TestPlugin {
+            versions: 2..=2,
+            ..plugin("b", &["a"], Vec::new())
+        };
+        assert!(Registry::new(definitions(), boxes(vec![a(), b()])).is_err());
+        let a = TestPlugin {
+            versions: 1..=2,
+            ..a()
+        };
+        assert!(Registry::new(definitions(), boxes(vec![a, b()])).is_ok());
+        let unavailable = TestPlugin {
+            versions: 3..=3,
+            ..plugin("x", &[], Vec::new())
+        };
+        assert!(Registry::new(definitions(), boxes(vec![unavailable])).is_err());
+    }
+
+    #[test]
+    fn recovery_skips_removed_subscriptions_on_registered_plugins() {
+        let db = db::open(":memory:").unwrap();
+        let bus = idle_bus(db.clone(), boxes(vec![plugin("a", &[], Vec::new())]));
+        bus.emit_in(&db.lock().unwrap(), "test", EVENT, 1, json!({}), None)
+            .unwrap();
+        let changed = TestPlugin {
+            event: OTHER,
+            ..plugin("a", &[], Vec::new())
+        };
+        let registry = Registry::new(events(), boxes(vec![changed])).unwrap();
+        recover(&db.lock().unwrap(), &registry).unwrap();
+        assert_eq!(states(&db), [("a".into(), "skipped".into(), 0)]);
+    }
+
+    #[tokio::test]
+    async fn recording_failure_retries_without_reexecuting_plugin_steps() {
+        let db = db::open(":memory:").unwrap();
+        let log = Log::default();
+        let bus = idle_bus(
+            db.clone(),
+            boxes(vec![plugin("a", &[], vec![record("a", &log)])]),
+        );
+        let event = {
+            let conn = db.lock().unwrap();
+            bus.emit_in(&conn, "test", EVENT, 1, json!({}), None)
+                .unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER reject_completion BEFORE UPDATE ON router_deliveries
+                WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END;",
+            )
+            .unwrap();
+            load(&conn, 1).unwrap()
+        };
+        bus.claim(db::now_ms(), 1).unwrap();
+        let run = tokio::spawn(execute(bus.clone(), event, "a"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while logged(&log).is_empty() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Give the first completion write a chance to fail.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(states(&db), [("a".into(), "running".into(), 0)]);
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_completion")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(logged(&log), ["a"]);
+        assert_eq!(states(&db), [("a".into(), "completed".into(), 0)]);
+    }
+
+    #[tokio::test]
+    async fn router_shutdown_cancels_owned_controller_runs_and_bounds_concurrency() {
+        struct Waiting(Arc<AtomicUsize>);
+        struct Active(Arc<AtomicUsize>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        #[async_trait]
+        impl Step for Waiting {
+            async fn run(&self, _: &Event, _: &StepContext) -> StepOutcome {
+                let _active = Active(self.0.clone());
+                self.0.fetch_add(1, Ordering::SeqCst);
+                std::future::pending().await
+            }
+        }
+        struct Controller(Arc<AtomicUsize>);
+        impl Plugin for Controller {
+            fn id(&self) -> &'static str {
+                "waiting"
+            }
+            fn subscriptions(&self) -> Vec<Subscription> {
+                vec![Subscription {
+                    event: EVENT,
+                    versions: 1..=1,
+                    depends_on: Vec::new(),
+                }]
+            }
+            fn exec(&self) -> Vec<Box<dyn Step>> {
+                vec![Box::new(Waiting(self.0.clone()))]
+            }
+        }
+        let db = db::open(":memory:").unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let (bus, router) = start(
+            db.clone(),
+            events(),
+            vec![Box::new(Controller(active.clone()))],
+        )
+        .unwrap();
+        for _ in 0..MAX_CONCURRENT_DELIVERIES + 3 {
+            bus.emit("test", EVENT, 1, json!({}), None).await.unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count(
+            &db,
+            "SELECT COUNT(*) FROM router_deliveries WHERE state='running'",
+        ) < MAX_CONCURRENT_DELIVERIES as i64
+        {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM router_deliveries WHERE state='pending'"
+            ),
+            3
+        );
+        assert!(active.load(Ordering::SeqCst) > 0);
+        router.abort();
+        let _ = router.await;
+        while active.load(Ordering::SeqCst) > 0 {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Interrupted deliveries remain durable for recovery.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM router_deliveries WHERE state='running'"
+            ),
+            MAX_CONCURRENT_DELIVERIES as i64
+        );
+        assert!(bus
+            .claim(i64::MAX, MAX_CONCURRENT_DELIVERIES)
+            .unwrap()
+            .runs
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_claim_cannot_mutate_deliveries_after_router_shutdown() {
+        let db = db::open(":memory:").unwrap();
+        let bus = idle_bus(db.clone(), boxes(vec![plugin("a", &[], Vec::new())]));
+        let pending = {
+            let conn = db.lock().unwrap();
+            bus.emit_in(&conn, "test", EVENT, 1, json!({}), None)
+                .unwrap();
+            let claimer = bus.clone();
+            let pending = spawn_blocking(move || claimer.claim(i64::MAX, 1));
+            drop(RouterLifetime(bus.active.clone()));
+            pending
+        };
+        assert!(pending.await.unwrap().unwrap().runs.is_empty());
+        assert_eq!(states(&db), [("a".into(), "pending".into(), 0)]);
+    }
+
+    #[test]
     fn reaching_the_retry_cap_emits_router_retrying_once() {
         let db = db::open(":memory:").unwrap();
         let log = Log::default();
@@ -1175,8 +1828,8 @@ mod tests {
         bus.emit_in(&conn, "test", EVENT, 1, json!({}), None)
             .unwrap();
         bus.finish(&conn, 1, "a", StepOutcome::Continue, 0).unwrap();
-        assert_eq!(prune(&conn, 0).unwrap(), 0, "newer than the cutoff");
-        assert_eq!(prune(&conn, i64::MAX).unwrap(), 1);
+        assert_eq!(prune(&conn, 0, None).unwrap(), 0, "newer than the cutoff");
+        assert_eq!(prune(&conn, i64::MAX, None).unwrap(), 1);
         let seq: i64 = conn
             .query_row("SELECT seq FROM router_events", [], |row| row.get(0))
             .unwrap();

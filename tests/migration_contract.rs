@@ -194,7 +194,16 @@ fn unused_existing_database_is_backed_up_before_install() {
     let _source = source(&path);
     let state = fixture.path().join("amux");
     let preview = migration::prepare_local(&path, &state).unwrap();
-    drop(db::open(state.join("server/application.sqlite").to_str().unwrap()).unwrap());
+    let empty = db::open(state.join("server/application.sqlite").to_str().unwrap()).unwrap();
+    empty
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE presence_clock SET observed_at=12345;
+         INSERT INTO retention_runs(id,completed_at) VALUES(1,12345);",
+        )
+        .unwrap();
+    drop(empty);
     migration::install(&preview, &state).unwrap();
     assert!(fs::read_dir(state.join("server")).unwrap().any(|entry| {
         entry
@@ -203,6 +212,153 @@ fn unused_existing_database_is_backed_up_before_install() {
             .to_string_lossy()
             .starts_with("before-migration-")
     }));
+}
+
+#[test]
+fn controller_work_identity_reports_settings_and_unknown_rows_prevent_overwrite() {
+    let fixture = fixture();
+    let path = fixture.path().join("legacy.sqlite");
+    let _source = source(&path);
+    let preview = migration::prepare_local(&path, &fixture.path().join("preview")).unwrap();
+    for (name, sql, table) in [
+        ("pending-event", "INSERT INTO router_events(uid,id,version,payload,source,emitted_at) VALUES('pending','channel.message_received',1,'{}','channel:discord',1);
+            INSERT INTO router_deliveries(event_seq,plugin,state,next_attempt_at,updated_at) VALUES(1,'inbound','pending',1,1);", "router_deliveries"),
+        ("task-input", "INSERT INTO router_task_outbox(kind,project,task_json,created_at) VALUES('created','p','{}',1);", "router_task_outbox"),
+        ("observed-agent", "INSERT INTO task_target_presence(project_ident,instance_id,session_id,origin_json,generation,advertised,source,agent_json,report_seen_at) VALUES('p','instance','observed','{}','g',0,'client:node','{}',1);", "task_target_presence"),
+        ("advertised-agent", "INSERT INTO task_target_presence(project_ident,instance_id,session_id,origin_json,generation) VALUES('p','instance','advertised','{}','g');", "task_target_presence"),
+        ("settings", "INSERT INTO settings(key,value) VALUES('plugin.assignment.enabled','false');", "settings"),
+        ("unknown", "CREATE TABLE operator_data(value TEXT); INSERT INTO operator_data VALUES('keep');", "operator_data"),
+    ] {
+        let state = fixture.path().join(name);
+        fs::create_dir_all(state.join("server")).unwrap();
+        let target = state.join("server/application.sqlite");
+        let database = db::open(target.to_str().unwrap()).unwrap();
+        database.lock().unwrap().execute_batch(sql).unwrap();
+        drop(database);
+        let error = migration::install(&preview, &state).unwrap_err();
+        assert!(error.to_string().contains("already contains data"), "{name}: {error:#}");
+        let conn = Connection::open(target).unwrap();
+        let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "{name}: existing records remain intact");
+    }
+}
+
+#[test]
+fn retiring_known_projections_does_not_allow_unrelated_schema_upgrade_data_loss() {
+    let fixture = fixture();
+    let path = fixture.path().join("legacy.sqlite");
+    let original = source(&path);
+    // Simulate an incompatible source trigger fired by schema initialization.
+    // Only the private staging copy may encounter this loss.
+    original
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER incompatible_upgrade BEFORE INSERT ON presence_clock
+         BEGIN DELETE FROM \"future records\"; END;",
+        )
+        .unwrap();
+    let state = fixture.path().join("amux");
+    let error = migration::prepare_local(&path, &state).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Schema upgrade removed source rows")
+    );
+    assert!(error.to_string().contains("future records"));
+    assert!(!state.join("server/application.sqlite").exists());
+    let count: i64 = original
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM \"future records\"", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "source data stays intact despite rejected staging upgrade"
+    );
+}
+
+#[test]
+fn legacy_presence_projections_upgrade_with_canonical_identities_and_original_snapshot_preserved() {
+    use rusqlite::params;
+    use serde_json::json;
+    let fixture = fixture();
+    let path = fixture.path().join("legacy.sqlite");
+    let original = source(&path);
+    let origin = json!({"session_id":"advertised", "instance_id":"instance", "provider":"codex", "os":"linux"});
+    let agent = json!({"session_id":"observer", "instance_id":"instance", "provider":"codex", "os":"linux", "project":"unregistered"});
+    {
+        let conn = original.lock().unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER presence_project_deleted;
+             DROP TABLE task_target_presence;
+             CREATE TABLE task_target_presence (
+                project_ident TEXT NOT NULL REFERENCES projects(ident),instance_id TEXT NOT NULL,session_id TEXT NOT NULL,
+                origin_json TEXT NOT NULL,generation TEXT NOT NULL,seen_at INTEGER NOT NULL,canonical_remote TEXT NOT NULL,
+                PRIMARY KEY(project_ident,instance_id,session_id));
+             CREATE TABLE presence_agents (session_id TEXT PRIMARY KEY,source TEXT NOT NULL,agent_json TEXT NOT NULL,
+                seen_at INTEGER NOT NULL,output_at INTEGER,draft INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'unknown');
+             CREATE TABLE notifier_agents (session_id TEXT PRIMARY KEY, project TEXT NOT NULL, agent_json TEXT NOT NULL);
+             INSERT INTO notifier_agents VALUES('stale','demo','{}');
+             CREATE TABLE reclaim_busy (session_id TEXT PRIMARY KEY);
+             INSERT INTO reclaim_busy VALUES('stale');",
+        ).unwrap();
+        conn.execute("INSERT INTO task_target_presence VALUES('demo','instance','advertised',?1,'generation',100,'')", params![origin.to_string()]).unwrap();
+        conn.execute("INSERT INTO presence_agents(session_id,source,agent_json,seen_at,output_at,state) VALUES('observer','client:observer',?1,100,80,'idle')", params![agent.to_string()]).unwrap();
+    }
+    let state = fixture.path().join("amux");
+    let preview = migration::prepare_local(&path, &state).unwrap();
+    for retired in ["presence_agents", "notifier_agents", "reclaim_busy"] {
+        assert!(!preview.inventory.tables.contains_key(retired));
+        assert!(
+            preview.inventory.schema_notes.iter().any(
+                |note| note.starts_with(retired) && note.contains("original snapshot retained")
+            )
+        );
+    }
+    let installed = migration::install(&preview, &state).unwrap();
+    let imported = Connection::open(installed.database).unwrap();
+    let advertisement: (String, String, bool) = imported.query_row(
+        "SELECT origin_json,generation,advertised FROM task_target_presence WHERE session_id='advertised'", [],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).unwrap();
+    assert_eq!(
+        advertisement,
+        (origin.to_string(), "generation".into(), true)
+    );
+    let observation: (String, String, bool, i64) = imported.query_row(
+        "SELECT agent_json,source,advertised,output_at FROM task_target_presence WHERE session_id='observer'", [],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    ).unwrap();
+    assert_eq!(
+        observation,
+        (agent.to_string(), "client:observer".into(), false, 80)
+    );
+    let backup = state.join("server").join(format!(
+        "legacy-source-{}.sqlite",
+        preview.inventory.source_sha256
+    ));
+    let backup = Connection::open(backup).unwrap();
+    for retired in ["presence_agents", "notifier_agents", "reclaim_busy"] {
+        assert_eq!(
+            backup
+                .query_row(&format!("SELECT COUNT(*) FROM {retired}"), [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            original
+                .lock()
+                .unwrap()
+                .query_row(&format!("SELECT COUNT(*) FROM {retired}"), [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
 }
 
 #[test]

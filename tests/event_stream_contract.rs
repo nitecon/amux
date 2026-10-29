@@ -632,12 +632,20 @@ async fn the_desktop_event_client_reports_agents_and_receives_their_work() {
         outgoing_rx,
         incoming_tx,
     ));
-    let Incoming::Connected(clock) = next_incoming(&mut incoming).await else {
+    let Incoming::Connected {
+        clock,
+        server_restart_reminders,
+    } = next_incoming(&mut incoming).await
+    else {
         panic!("not connected");
     };
     assert!(
         clock.is_some(),
         "server time comes from the upgrade response"
+    );
+    assert!(
+        server_restart_reminders,
+        "the full server owns startup continuity"
     );
     let agent = json!({"session_id": SESSION, "instance_id": INSTANCE, "provider": "claude", "os": "linux", "project": PROJECT});
     outgoing
@@ -856,4 +864,191 @@ async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_of
             .all(|t| t["title"] != "Review: Quick fix"),
         "a disabled plugin stops at its Enabled pre-exec step"
     );
+}
+
+#[tokio::test]
+async fn a_new_client_lifetime_immediately_reminds_its_exact_owner_over_the_real_stream() {
+    let server = Server::start().await;
+    let owned = server
+        .send(
+            reqwest::Method::POST,
+            &format!("/v1/projects/{PROJECT}/tasks"),
+            json!({"title":"Already owned before desktop startup"}),
+        )
+        .await;
+    let id = owned["id"].as_str().unwrap();
+    server
+        .send(
+            reqwest::Method::PATCH,
+            &format!("/v1/projects/{PROJECT}/tasks/{id}"),
+            json!({"status":"in_progress"}),
+        )
+        .await;
+    let mut socket = server
+        .subscribe_targets(Uuid::new_v4(), &["agent.notify"], &[SESSION], None)
+        .await;
+    emit(
+        &mut socket,
+        "client.heartbeat",
+        json!({
+            "client_run": Uuid::new_v4(),
+            "agents":[{"session_id":SESSION,"instance_id":INSTANCE,"provider":"claude",
+                       "os":"linux","project":PROJECT,"name":"Restarted owner"}],
+        }),
+        None,
+    )
+    .await;
+    // No idle report or scheduling tick is needed to queue the reminder.
+    let notice = tokio::time::timeout(Duration::from_secs(5), expect(&mut socket, "agent.notify"))
+        .await
+        .expect("restart reminder did not arrive immediately");
+    assert_eq!(notice["source"], "plugin:reminder");
+    assert_eq!(notice["payload"]["target"], SESSION);
+    assert_eq!(notice["payload"]["event"]["task"]["id"], id);
+    assert_eq!(notice["payload"]["heading"], "In-progress task reminder");
+    assert_eq!(notice["payload"]["mode"], "recipient");
+    assert_eq!(notice["payload"]["require_idle"], true);
+    assert!(
+        notice["payload"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("You still own this task")
+    );
+    emit(
+        &mut socket,
+        "agent.notify_result",
+        json!({"target":SESSION,"status":"delivered","reason":""}),
+        Some(&notice["uid"]),
+    )
+    .await;
+    assert_eq!(task(&server, id).await["status"], "in_progress");
+}
+
+#[tokio::test]
+async fn event_client_negotiates_old_new_and_missing_router_without_version_guessing() {
+    use amux::event_client::{self, Incoming, Subscription};
+    use axum::{
+        Router,
+        extract::ws::{Message as ServerMessage, WebSocketUpgrade},
+        routing::get,
+    };
+    for capability in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/v1/events/stream",
+            get(move |ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(move |mut socket| async move {
+                    let Some(Ok(ServerMessage::Text(text))) = socket.recv().await else {
+                        panic!("missing subscription")
+                    };
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(request["type"], "subscribe");
+                    let mut reply = json!({"type":"subscribed","cursor":0});
+                    if capability {
+                        reply["server_restart_reminders"] = json!(true);
+                    }
+                    socket
+                        .send(ServerMessage::Text(reply.to_string().into()))
+                        .await
+                        .unwrap();
+                    while socket.recv().await.is_some() {}
+                })
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let profile =
+            amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+        let (outgoing, outgoing_rx) = tokio::sync::mpsc::channel(8);
+        let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(8);
+        let subscription = Subscription {
+            consumer: Uuid::new_v4(),
+            events: vec!["agent.notify".into()],
+            targets: vec![SESSION.into()],
+        };
+        let client = tokio::spawn(event_client::run(
+            profile,
+            subscription,
+            outgoing_rx,
+            incoming_tx,
+        ));
+        let Some(Incoming::Connected {
+            server_restart_reminders,
+            ..
+        }) = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+            .await
+            .unwrap()
+        else {
+            panic!("not subscribed")
+        };
+        assert_eq!(server_restart_reminders, capability);
+        drop(outgoing);
+        client.await.unwrap();
+        server.abort();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, Router::new()).await.unwrap() });
+    let profile = amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+    let (_outgoing, outgoing_rx) = tokio::sync::mpsc::channel(8);
+    let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(8);
+    let client = tokio::spawn(event_client::run(
+        profile,
+        Subscription {
+            consumer: Uuid::new_v4(),
+            events: vec!["agent.notify".into()],
+            targets: vec![],
+        },
+        outgoing_rx,
+        incoming_tx,
+    ));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+            .await
+            .unwrap(),
+        Some(Incoming::Unsupported)
+    ));
+    client.abort();
+    server.abort();
+}
+
+#[tokio::test]
+async fn heartbeat_renews_the_remote_replay_lease_without_acknowledging_events() {
+    let server = Server::start().await;
+    let consumer = Uuid::new_v4();
+    let mut socket = server.subscribe(consumer, &["task.created"], None).await;
+    server
+        .send(
+            reqwest::Method::POST,
+            &format!("/v1/projects/{PROJECT}/tasks"),
+            json!({"title":"Lease fixture"}),
+        )
+        .await;
+    let unacked = event(&mut socket, false).await;
+    let conn = rusqlite::Connection::open(server._root.path().join("events.sqlite")).unwrap();
+    let cursor: i64 = conn
+        .query_row(
+            "SELECT cursor FROM remote_consumers WHERE consumer_id=?1",
+            [consumer.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE remote_consumers SET last_seen_at=0 WHERE consumer_id=?1",
+        [consumer.to_string()],
+    )
+    .unwrap();
+    let before = now_ms();
+    send(&mut socket, json!({"type":"heartbeat"})).await;
+    assert_eq!(frame(&mut socket).await["type"], "heartbeat_ack");
+    let (seen, unchanged): (i64, i64) = conn
+        .query_row(
+            "SELECT last_seen_at,cursor FROM remote_consumers WHERE consumer_id=?1",
+            [consumer.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(seen >= before);
+    assert_eq!(unchanged, cursor);
+    assert!(unchanged < unacked["seq"].as_i64().unwrap());
 }

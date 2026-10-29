@@ -226,6 +226,34 @@ fn origin_is_read_from_repository_subdirectory_and_worktree() {
 }
 
 #[test]
+fn configured_origin_applies_the_size_limit_after_gits_line_ending() {
+    let prefix = "https://git.example.test/";
+    let remote = format!("{prefix}{}/repo", "a".repeat(4096 - prefix.len() - 5));
+    assert_eq!(remote.len(), 4096);
+    let repo = workspace(Some(&remote));
+    let expected = repository(&remote).unwrap();
+    assert_eq!(origin(repo.path()).unwrap(), expected);
+    let identity = amux::project_identity::resolve(repo.path()).unwrap();
+    assert_eq!(identity.upstream.as_deref(), Some(expected.as_str()));
+    assert_eq!(identity.gateway_project.as_deref(), Some("repo"));
+
+    let oversized = format!("{remote}a");
+    git(repo.path(), &["config", "remote.origin.url", &oversized]);
+    assert!(
+        origin(repo.path()).is_err(),
+        "4097-byte origin remains unsupported"
+    );
+    for control in ["\t", "\n", "\r", "\x1b"] {
+        let invalid = format!("https://git.example.test/team{control}/repo");
+        git(repo.path(), &["config", "remote.origin.url", &invalid]);
+        assert!(
+            origin(repo.path()).is_err(),
+            "embedded controls remain rejected"
+        );
+    }
+}
+
+#[test]
 fn missing_or_unsupported_origins_fail_without_echoing_the_remote() {
     let none = workspace(None);
     assert!(origin(none.path()).is_err());
