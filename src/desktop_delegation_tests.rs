@@ -1584,3 +1584,102 @@ fn status_bar_shows_gateway_wide_stats_only_while_connected() {
     let _ = app.update(Message::GatewayStats(Err("old gateway".into())));
     assert_eq!(app.design_gateway_line(), "Gateway: Connected");
 }
+
+#[test]
+fn sidebar_lists_other_projects_by_where_they_are_checked_out() {
+    use amux::gateway::{ProjectMachine, ProjectOverview};
+    let mut app = desktop();
+    app.workspaces[0].gateway.project = "local".into();
+    let project = |ident: &str, hosts: &[&str]| ProjectOverview {
+        ident: ident.into(),
+        canonical_remote: Some(format!("github.com/nitecon/{ident}")),
+        machines: hosts
+            .iter()
+            .map(|host| ProjectMachine {
+                hostname: (*host).into(),
+                origin: Some(format!("git@github.com:nitecon/{ident}.git")),
+            })
+            .collect(),
+        agents: 2,
+        active: 1,
+    };
+    app.design.projects = vec![
+        project("zeta", &[]),
+        project("local", &["Defcon1"]),
+        project("beta", &["Defcon2"]),
+        project("alpha", &[]),
+        project("gamma", &["Defcon1", "Defcon2"]),
+    ];
+    let order: Vec<_> = app
+        .sidebar_projects()
+        .iter()
+        .map(|p| p.ident.as_str())
+        .collect();
+    assert_eq!(
+        order,
+        ["beta", "gamma", "alpha", "zeta"],
+        "open workspaces are not repeated"
+    );
+    assert_eq!(
+        app.project_lines("gamma", Some(std::path::Path::new("/src/gamma"))),
+        [
+            "Project: gamma",
+            "Checked out at: /src/gamma",
+            "Repository: github.com/nitecon/gamma",
+            "Machines: Defcon1, Defcon2",
+            "Agents: 2 (1 active)",
+        ]
+    );
+    assert_eq!(
+        app.project_lines("alpha", None)[2],
+        "Machines: not checked out anywhere"
+    );
+
+    // Checking out into the project dir needs the preference; a project no
+    // machine has checked out has no URL to clone.
+    drop(
+        app.design_message(crate::desktop::desktop_design::Action::ProjectMenu(
+            "beta".into(),
+        )),
+    );
+    drop(
+        app.design_message(crate::desktop::desktop_design::Action::CheckoutProject(
+            true,
+        )),
+    );
+    assert!(
+        app.status.contains("Default Projects directory"),
+        "{}",
+        app.status
+    );
+    assert!(!app.workspace_dialog.open);
+    drop(
+        app.design_message(crate::desktop::desktop_design::Action::ProjectMenu(
+            "alpha".into(),
+        )),
+    );
+    drop(
+        app.design_message(crate::desktop::desktop_design::Action::CheckoutProject(
+            false,
+        )),
+    );
+    assert!(
+        app.status.contains("No machine has reported a Git URL"),
+        "{}",
+        app.status
+    );
+    drop(
+        app.design_message(crate::desktop::desktop_design::Action::ProjectMenu(
+            "beta".into(),
+        )),
+    );
+    drop(
+        app.design_message(crate::desktop::desktop_design::Action::CheckoutProject(
+            false,
+        )),
+    );
+    assert!(
+        app.workspace_dialog.open,
+        "check out at location opens the file browser"
+    );
+}

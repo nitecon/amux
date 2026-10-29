@@ -92,6 +92,7 @@ enum Message {
     AutoResume(bool),
     ExitNotifications(bool),
     AutoUpdate(bool),
+    ProjectsDir(String),
     Delegation(u64, desktop_delegation::Event),
     Updates(bool),
     CheckUpdates,
@@ -107,6 +108,7 @@ enum Message {
     RefreshTasks,
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
     GatewayStats(Result<amux::gateway::PresenceSummary, String>),
+    ProjectsLoaded(Result<Vec<amux::gateway::ProjectOverview>, String>),
     RoutingLoaded(
         QueryScope,
         Result<(amux::task_routing::Directory, Option<String>), String>,
@@ -943,6 +945,7 @@ impl Desktop {
                 return self.task_changed(scope, id, request, change, result);
             }
             Message::GatewayStats(result) => self.design.gateway_stats = result.ok(),
+            Message::ProjectsLoaded(result) => self.design.projects = result.unwrap_or_default(),
             Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
             Message::TaskTarget(choice) => {
                 let panel = &mut self.workspaces[self.active].gateway;
@@ -978,6 +981,7 @@ impl Desktop {
             Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
             Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
             Message::AutoUpdate(value) => self.preferences.draft.auto_update = value,
+            Message::ProjectsDir(value) => self.preferences.draft.projects_dir = value,
             Message::AutomaticNotifications(value) => {
                 self.preferences.draft.automatic_notifications = value
             }
@@ -1643,6 +1647,7 @@ impl Desktop {
                         self.delegation_tick(),
                         self.routing_tick(),
                         self.gateway_stats_tick(),
+                        self.projects_tick(),
                     ])
                 };
                 return Task::batch([gateway_ticks, updates]);

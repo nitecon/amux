@@ -547,6 +547,50 @@ impl Desktop {
         )
     }
 
+    /// Every 30 seconds, report this machine's open projects and reload the
+    /// gateway's project list with the machines that have each checked out.
+    pub(super) fn projects_tick(&mut self) -> Task<Message> {
+        if !self.preferences.current.has_connection()
+            || !self.server_schedules()
+            || self
+                .design
+                .projects_polled
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(30))
+        {
+            return Task::none();
+        }
+        let Ok(gateway) = self.preferences.current.gateway() else {
+            return Task::none();
+        };
+        self.design.projects_polled = Some(Instant::now());
+        let open: Vec<(String, PathBuf)> = self
+            .workspaces
+            .iter()
+            .filter(|w| !w.gateway.project.is_empty())
+            .map(|w| (w.gateway.project.clone(), w.directory.clone()))
+            .collect();
+        Task::perform(
+            async move {
+                let checkouts = tokio::task::spawn_blocking(move || {
+                    open.into_iter()
+                        .map(|(project, directory)| amux::gateway::Checkout {
+                            project,
+                            origin: amux::gateway_project::clone_origin(&directory),
+                        })
+                        .collect()
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                let hostname = sysinfo::System::host_name().unwrap_or_default();
+                gateway
+                    .sync_checkouts(hostname, checkouts)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            Message::ProjectsLoaded,
+        )
+    }
+
     /// First status-bar line: connection state, then gateway-wide stats.
     pub(super) fn design_gateway_line(&self) -> String {
         let connection = self.design_connection();

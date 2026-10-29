@@ -133,6 +133,17 @@ Heartbeats include optional host OS metadata even with an empty inventory.
 Connections sharing the bearer principal share one reporting source. The desktop status bar polls it every
 30 seconds for its first line; the second line counts this machine's agents.
 
+`PUT /v1/checkouts` replaces one machine's checked-out projects:
+`{"hostname", "checkouts": [{"project", "origin"}]}`, where `origin` is the
+workspace's Git origin URL without HTTP(S) credentials. Each machine's last report
+is kept, so offline machines still show where a project lives. `GET /v1/checkouts`
+lists every project with `{"ident", "canonical_remote", "machines": [{"hostname",
+"origin"}], "agents", "active"}`. Every 30 seconds the desktop reports its open
+workspaces and lists the other projects in the sidebar: those checked out on other
+machines first, then the rest, each alphabetically. Right-click one to clone it from
+a reported origin into the Default Projects directory or a chosen folder. This
+data is display only and never affects routing.
+
 ## Built-in agent identity
 
 amux derives a local project UUID from the normalized Git upstream and canonical

@@ -41,6 +41,11 @@ pub(super) enum Action {
     DismissTabMenu,
     CloseMenuTab,
     RestartMenuTab,
+    ProjectMenu(String),
+    DismissProjectMenu,
+    /// Clone the menu's project: into the Default Projects directory when true,
+    /// otherwise into a folder chosen in the file browser.
+    CheckoutProject(bool),
     View(View),
     Filter(Filter),
     TaskSearch(String),
@@ -59,6 +64,7 @@ pub(super) struct State {
     cursor: iced::Point,
     viewport: Option<iced::Size>,
     tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
+    project_menu: Option<(String, iced::Point)>,
     mode: View,
     compact: bool,
     filter: Filter,
@@ -75,6 +81,9 @@ pub(super) struct State {
     /// Gateway-wide presence; `None` until loaded or when the gateway lacks it.
     pub(super) gateway_stats: Option<amux::gateway::PresenceSummary>,
     pub(super) gateway_stats_polled: Option<std::time::Instant>,
+    /// Gateway projects with the machines that have them checked out.
+    pub(super) projects: Vec<amux::gateway::ProjectOverview>,
+    pub(super) projects_polled: Option<std::time::Instant>,
 }
 #[derive(Debug, Clone)]
 pub(super) struct ProjectData {
@@ -335,6 +344,37 @@ impl Desktop {
                 }
             }
             Action::DismissTabMenu => self.design.tab_menu = None,
+            Action::ProjectMenu(ident) => {
+                self.design.project_menu = Some((ident, self.design.cursor));
+            }
+            Action::DismissProjectMenu => self.design.project_menu = None,
+            Action::CheckoutProject(projects_dir) => {
+                let Some((ident, _)) = self.design.project_menu.take() else {
+                    return Task::none();
+                };
+                let Some(origin) = self
+                    .design
+                    .projects
+                    .iter()
+                    .find(|p| p.ident == ident)
+                    .and_then(|p| p.machines.iter().find_map(|m| m.origin.clone()))
+                else {
+                    self.status = format!("No machine has reported a Git URL for {ident}.");
+                    return Task::none();
+                };
+                let parent = if projects_dir {
+                    let dir = self.preferences.current.projects_dir.trim();
+                    if dir.is_empty() {
+                        self.status =
+                            "Set a Default Projects directory in Settings → General first.".into();
+                        return Task::none();
+                    }
+                    Some(PathBuf::from(dir))
+                } else {
+                    None
+                };
+                return self.open_clone_dialog(origin, parent);
+            }
             Action::CloseMenuTab => {
                 if let Some((workspace, pane, tab, _)) = self.design.tab_menu.take()
                     && self.workspaces[self.active].id == workspace
@@ -576,6 +616,12 @@ impl Desktop {
                     .color(MUTED)
             ]
             .spacing(8);
+            if !w.gateway.project.is_empty() {
+                // The directory is already shown above.
+                for line in self.project_lines(&w.gateway.project, None) {
+                    diagnostic = diagnostic.push(text(line).size(11).color(MUTED));
+                }
+            }
             for tab in tabs(w) {
                 diagnostic = diagnostic.push(
                     text(format!(
@@ -665,14 +711,17 @@ impl Desktop {
                 }
                 style
             });
-            sidebar = sidebar.push(tooltip(
-                card,
-                container(diagnostic)
-                    .padding(14)
-                    .width(300)
-                    .style(|_| surface(CARD, true)),
-                tooltip::Position::Right,
-            ));
+            sidebar = sidebar.push(
+                tooltip(
+                    card,
+                    container(diagnostic)
+                        .padding(14)
+                        .width(300)
+                        .style(|_| surface(CARD, true)),
+                    tooltip::Position::Right,
+                )
+                .delay(Duration::from_millis(250)),
+            );
             if self.closing_workspace == Some(w.id) {
                 sidebar = sidebar.push(
                     container(
@@ -693,6 +742,45 @@ impl Desktop {
                     .style(|_| surface(CARD, true)),
                 );
             }
+        }
+        let projects = self.sidebar_projects();
+        if !projects.is_empty() {
+            sidebar = sidebar.push(text("PROJECTS").size(11).color(MUTED));
+        }
+        for project in projects {
+            let mut details = column![].spacing(6);
+            for line in self.project_lines(&project.ident, None) {
+                details = details.push(text(line).size(11));
+            }
+            let place = match project.machines.len() {
+                0 => "Not checked out".to_owned(),
+                1 => project.machines[0].hostname.clone(),
+                n => format!("{n} machines"),
+            };
+            let row = mouse_area(
+                container(
+                    row![
+                        text(&project.ident).size(12).color(MUTED),
+                        Space::new().width(Length::Fill),
+                        text(place).size(10).color(MUTED)
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .padding([6, 8])
+                .width(Length::Fill),
+            )
+            .on_right_press(action(Action::ProjectMenu(project.ident.clone())));
+            sidebar = sidebar.push(
+                tooltip(
+                    row,
+                    container(details)
+                        .padding(14)
+                        .width(300)
+                        .style(|_| surface(CARD, true)),
+                    tooltip::Position::Right,
+                )
+                .delay(Duration::from_millis(250)),
+            );
         }
         let sidebar = container(
             column![
@@ -922,6 +1010,45 @@ impl Desktop {
                         })
                         .padding(4)
                         .width(180)
+                        .style(|_| surface(CARD, true)),
+                    ))
+                    .padding(iced::Padding {
+                        top: position.y,
+                        left: position.x,
+                        ..Default::default()
+                    }),
+                );
+        }
+        if let Some((_, position)) = &self.design.project_menu {
+            let viewport = self
+                .design
+                .viewport
+                .unwrap_or(iced::Size::new(1600.0, 1000.0));
+            let position = iced::Point::new(
+                position.x.clamp(0.0, (viewport.width - 220.0).max(0.0)),
+                position.y.clamp(0.0, (viewport.height - 84.0).max(0.0)),
+            );
+            let item = |label, message| {
+                button(row![icon("folder-git"), text(label).size(12)].spacing(8))
+                    .on_press(action(message))
+                    .padding([8, 12])
+                    .width(Length::Fill)
+                    .style(|theme, status| button_style(false, theme, status))
+            };
+            layers = layers
+                .push(
+                    mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
+                        .on_press(action(Action::DismissProjectMenu))
+                        .on_right_press(action(Action::DismissProjectMenu)),
+                )
+                .push(
+                    container(opaque(
+                        container(column![
+                            item("Check out in project dir", Action::CheckoutProject(true)),
+                            item("Check out at location", Action::CheckoutProject(false)),
+                        ])
+                        .padding(4)
+                        .width(220)
                         .style(|_| surface(CARD, true)),
                     ))
                     .padding(iced::Padding {
@@ -1627,6 +1754,9 @@ impl Desktop {
                 text("Notifications report terminal process exits.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.auto_update).label("Install updates automatically").on_toggle(Message::AutoUpdate),
                 text("Updates download in the background. Click the update alert to restart amux and resume its sessions.").size(12).color(MUTED),
+                text("Default Projects directory").size(13),
+                text_input("Folder where projects from other machines are checked out", &self.preferences.draft.projects_dir).on_input(Message::ProjectsDir),
+                text("Right-click a grayed-out project in the sidebar and choose Check out in project dir to clone it here.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.auto_resume).label("Resume agent sessions on startup").on_toggle(Message::AutoResume),
                 text("Saved running terminals reopen on startup. This option also reopens agent tabs with their native conversation resume.").size(12),
                 text("Repository matching is required for gateway delivery.").size(12).color(CYAN)
@@ -1886,8 +2016,55 @@ impl Desktop {
     pub(super) fn show_terminals(&mut self) {
         self.design.mode = View::Terminals;
     }
+    /// Gateway projects not open on this machine: those checked out on other
+    /// machines first, then the rest, each alphabetically.
+    pub(super) fn sidebar_projects(&self) -> Vec<&amux::gateway::ProjectOverview> {
+        let mut projects: Vec<_> = self
+            .design
+            .projects
+            .iter()
+            .filter(|p| !self.workspaces.iter().any(|w| w.gateway.project == p.ident))
+            .collect();
+        projects.sort_by(|a, b| {
+            (a.machines.is_empty(), &a.ident).cmp(&(b.machines.is_empty(), &b.ident))
+        });
+        projects
+    }
+    /// Hover details for a project; other machines' folders are not shown.
+    pub(super) fn project_lines(
+        &self,
+        ident: &str,
+        directory: Option<&std::path::Path>,
+    ) -> Vec<String> {
+        let mut lines = vec![format!("Project: {ident}")];
+        if let Some(directory) = directory {
+            lines.push(format!("Checked out at: {}", directory.display()));
+        }
+        let Some(project) = self.design.projects.iter().find(|p| p.ident == ident) else {
+            return lines;
+        };
+        if let Some(remote) = &project.canonical_remote {
+            lines.push(format!("Repository: {remote}"));
+        }
+        lines.push(if project.machines.is_empty() {
+            "Machines: not checked out anywhere".into()
+        } else {
+            let hosts: Vec<_> = project
+                .machines
+                .iter()
+                .map(|m| m.hostname.as_str())
+                .collect();
+            format!("Machines: {}", hosts.join(", "))
+        });
+        lines.push(match project.agents {
+            0 => "Agents: none".into(),
+            n => format!("Agents: {n} ({} active)", project.active),
+        });
+        lines
+    }
     pub(super) fn close_design_popovers(&mut self) {
         self.design.tab_menu = None;
+        self.design.project_menu = None;
         self.design.bell = false;
         self.design.events = false;
     }

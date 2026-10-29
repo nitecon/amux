@@ -44,6 +44,34 @@ pub fn configured_origin(directory: &Path) -> Result<Option<String>> {
         .map(Some)
 }
 
+/// The raw `origin` URL another machine can clone from, without any HTTP(S)
+/// credentials. `None` when the checkout has no usable origin.
+pub fn clone_origin(directory: &Path) -> Option<String> {
+    let (status, text) = crate::git::observe(
+        directory,
+        &["config", "--local", "--get", "remote.origin.url"],
+        "workspace origin",
+    )
+    .ok()?;
+    let url = text.trim();
+    if !status.success() || url.is_empty() {
+        return None;
+    }
+    Some(strip_credentials(url))
+}
+
+fn strip_credentials(url: &str) -> String {
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            let authority = rest.split('/').next().unwrap_or_default();
+            if let Some((_, host)) = authority.rsplit_once('@') {
+                return format!("{scheme}{host}{}", &rest[authority.len()..]);
+            }
+        }
+    }
+    url.to_owned()
+}
+
 /// True when `ident` is listed as an active ad-hoc project without a repository,
 /// the only kind of project a local-only checkout may be bound to.
 pub fn local_only(ident: &str, projects: &Value) -> Result<bool> {
@@ -134,4 +162,35 @@ pub fn matching(remote: &str, projects: &Value) -> Result<Option<String>> {
     crate::gateway::validate_project(ident)
         .context("gateway project mapped to this repository is not a usable identity")?;
     Ok(Some(ident.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clone_origins_drop_http_credentials_but_keep_ssh_users() {
+        for (raw, shared) in [
+            (
+                "https://user:token@github.com/nitecon/amux.git",
+                "https://github.com/nitecon/amux.git",
+            ),
+            (
+                "http://token@git.example/team/repo",
+                "http://git.example/team/repo",
+            ),
+            (
+                "https://github.com/nitecon/amux",
+                "https://github.com/nitecon/amux",
+            ),
+            (
+                "git@github.com:nitecon/amux.git",
+                "git@github.com:nitecon/amux.git",
+            ),
+            (
+                "ssh://git@host:2222/team/repo.git",
+                "ssh://git@host:2222/team/repo.git",
+            ),
+        ] {
+            assert_eq!(super::strip_credentials(raw), shared);
+        }
+    }
 }

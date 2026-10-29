@@ -81,6 +81,8 @@ pub struct GatewayPreferences {
     pub auto_resume: bool,
     /// Download updates in the background so a restart can apply them.
     pub auto_update: bool,
+    /// Parent folder for projects checked out from the sidebar.
+    pub projects_dir: String,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -97,6 +99,7 @@ impl Default for GatewayPreferences {
             notify_exits: false,
             auto_resume: true,
             auto_update: false,
+            projects_dir: String::new(),
             machine_id: String::new(),
             machine_key: String::new(),
         }

@@ -15,6 +15,30 @@ pub struct PresenceSummary {
     pub active: u64,
 }
 
+/// A project open as a workspace on this machine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checkout {
+    pub project: String,
+    pub origin: Option<String>,
+}
+
+/// A machine that has a project checked out.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct ProjectMachine {
+    pub hostname: String,
+    pub origin: Option<String>,
+}
+
+/// A gateway project, where it is checked out and its live agents.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct ProjectOverview {
+    pub ident: String,
+    pub canonical_remote: Option<String>,
+    pub machines: Vec<ProjectMachine>,
+    pub agents: u64,
+    pub active: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct GatewayStatus(pub reqwest::StatusCode);
 impl std::fmt::Display for GatewayStatus {
@@ -375,6 +399,39 @@ impl Gateway {
             )
             .await?;
         serde_json::from_value(value).context("gateway presence summary is invalid")
+    }
+
+    /// Replace this machine's checked-out projects, then list every project with
+    /// the machines that have it checked out.
+    pub async fn sync_checkouts(
+        &self,
+        hostname: String,
+        checkouts: Vec<Checkout>,
+    ) -> Result<Vec<ProjectOverview>> {
+        let checkouts = Value::Array(
+            checkouts
+                .into_iter()
+                .map(|c| serde_json::json!({"project": c.project, "origin": c.origin}))
+                .collect(),
+        );
+        self.exchange(
+            Method::PUT,
+            self.base.join("v1/checkouts")?,
+            Some(serde_json::json!({"hostname": hostname, "checkouts": checkouts})),
+            None,
+            &[],
+        )
+        .await?;
+        let value = self
+            .exchange(
+                Method::GET,
+                self.base.join("v1/checkouts")?,
+                None,
+                None,
+                &[],
+            )
+            .await?;
+        serde_json::from_value(value).context("gateway project overview is invalid")
     }
 
     /// Check before any mutation: old gateways must not silently drop subscriptions.

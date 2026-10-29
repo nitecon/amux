@@ -13,6 +13,7 @@ use db::Db;
 use std::{collections::HashMap, sync::Arc};
 pub mod channel;
 pub mod channels;
+pub mod checkouts;
 pub mod db;
 pub mod execution_history;
 pub mod memory_okf;
@@ -140,6 +141,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/v1/tasks/stream", get(task_events::connect))
         .route("/v1/events/stream", get(plugins::remote::connect))
         .route("/v1/presence/summary", get(plugins::presence::summary_route))
+        .route("/v1/checkouts", get(checkouts::get).put(checkouts::put))
         .route("/v1/plugins", get(plugins::list))
         .route("/v1/plugins/{id}", put(plugins::set))
         .route("/v1/task-events", get(task_events::events))

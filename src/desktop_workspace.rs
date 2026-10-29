@@ -163,6 +163,28 @@ impl Desktop {
         };
         iced::widget::operation::focus("workspace-name")
     }
+    /// Clone `repository` into `parent` straight away, or let the user browse
+    /// for the parent folder first when `parent` is `None`.
+    pub(super) fn open_clone_dialog(
+        &mut self,
+        repository: String,
+        parent: Option<PathBuf>,
+    ) -> Task<Message> {
+        let open = self.open_workspace_dialog();
+        let dialog = &mut self.workspace_dialog;
+        dialog.tab = Kind::Clone;
+        dialog.repository = repository;
+        match parent {
+            Some(parent) => {
+                dialog.folder = parent.display().to_string();
+                Task::batch([open, self.workspace_message(WorkspaceMessage::Start)])
+            }
+            None => Task::batch([
+                open,
+                self.workspace_message(WorkspaceMessage::Browse(false)),
+            ]),
+        }
+    }
     pub(super) fn close_workspace_dialog(&mut self) -> Task<Message> {
         if self.workspace_dialog.busy {
             return Task::none();

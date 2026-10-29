@@ -1194,6 +1194,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     }
     crate::task_requester::initialize(conn)?;
     crate::task_reviews::initialize(conn)?;
+    crate::checkouts::initialize(conn)?;
     crate::task_targets::initialize(conn)?;
     crate::execution_history::initialize(conn)?;
 
