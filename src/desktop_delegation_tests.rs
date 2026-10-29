@@ -6,7 +6,6 @@
 //! driven manually with the same native discovery calls.
 use super::super::tests::desktop;
 use super::*;
-#[cfg(any(target_os = "linux", windows))]
 use amux::event_client::Incoming;
 use iced_term::TerminalGridObservation;
 use serde_json::{Value, json};
