@@ -926,12 +926,45 @@ impl Desktop {
         ]
         .into();
         // Modal focus operations and input must not reach widgets underneath.
+        let task_drawer = self.design.task_window.is_none()
+            && self.workspaces[self.active]
+                .gateway
+                .detail
+                .selected
+                .is_some();
         let base = if self.preferences.open || self.workspace_dialog.open {
             inert(base)
         } else {
             base
         };
         let mut layers = stack![base];
+        if task_drawer && !self.preferences.open && !self.workspace_dialog.open {
+            // A detail drawer floats over the terminal without squeezing it.
+            let width =
+                (self.design.viewport.map_or(1000.0, |size| size.width) - 24.0).clamp(1.0, 720.0);
+            let progress = self.workspaces[self.active]
+                .gateway
+                .detail
+                .drawer_progress();
+            layers = layers.push(
+                container(
+                    iced::widget::float(opaque(
+                        container(self.design_tasks(true))
+                            .width(width)
+                            .height(Length::Fill),
+                    ))
+                    .translate(move |_, _| iced::Vector::new(width * (1.0 - progress), 0.0)),
+                )
+                .align_right(Length::Fill)
+                .height(Length::Fill)
+                .padding(iced::Padding {
+                    top: 48.0,
+                    right: 12.0,
+                    bottom: 12.0,
+                    left: 12.0,
+                }),
+            );
+        }
         if self.design.events {
             layers = layers.push(
                 container(opaque(self.events_view()))
@@ -1340,6 +1373,15 @@ impl Desktop {
         .into()
     }
     fn task_sidebar(&self) -> Element<'_, Message> {
+        if self.design.task_window.is_none()
+            && self.workspaces[self.active]
+                .gateway
+                .detail
+                .selected
+                .is_some()
+        {
+            return Space::new().width(320).height(Length::Fill).into();
+        }
         if self.design.task_window.is_some() || self.design.tasks_collapsed {
             return container(
                 column![
@@ -1380,18 +1422,19 @@ impl Desktop {
             }),
             tooltip::Position::Bottom,
         );
+        let detached = self.design.task_window.is_some();
         let detach = tooltip(
             control(
                 "single",
                 "",
-                action(if expanded {
+                action(if detached {
                     Action::DockTasks
                 } else {
                     Action::DetachTasks
                 }),
                 false,
             ),
-            text(if expanded {
+            text(if detached {
                 "Return tasks to sidebar"
             } else {
                 "Open tasks in a separate window"
@@ -1402,10 +1445,10 @@ impl Desktop {
         if panel.detail.selected.is_some() {
             // The detail view's own back button returns to the list, so the collapse arrow is hidden.
             return container(column![row![detach], self.task_detail_view()].spacing(8))
-                .padding(12)
+                .padding(20)
                 .width(width)
                 .height(Length::Fill)
-                .style(|_| surface(PANEL, false))
+                .style(|_| surface(PANEL, true))
                 .into();
         }
         let filter = |label, kind| {

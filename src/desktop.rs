@@ -2612,6 +2612,14 @@ impl Desktop {
             iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Save),
             iced::window::close_requests().map(Message::Close),
             iced::time::every(Duration::from_millis(250)).map(|_| Message::DeliveryTick),
+            if self.design.task_window.is_none()
+                && self.workspaces[self.active].gateway.detail.animating()
+            {
+                iced::time::every(Duration::from_millis(16))
+                    .map(|_| Message::ManageTask(desktop_tasks::Action::AnimateDrawer))
+            } else {
+                Subscription::none()
+            },
         ])
     }
 

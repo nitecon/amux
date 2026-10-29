@@ -8,6 +8,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub(super) enum Action {
+    AnimateDrawer,
     Open(Uuid),
     AssignTask(Uuid),
     Back,
@@ -53,6 +54,7 @@ enum Mode {
 #[derive(Default)]
 pub(super) struct Panel {
     pub selected: Option<Uuid>,
+    opened_at: Option<std::time::Instant>,
     task: Option<Value>,
     loading: Option<Uuid>,
     pending: Option<Uuid>,
@@ -67,6 +69,15 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    pub(super) fn drawer_progress(&self) -> f32 {
+        self.opened_at.map_or(1.0, |opened| {
+            let elapsed = (opened.elapsed().as_secs_f32() / 0.18).min(1.0);
+            1.0 - (1.0 - elapsed).powi(3)
+        })
+    }
+    pub(super) fn animating(&self) -> bool {
+        self.selected.is_some() && self.drawer_progress() < 1.0
+    }
     pub fn refresh_with_list(&self) -> bool {
         self.selected.is_some()
             && self.mode == Mode::View
@@ -113,6 +124,7 @@ impl Desktop {
                 }
                 *panel = Panel {
                     selected: Some(id),
+                    opened_at: Some(std::time::Instant::now()),
                     mode: if matches!(action, Action::AssignTask(_)) {
                         Mode::Assign
                     } else {
@@ -490,7 +502,7 @@ impl Desktop {
         let panel = &self.workspaces[self.active].gateway.detail;
         let ready = panel.ready();
         let control = |label: &'static str, action, enabled: bool| {
-            button(text(label).size(11)).on_press_maybe(enabled.then(|| message(action)))
+            button(text(label).size(13)).on_press_maybe(enabled.then(|| message(action)))
         };
         // Navigation and task actions stay at the top and the comment box at
         // the bottom; only the details and comments between them scroll.
@@ -504,7 +516,7 @@ impl Desktop {
                 )
             ]
             .spacing(6),
-            text(&panel.status).size(11),
+            text(&panel.status).size(13),
         ]
         .spacing(10);
         let Some(task) = &panel.task else {
@@ -516,9 +528,14 @@ impl Desktop {
                 }))
                 .into();
         };
-        let mut body = column![].spacing(10);
+        let mut body = column![].spacing(14).width(Length::Fill);
         body = body
-            .push(text(task["title"].as_str().unwrap_or("Untitled")).size(15))
+            .push(
+                text(task["title"].as_str().unwrap_or("Untitled"))
+                    .size(17)
+                    .width(Length::Fill)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            )
             .push(
                 text(format!(
                     "{} · {}",
@@ -529,31 +546,59 @@ impl Desktop {
                     },
                     self.design_task_owner(task)
                 ))
-                .size(11),
+                .size(13)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             )
-            .push(text(format!("#{}", panel.selected.unwrap())).size(10));
+            .push(
+                text(format!("#{}", panel.selected.unwrap()))
+                    .size(12)
+                    .width(Length::Fill)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            );
+        for (label, field) in [
+            ("Created", "created_at"),
+            ("Updated", "updated_at"),
+            ("Completed", "done_at"),
+        ] {
+            if !task[field].is_null() {
+                body = body.push(
+                    text(format!("{label}: {}", task_time(&task[field])))
+                        .size(12)
+                        .width(Length::Fill),
+                );
+            }
+        }
         match amux::task_platform::required_os(task) {
-            Ok(Some(os)) => body = body.push(text(format!("Requires {}", os.as_str())).size(11)),
+            Ok(Some(os)) => body = body.push(text(format!("Requires {}", os.as_str())).size(13)),
             Err(_) => {
                 body = body.push(
                     text("Invalid OS requirement; correct the task labels before assignment.")
-                        .size(11),
+                        .size(13),
                 )
             }
             _ => {}
         }
         if panel.mode == Mode::Edit {
             body = body
-                .push(text_input("Title", &panel.title).on_input(|s| message(Action::Title(s))))
-                .push(text("Description").size(11))
+                .push(
+                    text_input("Title", &panel.title)
+                        .size(15)
+                        .on_input(|s| message(Action::Title(s))),
+                )
+                .push(text("Description").size(13))
                 .push(
                     text_editor(&panel.description)
+                        .size(15)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         .height(95)
                         .on_action(|a| message(Action::Description(a))),
                 )
-                .push(text("Specification / handoff").size(11))
+                .push(text("Specification / handoff").size(13))
                 .push(
                     text_editor(&panel.specification)
+                        .size(15)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         .height(140)
                         .on_action(|a| message(Action::Specification(a))),
                 )
@@ -576,34 +621,38 @@ impl Desktop {
                     } else {
                         "Assign to agent"
                     })
-                    .size(13),
+                    .size(15),
                 )
-                .push(text("Local and gateway agents for this repository:").size(11))
-                .push(text(&self.workspaces[self.active].gateway.routing.status).size(10));
+                .push(text("Local and gateway agents for this repository:").size(13))
+                .push(text(&self.workspaces[self.active].gateway.routing.status).size(12));
             for choice in &choices {
                 let selected = current.as_ref() == Some(choice);
                 body = body.push(
-                    button(text(choice.to_string()).size(11))
-                        .width(Length::Fill)
-                        .style(move |theme, status| {
-                            if selected {
-                                button::primary(theme, status)
-                            } else {
-                                button::secondary(theme, status)
-                            }
-                        })
-                        .on_press_maybe(ready.then(|| message(Action::Target(choice.clone())))),
+                    button(
+                        text(choice.to_string())
+                            .size(13)
+                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    )
+                    .width(Length::Fill)
+                    .style(move |theme, status| {
+                        if selected {
+                            button::primary(theme, status)
+                        } else {
+                            button::secondary(theme, status)
+                        }
+                    })
+                    .on_press_maybe(ready.then(|| message(Action::Target(choice.clone())))),
                 );
             }
             if choices.is_empty() {
-                body = body.push(text("No live agents available for this repository.").size(11));
+                body = body.push(text("No live agents available for this repository.").size(13));
             }
             if let Some(choice) = current.filter(|_| !available) {
                 body = body.push(
                     text(format!(
                         "Unavailable selection: {choice}. Refresh and select a live agent."
                     ))
-                    .size(11),
+                    .size(13),
                 );
             }
             body = body
@@ -641,14 +690,14 @@ impl Desktop {
                     } else {
                         "Assignments expire through the gateway's inactivity timeout."
                     })
-                    .size(10),
+                    .size(12),
                 );
         } else {
             if task["status"] == "user_review" {
                 body = body
                     .push(
                         text("Waiting for your decision. Agents will not pick up this task.")
-                            .size(11),
+                            .size(13),
                     )
                     .push(control("Return to queue", Action::Resume, ready));
             }
@@ -689,7 +738,7 @@ impl Desktop {
                         target.origin.os,
                         target.origin.session_id
                     ))
-                    .size(10),
+                    .size(12),
                 );
             }
             for (label, field) in [
@@ -705,31 +754,29 @@ impl Desktop {
                     })
                     .unwrap_or_default();
                 if !content.is_empty() {
-                    body = body.push(text(label).size(11)).push(text(content).size(12));
+                    body = body.push(text(label).size(13)).push(
+                        text(content)
+                            .size(14)
+                            .width(Length::Fill)
+                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    );
                 }
             }
         }
-        body = body.push(text("Comments").size(13));
+        body = body.push(text("Comments").size(15));
         let comments = task["comments"].as_array();
         if comments.is_none_or(|c| c.is_empty()) {
-            body = body.push(text("No comments yet.").size(11));
+            body = body.push(text("No comments yet.").size(13));
         }
         if let Some(comments) = comments {
             for comment in comments {
-                body = body
-                    .push(
-                        text(format!(
-                            "{} · {}",
-                            comment["author"].as_str().unwrap_or("unknown"),
-                            comment["author_type"].as_str().unwrap_or("")
-                        ))
-                        .size(10),
-                    )
-                    .push(text(comment["content"].as_str().unwrap_or_default()).size(12));
+                body = body.push(comment_bubble(comment));
             }
         }
         let footer = column![
             text_editor(&panel.comment)
+                .size(15)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .placeholder("Add a comment…")
                 .height(100)
                 .on_action(|a| message(Action::Comment(a))),
@@ -740,10 +787,81 @@ impl Desktop {
             )
         ]
         .spacing(10);
-        column![header, scrollable(body).height(Length::Fill), footer]
-            .spacing(10)
-            .into()
+        column![
+            header,
+            scrollable(container(body).padding(iced::Padding {
+                right: 12.0,
+                ..Default::default()
+            }))
+            .width(Length::Fill)
+            .height(Length::Fill),
+            footer
+        ]
+        .spacing(10)
+        .into()
     }
+}
+
+/// Gateway timestamps are Unix milliseconds. Keep the timezone explicit rather
+/// than silently treating a UTC value as local time or fabricating missing dates.
+fn task_time(value: &Value) -> String {
+    value
+        .as_u64()
+        .filter(|millis| *millis <= 253_402_300_799_999)
+        .and_then(|millis| UNIX_EPOCH.checked_add(Duration::from_millis(millis)))
+        .map(httpdate::fmt_http_date)
+        .unwrap_or_else(|| "Time unavailable".into())
+}
+
+fn comment_bubble(comment: &Value) -> Element<'_, Message> {
+    use iced::{Border, Font, font};
+    let wrap = iced::widget::text::Wrapping::WordOrGlyph;
+    container(
+        column![
+            text(
+                comment["author"]
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("Unknown author")
+            )
+            .font(Font {
+                weight: font::Weight::Bold,
+                ..Font::DEFAULT
+            })
+            .size(14)
+            .width(Length::Fill)
+            .wrapping(wrap),
+            text(format!(
+                "{} · {}",
+                task_time(&comment["created_at"]),
+                comment["author_type"].as_str().unwrap_or("unknown")
+            ))
+            .size(12)
+            .width(Length::Fill)
+            .wrapping(wrap),
+            text(comment["content"].as_str().unwrap_or_default())
+                .size(14)
+                .width(Length::Fill)
+                .wrapping(wrap),
+        ]
+        .spacing(8)
+        .width(Length::Fill),
+    )
+    .padding(14)
+    .width(Length::Fill)
+    .style(|theme: &Theme| {
+        let palette = theme.extended_palette();
+        container::Style {
+            background: Some(palette.background.weak.color.into()),
+            border: Border {
+                color: palette.background.strong.color,
+                width: 1.0,
+                radius: 9.0.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .into()
 }
 
 fn edit_text(content: &mut text_editor::Content, action: text_editor::Action) {
@@ -758,6 +876,15 @@ fn edit_text(content: &mut text_editor::Content, action: text_editor::Action) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn task_dates_use_stored_unix_milliseconds_and_an_explicit_timezone() {
+        assert_eq!(task_time(&json!(1_000)), "Thu, 01 Jan 1970 00:00:01 GMT");
+        assert_eq!(task_time(&json!(0)), "Thu, 01 Jan 1970 00:00:00 GMT");
+        for missing in [Value::Null, json!(-1), json!(u64::MAX)] {
+            assert_eq!(task_time(&missing), "Time unavailable");
+        }
+    }
 
     fn app() -> Desktop {
         let mut app = super::super::tests::desktop();
