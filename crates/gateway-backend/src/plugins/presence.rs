@@ -281,7 +281,7 @@ pub fn last_output(conn: &Connection, session: &str) -> Result<Option<i64>> {
         .flatten())
 }
 
-/// Fresh reporting machines, known OSes and observed native agents. A connected
+/// Fresh machines by hostname, known OSes and observed native agents. A connected
 /// machine can have no agents yet (or only agents with unresolved projects).
 pub fn summary(conn: &Connection) -> Result<Value> {
     summary_at(conn, db::now_ms())
@@ -289,12 +289,6 @@ pub fn summary(conn: &Connection) -> Result<Value> {
 
 fn summary_at(conn: &Connection, now: i64) -> Result<Value> {
     let agents = agents(conn, now)?;
-    // Retain compatibility with accepted legacy observations while counting
-    // empty inventories from the Presence-owned heartbeat cursor as machines.
-    let mut machines: std::collections::HashSet<String> = agents
-        .iter()
-        .filter_map(|agent| agent.agent["source"].as_str().map(str::to_owned))
-        .collect();
     let mut os: std::collections::BTreeSet<String> = agents
         .iter()
         .filter_map(|agent| agent.agent["os"].as_str().map(str::to_owned))
@@ -309,12 +303,32 @@ fn summary_at(conn: &Connection, now: i64) -> Result<Value> {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Machines are hostnames: clients sharing one API key share a reporting
+    // source, so each agent's registered host wins, then its heartbeat's host
+    // (also counting machines with no agents), then the source itself.
+    let host = |name: Option<&str>| {
+        name.map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_lowercase)
+    };
+    let mut source_hosts = std::collections::HashMap::new();
+    let mut machines = std::collections::HashSet::new();
     for (source, payload) in heartbeats {
-        machines.insert(source);
         let payload: Value = serde_json::from_str(&payload)?;
         if let Some(platform) = payload["os"].as_str() {
             os.insert(platform.to_owned());
         }
+        let machine = host(payload["hostname"].as_str()).unwrap_or_else(|| source.clone());
+        machines.insert(machine.clone());
+        source_hosts.insert(source, machine);
+    }
+    for agent in &agents {
+        let project = agent.agent["project"].as_str().unwrap_or_default();
+        let source = agent.agent["source"].as_str().unwrap_or_default();
+        let machine = host(registered_host(conn, project, &agent.agent)?.as_deref())
+            .or_else(|| source_hosts.get(source).cloned())
+            .unwrap_or_else(|| source.to_owned());
+        machines.insert(machine);
     }
     let active = agents.iter().filter(|agent| agent.state == "busy").count();
     Ok(json!({"machines": machines.len(), "os": os, "agents": agents.len(), "active": active}))
@@ -1407,6 +1421,35 @@ mod tests {
             summary(&conn).unwrap(),
             json!({"machines": 3, "os": ["linux", "macos", "windows"], "agents": 4, "active": 2})
         );
+    }
+
+    #[test]
+    fn summary_counts_machines_by_registered_hostname() {
+        let database = db::open(":memory:").unwrap();
+        let conn = database.lock().unwrap();
+        // Two machines share one API-key source; a third source is the same
+        // machine as the first under a different case.
+        for (session, source, host) in [
+            ("a", "client:api-key", "Defcon1"),
+            ("b", "client:api-key", "Defcon2"),
+            ("c", "client:peer", "DEFCON1"),
+        ] {
+            seed_report(
+                &conn,
+                source,
+                json!({"session_id":session,"instance_id":"instance","project":"p","os":"linux"}),
+                db::now_ms(),
+                None,
+                false,
+                "idle",
+            );
+            conn.execute(
+                "UPDATE task_target_presence SET hostname=?1 WHERE session_id=?2",
+                params![host, session],
+            )
+            .unwrap();
+        }
+        assert_eq!(summary(&conn).unwrap()["machines"], 2);
     }
 
     #[tokio::test]

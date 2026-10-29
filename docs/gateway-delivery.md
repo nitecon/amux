@@ -125,13 +125,15 @@ Server plugins can be switched off with `PUT /v1/plugins/{id}`
 lists them.
 
 `GET /v1/presence/summary` returns live presence across the gateway:
-`{"machines", "os", "agents", "active"}`, where machines are distinct authenticated
-reporting sources with a fresh heartbeat, including machines reporting no agents.
+`{"machines", "os", "agents", "active"}`, where machines are distinct hostnames (case-insensitive)
+with a fresh heartbeat, including machines reporting no agents.
 OS names are a set, so two Windows machines still count separately. Native
 agent observations count before project resolution; task assignment and startup
 reminders wait for a nonempty project. Active agents are observed busy agents.
-Heartbeats include optional host OS metadata even with an empty inventory.
-Connections sharing the bearer principal share one reporting source. The desktop status bar polls it every
+Heartbeats include optional host OS and hostname metadata even with an empty
+inventory. Each agent counts under its registered hostname, then its heartbeat's
+hostname, then its reporting source, so machines sharing one API key still count
+separately. The desktop status bar polls it every
 30 seconds for its first line; the second line counts this machine's agents.
 
 `PUT /v1/checkouts` replaces one machine's checked-out projects:

@@ -476,7 +476,8 @@ impl Desktop {
             events.activity.clear();
             let frame = event_client::emit(
                 "client.heartbeat",
-                json!({"agents": agents, "client_run": self.client_run, "os": std::env::consts::OS}),
+                json!({"agents": agents, "client_run": self.client_run, "os": std::env::consts::OS,
+                    "hostname": sysinfo::System::host_name()}),
                 None,
             );
             self.events_send(frame);
