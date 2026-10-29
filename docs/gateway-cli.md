@@ -82,8 +82,8 @@ the read and the update.
 
 The published `agent-tools 1.22.0` task workflows map to the commands below, with
 explicit identity and retired-Eventic exceptions. Mutations always use
-the caller's assigned amux identity (`--agent <id>` from the gateway notice), never
-a copied or overridden agent ID.
+the caller's amux identity (from the agent terminal's environment, or an explicit
+`--agent <id>` for headless use), never a copied or overridden agent ID.
 
 | agent-tools | amux |
 | --- | --- |
@@ -107,7 +107,7 @@ provides `agents`, `reassign`, `set-os`, `user-review`, `started`, `cancel`,
 `cancellation` and `bind`, described below.
 
 Use the full task UUID printed by amux; identity overrides are replaced by the
-assigned `amux --agent <id>` identity. Native human actions remain available in
+caller's amux identity. Native human actions remain available in
 the task pane. Goal/profile work present only in the agent-tools working tree at
 the audit is not part of this released baseline. The deprecation handoff must
 reconcile any such work before switching generated rules; it must not remove a
@@ -122,10 +122,10 @@ identity, use:
 ```sh
 amux tasks agents
 amux tasks agents --os windows
-amux --agent <calling-id> tasks reassign <task-id> --to-agent <recipient-session-uuid>
-amux --agent <calling-id> tasks create 'Verify Windows behavior' --os windows
-amux --agent <calling-id> tasks set-os <owned-task-id> --os windows
-amux --agent <calling-id> tasks set-os <owned-task-id> --clear
+amux tasks reassign <task-id> --to-agent <recipient-session-uuid>
+amux tasks create 'Verify Windows behavior' --os windows
+amux tasks set-os <owned-task-id> --os windows
+amux tasks set-os <owned-task-id> --clear
 ```
 
 Discovery verifies the checkout's project/repository and excludes expired
@@ -155,11 +155,11 @@ For a same-project handoff, create a task for a live agent and subscribe the
 calling execution to its comment and completion updates:
 
 ```sh
-amux --agent <calling-id> tasks create 'Review the design' --to-agent <recipient-session-uuid> --specification 'Review only; report findings.'
-amux --agent <calling-id> tasks create 'Track this work' --notify-results
-amux --agent <calling-id> tasks watch <task-id>
-amux --agent <calling-id> tasks watch <task-id> --clear
-amux --agent <calling-id> tasks delegate 'Review another project' --target-project other-project --notify-results
+amux tasks create 'Review the design' --to-agent <recipient-session-uuid> --specification 'Review only; report findings.'
+amux tasks create 'Track this work' --notify-results
+amux tasks watch <task-id>
+amux tasks watch <task-id> --clear
+amux tasks delegate 'Review another project' --target-project other-project --notify-results
 ```
 
 `--to-agent` enables return notices automatically. `--notify-results` adds a

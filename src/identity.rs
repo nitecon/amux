@@ -68,14 +68,13 @@ impl AgentIdentity {
                 }
             }
             if matching.len() != 1 {
-                bail!(
-                    "agent assignment is missing or ambiguous; use the --agent ID supplied by amux"
-                );
+                bail!("no single amux agent matches --agent in this project");
             }
             return Ok(matching.remove(0));
         }
-        Self::from_environment()
-            .context("use amux --agent <assigned-id> from this session's gateway notification")
+        Self::from_environment().context(
+            "run this inside an amux agent terminal, or pass --agent <id> for headless use",
+        )
     }
 
     pub fn display_name(&self) -> String {

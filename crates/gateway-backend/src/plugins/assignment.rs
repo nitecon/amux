@@ -337,7 +337,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         let (heading, instructions) = if review {
             ("Queued independent review", "This independent review task is already claimed by your amux identity. Review the source task, associated comments and actual changes according to this task's specification. Follow KISS/YAGNI. Review only: do not edit code or implement findings. Record confirmed defects as ordinary queued tasks, post results on the source and review tasks, then mark this review task done.".to_owned())
         } else {
-            ("Queued task review", format!("This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete. If waiting for a user decision, comment with your question then run: amux --agent {session} tasks user-review {id}."))
+            ("Queued task review", format!("This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete. If waiting for a user decision, comment with your question then run: amux tasks user-review {id}."))
         };
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,

@@ -88,7 +88,7 @@ commands in [gateway-cli.md](gateway-cli.md#project-agents-and-os-routing).
 
 Tasks awaiting a human decision use the gateway's `user_review` status (gateway
 v1.27.0 or newer). An agent can record its question in a task comment and run
-`amux --agent <assigned-id> tasks user-review <task-id>`; `review` is an alias.
+`amux tasks user-review <task-id>`; `review` is an alias.
 Only the exact owning agent can request this transition. The acknowledgment must
 confirm that ownership and execution timestamps were cleared. An uncertain
 response requires inspection before any retry.
@@ -162,12 +162,13 @@ Terminal numbers and project UUIDs continue to determine distinct internal sessi
 IDs. After the pool wraps, a numeric suffix keeps names distinct. The desktop also
 discovers providers started in ordinary shell tabs after `cd`.
 
-Each gateway notification includes its recipient's assigned ID and a command such
-as `amux --agent <id> tasks get <task-id>`. Use the same `--agent` ID for `whoami`,
-claim, comment and completion. Task commands resolve that stored assignment
-directly, without OS ancestry lookup. This also works when a provider filters the
-terminal's environment variables. Assigned launch environment values remain
-supported. An unknown or ambiguous assignment is rejected.
+Amux launches each agent with its identity in `AMUX_AGENT_*` environment
+variables, so agents run plain `amux tasks ...` and `amux whoami` without naming
+themselves. Notifications and reminders never ask for an ID. `--agent <id>` remains
+an explicit override for headless use such as cron jobs, where no agent terminal
+supplies the environment; it resolves the stored assignment directly, without OS
+ancestry lookup, and rejects an unknown or ambiguous one. Without either, task
+commands fail with a clear error rather than guessing an identity.
 
 Amux advertises each session's machine automatically. Notifications snapshot the
 sender and owner hostnames from these registrations; agents need no hostname

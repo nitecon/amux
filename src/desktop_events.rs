@@ -392,8 +392,7 @@ impl Desktop {
                 == Some(candidate.actor.instance_id.to_string().as_str())
             {
                 format!(
-                    "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux --agent {} tasks user-review {id}.",
-                    session.as_str().unwrap_or_default()
+                    "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux tasks user-review {id}."
                 )
             } else {
                 "This terminal's previous execution still owns this task. Inspect its prior progress. This is an informational continuity reminder, not an ownership handoff. Use the existing recovery or reassignment flow before attempting task mutations or resuming execution.".to_owned()
@@ -923,7 +922,7 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate) -> Option<
         summary.heading = heading.into();
     }
     let text = if payload["mode"] == "assigned" {
-        parsed.assigned_terminal_text(candidate.target.session, &candidate.name)
+        parsed.assigned_terminal_text(&candidate.name)
     } else {
         parsed.recipient_terminal_text(&candidate.target, &candidate.name)
     };
