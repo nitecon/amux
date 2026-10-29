@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.57 - 2026-10-29
+
+### Changed
+- Prefer registered eligible Codex agents for ordinary automatic assignments,
+  waiting while they are busy. Explicit agent assignments remain supported.
+- Assign completion reviews to the opposite provider whenever that provider has
+  a live registration. Same-provider fallback is used only when none is registered.
+- Show task details in a resizable floating drawer with wrapped text, larger
+  fonts and separate comment bubbles displaying author, machine and local time.
+- Cache Rust dependencies across CI runs and omit development/test debug symbols
+  to reduce repeated compilation and linking overhead.
+
+### Fixed
+- Human task-board status changes remain available while review-provider checks
+  enforce eligible agent claims and assignments.
+- Display task and comment timestamps in the client's local timezone with the
+  correct UTC offset, including daylight-saving changes.
+- Include task-created and delegated-completion relay messages in the read-only
+  instruction template catalog without changing delivered text.
+
 ## v0.0.56 - 2026-10-29
 
 ### Added
