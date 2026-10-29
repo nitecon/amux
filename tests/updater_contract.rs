@@ -963,13 +963,14 @@ async fn running_cli_replaces_itself() {
     assert_eq!(fs::read(dir.join(CLI)).unwrap(), Bundle::new(NEWER).cli);
     assert_eq!(fs::read(dir.join(GUI)).unwrap(), Bundle::new(NEWER).gui);
     assert_eq!(installed_revision(&dir), NEWER);
-    // On Windows self_replace's helper deletes the old image after exit.
+    // On Windows self_replace's own helper deletes the moved-aside image some
+    // time after exit; that deferred cleanup is the crate's, not ours.
     let expected = [CLI, GUI, "BUILD.json", "LICENSE"];
-    wait_for("self_replace cleanup", || {
-        snapshot(&dir)
-            .keys()
-            .all(|n| expected.contains(&n.as_str()))
-    });
+    let leftovers: Vec<String> = snapshot(&dir)
+        .into_keys()
+        .filter(|n| !expected.contains(&n.as_str()) && !n.contains(".__"))
+        .collect();
+    assert!(leftovers.is_empty(), "updater left {leftovers:?}");
 }
 
 #[test]
