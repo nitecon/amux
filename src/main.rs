@@ -611,6 +611,7 @@ fn launch_agent_once(
     args: &[String],
     actor: &AgentIdentity,
 ) -> Result<std::process::ExitStatus> {
+    let directory = amux::workspace_launch::external_path(project.canonicalize()?);
     #[cfg(target_os = "macos")]
     let mut command = {
         let shell = std::env::var_os("SHELL")
@@ -621,15 +622,13 @@ fn launch_agent_once(
             .parent()
             .context("amux executable has no parent directory")?
             .to_path_buf();
-        macos_agent_command(&shell, &bin, provider)
+        macos_agent_command(&shell, &bin, &directory, provider)
     };
     #[cfg(not(target_os = "macos"))]
     let mut command = Command::new(provider.command());
     command
         .args(args)
-        .current_dir(amux::workspace_launch::external_path(
-            project.canonicalize()?,
-        ))
+        .current_dir(&directory)
         .envs(actor.environment());
     #[cfg(target_os = "linux")]
     {
@@ -706,22 +705,23 @@ fn launch_agent_once(
 fn macos_agent_command(
     shell: &std::path::Path,
     bin: &std::path::Path,
+    directory: &std::path::Path,
     provider: Provider,
 ) -> Command {
     let mut command = Command::new(shell);
     if shell.file_name() == Some(std::ffi::OsStr::new("fish")) {
         command.args([
             "-ilc",
-            "set -gx PATH $argv[1] $PATH; set -e argv[1]; exec $argv",
+            "set -gx PATH $argv[1] $PATH; cd -- $argv[2]; or exit; set -e argv[1..2]; exec $argv",
         ]);
     } else {
         command.args([
             "-ilc",
-            "export PATH=\"$1:$PATH\"; shift; exec \"$@\"",
+            "export PATH=\"$1:$PATH\"; cd -- \"$2\" || exit; shift 2; exec \"$@\"",
             "amux-agent",
         ]);
     }
     // Paths and provider arguments are positional values, never shell source.
-    command.arg(bin).arg(provider.command());
+    command.arg(bin).arg(directory).arg(provider.command());
     command
 }

@@ -28,7 +28,7 @@ fn providers_use_the_login_profile_keep_arguments_and_find_the_bundled_cli() {
     // its own CLI after the login shell has loaded the provider's directory.
     fs::write(
         profile.join(".zshrc"),
-        "export PATH=\"$AMUX_TEST_PROVIDER_BIN:/usr/bin:/bin:/usr/sbin:/sbin\"\n",
+        "export PATH=\"$AMUX_TEST_PROVIDER_BIN:/usr/bin:/bin:/usr/sbin:/sbin\"\ncd /\n",
     )
     .unwrap();
     let args = [
