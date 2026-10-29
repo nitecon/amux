@@ -2010,6 +2010,12 @@ impl Desktop {
     pub(super) fn show_terminals(&mut self) {
         self.design.mode = View::Terminals;
     }
+    pub(super) fn clear_project_inventory(&mut self) {
+        self.design.projects.clear();
+        self.design.projects_polled = None;
+        self.design.project_menu = None;
+    }
+
     /// Gateway projects not open on this machine: those checked out on other
     /// machines first, then the rest, each alphabetically.
     pub(super) fn sidebar_projects(&self) -> Vec<&amux::gateway::ProjectOverview> {

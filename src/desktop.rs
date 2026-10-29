@@ -108,7 +108,7 @@ enum Message {
     RefreshTasks,
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
     GatewayStats(Result<amux::gateway::PresenceSummary, String>),
-    ProjectsLoaded(Result<Vec<amux::gateway::ProjectOverview>, String>),
+    ProjectsLoaded(u64, Result<Vec<amux::gateway::ProjectOverview>, String>),
     RoutingLoaded(
         QueryScope,
         Result<(amux::task_routing::Directory, Option<String>), String>,
@@ -945,7 +945,7 @@ impl Desktop {
                 return self.task_changed(scope, id, request, change, result);
             }
             Message::GatewayStats(result) => self.design.gateway_stats = result.ok(),
-            Message::ProjectsLoaded(result) => self.design.projects = result.unwrap_or_default(),
+            Message::ProjectsLoaded(epoch, result) => self.projects_loaded(epoch, result),
             Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
             Message::TaskTarget(choice) => {
                 let panel = &mut self.workspaces[self.active].gateway;
@@ -2212,6 +2212,7 @@ impl Desktop {
         };
         let mut content = column![
             text("Gateway Server").size(20),
+            text("Changing gateways clears this app's task and project lists and reloads them from the selected gateway. Switching back reloads them again.").size(12),
             row![
                 mode("Server", GatewayMode::Server),
                 mode("Client", GatewayMode::Client),

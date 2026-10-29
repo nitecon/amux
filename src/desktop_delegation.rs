@@ -563,6 +563,7 @@ impl Desktop {
             return Task::none();
         };
         self.design.projects_polled = Some(Instant::now());
+        let epoch = self.delegation.epoch;
         let open: Vec<(String, PathBuf)> = self
             .workspaces
             .iter()
@@ -587,8 +588,18 @@ impl Desktop {
                     .await
                     .map_err(|error| error.to_string())
             },
-            Message::ProjectsLoaded,
+            move |result| Message::ProjectsLoaded(epoch, result),
         )
+    }
+
+    pub(super) fn projects_loaded(
+        &mut self,
+        epoch: u64,
+        result: Result<Vec<amux::gateway::ProjectOverview>, String>,
+    ) {
+        if epoch == self.delegation.epoch {
+            self.design.projects = result.unwrap_or_default();
+        }
     }
 
     /// First status-bar line: connection state, then gateway-wide stats.

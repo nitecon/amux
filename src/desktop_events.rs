@@ -285,6 +285,7 @@ impl Desktop {
     /// another server. Ordinary event resubscriptions use events_stop instead.
     pub(in super::super) fn reset_delegation(&mut self) {
         self.delegation.stop();
+        self.clear_project_inventory();
         if let Some(directory) = &self.registry {
             let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
         }

@@ -1586,6 +1586,93 @@ fn status_bar_shows_gateway_wide_stats_only_while_connected() {
 }
 
 #[test]
+fn project_inventory_rejects_old_gateway_replies_after_switch_and_disconnect() {
+    use amux::{gateway::ProjectOverview, gateway_preferences::GatewayMode};
+    let mut app = desktop();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    std::fs::create_dir_all(&root).unwrap();
+    let settings = tempfile::tempdir_in(root).unwrap();
+    app.preferences.path = Some(settings.path().join("preferences.json"));
+    // Dropping the returned Tasks drives the real synchronous preference and
+    // callback paths without making a gateway request or opening a provider.
+    app.preferences.current.mode = GatewayMode::Legacy;
+    app.preferences.current.url = "http://127.0.0.1:41001".into();
+    app.preferences.current.api_key = "fixture-key".into();
+    app.preferences.draft = app.preferences.current.clone();
+    let projects = |ident: &str| {
+        vec![ProjectOverview {
+            ident: ident.into(),
+            ..Default::default()
+        }]
+    };
+    let old_epoch = app.delegation.epoch;
+    drop(app.update(Message::ProjectsLoaded(
+        old_epoch,
+        Ok(projects("gateway-a")),
+    )));
+    app.design.projects_polled = Some(Instant::now());
+    drop(
+        app.design_message(super::super::desktop_design::Action::ProjectMenu(
+            "gateway-a".into(),
+        )),
+    );
+    app.preferences.draft.url = "http://127.0.0.1:41002".into();
+    drop(app.save_preferences());
+    assert_eq!(app.preferences.current.url, "http://127.0.0.1:41002");
+    assert!(app.design.projects.is_empty());
+    assert!(
+        app.design.projects_polled.is_none(),
+        "the new connection must not inherit the old poll delay"
+    );
+    let status = app.status.clone();
+    drop(app.design_message(super::super::desktop_design::Action::CheckoutProject(false)));
+    assert_eq!(
+        app.status, status,
+        "the old project's checkout menu must be closed"
+    );
+    let current_epoch = app.delegation.epoch;
+    assert_ne!(old_epoch, current_epoch);
+    drop(app.update(Message::ProjectsLoaded(
+        current_epoch,
+        Ok(projects("gateway-b")),
+    )));
+    for result in [Ok(projects("gateway-a")), Err("late A error".into())] {
+        drop(app.update(Message::ProjectsLoaded(old_epoch, result)));
+        assert_eq!(app.design.projects[0].ident, "gateway-b");
+    }
+    // A display preference alone must not invalidate this connection's inventory.
+    app.preferences.draft.projects_dir = "projects".into();
+    drop(app.save_preferences());
+    assert_eq!(app.delegation.epoch, current_epoch);
+    assert_eq!(app.design.projects[0].ident, "gateway-b");
+
+    // Switching back also reloads; the first A connection's reply stays stale.
+    app.preferences.draft.url = "http://127.0.0.1:41001".into();
+    drop(app.save_preferences());
+    let returned_epoch = app.delegation.epoch;
+    assert!(app.design.projects.is_empty());
+    drop(app.update(Message::ProjectsLoaded(old_epoch, Ok(projects("old-a")))));
+    assert!(app.design.projects.is_empty());
+    drop(app.update(Message::ProjectsLoaded(
+        returned_epoch,
+        Ok(projects("fresh-a")),
+    )));
+    assert_eq!(app.design.projects[0].ident, "fresh-a");
+
+    app.design.projects_polled = Some(Instant::now());
+    app.preferences.draft.url.clear();
+    app.preferences.draft.api_key.clear();
+    drop(app.save_preferences());
+    assert!(!app.preferences.current.has_connection());
+    assert!(app.design.projects.is_empty());
+    assert!(app.design.projects_polled.is_none());
+    for result in [Ok(projects("fresh-a")), Err("late A error".into())] {
+        drop(app.update(Message::ProjectsLoaded(returned_epoch, result)));
+        assert!(app.design.projects.is_empty());
+    }
+}
+
+#[test]
 fn sidebar_lists_other_projects_by_where_they_are_checked_out() {
     use amux::gateway::{ProjectMachine, ProjectOverview};
     let mut app = desktop();
