@@ -133,6 +133,11 @@ fn heartbeat(payload: &Value) -> std::result::Result<(), String> {
     {
         return Err("client_run must be a UUID when present".into());
     }
+    if !payload["os"].is_null()
+        && !matches!(payload["os"].as_str(), Some("linux" | "windows" | "macos"))
+    {
+        return Err("client os must be linux, windows or macos when present".into());
+    }
     let agents = payload["agents"]
         .as_array()
         .ok_or("agents must be a list")?;
@@ -548,6 +553,10 @@ mod tests {
     #[test]
     fn heartbeat_client_lifetime_is_optional_and_validated() {
         assert!(heartbeat(&json!({"agents":[]})).is_ok());
+        assert!(heartbeat(&json!({"os":"windows","agents":[]})).is_ok());
+        assert!(heartbeat(&json!({"os":"macos","agents":[]})).is_ok());
+        assert!(heartbeat(&json!({"os":42,"agents":[]})).is_err());
+        assert!(heartbeat(&json!({"os":"unknown","agents":[]})).is_err());
         assert!(heartbeat(&json!({"agents":[],"client_run":Uuid::now_v7().to_string()})).is_ok());
         assert!(heartbeat(&json!({"agents":[],"client_run":"not a UUID"})).is_err());
         assert!(heartbeat(&json!({"agents":[],"client_run":1})).is_err());

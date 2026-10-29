@@ -124,6 +124,11 @@ fn restart(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
         let Some((session, instance, project)) = execution_key(&agent, &agent["project"]) else {
             continue;
         };
+        // An unresolved observation must not consume restart continuity before
+        // the same execution reports its bound project.
+        if project.is_empty() {
+            continue;
+        }
         if agent["source"] != event.source || !listed.contains(&(session, instance, project)) {
             continue;
         }
@@ -467,6 +472,81 @@ mod tests {
                 .unwrap(),
             2,
             "each client execution retains its own deduplication"
+        );
+    }
+
+    #[tokio::test]
+    async fn unresolved_observation_does_not_consume_restart_continuity_before_project_binding() {
+        let database = db::open(":memory:").unwrap();
+        let remote = plugins::remote::Remote::default();
+        let (bus, worker) = router::start(
+            database.clone(),
+            plugins::events(),
+            plugins::plugins(&remote),
+        )
+        .unwrap();
+        worker.abort();
+        let ctx = router::test_context(&bus, PLUGIN);
+        let now = db::now_ms();
+        let mut agent = json!({"session_id":"session","instance_id":"instance","provider":"codex","os":"windows","project":""});
+        let mut event = Event {
+            seq: 10,
+            id: remote::HEARTBEAT.into(),
+            version: 1,
+            uid: uuid::Uuid::now_v7(),
+            payload: json!({"agents":[agent.clone()],"client_run":uuid::Uuid::now_v7().to_string()}),
+            source: "client:windows".into(),
+            emitted_at: now,
+            correlation: None,
+        };
+        let conn = database.lock().unwrap();
+        conn.execute("INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES('p','discord','',0)",[]).unwrap();
+        conn.execute("INSERT INTO tasks(id,project_ident,title,reporter,created_at,updated_at,status,owner_origin_json) VALUES('task','p','t','user',0,?1,'in_progress',?2)",params![now,json!({"session_id":"session","instance_id":"instance","provider":"codex","os":"windows"}).to_string()]).unwrap();
+        conn.execute(
+            "INSERT INTO presence_sources(source,heartbeat_seq) VALUES('client:windows',10)",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE presence_clock SET observed_at=?1", params![now])
+            .unwrap();
+        presence::seed_report(
+            &conn,
+            &event.source,
+            agent.clone(),
+            now,
+            None,
+            false,
+            "unknown",
+        );
+        restart(&conn, &ctx, &event).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM reminder_restarts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "an observation without a project cannot consume startup deduplication"
+        );
+        agent["project"] = json!("p");
+        presence::seed_report(
+            &conn,
+            &event.source,
+            agent.clone(),
+            now,
+            None,
+            false,
+            "unknown",
+        );
+        event.payload["agents"] = json!([agent]);
+        restart(&conn, &ctx, &event).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM router_events WHERE id='agent.notify'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "binding the same execution later still emits its startup reminder"
         );
     }
 

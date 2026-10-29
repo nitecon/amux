@@ -419,13 +419,9 @@ impl Desktop {
 
     pub(super) fn events_report(&mut self) {
         let now = self.events_now();
-        let candidates: Vec<Candidate> = self
-            .delegation
-            .candidates
-            .iter()
-            .filter(|c| !c.target.project.is_empty())
-            .cloned()
-            .collect();
+        // Presence observes native executors even before repository resolution;
+        // task routing remains gated by their resolved project.
+        let candidates = self.delegation.candidates.clone();
         let agents: Vec<Value> = candidates
             .iter()
             .map(|c| {
@@ -480,7 +476,7 @@ impl Desktop {
             events.activity.clear();
             let frame = event_client::emit(
                 "client.heartbeat",
-                json!({"agents": agents, "client_run": self.client_run}),
+                json!({"agents": agents, "client_run": self.client_run, "os": std::env::consts::OS}),
                 None,
             );
             self.events_send(frame);

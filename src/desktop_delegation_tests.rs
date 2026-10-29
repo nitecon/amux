@@ -1409,6 +1409,88 @@ fn client_run_heartbeat_is_stable_across_resubscription_and_changes_with_desktop
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
+fn heartbeat_observes_unresolved_native_agents_and_empty_inventory_with_machine_os() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    scan(&mut app);
+    assert_eq!(app.delegation.candidates.len(), 1);
+    assert!(app.delegation.candidates[0].target.project.is_empty());
+    human(&mut app, 0, b"draft while project is unresolved");
+    app.events_report();
+    let reported: Vec<_> = std::iter::from_fn(|| frames.try_recv().ok()).collect();
+    let heartbeat = reported
+        .iter()
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
+    let unresolved = heartbeat["payload"]["agents"][0].clone();
+    assert_eq!(heartbeat["payload"]["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(heartbeat["payload"]["os"], std::env::consts::OS);
+    assert_eq!(unresolved["project"], "");
+    assert!(
+        unresolved.get("canonical_remote").is_none(),
+        "observation does not invent a repository binding"
+    );
+    let activity = reported
+        .iter()
+        .find(|frame| frame["id"] == "terminal.activity")
+        .unwrap();
+    assert_eq!(activity["payload"]["session_id"], unresolved["session_id"]);
+    assert_eq!(
+        activity["payload"]["instance_id"],
+        unresolved["instance_id"]
+    );
+    assert_eq!(activity["payload"]["draft"], true);
+    assert!(activity["payload"]["output_at"].is_i64());
+
+    project(&mut app, &agent, "alpha");
+    scan(&mut app);
+    app.events_report();
+    let reported: Vec<_> = std::iter::from_fn(|| frames.try_recv().ok()).collect();
+    let heartbeat = reported
+        .iter()
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
+    let resolved = &heartbeat["payload"]["agents"][0];
+    assert_eq!(resolved["project"], "alpha");
+    for field in ["session_id", "instance_id", "generation"] {
+        assert_eq!(
+            resolved[field], unresolved[field],
+            "resolving a project must not replace the native identity: {field}"
+        );
+    }
+    assert!(
+        reported
+            .iter()
+            .any(|frame| frame["id"] == "terminal.activity"
+                && frame["payload"]["session_id"] == resolved["session_id"])
+    );
+
+    drop(tab(&mut app, 0).unwrap().terminal.take());
+    scan(&mut app);
+    assert!(app.delegation.candidates.is_empty());
+    app.events_report();
+    let reported: Vec<_> = std::iter::from_fn(|| frames.try_recv().ok()).collect();
+    let heartbeat = reported
+        .iter()
+        .find(|frame| frame["id"] == "client.heartbeat")
+        .unwrap();
+    assert_eq!(heartbeat["payload"]["agents"], json!([]));
+    assert_eq!(
+        heartbeat["payload"]["os"],
+        std::env::consts::OS,
+        "an empty inventory still reports this connected machine"
+    );
+    assert!(
+        !reported
+            .iter()
+            .any(|frame| frame["id"] == "terminal.activity")
+    );
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
 fn heartbeat_advertises_only_a_confirmed_live_execution_repository_binding() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");

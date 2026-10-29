@@ -372,6 +372,12 @@ for this shared domain resource; controllers do not maintain identity copies.
   hostname history survives lease expiry and event departure as display
   provenance, independently of routing authority. Event-only observations
   cannot forge a registered hostname.
+- Machine summaries count fresh heartbeat sources independently of agent rows,
+  including empty inventories. Optional heartbeat `os` describes a host before
+  any agent is discovered. Native observations with unresolved projects still
+  count as agents, but task controllers wait for project binding. Unresolved
+  observations cannot claim work, suppress reclaim, or consume restart-reminder
+  deduplication.
 - Credential-bound `task_sessions` represents enrollment and revocation,
   rather than a second presence directory, and stays separately scoped.
 

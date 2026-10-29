@@ -180,6 +180,9 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
         }
         let agent = report.agent;
         let project = agent["project"].as_str().unwrap_or_default();
+        if project.is_empty() {
+            continue; // Observed for status counts, not eligible for task routing.
+        }
         let session = agent["session_id"].as_str().unwrap_or_default();
         let busy: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM tasks WHERE status='in_progress'

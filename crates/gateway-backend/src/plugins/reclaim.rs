@@ -50,7 +50,12 @@ impl Step for Sweep {
             let conn = ctx.db().lock().unwrap();
             let busy: Vec<_> = presence::agents(&conn, event.emitted_at)?
                 .into_iter()
-                .filter(|agent| agent.state == "busy")
+                .filter(|agent| {
+                    agent.state == "busy"
+                        && agent.agent["project"]
+                            .as_str()
+                            .is_some_and(|project| !project.is_empty())
+                })
                 .map(|agent| agent.session_id)
                 .collect();
             for project in db::all_projects(&conn)? {
@@ -98,6 +103,55 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(statuses, ["in_progress", "todo"]);
+    }
+
+    #[tokio::test]
+    async fn unresolved_busy_observation_cannot_hold_an_existing_tasks_claim() {
+        let database = db::open(":memory:").unwrap();
+        let (bus, worker) = router::start(
+            database.clone(),
+            plugins::events(),
+            vec![Box::new(presence::Presence), Box::new(Reclaim)],
+        )
+        .unwrap();
+        worker.abort();
+        let ctx = router::test_context(&bus, PLUGIN);
+        let now = db::now_ms();
+        {
+            let conn = database.lock().unwrap();
+            conn.execute("INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES('p','discord','',0)",[]).unwrap();
+            conn.execute("INSERT INTO tasks(id,project_ident,title,reporter,created_at,updated_at,status,owner_origin_json) VALUES('01a17e58-0000-7000-8000-000000000001','p','t','user',0,0,'in_progress','{\"session_id\":\"session\",\"instance_id\":\"previous\"}')",[]).unwrap();
+            presence::seed_report(
+                &conn,
+                "client",
+                json!({"session_id":"session","instance_id":"replacement","project":"","os":"windows"}),
+                now,
+                Some(now),
+                false,
+                "busy",
+            );
+        }
+        let tick = Event {
+            seq: 0,
+            id: clock::TICK.into(),
+            version: 1,
+            uid: uuid::Uuid::now_v7(),
+            payload: json!({}),
+            source: "clock".into(),
+            emitted_at: now,
+            correlation: None,
+        };
+        assert_eq!(Sweep.run(&tick, &ctx).await, StepOutcome::Continue);
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row("SELECT status FROM tasks", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "todo",
+            "counting an unbound replacement must not protect another execution's stale claim"
+        );
     }
 
     #[tokio::test]

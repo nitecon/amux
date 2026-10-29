@@ -1052,3 +1052,90 @@ async fn heartbeat_renews_the_remote_replay_lease_without_acknowledging_events()
     assert_eq!(unchanged, cursor);
     assert!(unchanged < unacked["seq"].as_i64().unwrap());
 }
+
+#[tokio::test]
+async fn summary_counts_connected_empty_clients_and_unresolved_native_observations() {
+    let server = Server::start().await;
+    let mut socket = server.subscribe(Uuid::new_v4(), &[], None).await;
+    async fn expect_summary(server: &Server, expected: Value) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let summary: Value = server
+                .http
+                .get(format!("http://{}/v1/presence/summary", server.endpoint))
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if summary == expected {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "expected {expected}, got {summary}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    emit(
+        &mut socket,
+        "client.heartbeat",
+        json!({"os":"windows","agents":[]}),
+        None,
+    )
+    .await;
+    expect_summary(
+        &server,
+        json!({"machines":1,"os":["windows"],"agents":0,"active":0}),
+    )
+    .await;
+    let agent = json!({"session_id":SESSION,"instance_id":INSTANCE,"provider":"codex","os":"windows","project":""});
+    emit(
+        &mut socket,
+        "client.heartbeat",
+        json!({"os":"windows","agents":[agent.clone()]}),
+        None,
+    )
+    .await;
+    emit(
+        &mut socket,
+        "terminal.activity",
+        json!({"session_id":SESSION,"instance_id":INSTANCE,"output_at":now_ms(),"draft":false}),
+        None,
+    )
+    .await;
+    expect_summary(
+        &server,
+        json!({"machines":1,"os":["windows"],"agents":1,"active":1}),
+    )
+    .await;
+    emit(
+        &mut socket,
+        "client.heartbeat",
+        json!({"os":"windows","agents":[agent]}),
+        None,
+    )
+    .await;
+    expect_summary(
+        &server,
+        json!({"machines":1,"os":["windows"],"agents":1,"active":1}),
+    )
+    .await;
+    emit(
+        &mut socket,
+        "client.heartbeat",
+        json!({"os":"windows","agents":[]}),
+        None,
+    )
+    .await;
+    expect_summary(
+        &server,
+        json!({"machines":1,"os":["windows"],"agents":0,"active":0}),
+    )
+    .await;
+}

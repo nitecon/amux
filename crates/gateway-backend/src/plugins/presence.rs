@@ -281,18 +281,41 @@ pub fn last_output(conn: &Connection, session: &str) -> Result<Option<i64>> {
         .flatten())
 }
 
-/// Live agents across the gateway: distinct client machines, their OSes and
-/// how many agents are busy. Gone agents are already deleted.
+/// Fresh reporting machines, known OSes and observed native agents. A connected
+/// machine can have no agents yet (or only agents with unresolved projects).
 pub fn summary(conn: &Connection) -> Result<Value> {
-    let agents = agents(conn, db::now_ms())?;
-    let machines: std::collections::HashSet<_> = agents
+    summary_at(conn, db::now_ms())
+}
+
+fn summary_at(conn: &Connection, now: i64) -> Result<Value> {
+    let agents = agents(conn, now)?;
+    // Retain compatibility with accepted legacy observations while counting
+    // empty inventories from the Presence-owned heartbeat cursor as machines.
+    let mut machines: std::collections::HashSet<String> = agents
         .iter()
-        .filter_map(|agent| agent.agent["source"].as_str())
+        .filter_map(|agent| agent.agent["source"].as_str().map(str::to_owned))
         .collect();
-    let os: std::collections::BTreeSet<_> = agents
+    let mut os: std::collections::BTreeSet<String> = agents
         .iter()
-        .filter_map(|agent| agent.agent["os"].as_str())
+        .filter_map(|agent| agent.agent["os"].as_str().map(str::to_owned))
         .collect();
+    let heartbeats = conn
+        .prepare(
+            "SELECT p.source,e.payload FROM presence_sources p
+         JOIN router_events e ON e.seq=p.heartbeat_seq AND e.source=p.source
+         WHERE e.id='client.heartbeat' AND ?1-e.emitted_at<?2",
+        )?
+        .query_map(params![now, GONE_AFTER_MS], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (source, payload) in heartbeats {
+        machines.insert(source);
+        let payload: Value = serde_json::from_str(&payload)?;
+        if let Some(platform) = payload["os"].as_str() {
+            os.insert(platform.to_owned());
+        }
+    }
     let active = agents.iter().filter(|agent| agent.state == "busy").count();
     Ok(json!({"machines": machines.len(), "os": os, "agents": agents.len(), "active": active}))
 }
@@ -1384,6 +1407,84 @@ mod tests {
             summary(&conn).unwrap(),
             json!({"machines": 3, "os": ["linux", "macos", "windows"], "agents": 4, "active": 2})
         );
+    }
+
+    #[tokio::test]
+    async fn summary_counts_empty_machine_inventories_and_unresolved_agents_without_os_deduplication(
+    ) {
+        let database = db::open(":memory:").unwrap();
+        let (bus, worker) = router::start(
+            database.clone(),
+            plugins::events(),
+            vec![Box::new(Presence)],
+        )
+        .unwrap();
+        let linux = json!({"session_id":"linux-agent", "instance_id":"instance", "provider":"codex", "os":"linux", "project":"p"});
+        let unresolved = json!({"session_id":"unresolved-agent", "instance_id":"instance", "provider":"codex", "os":"linux", "project":""});
+        let windows = json!({"session_id":"windows-agent", "instance_id":"instance", "provider":"claude", "os":"windows", "project":"p"});
+        for (source, payload) in [
+            (
+                "client:linux",
+                json!({"os":"linux", "agents":[linux.clone(),linux,unresolved]}),
+            ),
+            // Old clients omit machine OS; their observed agent still supplies it.
+            ("client:windows-one", json!({"agents":[windows]})),
+            ("client:windows-two", json!({"os":"windows", "agents":[]})),
+        ] {
+            bus.emit(source, remote::HEARTBEAT, 1, payload, None)
+                .await
+                .unwrap();
+        }
+        bus.emit("client:linux", remote::ACTIVITY, 1,
+            json!({"session_id":"linux-agent", "instance_id":"instance", "output_at":db::now_ms(), "draft":false}), None).await.unwrap();
+        settle(&database).await;
+        let expected = json!({"machines":3,"os":["linux","windows"],"agents":3,"active":1});
+        assert_eq!(summary(&database.lock().unwrap()).unwrap(), expected,
+            "two Windows machines count separately, an empty machine remains connected, and duplicate/unresolved observations count once");
+        bus.emit(
+            "client:windows-two",
+            remote::HEARTBEAT,
+            1,
+            json!({"os":"windows","agents":[]}),
+            None,
+        )
+        .await
+        .unwrap();
+        settle(&database).await;
+        assert_eq!(
+            summary(&database.lock().unwrap()).unwrap(),
+            expected,
+            "a repeated heartbeat cannot multiply machines or erase another source's agents"
+        );
+        bus.emit(
+            "client:mac",
+            remote::HEARTBEAT,
+            1,
+            json!({"os":"macos","agents":[]}),
+            None,
+        )
+        .await
+        .unwrap();
+        settle(&database).await;
+        let conn = database.lock().unwrap();
+        assert_eq!(
+            summary(&conn).unwrap(),
+            json!({"machines":4,"os":["linux","macos","windows"],"agents":3,"active":1}),
+            "a newly connected Mac is visible before any agent is discovered"
+        );
+        let now = db::now_ms();
+        conn.execute("UPDATE router_events SET emitted_at=?1 WHERE seq=(SELECT heartbeat_seq FROM presence_sources WHERE source='client:windows-two')",params![now-GONE_AFTER_MS]).unwrap();
+        assert_eq!(
+            summary_at(&conn, now).unwrap()["machines"],
+            3,
+            "only the latest accepted heartbeat extends a machine lease"
+        );
+        assert_eq!(
+            summary_at(&conn, now + GONE_AFTER_MS + 1).unwrap(),
+            json!({"machines":0,"os":[],"agents":0,"active":0}),
+            "expired observations and empty clients disappear before clock cleanup"
+        );
+        worker.abort();
     }
 
     #[test]
