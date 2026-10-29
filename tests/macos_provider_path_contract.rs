@@ -84,5 +84,34 @@ fn providers_use_the_login_profile_keep_arguments_and_find_the_bundled_cli() {
         );
         assert!(stdout.contains("NUMBER:42"), "{stdout}");
         assert!(!project.join("SHOULD_NOT_EXIST").exists());
+
+        // A provider already on PATH must remain directly launchable, even if
+        // the configured shell is unavailable; recovery is only for NotFound.
+        let direct = Command::new(&cli)
+            .args([
+                "--project-dir",
+                project.to_str().unwrap(),
+                "agent",
+                provider,
+            ])
+            .env(
+                "PATH",
+                std::env::join_paths([
+                    providers.as_path(),
+                    Path::new("/usr/bin"),
+                    Path::new("/bin"),
+                ])
+                .unwrap(),
+            )
+            .env("SHELL", root.join("missing-shell"))
+            .env("AMUX_STATE_DIR", root.join("state"))
+            .env("AMUX_TERMINAL_NUMBER", "42")
+            .output()
+            .unwrap();
+        assert!(
+            direct.status.success(),
+            "{provider}: {}",
+            String::from_utf8_lossy(&direct.stderr)
+        );
     }
 }

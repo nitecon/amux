@@ -612,19 +612,6 @@ fn launch_agent_once(
     actor: &AgentIdentity,
 ) -> Result<std::process::ExitStatus> {
     let directory = amux::workspace_launch::external_path(project.canonicalize()?);
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let shell = std::env::var_os("SHELL")
-            .filter(|shell| !shell.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
-        let bin = std::env::current_exe()?
-            .parent()
-            .context("amux executable has no parent directory")?
-            .to_path_buf();
-        macos_agent_command(&shell, &bin, &directory, provider)
-    };
-    #[cfg(not(target_os = "macos"))]
     let mut command = Command::new(provider.command());
     command
         .args(args)
@@ -656,7 +643,27 @@ fn launch_agent_once(
         ));
         command.env("PATH", std::env::join_paths(paths)?);
     }
-    let mut child = command.spawn().with_context(|| {
+    let spawned = command.spawn();
+    #[cfg(target_os = "macos")]
+    let spawned = match spawned {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let shell = std::env::var_os("SHELL")
+                .filter(|shell| !shell.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+            let bin = std::env::current_exe()?
+                .parent()
+                .context("amux executable has no parent directory")?
+                .to_path_buf();
+            macos_agent_command(&shell, &bin, &directory, provider)
+                .args(args)
+                .current_dir(&directory)
+                .envs(actor.environment())
+                .spawn()
+        }
+        result => result,
+    };
+    let mut child = spawned.with_context(|| {
         format!(
             "launch {}; install it and ensure it is on PATH",
             provider.command()
