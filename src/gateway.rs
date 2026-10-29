@@ -151,13 +151,21 @@ impl Gateway {
         method: Method,
         project: &str,
         suffix: &[&str],
-        body: Option<Value>,
+        mut body: Option<Value>,
         actor: Option<&AgentIdentity>,
     ) -> Result<Value> {
         let creating_task = method == Method::POST && suffix.is_empty();
         let task_resource = suffix.len() == 1 && (method == Method::GET || method == Method::PATCH);
         let posting_comment =
             method == Method::POST && suffix.len() == 2 && suffix[1] == "comments";
+        if posting_comment
+            && let (Some(body), Some(hostname)) = (
+                body.as_mut().and_then(Value::as_object_mut),
+                sysinfo::System::host_name(),
+            )
+        {
+            body.entry("hostname").or_insert(json!(hostname));
+        }
         let requested_status = if method == Method::PATCH {
             body.as_ref().and_then(|body| body.get("status")).cloned()
         } else {

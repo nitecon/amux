@@ -14,7 +14,7 @@ resolver = "2"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:iced", "dep:iced_term", "dep:notify-rust"]
+desktop = ["dep:chrono", "dep:iced", "dep:iced_term", "dep:notify-rust"]
 
 # GUI entry point: no Windows console. Desktop tests already run in the CLI binary.
 [[bin]]
@@ -27,6 +27,7 @@ test = false
 amux-gateway-backend = { path = "crates/gateway-backend" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
 directories = "6"
 getrandom = "0.3"
 futures-util = "0.3"

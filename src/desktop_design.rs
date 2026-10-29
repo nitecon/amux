@@ -37,6 +37,8 @@ pub(super) enum Action {
     DetachTasks,
     DockTasks,
     Cursor(iced::Point),
+    ResizeTaskDrawer,
+    FinishTaskDrawerResize,
     TabMenu(pane_grid::Pane, u64),
     DismissTabMenu,
     CloseMenuTab,
@@ -63,6 +65,8 @@ pub(super) struct State {
     tasks_collapsed: bool,
     cursor: iced::Point,
     viewport: Option<iced::Size>,
+    task_drawer_fraction: Option<f32>,
+    resizing_task_drawer: bool,
     tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
     project_menu: Option<(String, iced::Point)>,
     mode: View,
@@ -84,6 +88,14 @@ pub(super) struct State {
     /// Gateway projects with the machines that have them checked out.
     pub(super) projects: Vec<amux::gateway::ProjectOverview>,
     pub(super) projects_polled: Option<std::time::Instant>,
+}
+impl State {
+    fn task_drawer_width(&self) -> f32 {
+        let window = self.viewport.map_or(1200.0, |size| size.width);
+        let available = (window - 24.0).max(1.0);
+        (window * self.task_drawer_fraction.unwrap_or(1.0 / 3.0))
+            .clamp(available.min(360.0), available)
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) struct ProjectData {
@@ -365,7 +377,19 @@ impl Desktop {
                     return iced::window::close(id);
                 }
             }
-            Action::Cursor(position) => self.design.cursor = position,
+            Action::Cursor(position) => {
+                self.design.cursor = position;
+                if self.design.resizing_task_drawer
+                    && let Some(viewport) = self.design.viewport
+                {
+                    let available = (viewport.width - 24.0).max(1.0);
+                    let width =
+                        (viewport.width - position.x - 12.0).clamp(available.min(360.0), available);
+                    self.design.task_drawer_fraction = Some(width / viewport.width.max(1.0));
+                }
+            }
+            Action::ResizeTaskDrawer => self.design.resizing_task_drawer = true,
+            Action::FinishTaskDrawerResize => self.design.resizing_task_drawer = false,
             Action::TabMenu(pane, tab) => {
                 let workspace = &self.workspaces[self.active];
                 if workspace
@@ -940,8 +964,7 @@ impl Desktop {
         let mut layers = stack![base];
         if task_drawer && !self.preferences.open && !self.workspace_dialog.open {
             // A detail drawer floats over the terminal without squeezing it.
-            let width =
-                (self.design.viewport.map_or(1000.0, |size| size.width) - 24.0).clamp(1.0, 720.0);
+            let width = self.design.task_drawer_width();
             let progress = self.workspaces[self.active]
                 .gateway
                 .detail
@@ -949,9 +972,19 @@ impl Desktop {
             layers = layers.push(
                 container(
                     iced::widget::float(opaque(
-                        container(self.design_tasks(true))
-                            .width(width)
-                            .height(Length::Fill),
+                        container(row![
+                            mouse_area(
+                                container(Space::new())
+                                    .width(8)
+                                    .height(Length::Fill)
+                                    .style(|_| surface(LINE, false))
+                            )
+                            .interaction(iced::mouse::Interaction::ResizingHorizontally)
+                            .on_press(action(Action::ResizeTaskDrawer)),
+                            self.design_tasks(true),
+                        ])
+                        .width(width)
+                        .height(Length::Fill),
                     ))
                     .translate(move |_, _| iced::Vector::new(width * (1.0 - progress), 0.0)),
                 )
@@ -2214,6 +2247,20 @@ fn inert<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_drawer_starts_at_a_third_and_resizes_within_the_window() {
+        let mut app = super::super::tests::desktop();
+        app.design_viewport(iced::Size::new(1500.0, 900.0));
+        assert_eq!(app.design.task_drawer_width(), 500.0);
+        drop(app.design_message(Action::ResizeTaskDrawer));
+        drop(app.design_message(Action::Cursor(iced::Point::new(588.0, 200.0))));
+        assert!((app.design.task_drawer_width() - 900.0).abs() < 0.01);
+        drop(app.design_message(Action::FinishTaskDrawerResize));
+        drop(app.design_message(Action::Cursor(iced::Point::ORIGIN)));
+        assert!((app.design.task_drawer_width() - 900.0).abs() < 0.01);
+        app.design_viewport(iced::Size::new(300.0, 600.0));
+        assert_eq!(app.design.task_drawer_width(), 276.0);
+    }
     #[test]
     fn task_search_finds_short_ids_titles_and_tags_across_states_without_changing_the_queue() {
         let mut app = super::super::tests::desktop();

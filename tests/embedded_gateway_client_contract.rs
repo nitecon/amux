@@ -892,6 +892,17 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
         .await
         .unwrap();
     assert_eq!(comment["origin"], origin(&fixture.actor));
+    assert_eq!(comment["hostname"], json!(sysinfo::System::host_name()));
+    assert!(comment["created_at"].as_i64().unwrap() > 0);
+    let detail = fixture.client.task(PROJECT, id, 50).await.unwrap();
+    let saved = detail["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|saved| saved["id"] == comment["id"])
+        .unwrap();
+    assert_eq!(saved["hostname"], comment["hostname"]);
+    assert_eq!(saved["created_at"], comment["created_at"]);
     let cancelled = fixture
         .client
         .cancel_task(PROJECT, id, "fixture complete", &fixture.actor)

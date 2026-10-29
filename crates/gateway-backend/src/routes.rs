@@ -5715,6 +5715,8 @@ pub struct UpdateDelegationRequest {
 #[derive(Deserialize)]
 pub struct AddCommentRequest {
     pub content: String,
+    /// Display provenance, never used for authorization or routing.
+    pub hostname: Option<String>,
     /// `"agent"` | `"user"`. Defaults based on whether X-Agent-Id is present.
     pub author_type: Option<String>,
     /// Defaults to X-Agent-Id header, or `"user"` when the header is absent or
@@ -6669,8 +6671,14 @@ pub async fn add_comment_handler(
     let comment = spawn_blocking(move || -> anyhow::Result<db::TaskComment> {
         let conn = db.lock().unwrap();
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
-            let comment =
-                db::insert_comment(conn, &task_id_clone, &author, &author_type, &content)?;
+            let comment = db::insert_comment_with_hostname(
+                conn,
+                &task_id_clone,
+                &author,
+                &author_type,
+                &content,
+                req.hostname.as_deref(),
+            )?;
             if author_type != "system" {
                 if let Some(delegation) =
                     db::get_delegation_by_target(conn, &ident_clone, &task_id_clone)?
@@ -7605,6 +7613,7 @@ mod tests {
                     path(),
                     Json(AddCommentRequest {
                         content: "Please continue after this note".into(),
+                        hostname: None,
                         author: None,
                         author_type: None,
                     }),
