@@ -12,7 +12,7 @@ use std::{
 
 pub const START: &str = "<!-- amux:tasks:start -->";
 pub const END: &str = "<!-- amux:tasks:end -->";
-pub const RULES: &str = include_str!("../assets/task-harness.md");
+pub const RULES: &str = amux_gateway_backend::templates::TASK_HARNESS_RULES;
 pub const CLAUDE_DENIES: &[&str] = &[
     "TaskCreate",
     "TaskGet",

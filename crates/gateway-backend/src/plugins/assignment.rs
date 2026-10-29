@@ -6,6 +6,7 @@ use crate::{
     plugins::{clock, notify, presence, tasks, Enabled},
     router::{Event, Plugin, Step, StepContext, StepOutcome, Subscription},
     task_events::{self, AgentOrigin},
+    templates,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -335,9 +336,15 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         let review = is_review(&current);
         let session = &origin.session_id;
         let (heading, instructions) = if review {
-            ("Queued independent review", "This independent review task is already claimed by your amux identity. Review the source task, associated comments and actual changes according to this task's specification. Follow KISS/YAGNI. Review only: do not edit code or implement findings. Record confirmed defects as ordinary queued tasks, post results on the source and review tasks, then mark this review task done.".to_owned())
+            (
+                "Queued independent review",
+                templates::QUEUED_REVIEW.to_owned(),
+            )
         } else {
-            ("Queued task review", format!("This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete. If waiting for a user decision, comment with your question then run: amux tasks user-review {id}."))
+            (
+                "Queued task review",
+                templates::render(templates::QUEUED_TASK, &[("task_id", id)]),
+            )
         };
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,

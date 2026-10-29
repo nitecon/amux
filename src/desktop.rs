@@ -209,6 +209,7 @@ enum PreferencesTab {
     General,
     Updates,
     Harness,
+    Templates,
 }
 
 struct Updates {

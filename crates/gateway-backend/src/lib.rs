@@ -32,6 +32,7 @@ pub mod task_platform;
 pub mod task_requester;
 pub mod task_reviews;
 pub mod task_targets;
+pub mod templates;
 pub mod ui_auth;
 
 #[derive(Clone)]

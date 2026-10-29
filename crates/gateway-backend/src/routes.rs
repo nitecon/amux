@@ -6189,84 +6189,89 @@ pub async fn delegate_task_handler(
     let response = spawn_blocking(move || -> anyhow::Result<DelegationResponse> {
         let conn = db.lock().unwrap();
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
-        if db::get_project(conn, &source_ident)?.is_none() {
-            anyhow::bail!("project '{source_ident}' not found");
-        }
-        if db::get_project(conn, &target_ident)?.is_none() {
-            anyhow::bail!("project '{target_ident}' not found");
-        }
+            if db::get_project(conn, &source_ident)?.is_none() {
+                anyhow::bail!("project '{source_ident}' not found");
+            }
+            if db::get_project(conn, &target_ident)?.is_none() {
+                anyhow::bail!("project '{target_ident}' not found");
+            }
 
-        let target_task = db::insert_task(
-            conn,
-            &target_ident,
-            &title,
-            description.as_deref(),
-            specification.as_deref(),
-            &labels,
-            hostname.as_deref(),
-            &reporter,
-        )?;
-        let source_title = format!("{title} (DELEGATED)");
-        let source_task = db::insert_delegated_task_with_requester(
-            conn,
-            &db::DelegatedTaskInsert {
-                project_ident: &source_ident,
-                title: &source_title,
-                description: description.as_deref(),
-                details: specification.as_deref(),
-                labels: &labels,
-                hostname: hostname.as_deref(),
-                reporter: &reporter,
-                target_project_ident: &target_ident,
-                target_task_id: &target_task.id,
-            },
-            req.requester.as_ref(),
-        )?;
-        let delegation = db::insert_task_delegation(
-            conn,
-            &source_ident,
-            &source_task.id,
-            &target_ident,
-            &target_task.id,
-            requester.as_deref(),
-            hostname.as_deref(),
-        )?;
-        db::insert_comment(
-            conn,
-            &source_task.id,
-            "agent-gateway",
-            "system",
-            &format!(
-                "Delegated to project `{}` as task `{}`.",
-                target_ident, target_task.id
-            ),
-        )?;
-        db::insert_comment(
-            conn,
-            &target_task.id,
-            "agent-gateway",
-            "system",
-            &format!(
-                "Delegated from project `{}`; source tracking task `{}`.",
-                source_ident, source_task.id
-            ),
-        )?;
-        let message_id = system_nudge(
-            conn,
-            &target_ident,
-            "Delegated task created",
-            format!(
-                "Project `{}` delegated task `{}`: {}\n\nFetch task `{}` in project `{}` to claim and execute it.",
-                source_ident, target_task.id, title, target_task.id, target_ident
-            ),
-        )?;
+            let target_task = db::insert_task(
+                conn,
+                &target_ident,
+                &title,
+                description.as_deref(),
+                specification.as_deref(),
+                &labels,
+                hostname.as_deref(),
+                &reporter,
+            )?;
+            let source_title = format!("{title} (DELEGATED)");
+            let source_task = db::insert_delegated_task_with_requester(
+                conn,
+                &db::DelegatedTaskInsert {
+                    project_ident: &source_ident,
+                    title: &source_title,
+                    description: description.as_deref(),
+                    details: specification.as_deref(),
+                    labels: &labels,
+                    hostname: hostname.as_deref(),
+                    reporter: &reporter,
+                    target_project_ident: &target_ident,
+                    target_task_id: &target_task.id,
+                },
+                req.requester.as_ref(),
+            )?;
+            let delegation = db::insert_task_delegation(
+                conn,
+                &source_ident,
+                &source_task.id,
+                &target_ident,
+                &target_task.id,
+                requester.as_deref(),
+                hostname.as_deref(),
+            )?;
+            db::insert_comment(
+                conn,
+                &source_task.id,
+                "agent-gateway",
+                "system",
+                &format!(
+                    "Delegated to project `{}` as task `{}`.",
+                    target_ident, target_task.id
+                ),
+            )?;
+            db::insert_comment(
+                conn,
+                &target_task.id,
+                "agent-gateway",
+                "system",
+                &format!(
+                    "Delegated from project `{}`; source tracking task `{}`.",
+                    source_ident, source_task.id
+                ),
+            )?;
+            let message_id = system_nudge(
+                conn,
+                &target_ident,
+                "Delegated task created",
+                crate::templates::render(
+                    crate::templates::DELEGATED_CREATED,
+                    &[
+                        ("source_project", &source_ident),
+                        ("target_task_id", &target_task.id),
+                        ("title", &title),
+                        ("target_project", &target_ident),
+                    ],
+                ),
+            )?;
 
-        Ok(DelegationResponse {
-            delegation,
-            source_task,
-            target_task,
-            message_id,
-        })
+            Ok(DelegationResponse {
+                delegation,
+                source_task,
+                target_task,
+                message_id,
+            })
         })
     })
     .await??;
@@ -6461,88 +6466,96 @@ pub async fn update_delegation_handler(
     let response = spawn_blocking(move || -> anyhow::Result<DelegationResponse> {
         let conn = db.lock().unwrap();
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
-        let delegation = db::get_delegation_by_source(conn, &ident, &task_id)?
-            .ok_or_else(|| anyhow::anyhow!("task '{task_id}' is not a delegated source task"))?;
-        let source_title = req.title.as_ref().map(|title| {
-            if title.ends_with(" (DELEGATED)") {
-                title.clone()
-            } else {
-                format!("{title} (DELEGATED)")
-            }
-        });
+            let delegation =
+                db::get_delegation_by_source(conn, &ident, &task_id)?.ok_or_else(|| {
+                    anyhow::anyhow!("task '{task_id}' is not a delegated source task")
+                })?;
+            let source_title = req.title.as_ref().map(|title| {
+                if title.ends_with(" (DELEGATED)") {
+                    title.clone()
+                } else {
+                    format!("{title} (DELEGATED)")
+                }
+            });
 
-        let source_upd = db::TaskUpdate {
-            goal: None,
-            status: None,
-            owner_agent_id: None,
-            rank: None,
-            title: source_title.as_deref(),
-            description: req.description.as_ref().map(|inner| inner.as_deref()),
-            details: details_opt.as_ref().map(|inner| inner.as_deref()),
-            labels: req.labels.as_deref(),
-            hostname: None,
-        };
-        let source_task = db::update_task(
-            conn,
-            &delegation.source_project_ident,
-            &delegation.source_task_id,
-            &source_upd,
-            None,
-        )?
-        .ok_or_else(|| anyhow::anyhow!("source delegated task missing"))?;
+            let source_upd = db::TaskUpdate {
+                goal: None,
+                status: None,
+                owner_agent_id: None,
+                rank: None,
+                title: source_title.as_deref(),
+                description: req.description.as_ref().map(|inner| inner.as_deref()),
+                details: details_opt.as_ref().map(|inner| inner.as_deref()),
+                labels: req.labels.as_deref(),
+                hostname: None,
+            };
+            let source_task = db::update_task(
+                conn,
+                &delegation.source_project_ident,
+                &delegation.source_task_id,
+                &source_upd,
+                None,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("source delegated task missing"))?;
 
-        let target_title = req.title.as_deref().map(|t| t.trim_end_matches(" (DELEGATED)"));
-        let target_upd = db::TaskUpdate {
-            goal: None,
-            status: None,
-            owner_agent_id: None,
-            rank: None,
-            title: target_title,
-            description: req.description.as_ref().map(|inner| inner.as_deref()),
-            details: details_opt.as_ref().map(|inner| inner.as_deref()),
-            labels: req.labels.as_deref(),
-            hostname: None,
-        };
-        let target_task = db::update_task(
-            conn,
-            &delegation.target_project_ident,
-            &delegation.target_task_id,
-            &target_upd,
-            None,
-        )?
-        .ok_or_else(|| anyhow::anyhow!("target delegated task missing"))?;
+            let target_title = req
+                .title
+                .as_deref()
+                .map(|t| t.trim_end_matches(" (DELEGATED)"));
+            let target_upd = db::TaskUpdate {
+                goal: None,
+                status: None,
+                owner_agent_id: None,
+                rank: None,
+                title: target_title,
+                description: req.description.as_ref().map(|inner| inner.as_deref()),
+                details: details_opt.as_ref().map(|inner| inner.as_deref()),
+                labels: req.labels.as_deref(),
+                hostname: None,
+            };
+            let target_task = db::update_task(
+                conn,
+                &delegation.target_project_ident,
+                &delegation.target_task_id,
+                &target_upd,
+                None,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("target delegated task missing"))?;
 
-        let note = "Delegated task contract was updated by the source project.";
-        db::insert_comment(
-            conn,
-            &delegation.source_task_id,
-            "agent-gateway",
-            "system",
-            note,
-        )?;
-        db::insert_comment(
-            conn,
-            &delegation.target_task_id,
-            "agent-gateway",
-            "system",
-            note,
-        )?;
-        let message_id = system_nudge(
-            conn,
-            &delegation.target_project_ident,
-            "Delegated task updated",
-            format!(
-                "Project `{}` updated delegated task `{}`. Review the latest title, description, specification, and labels before continuing.",
-                delegation.source_project_ident, delegation.target_task_id
-            ),
-        )?;
+            let note = "Delegated task contract was updated by the source project.";
+            db::insert_comment(
+                conn,
+                &delegation.source_task_id,
+                "agent-gateway",
+                "system",
+                note,
+            )?;
+            db::insert_comment(
+                conn,
+                &delegation.target_task_id,
+                "agent-gateway",
+                "system",
+                note,
+            )?;
+            let message_id = system_nudge(
+                conn,
+                &delegation.target_project_ident,
+                "Delegated task updated",
+                crate::templates::render(
+                    crate::templates::DELEGATED_UPDATED,
+                    &[
+                        ("source_project", &delegation.source_project_ident),
+                        ("target_task_id", &delegation.target_task_id),
+                    ],
+                ),
+            )?;
 
-        Ok(DelegationResponse {
-            delegation,
-            source_task,
-            target_task,
-            message_id,
-        })
+            Ok(DelegationResponse {
+                delegation,
+                source_task,
+                target_task,
+                message_id,
+            })
         })
     })
     .await??;
@@ -6614,9 +6627,14 @@ pub async fn add_comment_handler(
                 if let Some(delegation) =
                     db::get_delegation_by_target(conn, &ident_clone, &task_id_clone)?
                 {
-                    let body = format!(
-                        "New comment on delegated task `{}` from project `{}`:\n\n{}: {}",
-                        delegation.source_task_id, delegation.target_project_ident, author, content
+                    let body = crate::templates::render(
+                        crate::templates::DELEGATED_COMMENT,
+                        &[
+                            ("source_task_id", &delegation.source_task_id),
+                            ("target_project", &delegation.target_project_ident),
+                            ("author", &author),
+                            ("content", &content),
+                        ],
                     );
                     system_nudge(
                         conn,

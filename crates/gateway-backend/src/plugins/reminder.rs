@@ -154,11 +154,9 @@ fn restart(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
             let task: Value = serde_json::from_str(&task)?;
             let id = task["id"].as_str().unwrap_or_default();
             let instructions = if task["owner_origin"]["instance_id"].as_str() == Some(instance) {
-                format!(
-                    "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux tasks user-review {id}."
-                )
+                crate::templates::render(crate::templates::REMINDER_OWNER, &[("task_id", id)])
             } else {
-                "This terminal's previous execution still owns this task. Inspect its prior progress. This is an informational continuity reminder, not an ownership handoff. Use the existing recovery or reassignment flow before attempting task mutations or resuming execution.".to_owned()
+                crate::templates::REMINDER_PREVIOUS_EXECUTION.to_owned()
             };
             notify::emit(
                 conn,
@@ -209,9 +207,8 @@ fn remind(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
         let session = owner.0;
         let id = task["id"].as_str().unwrap_or_default().to_owned();
         let project = task["project_ident"].clone();
-        let instructions = format!(
-            "You still own this task and it has had no update for 10 minutes. Post a progress comment saying where you are, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux tasks user-review {id}."
-        );
+        let instructions =
+            crate::templates::render(crate::templates::UPDATE_NUDGE, &[("task_id", &id)]);
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,
             "heading": "Task update requested", "instructions": instructions,

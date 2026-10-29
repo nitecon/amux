@@ -118,7 +118,13 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
             labels.push(label);
         }
     }
-    let specification = format!("Review the completed work for task {}: {}.\nRead that task and its associated comments for implementation and validation evidence. Inspect the actual changes. Follow repository instructions and KISS/YAGNI: report concrete introduced defects, not speculative enhancements or style preferences. Review only; do not implement changes. For confirmed actionable defects, check for duplicates and create normal queued finding tasks with concise evidence and suggested corrections. Post review results (including no findings) on the source task and this review task, then mark this review task done. Do not run the legacy reviews complete command. Completing a review does not create another review.", source.id, source.title);
+    let specification = crate::templates::render(
+        crate::templates::REVIEW_SPECIFICATION,
+        &[
+            ("source_task_id", &source.id),
+            ("source_title", &source.title),
+        ],
+    );
     // This helper only inserts an unowned ordinary task; no dispatch protocol
     // record or submitting-agent claim is created.
     let task = db::insert_unassigned_dispatch_task(

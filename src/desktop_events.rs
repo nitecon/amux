@@ -391,11 +391,12 @@ impl Desktop {
             let instructions = if current["owner_origin"]["instance_id"].as_str()
                 == Some(candidate.actor.instance_id.to_string().as_str())
             {
-                format!(
-                    "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux tasks user-review {id}."
+                amux_gateway_backend::templates::render(
+                    amux_gateway_backend::templates::REMINDER_OWNER,
+                    &[("task_id", id)],
                 )
             } else {
-                "This terminal's previous execution still owns this task. Inspect its prior progress. This is an informational continuity reminder, not an ownership handoff. Use the existing recovery or reassignment flow before attempting task mutations or resuming execution.".to_owned()
+                amux_gateway_backend::templates::REMINDER_PREVIOUS_EXECUTION.to_owned()
             };
             let project = current["project_ident"].clone();
             let hostname = sysinfo::System::host_name();

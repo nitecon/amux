@@ -113,6 +113,39 @@ pub(super) fn theme() -> Theme {
         },
     )
 }
+/// Read-only view of every injected instruction template and its variables.
+fn templates_view<'a>() -> Element<'a, Message> {
+    use amux_gateway_backend::templates::{TEMPLATES, VARIABLES};
+    let mut content = column![
+        text("Instruction templates").size(20),
+        text("Every instruction amux injects into agent sessions. {name} placeholders are filled when the text is sent; ask for a template change to adjust what agents receive.").size(12).color(MUTED),
+        text("Template variables").size(15),
+    ]
+    .spacing(10);
+    for variable in VARIABLES {
+        content = content.push(
+            row![
+                text(format!("{{{}}}", variable.name))
+                    .font(iced::Font::MONOSPACE)
+                    .size(12)
+                    .color(CYAN)
+                    .width(150),
+                text(variable.description).size(12),
+            ]
+            .spacing(8),
+        );
+    }
+    for template in TEMPLATES {
+        content = content.push(text(template.name).size(15)).push(
+            container(text(template.text).font(iced::Font::MONOSPACE).size(12))
+                .padding(10)
+                .width(Length::Fill)
+                .style(|_| surface(CARD, true)),
+        );
+    }
+    content.into()
+}
+
 fn surface(color: Color, rounded: bool) -> container::Style {
     container::Style {
         background: Some(color.into()),
@@ -1750,6 +1783,7 @@ impl Desktop {
             PreferencesTab::Gateway=>self.preferences_view(),
             PreferencesTab::Updates=>self.updates_view(),
             PreferencesTab::Harness=>self.harness_view(),
+            PreferencesTab::Templates=>templates_view(),
             PreferencesTab::General=>column![
                 text("Workspaces & Terminals").size(18),
                 checkbox(self.preferences.draft.notify_exits).label("Notify on process exit").on_toggle(Message::ExitNotifications),
@@ -1783,6 +1817,7 @@ impl Desktop {
                         tab("Gateway Server", PreferencesTab::Gateway),
                         tab("Workspaces & Terminals", PreferencesTab::General),
                         tab("Agent Instructions", PreferencesTab::Harness),
+                        tab("Instruction templates", PreferencesTab::Templates),
                         tab("Updates", PreferencesTab::Updates)
                     ]
                     .spacing(6)
