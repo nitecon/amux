@@ -492,7 +492,9 @@ impl Desktop {
         let control = |label: &'static str, action, enabled: bool| {
             button(text(label).size(11)).on_press_maybe(enabled.then(|| message(action)))
         };
-        let mut body = column![
+        // Navigation and task actions stay at the top and the comment box at
+        // the bottom; only the details and comments between them scroll.
+        let mut header = column![
             row![
                 control("‹ Go back", Action::Back, !panel.unresolved()),
                 control(
@@ -506,7 +508,7 @@ impl Desktop {
         ]
         .spacing(10);
         let Some(task) = &panel.task else {
-            return body
+            return header
                 .push(text(if panel.loading.is_some() {
                     "Loading task…"
                 } else {
@@ -514,6 +516,7 @@ impl Desktop {
                 }))
                 .into();
         };
+        let mut body = column![].spacing(10);
         body = body
             .push(text(task["title"].as_str().unwrap_or("Untitled")).size(15))
             .push(
@@ -649,7 +652,7 @@ impl Desktop {
                     )
                     .push(control("Return to queue", Action::Resume, ready));
             }
-            body = body.push(
+            header = header.push(
                 row![
                     control("Edit", Action::Edit, ready),
                     control(
@@ -725,18 +728,21 @@ impl Desktop {
                     .push(text(comment["content"].as_str().unwrap_or_default()).size(12));
             }
         }
-        body.push(
+        let footer = column![
             text_editor(&panel.comment)
                 .placeholder("Add a comment…")
                 .height(100)
                 .on_action(|a| message(Action::Comment(a))),
-        )
-        .push(control(
-            "Post comment",
-            Action::PostComment,
-            ready && !panel.comment.text().trim().is_empty(),
-        ))
-        .into()
+            control(
+                "Post comment",
+                Action::PostComment,
+                ready && !panel.comment.text().trim().is_empty(),
+            )
+        ]
+        .spacing(10);
+        column![header, scrollable(body).height(Length::Fill), footer]
+            .spacing(10)
+            .into()
     }
 }
 

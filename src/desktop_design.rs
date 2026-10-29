@@ -1368,18 +1368,12 @@ impl Desktop {
         let panel = &self.workspaces[self.active].gateway;
         if panel.detail.selected.is_some() {
             // The detail view's own back button returns to the list, so the collapse arrow is hidden.
-            return container(
-                column![
-                    row![detach],
-                    scrollable(self.task_detail_view()).height(Length::Fill)
-                ]
-                .spacing(8),
-            )
-            .padding(12)
-            .width(width)
-            .height(Length::Fill)
-            .style(|_| surface(PANEL, false))
-            .into();
+            return container(column![row![detach], self.task_detail_view()].spacing(8))
+                .padding(12)
+                .width(width)
+                .height(Length::Fill)
+                .style(|_| surface(PANEL, false))
+                .into();
         }
         let filter = |label, kind| {
             control(
