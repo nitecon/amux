@@ -13,6 +13,9 @@
 - A New release button in the gateway task composer fills an editable release
   task (green CI, version, changelog, publish and verify) with a line for extra
   notes. Nothing is sent until Submit Task, and existing drafts are never replaced.
+- Settings has a read-only Instruction templates tab showing each instruction amux
+  injects into agent sessions and the variables it fills in. Rendered text is
+  unchanged.
 
 ### Changed
 - The status bar counts gateway machines by hostname, so machines sharing one API
@@ -32,3 +35,6 @@
   assigned work, protect stale claims or consume restart reminders.
 - Switching or disconnecting the gateway clears the sidebar project list, and late
   replies from the previous gateway are ignored.
+- On macOS, launching Codex or Claude from the desktop app no longer fails with
+  `os error 2` when the provider is only on the login shell's PATH: providers now
+  start through the configured login shell.
