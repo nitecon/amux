@@ -33,6 +33,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+const RELEASE_TASK_CONTEXT: &str = "Prepare and publish a new release for this project using its documented release process.\n\n\
+Honor the additional notes below, including any changes or tickets that must land before releasing.\n\n\
+Verify that all CI for the recent changes and final release commit is green; wait for pending checks and resolve failures before tagging. Update all required versions consistently, including manifests, lockfiles, containers and packager metadata where applicable.\n\n\
+Once verified, cut the new release, publish it with an accurate changelog, and verify that release builds and publishing complete successfully with the expected artifacts. Keep this task in progress until verification is complete.\n\n\
+Additional notes / directives (optional):\n";
+
 #[derive(Debug, Clone)]
 enum Message {
     ManageTask(desktop_tasks::Action),
@@ -117,6 +123,7 @@ enum Message {
     TaskTitle(String),
     TaskContext(text_editor::Action),
     SubmitTask,
+    PrepareReleaseTask,
     NewTaskRequest,
     TaskCreated(QueryScope, Uuid, Result<Uuid, String>),
     #[cfg(test)]
@@ -278,6 +285,14 @@ struct TaskPanel {
     draft_context: text_editor::Content,
     draft_status: String,
     request: Option<TaskRequest>,
+}
+
+impl TaskPanel {
+    fn can_prepare_release(&self) -> bool {
+        self.request.is_none()
+            && self.draft_title.is_empty()
+            && self.draft_context.text().is_empty()
+    }
 }
 
 struct TaskRequest {
@@ -1532,6 +1547,15 @@ impl Desktop {
                 }
             }
             Message::SubmitTask => return self.create_task(),
+            Message::PrepareReleaseTask => {
+                let panel = &mut self.workspaces[self.active].gateway;
+                if panel.can_prepare_release() {
+                    panel.draft_title = "Prepare and publish a new release".into();
+                    panel.draft_context = text_editor::Content::with_text(RELEASE_TASK_CONTEXT);
+                    panel.draft_status =
+                        "Review the release request and add any notes before submitting.".into();
+                }
+            }
             Message::NewTaskRequest => {
                 let panel = &mut self.workspaces[self.active].gateway;
                 if panel
@@ -3488,6 +3512,63 @@ mod tests {
                 .draft_status
                 .starts_with("Not submitted:")
         );
+    }
+
+    #[test]
+    fn release_button_prepares_an_editable_workspace_task_without_submitting() {
+        let mut app = desktop();
+        let _ = app.update(Message::PrepareReleaseTask);
+        let panel = &app.workspaces[0].gateway;
+        assert_eq!(panel.draft_title, "Prepare and publish a new release");
+        assert_eq!(panel.draft_context.text(), RELEASE_TASK_CONTEXT);
+        assert!(panel.request.is_none(), "preparing must not send a request");
+        assert_eq!(panel.routing.choice, desktop_routing::Choice::Auto);
+        assert!(app.workspaces[1].gateway.draft_title.is_empty());
+
+        let notes = "Wait for ticket ABC-123 before releasing.";
+        let _ = app.update(Message::TaskContext(text_editor::Action::Move(
+            text_editor::Motion::DocumentEnd,
+        )));
+        let _ = app.update(Message::TaskContext(text_editor::Action::Edit(
+            text_editor::Edit::Paste(std::sync::Arc::new(notes.into())),
+        )));
+        let context = app.workspaces[0].gateway.draft_context.text();
+        assert_eq!(context, format!("{RELEASE_TASK_CONTEXT}{notes}"));
+        let _ = app.update(Message::PrepareReleaseTask);
+        assert_eq!(app.workspaces[0].gateway.draft_context.text(), context);
+    }
+
+    #[test]
+    fn release_button_preserves_drafts_and_task_acceptance_receipts() {
+        let mut app = desktop();
+        // A context-only draft also counts as work that must not be replaced.
+        app.workspaces[0].gateway.draft_context = text_editor::Content::with_text("Keep notes");
+        let _ = app.update(Message::PrepareReleaseTask);
+        assert!(app.workspaces[0].gateway.draft_title.is_empty());
+        assert_eq!(app.workspaces[0].gateway.draft_context.text(), "Keep notes");
+        app.workspaces[0].gateway.draft_context = text_editor::Content::default();
+        app.workspaces[0].gateway.draft_title = "Keep title".into();
+        let _ = app.update(Message::PrepareReleaseTask);
+        assert_eq!(app.workspaces[0].gateway.draft_title, "Keep title");
+        app.workspaces[0].gateway.draft_title.clear();
+        for state in [
+            TaskRequestState::Sending,
+            TaskRequestState::Accepted(Uuid::new_v4()),
+            TaskRequestState::Unconfirmed("connection lost".into()),
+        ] {
+            let request_id = Uuid::new_v4();
+            app.workspaces[0].gateway.request = Some(TaskRequest {
+                id: request_id,
+                project: "project-0".into(),
+                title: "Existing request".into(),
+                state,
+            });
+            let _ = app.update(Message::PrepareReleaseTask);
+            let panel = &app.workspaces[0].gateway;
+            assert!(panel.draft_title.is_empty());
+            assert!(panel.draft_context.text().is_empty());
+            assert_eq!(panel.request.as_ref().unwrap().id, request_id);
+        }
     }
 
     #[test]

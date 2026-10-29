@@ -1555,9 +1555,17 @@ impl Desktop {
             column![
                 row![
                     icon("send"),
-                    text("DISPATCH NEW GATEWAY TASK").size(10).color(CYAN)
+                    text("DISPATCH NEW GATEWAY TASK").size(10).color(CYAN),
+                    Space::new().width(Length::Fill),
+                    tooltip(
+                        button(text("New release").size(11))
+                            .on_press_maybe(panel.can_prepare_release().then_some(Message::PrepareReleaseTask)),
+                        text("Prepare a release request with optional notes. Requires an empty task draft."),
+                        tooltip::Position::Top,
+                    ),
                 ]
-                .spacing(6),
+                .spacing(6)
+                .align_y(Alignment::Center),
                 text(format!(
                     "Project: {} · repository matching required",
                     if panel.project.is_empty() {
