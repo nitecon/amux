@@ -38,6 +38,90 @@ pub fn ensure_reviewer(
     Ok(())
 }
 
+fn opposite(provider: &str) -> Option<&'static str> {
+    match provider {
+        "claude" => Some("codex"),
+        "codex" => Some("claude"),
+        _ => None,
+    }
+}
+
+fn preferred_for_source(conn: &Connection, source: &str) -> Result<Option<String>> {
+    let provider: Option<String> = conn
+        .query_row(
+            "SELECT COALESCE(json_extract(owner_origin_json,'$.provider'),
+                (SELECT json_extract(origin_json,'$.provider') FROM task_comments
+                 WHERE task_id=tasks.id AND author_type='agent'
+                 AND json_extract(origin_json,'$.provider') IS NOT NULL
+                 ORDER BY created_at DESC,id DESC LIMIT 1)) FROM tasks WHERE id=?1",
+            params![source],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(provider.as_deref().and_then(opposite).map(str::to_owned))
+}
+
+/// New reviews freeze the desired provider; older queued reviews resolve it
+/// from their source task without requiring a data migration.
+fn preferred_provider(conn: &Connection, labels: &[String]) -> Result<Option<String>> {
+    if !labels.iter().any(|label| label == "task-review") {
+        return Ok(None);
+    }
+    if let Some(provider) = labels
+        .iter()
+        .find_map(|label| label.strip_prefix("review-provider:"))
+    {
+        return Ok(Some(provider.to_owned()));
+    }
+    let Some(source) = labels
+        .iter()
+        .find_map(|label| label.strip_prefix("review-of:"))
+    else {
+        return Ok(None);
+    };
+    preferred_for_source(conn, source)
+}
+
+/// Used by the controller and every claim/reassignment path. A busy or
+/// incompatible opposite-provider registration still requires waiting for it.
+pub fn ensure_provider(
+    conn: &Connection,
+    labels: &[String],
+    origin: Option<&task_events::AgentOrigin>,
+    actor_agent_id: Option<&str>,
+) -> Result<()> {
+    // A human board status change nominates no reviewer. Explicit owner
+    // assignments still supply an actor ID or target origin and are checked.
+    if origin.is_none() && actor_agent_id.is_none() {
+        return Ok(());
+    }
+    let Some(preferred) = preferred_provider(conn, labels)? else {
+        return Ok(());
+    };
+    if !crate::plugins::presence::provider_registered(conn, &preferred, db::now_ms())? {
+        return Ok(());
+    }
+    let provider = if let Some(origin) = origin {
+        Some(origin.provider.clone())
+    } else if let Some(actor) = actor_agent_id {
+        conn.query_row(
+            "SELECT json_extract(origin_json,'$.provider') FROM task_target_presence
+             WHERE session_id=?1 OR json_extract(agent_json,'$.agent_id')=?1
+             ORDER BY COALESCE(report_seen_at,seen_at) DESC LIMIT 1",
+            params![actor],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    } else {
+        None
+    };
+    if provider.as_deref() != Some(preferred.as_str()) {
+        return Err(Conflict("completion reviews require the opposite provider while it is registered; use an eligible agent identity").into());
+    }
+    Ok(())
+}
+
 pub fn preserve_metadata(current: &[String], next: &[String]) -> Result<()> {
     if current.iter().any(|label| label == "task-review") {
         let markers = |labels: &[String]| {
@@ -47,14 +131,16 @@ pub fn preserve_metadata(current: &[String], next: &[String]) -> Result<()> {
                     label.as_str() == "task-review"
                         || label.starts_with("review-of:")
                         || label.starts_with("review-exclude:")
+                        || label.starts_with("review-provider:")
                 })
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>()
         };
         if markers(current) != markers(next) {
-            return Err(
-                Conflict("completion review source and reviewer exclusion are immutable").into(),
-            );
+            return Err(Conflict(
+                "completion review source, exclusions and provider preference are immutable",
+            )
+            .into());
         }
     }
     Ok(())
@@ -87,6 +173,9 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         return Ok(db::get_task_detail(conn, project, &id)?.map(|detail| detail.task));
     }
     let mut labels = vec!["task-review".to_owned(), format!("review-of:{}", source.id)];
+    if let Some(provider) = preferred_for_source(conn, &source.id)? {
+        labels.push(format!("review-provider:{provider}"));
+    }
     labels.extend(
         source
             .labels
@@ -232,6 +321,7 @@ mod tests {
         assert_eq!(review.hostname, sysinfo::System::host_name());
         assert!(review.owner_origin.is_none() && review.owner_agent_id.is_none());
         assert!(review.labels.contains(&"os:linux".into()));
+        assert!(review.labels.contains(&"review-provider:claude".into()));
         assert!(update(&conn, &review.id, "in_progress", &author).is_err());
         assert_eq!(
             task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
@@ -262,6 +352,123 @@ mod tests {
             1
         );
     }
+    #[test]
+    fn registered_opposite_provider_blocks_manual_claims_even_when_busy_elsewhere() {
+        let (database, source, _) = fixture();
+        let conn = database.lock().unwrap();
+        let review =
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
+                .unwrap()
+                .unwrap();
+        let peer = actor();
+        let mut reviewer = actor();
+        reviewer.provider = "claude".into();
+        // Register on another project/OS, busy with no idle evidence. This
+        // still prevents same-provider fallback, including direct REST claims.
+        let now = db::now_ms();
+        crate::plugins::presence::seed_report(
+            &conn,
+            "fixture",
+            serde_json::json!({
+                "session_id":reviewer.session_id,"instance_id":reviewer.instance_id,
+                "provider":"claude","os":"windows","project":"another-project"
+            }),
+            now,
+            Some(now),
+            true,
+            "busy",
+        );
+        assert!(update(&conn, &review.id, "in_progress", &peer).is_err());
+        assert!(
+            ensure_provider(&conn, &review.labels, None, Some("unknown-legacy-agent")).is_err()
+        );
+        assert!(ensure_provider(&conn, &review.labels, None, Some(&reviewer.session_id)).is_ok());
+        // Existing reviews without the new marker follow the same policy.
+        let legacy: Vec<_> = review
+            .labels
+            .iter()
+            .filter(|label| !label.starts_with("review-provider:"))
+            .cloned()
+            .collect();
+        assert!(ensure_provider(&conn, &legacy, Some(&peer), None).is_err());
+        let stripped: Vec<_> = review
+            .labels
+            .iter()
+            .filter(|label| !label.starts_with("review-provider:"))
+            .cloned()
+            .collect();
+        assert!(preserve_metadata(&review.labels, &stripped).is_err());
+        assert!(ensure_provider(&conn, &review.labels, Some(&reviewer), None).is_ok());
+
+        conn.execute(
+            "UPDATE task_target_presence SET report_seen_at=?1",
+            params![now - 90_000],
+        )
+        .unwrap();
+        update(&conn, &review.id, "in_progress", &peer).unwrap();
+        // A later opposite-provider registration doesn't invalidate work that
+        // was already validly claimed under fallback.
+        conn.execute(
+            "UPDATE task_target_presence SET report_seen_at=?1",
+            params![db::now_ms()],
+        )
+        .unwrap();
+        update(&conn, &review.id, "in_progress", &peer).unwrap();
+        update(&conn, &review.id, "done", &peer).unwrap();
+    }
+
+    #[test]
+    fn review_uses_contributor_provider_when_the_source_has_no_owner() {
+        let (database, source, _) = fixture();
+        let conn = database.lock().unwrap();
+        let mut worker = actor();
+        worker.provider = "claude".into();
+        task_events::mutation(&conn, Some(&worker), |conn| {
+            db::insert_comment(
+                conn,
+                &source.id,
+                "worker",
+                "agent",
+                "implemented and verified",
+            )
+        })
+        .unwrap();
+        conn.execute(
+            "UPDATE tasks SET owner_agent_id=NULL,owner_origin_json=NULL WHERE id=?1",
+            params![source.id],
+        )
+        .unwrap();
+        let review =
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
+                .unwrap()
+                .unwrap();
+        assert!(review.labels.contains(&"review-provider:codex".into()));
+    }
+
+    #[test]
+    fn provider_policy_is_symmetric_and_counts_rest_only_registrations() {
+        let (database, _, _) = fixture();
+        let conn = database.lock().unwrap();
+        let codex = actor();
+        let mut claude = actor();
+        claude.provider = "claude".into();
+        let labels = vec!["task-review".into(), "review-provider:codex".into()];
+        assert!(ensure_provider(&conn, &labels, Some(&claude), None).is_ok());
+        conn.execute(
+            "INSERT INTO task_target_presence(project_ident,instance_id,session_id,origin_json,generation,seen_at,advertised)
+             VALUES('example',?1,?2,?3,'fixture',?4,1)",
+            params![codex.instance_id, codex.session_id, serde_json::to_string(&codex).unwrap(), db::now_ms()],
+        ).unwrap();
+        assert!(ensure_provider(&conn, &labels, Some(&claude), None).is_err());
+        assert!(ensure_provider(&conn, &labels, Some(&codex), None).is_ok());
+        conn.execute(
+            "UPDATE task_target_presence SET seen_at=?1",
+            params![db::now_ms() - crate::task_targets::TTL_MS - 1],
+        )
+        .unwrap();
+        assert!(ensure_provider(&conn, &labels, Some(&claude), None).is_ok());
+    }
+
     #[test]
     fn agents_that_commented_before_a_handoff_are_also_excluded() {
         let database = db::open(":memory:").unwrap();

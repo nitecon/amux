@@ -2668,6 +2668,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn review_provider_policy_fences_claim_assignment_and_atomic_reorder_apis() {
+        let state = fixture(db::open(":memory:").unwrap());
+        let codex = Agent::new(&id(), "unused");
+        let mut claude = Agent::new(&id(), "unused");
+        claude.target.origin.provider = "claude".into();
+        let (first, review) = {
+            let conn = state.db.lock().unwrap();
+            let mut report = serde_json::to_value(&codex.target.origin).unwrap();
+            report["project"] = json!("example");
+            crate::plugins::presence::seed_report(
+                &conn,
+                "fixture",
+                report,
+                db::now_ms(),
+                None,
+                false,
+                "unknown",
+            );
+            let queue = |labels: &[String]| {
+                db::insert_unassigned_dispatch_task(
+                    &conn,
+                    "example",
+                    "review fixture",
+                    None,
+                    None,
+                    labels,
+                    None,
+                    "fixture",
+                )
+                .unwrap()
+            };
+            (
+                queue(&[]),
+                queue(&["task-review".into(), "review-provider:codex".into()]),
+            )
+        };
+        let path = format!("/v1/projects/example/tasks/{}", review.id);
+        for (method, endpoint, headers, body) in [
+            (
+                "PATCH",
+                path.clone(),
+                ordinary_headers(&claude),
+                json!({"status":"in_progress"}),
+            ),
+            (
+                "PATCH",
+                path.clone(),
+                human_headers(),
+                json!({"owner_agent_id":claude.target.origin.session_id}),
+            ),
+            (
+                "POST",
+                format!("{path}/assign"),
+                human_headers(),
+                json!({"target":claude.target}),
+            ),
+            (
+                "POST",
+                "/v1/projects/example/tasks/reorder?status=in_progress".into(),
+                ordinary_headers(&claude),
+                json!({"order":[first.id,review.id]}),
+            ),
+        ] {
+            let (status, result) = desktop_http(&state, headers, method, &endpoint, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert!(result.to_string().contains("opposite provider"), "{result}");
+            let conn = state.db.lock().unwrap();
+            for id in [&first.id, &review.id] {
+                let task = db::get_task_detail(&conn, "example", id)
+                    .unwrap()
+                    .unwrap()
+                    .task;
+                assert_eq!(
+                    task.status, "todo",
+                    "rejected batch must roll back earlier tasks"
+                );
+                assert!(task.owner_origin.is_none() && task.owner_agent_id.is_none());
+            }
+        }
+        // Human board controls do not nominate a reviewer. Both direct status
+        // changes and column moves remain available with a live Codex present.
+        for reorder in [false, true] {
+            let (method, endpoint, body) = if reorder {
+                (
+                    "POST",
+                    "/v1/projects/example/tasks/reorder?status=in_progress".to_owned(),
+                    json!({"order":[first.id,review.id]}),
+                )
+            } else {
+                ("PATCH", path.clone(), json!({"status":"in_progress"}))
+            };
+            let (status, result) =
+                desktop_http(&state, human_headers(), method, &endpoint, body).await;
+            assert_eq!(status, StatusCode::OK, "human reorder={reorder}: {result}");
+            let task = db::get_task_detail(&state.db.lock().unwrap(), "example", &review.id)
+                .unwrap()
+                .unwrap()
+                .task;
+            assert_eq!(task.status, "in_progress");
+            assert!(task.owner_origin.is_none() && task.owner_agent_id.is_none());
+            let (status, result) = desktop_http(
+                &state,
+                human_headers(),
+                "PATCH",
+                &path,
+                json!({"status":"todo"}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+        }
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&codex),
+            "PATCH",
+            &path,
+            json!({"status":"in_progress"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+    }
+
+    #[tokio::test]
     async fn review_exclusions_fence_native_and_legacy_claims_owners_and_atomic_reorders() {
         let state = fixture(db::open(":memory:").unwrap());
         let author = Agent::new(&id(), "unused");

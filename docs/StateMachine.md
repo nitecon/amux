@@ -306,7 +306,11 @@ Rules carried over from the desktop:
   the claim; the next tick revalidates idle sessions and offers queued work.
   The refusing session is skipped until its terminal reports new output, so
   other idle sessions receive the task instead of the same refusal repeating.
-  Sessions are considered oldest terminal output first, then session ID. The
+  Ordinary queued work waits for Codex whenever a live Codex report matches
+  the project, OS, goal and routing requirements, even while that agent is busy.
+  Claude takes ordinary work when no eligible Codex is registered. Explicit
+  ownership and session routing retain precedence. Within each provider,
+  sessions are considered oldest terminal output first, then session ID. The
   sweep fills every eligible free session while work remains; empty or blocked
   projects do not stop other workspaces. Fresh Presence state is authoritative,
   including sessions that stayed idle since the previous tick. Activity and task
@@ -322,6 +326,19 @@ Rules carried over from the desktop:
   Any subsequent task or comment mutation invalidates the old offer in that
   mutation's transaction, so a delayed rejection cannot undo progress or a
   newer claim, even when timestamps match.
+- **Review provider:** reviews of Claude work go to Codex, and reviews of Codex
+  work go to Claude. Same-provider fallback is allowed only when the opposite
+  provider has no live registration anywhere on this server. Busy agents,
+  other projects and incompatible OS requirements do not permit fallback;
+  the review waits for an eligible opposite-provider agent. Registrations use
+  the existing Presence report/advertisement leases, so expired identities do
+  not block fallback forever. The source provider is captured in immutable
+  review metadata; older queued reviews resolve it from the source task.
+  The normal task store enforces this policy for automatic assignments,
+  manual claims, reassignments and batch status changes. Already claimed
+  fallback reviews may finish if an opposite-provider agent later connects.
+  Human board status changes and column moves remain available without
+  nominating a reviewer; explicit owner assignments still enforce the policy.
 - **Notifier:** owners hear about activity on their tasks, explicit requesters
   receive comment/completion results, actors never hear about their own
   changes, and queued or user-review work is left to Assignment and the user.

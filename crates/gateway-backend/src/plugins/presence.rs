@@ -257,6 +257,19 @@ pub fn agents(conn: &Connection, now: i64) -> Result<Vec<AgentPresence>> {
         .collect()
 }
 
+/// Registration availability is server-wide, independent of idle state,
+/// project or OS. Expired historical identities do not block review fallback.
+pub fn provider_registered(conn: &Connection, provider: &str, now: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_target_presence
+         WHERE json_extract(origin_json,'$.provider')=?1
+         AND ((report_seen_at IS NOT NULL AND ?2-report_seen_at<?3)
+           OR (advertised=1 AND seen_at>=?2-?4)))",
+        params![provider, now, GONE_AFTER_MS, task_targets::TTL_MS],
+        |row| row.get(0),
+    )?)
+}
+
 /// Whether this heartbeat is the current, unexpired complete source report.
 /// Controllers observing heartbeats after Presence must ignore reordered runs.
 pub fn heartbeat_is_current(conn: &Connection, event: &Event) -> Result<bool> {

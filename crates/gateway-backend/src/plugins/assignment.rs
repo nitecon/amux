@@ -156,7 +156,10 @@ fn release(conn: &Connection, event: &Event) -> Result<()> {
 }
 
 fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
-    let agents = presence::agents(conn, now)?;
+    let mut agents = presence::agents(conn, now)?;
+    // Codex gets first choice of ordinary work. Stable sorting preserves the
+    // oldest-output ordering within each provider.
+    agents.sort_by_key(|report| report.agent["provider"] != "codex");
     let outputs: HashMap<_, _> = agents
         .iter()
         .map(|agent| (agent.session_id.as_str(), agent.output_at))
@@ -179,11 +182,11 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             )?;
         }
     }
-    for report in agents {
+    for report in &agents {
         if !report.idle(now) || refused.contains(&report.session_id) {
             continue;
         }
-        let agent = report.agent;
+        let agent = &report.agent;
         let project = agent["project"].as_str().unwrap_or_default();
         if project.is_empty() {
             continue; // Observed for status counts, not eligible for task routing.
@@ -212,7 +215,16 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             tasks.sort_by_key(|task| !is_review(task));
         }
         for task in tasks {
-            if eligible(&task, &agent) && claim(conn, ctx, &agent, &task)? {
+            // Busy Codex agents retain preference for ordinary work. Explicit
+            // ownership/routing and OS/goal requirements still take precedence.
+            let reserved_for_codex = !is_review(&task)
+                && agent["provider"] != "codex"
+                && agents.iter().any(|candidate| {
+                    candidate.agent["provider"] == "codex"
+                        && candidate.agent["project"].as_str() == Some(project)
+                        && eligible(&task, &candidate.agent)
+                });
+            if !reserved_for_codex && eligible(&task, agent) && claim(conn, ctx, agent, &task)? {
                 conn.execute(
                     "INSERT OR REPLACE INTO assignment_turns(project, review_next) VALUES(?1, ?2)",
                     params![project, !is_review(&task)],
@@ -908,6 +920,70 @@ mod tests {
             ))
             .unwrap(),
             second
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_gets_first_choice_of_ordinary_work_before_older_idle_claude() {
+        let (database, bus, _router) = setup();
+        let now = db::now_ms();
+        seed_agent(&database, session(1, "p"), now, 80_000, false, "busy");
+        for index in [2, 3] {
+            let mut codex = session(index, "p");
+            codex["provider"] = json!("codex");
+            seed_agent(&database, codex, now, 50_000, false, "busy");
+        }
+        let first = queue(&database, "p", 1, &[]);
+        let second = queue(&database, "p", 2, &[]);
+        tick(&bus, &database).await;
+        assert_eq!(
+            state(&database, &first).1.as_deref(),
+            session(2, "p")["session_id"].as_str()
+        );
+        assert_eq!(
+            state(&database, &second).1.as_deref(),
+            session(3, "p")["session_id"].as_str()
+        );
+        let overflow = queue(&database, "p", 3, &[]);
+        tick(&bus, &database).await;
+        assert_eq!(
+            state(&database, &overflow),
+            ("todo".into(), None),
+            "busy Codex agents retain preference"
+        );
+        database.lock().unwrap().execute("DELETE FROM task_target_presence WHERE json_extract(origin_json,'$.provider')='codex'", []).unwrap();
+        tick(&bus, &database).await;
+        assert_eq!(
+            state(&database, &overflow).1.as_deref(),
+            session(1, "p")["session_id"].as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn reviews_wait_for_registered_codex_then_assign_automatically_when_it_is_idle() {
+        let (database, bus, _router) = setup();
+        let now = db::now_ms();
+        seed_agent(&database, session(1, "p"), now, 60_000, false, "busy");
+        let mut codex = session(2, "p");
+        codex["provider"] = json!("codex");
+        seed_agent(&database, codex.clone(), now, 0, false, "busy");
+        let review = queue(&database, "p", 1, &["task-review", "review-provider:codex"]);
+        // Claude can still handle work whose OS has no eligible Codex report.
+        let ordinary = queue(&database, "p", 2, &["os:windows"]);
+        let mut claude = session(1, "p");
+        claude["os"] = json!("windows");
+        seed_agent(&database, claude, now, 60_000, false, "busy");
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &review), ("todo".into(), None));
+        assert_eq!(
+            state(&database, &ordinary).1.as_deref(),
+            session(1, "p")["session_id"].as_str()
+        );
+        seed_agent(&database, codex, db::now_ms(), 50_000, false, "busy");
+        tick(&bus, &database).await;
+        assert_eq!(
+            state(&database, &review).1.as_deref(),
+            session(2, "p")["session_id"].as_str()
         );
     }
 
