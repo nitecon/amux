@@ -10,6 +10,9 @@
   into the new Default Projects directory (Settings > General) or a folder chosen
   in the file browser. Desktops report their open workspaces to the server, which
   keeps each machine's last report (`PUT`/`GET /v1/checkouts`).
+- A New release button in the gateway task composer fills an editable release
+  task (green CI, version, changelog, publish and verify) with a line for extra
+  notes. Nothing is sent until Submit Task, and existing drafts are never replaced.
 
 ### Changed
 - The status bar counts gateway machines by hostname, so machines sharing one API
