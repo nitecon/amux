@@ -802,14 +802,18 @@ impl Desktop {
     }
 }
 
-/// Gateway timestamps are Unix milliseconds. Keep the timezone explicit rather
-/// than silently treating a UTC value as local time or fabricating missing dates.
+/// Store Unix milliseconds unchanged; display the client's local date/time with
+/// the UTC offset that applied at that instant, including daylight saving time.
 fn task_time(value: &Value) -> String {
     value
-        .as_u64()
-        .filter(|millis| *millis <= 253_402_300_799_999)
-        .and_then(|millis| UNIX_EPOCH.checked_add(Duration::from_millis(millis)))
-        .map(httpdate::fmt_http_date)
+        .as_i64()
+        .filter(|millis| (0..=253_402_300_799_999).contains(millis))
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|date| {
+            date.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        })
         .unwrap_or_else(|| "Time unavailable".into())
 }
 
@@ -878,11 +882,59 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn task_dates_use_stored_unix_milliseconds_and_an_explicit_timezone() {
-        assert_eq!(task_time(&json!(1_000)), "Thu, 01 Jan 1970 00:00:01 GMT");
-        assert_eq!(task_time(&json!(0)), "Thu, 01 Jan 1970 00:00:00 GMT");
-        for missing in [Value::Null, json!(-1), json!(u64::MAX)] {
+    fn task_dates_preserve_invalid_timestamp_fallback() {
+        assert_ne!(task_time(&json!(0)), "Time unavailable");
+        for missing in [
+            Value::Null,
+            json!(-1),
+            json!(u64::MAX),
+            json!(253_402_300_800_000_i64),
+        ] {
             assert_eq!(task_time(&missing), "Time unavailable");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_dates_follow_local_timezone_across_dst() {
+        const FIXTURE: &str = "AMUX_TEST_TASK_TIME_ZONE";
+        if let Ok(zone) = std::env::var(FIXTURE) {
+            match zone.as_str() {
+                "utc" => assert_eq!(task_time(&json!(1_000)), "1970-01-01 00:00:01 +00:00"),
+                "new_york" => {
+                    assert_eq!(task_time(&json!(1_000)), "1969-12-31 19:00:01 -05:00");
+                    assert_eq!(
+                        task_time(&json!(1_793_512_799_000_i64)),
+                        "2026-11-01 01:59:59 -04:00"
+                    );
+                    assert_eq!(
+                        task_time(&json!(1_793_512_800_000_i64)),
+                        "2026-11-01 01:00:00 -05:00"
+                    );
+                }
+                _ => panic!("unknown timezone fixture"),
+            }
+            return;
+        }
+        // Isolate TZ changes from other test threads and the timezone cache.
+        // POSIX rules keep this independent of installed zoneinfo files.
+        for (zone, tz) in [("utc", "UTC0"), ("new_york", "EST5EDT,M3.2.0,M11.1.0")] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "desktop::desktop_tasks::tests::task_dates_follow_local_timezone_across_dst",
+                    "--nocapture",
+                ])
+                .env(FIXTURE, zone)
+                .env("TZ", tz)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{zone}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
