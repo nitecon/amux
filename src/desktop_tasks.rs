@@ -836,9 +836,13 @@ fn comment_bubble(comment: &Value) -> Element<'_, Message> {
             .width(Length::Fill)
             .wrapping(wrap),
             text(format!(
-                "{} · {}",
+                "{} · {} · {}",
                 task_time(&comment["created_at"]),
-                comment["author_type"].as_str().unwrap_or("unknown")
+                comment["author_type"].as_str().unwrap_or("unknown"),
+                comment["hostname"]
+                    .as_str()
+                    .filter(|host| !host.trim().is_empty())
+                    .unwrap_or("Machine not recorded")
             ))
             .size(12)
             .width(Length::Fill)

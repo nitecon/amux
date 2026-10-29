@@ -7759,6 +7759,8 @@ pub struct TaskComment {
     pub author_type: String,
     pub content: String,
     pub created_at: i64,
+    /// Sender machine recorded with the comment; absent on older comments.
+    pub hostname: Option<String>,
     pub origin: Option<crate::task_events::AgentOrigin>,
 }
 
@@ -8831,7 +8833,7 @@ pub fn get_task_detail_recent(
     };
 
     let mut stmt = conn.prepare_cached(
-        "SELECT id, task_id, author, author_type, content, created_at, origin_json
+        "SELECT id, task_id, author, author_type, content, created_at, origin_json, hostname
          FROM task_comments
          WHERE task_id = ?1
          ORDER BY created_at DESC, rowid DESC
@@ -8849,6 +8851,7 @@ pub fn get_task_detail_recent(
                 content: r.get(4)?,
                 created_at: r.get(5)?,
                 origin: crate::task_events::read_origin(r, 6)?,
+                hostname: r.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -9512,6 +9515,33 @@ pub fn insert_comment(
     author_type: &str,
     content: &str,
 ) -> Result<TaskComment> {
+    let hostname = (author_type == "system")
+        .then(sysinfo::System::host_name)
+        .flatten();
+    insert_comment_with_hostname(
+        conn,
+        task_id,
+        author,
+        author_type,
+        content,
+        hostname.as_deref(),
+    )
+}
+
+pub fn insert_comment_with_hostname(
+    conn: &Connection,
+    task_id: &str,
+    author: &str,
+    author_type: &str,
+    content: &str,
+    hostname: Option<&str>,
+) -> Result<TaskComment> {
+    let hostname = hostname.map(str::trim).filter(|host| !host.is_empty());
+    if hostname.is_some_and(|host| host.len() > 255 || host.chars().any(char::is_control)) {
+        anyhow::bail!(
+            "comment hostname must be at most 255 bytes and contain no control characters"
+        );
+    }
     if author_type != "agent" && author_type != "user" && author_type != "system" {
         anyhow::bail!("invalid author_type '{author_type}': must be agent|user|system");
     }
@@ -9534,6 +9564,7 @@ pub fn insert_comment(
             crud_col("author_type", author_type),
             crud_col("content", content),
             crud_col("created_at", now),
+            crud_col("hostname", hostname),
             crud_col(
                 "origin_json",
                 origin.as_ref().map(serde_json::to_string).transpose()?,
@@ -9556,6 +9587,7 @@ pub fn insert_comment(
         author_type: author_type.to_string(),
         content: content.to_string(),
         created_at: now,
+        hostname: hostname.map(str::to_owned),
         origin,
     })
 }

@@ -161,6 +161,7 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     for (table, column) in [
         ("tasks", "owner_origin_json"),
         ("task_comments", "origin_json"),
+        ("task_comments", "hostname"),
         ("task_events", "origin_json"),
     ] {
         let present: bool = conn.query_row(
