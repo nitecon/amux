@@ -611,6 +611,19 @@ fn launch_agent_once(
     args: &[String],
     actor: &AgentIdentity,
 ) -> Result<std::process::ExitStatus> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let shell = std::env::var_os("SHELL")
+            .filter(|shell| !shell.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+        let bin = std::env::current_exe()?
+            .parent()
+            .context("amux executable has no parent directory")?
+            .to_path_buf();
+        macos_agent_command(&shell, &bin, provider)
+    };
+    #[cfg(not(target_os = "macos"))]
     let mut command = Command::new(provider.command());
     command
         .args(args)
@@ -685,4 +698,30 @@ fn launch_agent_once(
     // gateway lease alone cannot prove this executor has stopped; live_agents
     // still lists only records whose native process generation is running.
     Ok(status?)
+}
+
+/// Apply the user's profile in the agent's PTY, rather than relying on the
+/// Finder/Dock environment or the desktop's best-effort startup PATH probe.
+#[cfg(target_os = "macos")]
+fn macos_agent_command(
+    shell: &std::path::Path,
+    bin: &std::path::Path,
+    provider: Provider,
+) -> Command {
+    let mut command = Command::new(shell);
+    if shell.file_name() == Some(std::ffi::OsStr::new("fish")) {
+        command.args([
+            "-ilc",
+            "set -gx PATH $argv[1] $PATH; set -e argv[1]; exec $argv",
+        ]);
+    } else {
+        command.args([
+            "-ilc",
+            "export PATH=\"$1:$PATH\"; shift; exec \"$@\"",
+            "amux-agent",
+        ]);
+    }
+    // Paths and provider arguments are positional values, never shell source.
+    command.arg(bin).arg(provider.command());
+    command
 }
