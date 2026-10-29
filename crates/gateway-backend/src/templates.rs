@@ -35,6 +35,9 @@ pub const VARIABLES: &[Variable] = &[
     Variable { name: "target_task_id", description: "Task ID in the target project of a delegation" },
     Variable { name: "author", description: "Comment author" },
     Variable { name: "content", description: "Comment text" },
+    Variable { name: "description", description: "Task description" },
+    Variable { name: "specification", description: "Task specification" },
+    Variable { name: "comments", description: "delegated_completed_comment lines joined by newlines, or (none)" },
 ];
 
 pub const TASK_HARNESS_RULES: &str = include_str!("../../../assets/task-harness.md");
@@ -55,6 +58,9 @@ pub const QUEUED_REVIEW: &str = "This independent review task is already claimed
 pub const REVIEW_SPECIFICATION: &str = "Review the completed work for task {source_task_id}: {source_title}.\nRead that task and its associated comments for implementation and validation evidence. Inspect the actual changes. Follow repository instructions and KISS/YAGNI: report concrete introduced defects, not speculative enhancements or style preferences. Review only; do not implement changes. For confirmed actionable defects, check for duplicates and create normal queued finding tasks with concise evidence and suggested corrections. Post review results (including no findings) on the source task and this review task, then mark this review task done. Do not run the legacy reviews complete command. Completing a review does not create another review.";
 pub const DELEGATED_CREATED: &str = "Project `{source_project}` delegated task `{target_task_id}`: {title}\n\nFetch task `{target_task_id}` in project `{target_project}` to claim and execute it.";
 pub const DELEGATED_UPDATED: &str = "Project `{source_project}` updated delegated task `{target_task_id}`. Review the latest title, description, specification, and labels before continuing.";
+pub const TASK_CREATED: &str = "New task `{task_id}` was created in project `{project}`: {title}\n\nFetch task `{task_id}` to claim and execute it.";
+pub const DELEGATED_COMPLETED: &str = "Delegated task completed in project `{target_project}`.\n\nTitle: {title}\nDescription: {description}\nSpecification: {specification}\nComments:\n{comments}";
+pub const DELEGATED_COMPLETED_COMMENT: &str = "- {author}: {content}";
 pub const DELEGATED_COMMENT: &str =
     "New comment on delegated task `{source_task_id}` from project `{target_project}`:\n\n{author}: {content}";
 
@@ -120,6 +126,10 @@ pub const TEMPLATES: &[Template] = &[
         text: REVIEW_SPECIFICATION,
     },
     Template {
+        name: "task_created",
+        text: TASK_CREATED,
+    },
+    Template {
         name: "delegated_created",
         text: DELEGATED_CREATED,
     },
@@ -130,6 +140,14 @@ pub const TEMPLATES: &[Template] = &[
     Template {
         name: "delegated_comment",
         text: DELEGATED_COMMENT,
+    },
+    Template {
+        name: "delegated_completed",
+        text: DELEGATED_COMPLETED,
+    },
+    Template {
+        name: "delegated_completed_comment",
+        text: DELEGATED_COMPLETED_COMMENT,
     },
 ];
 
@@ -171,6 +189,38 @@ mod tests {
         assert_eq!(
             render("{a} {b} {a} {c", &[("a", "{b}"), ("b", "x")]),
             "{b} x {b} {c"
+        );
+    }
+
+    #[test]
+    fn relay_templates_match_their_previous_formats() {
+        assert_eq!(
+            render(TASK_CREATED, &[("task_id", "t1"), ("project", "p"), ("title", "T {x}")]),
+            format!(
+                "New task `{}` was created in project `{}`: {}\n\nFetch task `{}` to claim and execute it.",
+                "t1", "p", "T {x}", "t1"
+            )
+        );
+        let comments = render(
+            DELEGATED_COMPLETED_COMMENT,
+            &[("author", "a"), ("content", "c")],
+        );
+        assert_eq!(comments, format!("- {}: {}", "a", "c"));
+        assert_eq!(
+            render(
+                DELEGATED_COMPLETED,
+                &[
+                    ("target_project", "p"),
+                    ("title", "T"),
+                    ("description", ""),
+                    ("specification", "S"),
+                    ("comments", &comments),
+                ],
+            ),
+            format!(
+                "Delegated task completed in project `{}`.\n\nTitle: {}\nDescription: {}\nSpecification: {}\nComments:\n{}",
+                "p", "T", "", "S", comments
+            )
         );
     }
 

@@ -6118,37 +6118,54 @@ pub async fn create_task_handler(
     let ident_clone = ident;
     let task = spawn_blocking(move || -> Result<db::Task> {
         let conn = db.lock().unwrap();
-        if !matches!(req.routing, crate::task_targets::Routing::Auto) || req.canonical_remote.is_some() {
-            crate::task_targets::require_binding(&conn, &ident_clone, req.canonical_remote.as_deref())?;
-        }
-        Ok(crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
-        let task = db::insert_task_with_requester(
-            conn,
-            &ident_clone,
-            &title,
-            description.as_deref(),
-            specification.as_deref(),
-            &labels,
-            hostname.as_deref(),
-            &reporter,
-            goal.as_deref(),
-            &req.routing,
-            req.requester.as_ref(),
-        )?;
-        if task.goal.is_none() && task.owner_agent_id.is_none() && task.status == "todo"
-            && !matches!(task.routing, crate::task_targets::Routing::Unassigned) {
-            system_nudge(
-                conn,
+        if !matches!(req.routing, crate::task_targets::Routing::Auto)
+            || req.canonical_remote.is_some()
+        {
+            crate::task_targets::require_binding(
+                &conn,
                 &ident_clone,
-                "Task created",
-                format!(
-                    "New task `{}` was created in project `{}`: {}\n\nFetch task `{}` to claim and execute it.",
-                    task.id, ident_clone, task.title, task.id
-                ),
+                req.canonical_remote.as_deref(),
             )?;
         }
-        Ok(task)
-        })?)
+        Ok(crate::task_events::mutation(
+            &conn,
+            origin.as_ref(),
+            |conn| {
+                let task = db::insert_task_with_requester(
+                    conn,
+                    &ident_clone,
+                    &title,
+                    description.as_deref(),
+                    specification.as_deref(),
+                    &labels,
+                    hostname.as_deref(),
+                    &reporter,
+                    goal.as_deref(),
+                    &req.routing,
+                    req.requester.as_ref(),
+                )?;
+                if task.goal.is_none()
+                    && task.owner_agent_id.is_none()
+                    && task.status == "todo"
+                    && !matches!(task.routing, crate::task_targets::Routing::Unassigned)
+                {
+                    system_nudge(
+                        conn,
+                        &ident_clone,
+                        "Task created",
+                        crate::templates::render(
+                            crate::templates::TASK_CREATED,
+                            &[
+                                ("task_id", &task.id),
+                                ("project", &ident_clone),
+                                ("title", &task.title),
+                            ],
+                        ),
+                    )?;
+                }
+                Ok(task)
+            },
+        )?)
     })
     .await??;
 
@@ -6349,94 +6366,125 @@ pub async fn update_task_handler(
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = db.lock().unwrap();
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
-        let before = db::get_task_detail(conn, &ident_for_update, &task_id_clone)?.map(|d| d.task);
+            let before =
+                db::get_task_detail(conn, &ident_for_update, &task_id_clone)?.map(|d| d.task);
 
-        if agent_request {
-            if let Some(goal) = before.as_ref().and_then(|task| task.goal.as_deref()) {
-                let changes_queue = status.as_deref() == Some("in_progress")
-                    || owner_opt.as_ref().is_some_and(|o| o.is_some())
-                    || goal_opt.is_some();
-                if changes_queue && selected_goal.as_deref() != Some(goal) {
-                    return Err(TaskGoalConflict.into());
+            if agent_request {
+                if let Some(goal) = before.as_ref().and_then(|task| task.goal.as_deref()) {
+                    let changes_queue = status.as_deref() == Some("in_progress")
+                        || owner_opt.as_ref().is_some_and(|o| o.is_some())
+                        || goal_opt.is_some();
+                    if changes_queue && selected_goal.as_deref() != Some(goal) {
+                        return Err(TaskGoalConflict.into());
+                    }
                 }
             }
-        }
-        let upd = db::TaskUpdate {
-            goal: goal_opt.as_ref().map(|g| g.as_deref()),
-            status: status.as_deref(),
-            owner_agent_id: owner_opt.as_ref().map(|inner| inner.as_deref()),
-            rank,
-            title: title.as_deref(),
-            description: description_opt.as_ref().map(|inner| inner.as_deref()),
-            details: details_opt.as_ref().map(|inner| inner.as_deref()),
-            labels: labels.as_deref(),
-            hostname: hostname_opt.as_ref().map(|inner| inner.as_deref()),
-        };
-        let updated = if agent_request {
-            db::update_task(conn, &ident_for_update, &task_id_clone, &upd, actor.as_deref())?
-        } else {
-            db::update_task_from_user(conn, &ident_for_update, &task_id_clone, &upd)?
-        };
+            let upd = db::TaskUpdate {
+                goal: goal_opt.as_ref().map(|g| g.as_deref()),
+                status: status.as_deref(),
+                owner_agent_id: owner_opt.as_ref().map(|inner| inner.as_deref()),
+                rank,
+                title: title.as_deref(),
+                description: description_opt.as_ref().map(|inner| inner.as_deref()),
+                details: details_opt.as_ref().map(|inner| inner.as_deref()),
+                labels: labels.as_deref(),
+                hostname: hostname_opt.as_ref().map(|inner| inner.as_deref()),
+            };
+            let updated = if agent_request {
+                db::update_task(
+                    conn,
+                    &ident_for_update,
+                    &task_id_clone,
+                    &upd,
+                    actor.as_deref(),
+                )?
+            } else {
+                db::update_task_from_user(conn, &ident_for_update, &task_id_clone, &upd)?
+            };
 
-        if let (Some(before), Some(after)) = (&before, &updated) {
-            if before.status != "done" && after.status == "done" {
-                if let Some(delegation) =
-                    db::get_delegation_by_target(conn, &ident_for_update, &task_id_clone)?
-                {
-                    let target_detail =
-                        db::get_task_detail(conn, &delegation.target_project_ident, &delegation.target_task_id)?
-                            .ok_or_else(|| anyhow::anyhow!("target delegated task missing"))?;
-                    let comments = target_detail
-                        .comments
-                        .iter()
-                        .filter(|c| c.author_type != "system")
-                        .map(|c| format!("- {}: {}", c.author, c.content))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let summary = format!(
-                        "Delegated task completed in project `{}`.\n\nTitle: {}\nDescription: {}\nSpecification: {}\nComments:\n{}",
-                        delegation.target_project_ident,
-                        target_detail.task.title,
-                        target_detail.task.description.as_deref().unwrap_or(""),
-                        target_detail.task.details.as_deref().unwrap_or(""),
-                        if comments.is_empty() { "(none)" } else { &comments }
-                    );
-                    db::insert_comment(
-                        conn,
-                        &delegation.source_task_id,
-                        "agent-gateway",
-                        "system",
-                        &summary,
-                    )?;
-                    let done_upd = db::TaskUpdate {
-                        goal: None,
-                        status: Some("done"),
-                        owner_agent_id: None,
-                        rank: None,
-                        title: None,
-                        description: None,
-                        details: None,
-                        labels: None,
-                        hostname: None,
-                    };
-                    let _ = db::update_task_mirrored(
-                        conn,
-                        &delegation.source_project_ident,
-                        &delegation.source_task_id,
-                        &done_upd,
-                    )?.ok_or_else(|| anyhow::anyhow!("source delegated task missing"))?;
-                    let message_id = system_nudge(
-                        conn,
-                        &delegation.source_project_ident,
-                        "Delegated task completed",
-                        summary,
-                    )?;
-                    db::mark_delegation_complete(conn, &delegation.id, message_id)?;
+            if let (Some(before), Some(after)) = (&before, &updated) {
+                if before.status != "done" && after.status == "done" {
+                    if let Some(delegation) =
+                        db::get_delegation_by_target(conn, &ident_for_update, &task_id_clone)?
+                    {
+                        let target_detail = db::get_task_detail(
+                            conn,
+                            &delegation.target_project_ident,
+                            &delegation.target_task_id,
+                        )?
+                        .ok_or_else(|| anyhow::anyhow!("target delegated task missing"))?;
+                        let comments = target_detail
+                            .comments
+                            .iter()
+                            .filter(|c| c.author_type != "system")
+                            .map(|c| {
+                                crate::templates::render(
+                                    crate::templates::DELEGATED_COMPLETED_COMMENT,
+                                    &[("author", &c.author), ("content", &c.content)],
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let summary = crate::templates::render(
+                            crate::templates::DELEGATED_COMPLETED,
+                            &[
+                                ("target_project", &delegation.target_project_ident),
+                                ("title", &target_detail.task.title),
+                                (
+                                    "description",
+                                    target_detail.task.description.as_deref().unwrap_or(""),
+                                ),
+                                (
+                                    "specification",
+                                    target_detail.task.details.as_deref().unwrap_or(""),
+                                ),
+                                (
+                                    "comments",
+                                    if comments.is_empty() {
+                                        "(none)"
+                                    } else {
+                                        &comments
+                                    },
+                                ),
+                            ],
+                        );
+                        db::insert_comment(
+                            conn,
+                            &delegation.source_task_id,
+                            "agent-gateway",
+                            "system",
+                            &summary,
+                        )?;
+                        let done_upd = db::TaskUpdate {
+                            goal: None,
+                            status: Some("done"),
+                            owner_agent_id: None,
+                            rank: None,
+                            title: None,
+                            description: None,
+                            details: None,
+                            labels: None,
+                            hostname: None,
+                        };
+                        let _ = db::update_task_mirrored(
+                            conn,
+                            &delegation.source_project_ident,
+                            &delegation.source_task_id,
+                            &done_upd,
+                        )?
+                        .ok_or_else(|| anyhow::anyhow!("source delegated task missing"))?;
+                        let message_id = system_nudge(
+                            conn,
+                            &delegation.source_project_ident,
+                            "Delegated task completed",
+                            summary,
+                        )?;
+                        db::mark_delegation_complete(conn, &delegation.id, message_id)?;
+                    }
                 }
             }
-        }
 
-        Ok(updated)
+            Ok(updated)
         })
     })
     .await??;
