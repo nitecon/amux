@@ -297,7 +297,9 @@ Rules carried over from the desktop:
   reported sessions across every workspace/project. Each currently idle agent
   that owns no in-progress task gets the oldest eligible queued task in its
   project (OS label, review exclusion, goal, delegation, owner and session
-  routing). Queued `autoreview-finding` tasks remain ordinary work; **User review**
+  routing). After each ordinary assignment, the project's next assignment
+  goes to the oldest eligible queued `task-review`, if any. Queued
+  `autoreview-finding` tasks remain ordinary work; **User review**
   is the explicit parked state. It claims the
   task as that agent through the normal task store, comments why, and sends
   `agent.notify` with `require_idle`. A `skipped` or `failed` result releases

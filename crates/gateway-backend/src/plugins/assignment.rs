@@ -26,6 +26,10 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             reporter_source TEXT
         );
         CREATE INDEX IF NOT EXISTS assignment_offers_task ON assignment_offers(task_id);
+        CREATE TABLE IF NOT EXISTS assignment_turns (
+            project     TEXT PRIMARY KEY,
+            review_next INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS assignment_refusals (
             session_id TEXT PRIMARY KEY,
             output_at  INTEGER NOT NULL
@@ -193,8 +197,25 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
         if busy {
             continue;
         }
-        for task in queued(conn, project)? {
+        // Every ordinary assignment is followed by a review when one is queued.
+        let review_next: bool = conn
+            .query_row(
+                "SELECT review_next FROM assignment_turns WHERE project=?1",
+                params![project],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        let mut tasks = queued(conn, project)?;
+        if review_next {
+            tasks.sort_by_key(|task| !is_review(task));
+        }
+        for task in tasks {
             if eligible(&task, &agent) && claim(conn, ctx, &agent, &task)? {
+                conn.execute(
+                    "INSERT OR REPLACE INTO assignment_turns(project, review_next) VALUES(?1, ?2)",
+                    params![project, !is_review(&task)],
+                )?;
                 break;
             }
         }
@@ -217,6 +238,12 @@ fn queued(conn: &Connection, project: &str) -> Result<Vec<Value>> {
         .iter()
         .map(|row| serde_json::from_str(row))
         .collect::<serde_json::Result<_>>()?)
+}
+
+fn is_review(task: &Value) -> bool {
+    task["labels"]
+        .as_array()
+        .is_some_and(|labels| labels.iter().any(|label| label == "task-review"))
 }
 
 /// Port of the desktop backlog eligibility rules.
@@ -305,9 +332,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
             |row| row.get(0),
         )?;
         let current: Value = serde_json::from_str(&current)?;
-        let review = current["labels"]
-            .as_array()
-            .is_some_and(|labels| labels.iter().any(|label| label == "task-review"));
+        let review = is_review(&current);
         let session = &origin.session_id;
         let (heading, instructions) = if review {
             ("Queued independent review", "This independent review task is already claimed by your amux identity. Review the source task, associated comments and actual changes according to this task's specification. Follow KISS/YAGNI. Review only: do not edit code or implement findings. Record confirmed defects as ordinary queued tasks, post results on the source and review tasks, then mark this review task done.".to_owned())
@@ -877,6 +902,31 @@ mod tests {
             .unwrap(),
             second
         );
+    }
+
+    #[tokio::test]
+    async fn each_ordinary_assignment_is_followed_by_a_queued_review() {
+        let (database, bus, _router) = setup();
+        let now = db::now_ms();
+        for (index, quiet) in [(1, 60_000), (2, 50_000), (3, 40_000)] {
+            seed_agent(&database, session(index, "p"), now, quiet, false, "busy");
+        }
+        let first = queue(&database, "p", 1, &[]);
+        let second = queue(&database, "p", 2, &[]);
+        let review = queue(&database, "p", 3, &["task-review"]);
+        tick(&bus, &database).await;
+        let owner = |index| {
+            session(index, "p")["session_id"]
+                .as_str()
+                .map(str::to_owned)
+        };
+        assert_eq!(state(&database, &first), ("in_progress".into(), owner(1)));
+        assert_eq!(
+            state(&database, &review),
+            ("in_progress".into(), owner(2)),
+            "the review jumps the remaining queue"
+        );
+        assert_eq!(state(&database, &second), ("in_progress".into(), owner(3)));
     }
 
     #[tokio::test]
