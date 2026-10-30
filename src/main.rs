@@ -18,8 +18,6 @@ mod desktop;
 #[derive(Parser)]
 #[command(version, about = "Agent terminals and gateway task coordination")]
 struct Cli {
-    #[arg(skip)]
-    explicit_gateway: bool,
     #[arg(long, global = true)]
     project_dir: Option<PathBuf>,
     /// Assigned amux agent ID, shown in gateway notifications.
@@ -37,10 +35,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Operation {
-    /// Host the API-compatible gateway using its existing .env/environment settings.
+    /// Host the native server or administer its local database.
     Server {
         #[command(subcommand)]
-        command: Option<amux::server::Command>,
+        command: amux::server::Command,
     },
     /// Check or install managed task instructions for local coding agents.
     Harness {
@@ -60,12 +58,11 @@ enum Operation {
     Whoami,
     /// List live amux-launched agent sessions, including three in one project.
     Agents,
-    /// Use the authoritative gateway without agent-tools installed. The URL and
-    /// key default to saved gateway preferences; the project resolves from Git.
+    /// Use the enrolled amux server. The project resolves from Git.
     Tasks {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
         project: Option<String>,
-        #[arg(long, env = "AMUX_GATEWAY_URL")]
+        #[arg(long)]
         gateway_url: Option<String>,
         /// Print the raw gateway JSON instead of Markdown.
         #[arg(long, global = true)]
@@ -77,18 +74,18 @@ enum Operation {
     Messages {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
         project: String,
-        #[arg(long, env = "AMUX_GATEWAY_URL")]
+        #[arg(long)]
         gateway_url: Option<String>,
         #[command(subcommand)]
         operation: MessageOperation,
     },
     /// Exact-session task dispatch through the gateway's credential-bound API.
-    /// Needs AMUX_GATEWAY_KEY plus the operator-issued AMUX_GATEWAY_MACHINE_ID
+    /// Needs the enrolled connection plus operator-issued AMUX_GATEWAY_MACHINE_ID
     /// and AMUX_GATEWAY_MACHINE_KEY; amux never provisions or stores them.
     Dispatch {
         #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
         project: String,
-        #[arg(long, env = "AMUX_GATEWAY_URL")]
+        #[arg(long)]
         gateway_url: Option<String>,
         #[command(subcommand)]
         operation: amux::dispatch::Command,
@@ -277,9 +274,7 @@ impl DetailArgs {
 }
 
 fn main() -> ExitCode {
-    let mut cli = Cli::parse();
-    cli.explicit_gateway = std::env::args_os()
-        .any(|arg| arg == "--gateway-url" || arg.to_string_lossy().starts_with("--gateway-url="));
+    let cli = Cli::parse();
     match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
@@ -357,7 +352,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => {
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
-                let (gateway, _server) = cli_gateway(gateway_url, cli.explicit_gateway).await?;
+                let (gateway, _server) = cli_gateway(gateway_url).await?;
                 match operation {
                     MessageOperation::List { limit, offset } => {
                         gateway.messages(&project, limit, offset).await
@@ -398,7 +393,7 @@ fn run(cli: Cli) -> Result<u8> {
             let executor = Executor::load(&state, actor)?;
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
-                let (gateway, _server) = cli_gateway(gateway_url, cli.explicit_gateway).await?;
+                let (gateway, _server) = cli_gateway(gateway_url).await?;
                 let dispatcher = Dispatcher::from_profile(
                     gateway.transport_profile(),
                     &project,
@@ -417,7 +412,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => {
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
-                let (gateway, _server) = cli_gateway(gateway_url, cli.explicit_gateway).await?;
+                let (gateway, _server) = cli_gateway(gateway_url).await?;
                 if let TaskOperation::Bind { ident } = &operation {
                     let directory = project_dir.canonicalize()?;
                     anyhow::ensure!(amux::gateway_project::configured_origin(&directory)?.is_none(), "workspace has a Git origin; it resolves by repository and cannot be bound");
@@ -523,49 +518,23 @@ fn run(cli: Cli) -> Result<u8> {
 
 async fn cli_gateway(
     url: Option<String>,
-    explicit: bool,
 ) -> Result<(Gateway, Option<amux::server_controller::LocalServer>)> {
     use amux::gateway_preferences::{GatewayMode, GatewayPreferences};
     let state = identity::state_directory()?;
     let path = state.join("gateway-preferences.json");
-    let saved = GatewayPreferences::load(&path)?;
-    let mut config = saved
-        .clone()
-        .unwrap_or_else(GatewayPreferences::from_environment);
-    // A saved secure selection wins over stale environment inherited by an
-    // already-running provider process. A deliberate CLI override remains explicit.
-    if explicit {
-        let url = url.context("gateway URL override is missing")?;
-        let same_origin = config
+    let mut config =
+        GatewayPreferences::load(&path)?.unwrap_or_else(GatewayPreferences::from_environment);
+    // URL overrides may select only the already-enrolled authority. Pairing
+    // supplies trust and identity; a URL or environment key cannot replace it.
+    if let Some(url) = url {
+        let selected = config
             .resolved_url()
-            .ok()
-            .and_then(|saved| {
-                Some(
-                    amux::gateway_transport::origin(&saved, true).ok()?
-                        == amux::gateway_transport::origin(&url, true).ok()?,
-                )
-            })
-            .unwrap_or(false);
-        if config.mode == GatewayMode::Legacy || !same_origin {
-            config.mode = GatewayMode::Legacy;
-            config.url = url;
-            config.api_key = std::env::var("AMUX_GATEWAY_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty())
-                .unwrap_or(config.api_key);
-        }
-    } else if config.mode == GatewayMode::Legacy {
-        if let Some(url) = url {
-            config.url = url;
-        }
-        if let Ok(key) = std::env::var("AMUX_GATEWAY_KEY")
-            && !key.trim().is_empty()
-        {
-            config.api_key = key;
-        }
-        if saved.is_none() && config.url.is_empty() && config.api_key.is_empty() {
-            config.mode = GatewayMode::Server;
-        }
+            .context("Pair with the server in Settings first")?;
+        anyhow::ensure!(
+            amux::gateway_transport::origin(&selected, true)?
+                == amux::gateway_transport::origin(&url, true)?,
+            "Server URL differs from the enrolled connection; pair with that server in Settings first"
+        );
     }
     let server = if config.mode == GatewayMode::Server {
         let server = amux::server_controller::ensure_local(state, config.server.clone()).await?;

@@ -1980,7 +1980,6 @@ impl Desktop {
         let mode = match self.preferences.current.mode {
             GatewayMode::Server => "Server mode",
             GatewayMode::Client => "Client mode",
-            GatewayMode::Legacy => "Legacy gateway",
         };
         let header = container(
             row![
@@ -2636,6 +2635,8 @@ mod tests {
     fn general_settings_save_without_gateway_and_keep_uncertain_submission() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = super::super::tests::desktop();
+        app.preferences.current.mode = GatewayMode::Client;
+        app.preferences.draft = app.preferences.current.clone();
         app.preferences.path = Some(dir.path().join("settings.json"));
         app.preferences.open = true;
         app.preferences.draft.auto_resume = false;

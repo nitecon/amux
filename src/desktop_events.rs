@@ -2,7 +2,7 @@
 //! and native servers the server decides who works on what; this desktop only
 //! reports its agents and their terminal activity, shows the activity the
 //! server derives, and safely delivers `agent.notify` into terminals,
-//! reporting each outcome. A legacy gateway has no router, so nothing here runs.
+//! reporting each outcome.
 use super::*;
 use amux::event_client::{self, Incoming, Subscription};
 use serde_json::{Value, json};
@@ -27,10 +27,6 @@ const ACTIVITY_RESEND: Duration = Duration::from_secs(30);
 const MAX_AGE_MS: i64 = 5 * 60_000;
 const RECENT: usize = 64;
 const CARDS: usize = 20;
-// Compatibility only: older router servers have no startup-continuity controller.
-const RESTART_TASKS: &str = "restart-tasks.json";
-const RESTART_WINDOW: Duration = Duration::from_secs(10 * 60);
-
 #[derive(Default)]
 pub(super) struct State {
     flight: Option<iced::task::Handle>,
@@ -38,9 +34,6 @@ pub(super) struct State {
     clock: Option<amux::gateway_stream::GatewayClock>,
     targets: Vec<String>,
     pub(super) connected: bool,
-    pub(super) server_restart_reminders: Option<bool>,
-    pub(super) restart: Vec<Value>,
-    restart_loaded: Option<Instant>,
     pub(super) status: String,
     retry_at: Option<Instant>,
     heartbeat_at: Option<Instant>,
@@ -52,12 +45,6 @@ pub(super) struct State {
     delivered: VecDeque<String>,
     /// Recent notifications and their outcomes, for the Events panel.
     cards: VecDeque<(String, delegation::Event, String, String)>,
-}
-
-impl State {
-    pub(super) fn running(&self) -> bool {
-        self.flight.is_some()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,12 +95,6 @@ impl Desktop {
         }
     }
 
-    /// Embedded and native servers own assignment, review and notifications.
-    /// Legacy connections have no automatic controller path.
-    pub(super) fn server_schedules(&self) -> bool {
-        self.preferences.current.mode != amux::gateway_preferences::GatewayMode::Legacy
-    }
-
     fn events_enabled(&self) -> bool {
         self.preferences.current.automatic_notifications
             && self.preferences.current.has_connection()
@@ -146,9 +127,6 @@ impl Desktop {
             retry_at: Some(Instant::now()),
             pending,
             delivered: old.delivered,
-            server_restart_reminders: old.server_restart_reminders,
-            restart: old.restart,
-            restart_loaded: old.restart_loaded,
             ..State::default()
         };
         for workspace in &mut self.workspaces {
@@ -277,145 +255,13 @@ impl Desktop {
             return Task::none();
         }
         self.events_report();
-        self.restart_reminders();
         self.events_deliver()
     }
 
-    /// A connection or identity reset must not carry compatibility work into
-    /// another server. Ordinary event resubscriptions use events_stop instead.
+    /// A connection or identity reset cannot carry queued work to another server.
     pub(in super::super) fn reset_delegation(&mut self) {
         self.delegation.stop();
         self.clear_project_inventory();
-        if let Some(directory) = &self.registry {
-            let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
-        }
-    }
-
-    /// Save the in-progress tasks owned by this desktop's agents before exit.
-    pub(in super::super) fn save_restart_tasks(&self) {
-        let Some(directory) = &self.registry else {
-            return;
-        };
-        if self.delegation.events.server_restart_reminders == Some(true) {
-            let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
-            return;
-        }
-        let sessions: Vec<String> = self
-            .delegation
-            .candidates
-            .iter()
-            .map(|c| c.target.session.to_string())
-            .collect();
-        let owned: Vec<&Value> = self
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.gateway.tasks)
-            .filter(|t| {
-                t["status"] == "in_progress"
-                    && t["owner_origin"]["session_id"]
-                        .as_str()
-                        .is_some_and(|s| sessions.iter().any(|own| own == s))
-            })
-            .collect();
-        let path = directory.join(RESTART_TASKS);
-        if owned.is_empty() {
-            let _ = std::fs::remove_file(path);
-        } else if let Ok(json) = serde_json::to_vec(&owned) {
-            let _ = std::fs::write(path, json);
-        }
-    }
-
-    /// Load compatibility work without retiring it until protocol negotiation.
-    pub(in super::super) fn load_restart_tasks(&mut self) {
-        let Some(path) = self.registry.as_ref().map(|d| d.join(RESTART_TASKS)) else {
-            return;
-        };
-        if let Some(Value::Array(tasks)) = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        {
-            self.delegation.events.restart = tasks;
-            self.delegation.events.restart_loaded = Some(Instant::now());
-        }
-    }
-
-    /// Once a saved task's current state is loaded and it is still owned by a
-    /// running agent here, queue a reminder. It waits until that agent is idle,
-    /// so an agent that resumed the work is not interrupted.
-    pub(super) fn restart_reminders(&mut self) {
-        if !self.delegation.events.connected
-            || self.delegation.events.server_restart_reminders != Some(false)
-        {
-            return;
-        }
-        let events = &mut self.delegation.events;
-        if events
-            .restart_loaded
-            .is_some_and(|at| at.elapsed() > RESTART_WINDOW)
-        {
-            events.restart.clear();
-        }
-        if events.restart.is_empty() {
-            return;
-        }
-        let saved = std::mem::take(&mut self.delegation.events.restart);
-        let now = self.events_now();
-        for task in saved {
-            let current = self
-                .workspaces
-                .iter()
-                .filter(|w| w.gateway.loaded_at.is_some())
-                .flat_map(|w| &w.gateway.tasks)
-                .find(|t| t["id"] == task["id"]);
-            let session = task["owner_origin"]["session_id"].clone();
-            let running = self
-                .delegation
-                .candidates
-                .iter()
-                .find(|c| session.as_str() == Some(c.target.session.to_string().as_str()))
-                .cloned();
-            let Some(current) = current.filter(|_| running.is_some()) else {
-                // Not loaded yet, or its agent has not been found yet.
-                self.delegation.events.restart.push(task);
-                continue;
-            };
-            if current["status"] != "in_progress"
-                || current["owner_origin"]["session_id"] != session
-            {
-                continue;
-            }
-            let Some(candidate) = running else {
-                continue;
-            };
-            let id = current["id"].as_str().unwrap_or_default();
-            let instructions = if current["owner_origin"]["instance_id"].as_str()
-                == Some(candidate.actor.instance_id.to_string().as_str())
-            {
-                amux_gateway_backend::templates::render(
-                    amux_gateway_backend::templates::REMINDER_OWNER,
-                    &[("task_id", id)],
-                )
-            } else {
-                amux_gateway_backend::templates::REMINDER_PREVIOUS_EXECUTION.to_owned()
-            };
-            let project = current["project_ident"].clone();
-            let hostname = sysinfo::System::host_name();
-            // A local notice; its sequence only needs to be a valid event number.
-            let mut notice = json!({
-                "id": "agent.notify", "uid": Uuid::new_v4().to_string(), "seq": 1,
-                "emitted_at": now, "local": true,
-                "payload": {
-                    "target": session, "project": project, "mode": "assigned", "require_idle": true,
-                    "receiver": {"session_id": session,"instance_id": candidate.actor.instance_id,"project":project},
-                    "heading": "In-progress task reminder", "instructions": instructions,
-                    "event": {"kind": "task_created", "project_ident": project, "created_at": now,
-                              "sender_name": "amux", "sender_hostname": hostname, "owner_hostname": hostname,
-                              "task": current, "comment": null, "origin": null},
-                },
-            });
-            notice["receiver"] = notification_receiver(&notice, Some(&candidate));
-            self.delegation.events.pending.push_back(notice);
-        }
     }
 
     pub(super) fn events_report(&mut self) {
@@ -523,41 +369,16 @@ impl Desktop {
 
     pub(super) fn events_incoming(&mut self, incoming: Incoming) -> Task<Message> {
         match incoming {
-            Incoming::Connected {
-                clock,
-                server_restart_reminders,
-            } => {
+            Incoming::Connected { clock, .. } => {
                 let events = &mut self.delegation.events;
                 events.connected = true;
                 events.clock = clock;
                 events.heartbeat_at = None;
-                events.server_restart_reminders = Some(server_restart_reminders);
-                if server_restart_reminders {
-                    events.restart.clear();
-                    events.pending.retain(|event| event["local"] != true);
-                    if events
-                        .delivering
-                        .as_ref()
-                        .is_some_and(|delivery| delivery.event["local"] == true)
-                    {
-                        events.delivering = None;
-                    }
-                }
-                // Only retire the saved compatibility snapshot after negotiation
-                // chooses the authoritative startup-reminder path.
-                if let Some(directory) = &self.registry {
-                    let _ = std::fs::remove_file(directory.join(RESTART_TASKS));
-                }
                 events.status = "Connected to the event router".into();
                 self.toasts.connection_restored();
             }
             Incoming::Rejected(reason) => {
                 self.queue_diagnostic(format!("Event router rejected a frame: {reason}"));
-            }
-            Incoming::Unsupported => {
-                self.delegation.events.connected = false;
-                self.delegation.events.status =
-                    "This gateway has no event router; automatic task work is off".into();
             }
             Incoming::Lost(reason) => {
                 if self.delegation.events.connected {
@@ -664,15 +485,13 @@ impl Desktop {
                 cards.pop_front();
             }
         }
-        if event["local"] != true {
-            let payload = json!({"target": target, "status": status, "reason": reason});
-            let correlation = event["uid"].as_str();
-            self.events_send(event_client::emit(
-                "agent.notify_result",
-                payload,
-                correlation,
-            ));
-        }
+        let payload = json!({"target": target, "status": status, "reason": reason});
+        let correlation = event["uid"].as_str();
+        self.events_send(event_client::emit(
+            "agent.notify_result",
+            payload,
+            correlation,
+        ));
         let events = &mut self.delegation.events;
         events
             .delivered
@@ -751,7 +570,7 @@ impl Desktop {
             self.events_result(event, "skipped", "notification expired");
             return false;
         }
-        let offer = payload["mode"] == "assigned" && event["local"] != true;
+        let offer = payload["mode"] == "assigned";
         let now = self.events_now();
         let reported = self
             .delegation

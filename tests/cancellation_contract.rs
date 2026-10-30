@@ -1,5 +1,7 @@
 #[path = "support/identity.rs"]
 mod fixture_identity;
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use amux::{
     gateway::Gateway,
     identity::{AgentIdentity, Provider},
@@ -287,7 +289,11 @@ fn shipped_cli_reads_cancellation_without_claim_or_agent_identity() {
     .unwrap();
     let record = report(&actor);
     let (url, handle) = server(vec![(200, record.clone())]);
+    let state = tempfile::tempdir().unwrap();
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let output = Command::new(env!("CARGO_BIN_EXE_amux"))
+        .env("AMUX_STATE_DIR", state.path())
         .args([
             "tasks",
             "--project",

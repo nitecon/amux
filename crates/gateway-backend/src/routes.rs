@@ -4182,15 +4182,16 @@ pub async fn post_human_message(
 
     // Then deliver to the channel, best effort.
     let text = format!("**{author}** (via gateway): {content}");
-    let delivery: std::result::Result<String, String> =
+    let delivery: std::result::Result<Option<String>, String> =
         match state.plugins.get(&project.channel_name) {
+            None if project.channel_name == crate::messaging::INTERNAL => Ok(None),
             None => Err(format!(
                 "channel plugin '{}' is not configured",
                 project.channel_name
             )),
             Some(plugin) => {
                 let plugin = plugin.clone();
-                match ensure_project_room(
+                match crate::messaging::external_room(
                     &state,
                     &project.ident,
                     plugin.as_ref(),
@@ -4205,13 +4206,14 @@ pub async fn post_human_message(
                                 Some(ext) => plugin.reply(&room_id, &ext, &text).await,
                                 None => plugin.send(&room_id, &text).await,
                             };
-                        result.map_err(|e| format!("{e:#}"))
+                        result.map(Some).map_err(|e| format!("{e:#}"))
                     }
                 }
             }
         };
     let (delivered, delivery_error) = match delivery {
-        Ok(external_id) => {
+        Ok(None) => (true, None),
+        Ok(Some(external_id)) => {
             let db = state.db.clone();
             spawn_blocking(move || {
                 let conn = db.lock().unwrap();
@@ -4310,17 +4312,7 @@ pub async fn create_project_room(
             }
         }
     };
-    let plugin = state
-        .plugins
-        .get(&channel_name)
-        .ok_or_else(|| {
-            AppError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("channel plugin '{channel_name}' is not configured"),
-            )
-        })?
-        .clone();
-    ensure_project_room(&state, &ident, plugin.as_ref(), room_id).await?;
+    crate::messaging::room(&state, &ident, &channel_name, room_id).await?;
     let db = state.db.clone();
     let project = spawn_blocking(move || -> anyhow::Result<Option<Project>> {
         let conn = db.lock().unwrap();
@@ -4543,13 +4535,13 @@ pub async fn discover_memory_projects_handler(
 pub struct RegisterProjectRequest {
     /// Raw project identity (git remote URL or directory name).
     pub ident: String,
-    /// Which channel plugin to use. Defaults to gateway's DEFAULT_CHANNEL.
+    /// Optional external integration. Defaults to native internal storage.
     pub channel: Option<String>,
     /// Git remote (or agent-tools canonical ident such as
     /// `github.com/nitecon/agent-gateway.git`). When present the repository
     /// mapping is derived from it and the project is registered as a `repo`
-    /// project; otherwise it is an `adhoc` project with no channel room until
-    /// the first message is sent.
+    /// project; otherwise it is an `adhoc` project. External adhoc rooms are
+    /// provisioned lazily on first send; native rooms need no provisioning.
     pub repo_url: Option<String>,
 }
 
@@ -4603,9 +4595,18 @@ pub async fn register_project(
         }
     }
 
-    // Repo projects get their room now; adhoc projects (bare directory names)
-    // get one lazily on first send so stray `cd`s do not create channels.
+    // Native rooms require no external provisioning. External adhoc rooms
+    // remain lazy so stray `cd`s do not create channels.
     let (kind, room_id) = match repo.as_ref() {
+        _ if channel_name == crate::messaging::INTERNAL => (
+            if repo.is_some() {
+                db::PROJECT_KIND_REPO
+            } else {
+                db::PROJECT_KIND_ADHOC
+            }
+            .to_string(),
+            project_ident.clone(),
+        ),
         Some(_) => {
             let plugin = state
                 .plugins
@@ -4659,30 +4660,6 @@ pub async fn register_project(
     }))
 }
 
-/// Resolve the plugin room for an outbound send, creating it on first use for
-/// adhoc projects that were registered without one.
-pub(crate) async fn ensure_project_room(
-    state: &AppState,
-    ident: &str,
-    plugin: &dyn crate::channel::ChannelPlugin,
-    room_id: String,
-) -> Result<String> {
-    if !room_id.is_empty() {
-        return Ok(room_id);
-    }
-    let created = plugin.ensure_room(ident).await?;
-    plugin.register_room(&created, None);
-    let db = state.db.clone();
-    let ident = ident.to_string();
-    let persisted = created.clone();
-    spawn_blocking(move || {
-        let conn = db.lock().unwrap();
-        db::set_project_room(&conn, &ident, &persisted)
-    })
-    .await??;
-    Ok(created)
-}
-
 // ── POST /v1/projects/:ident/messages ─────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -4721,18 +4698,6 @@ pub async fn send_message(
         }
     };
 
-    let plugin = state
-        .plugins
-        .get(&channel_name)
-        .ok_or_else(|| {
-            AppError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("channel plugin '{channel_name}' is not configured"),
-            )
-        })?
-        .clone();
-    let room_id = ensure_project_room(&state, &ident, plugin.as_ref(), room_id).await?;
-
     let agent_id = extract_agent_id(&headers);
     let body_text = req.body.or(req.content).unwrap_or_default();
     if body_text.trim().is_empty() {
@@ -4748,13 +4713,14 @@ pub async fn send_message(
         req.hostname,
         req.event_at,
     );
-    let external_id = plugin.send_structured(&room_id, &outbound).await?;
+    let external_id =
+        crate::messaging::send(&state, &ident, &channel_name, room_id, None, &outbound).await?;
 
     let msg = Message {
         id: 0,
         project_ident: ident.clone(),
         source: "agent".into(),
-        external_message_id: Some(external_id.clone()),
+        external_message_id: external_id,
         content: outbound.body.clone(),
         sent_at: now_ms(),
         confirmed_at: None,
@@ -4771,12 +4737,9 @@ pub async fn send_message(
     };
 
     let db = state.db.clone();
-    let ident_clone = ident.clone();
-    let aid = agent_id;
-    let row_id = spawn_blocking(move || {
+    let (row_id, external_id) = spawn_blocking(move || {
         let conn = db.lock().unwrap();
-        db::upsert_agent(&conn, &ident_clone, &aid)?;
-        db::insert_message(&conn, &msg)
+        crate::messaging::store(&conn, &msg)
     })
     .await??;
 
@@ -7214,18 +7177,6 @@ pub async fn reply_to_message(
         )
     };
 
-    let plugin = state
-        .plugins
-        .get(&channel_name)
-        .ok_or_else(|| {
-            AppError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("channel plugin '{channel_name}' is not configured"),
-            )
-        })?
-        .clone();
-    let room_id = ensure_project_room(&state, &ident, plugin.as_ref(), room_id).await?;
-
     let body_text = req.body.or(req.content).unwrap_or_default();
     if body_text.trim().is_empty() {
         return Err(AppError(
@@ -7241,16 +7192,21 @@ pub async fn reply_to_message(
         req.event_at,
     );
 
-    let external_id = match &parent_external_id {
-        Some(ext_id) => plugin.reply_structured(&room_id, ext_id, &outbound).await?,
-        None => plugin.send_structured(&room_id, &outbound).await?,
-    };
+    let external_id = crate::messaging::send(
+        &state,
+        &ident,
+        &channel_name,
+        room_id,
+        parent_external_id.as_deref(),
+        &outbound,
+    )
+    .await?;
 
     let msg = Message {
         id: 0,
         project_ident: ident.clone(),
         source: "agent".into(),
-        external_message_id: Some(external_id.clone()),
+        external_message_id: external_id,
         content: outbound.body.clone(),
         sent_at: now_ms(),
         confirmed_at: None,
@@ -7267,12 +7223,9 @@ pub async fn reply_to_message(
     };
 
     let db = state.db.clone();
-    let ident_clone = ident.clone();
-    let aid = agent_id;
-    let row_id = spawn_blocking(move || {
+    let (row_id, external_id) = spawn_blocking(move || {
         let conn = db.lock().unwrap();
-        db::upsert_agent(&conn, &ident_clone, &aid)?;
-        db::insert_message(&conn, &msg)
+        crate::messaging::store(&conn, &msg)
     })
     .await??;
 
@@ -7331,18 +7284,6 @@ pub async fn taking_action_on(
         )
     };
 
-    let plugin = state
-        .plugins
-        .get(&channel_name)
-        .ok_or_else(|| {
-            AppError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("channel plugin '{channel_name}' is not configured"),
-            )
-        })?
-        .clone();
-    let room_id = ensure_project_room(&state, &ident, plugin.as_ref(), room_id).await?;
-
     let body_text = req.body.or(req.message).unwrap_or_default();
     if body_text.trim().is_empty() {
         return Err(AppError(
@@ -7358,16 +7299,21 @@ pub async fn taking_action_on(
     });
     let outbound = build_outbound(&agent_id, body_text, subject, req.hostname, req.event_at);
 
-    let external_id = match &parent_external_id {
-        Some(ext_id) => plugin.reply_structured(&room_id, ext_id, &outbound).await?,
-        None => plugin.send_structured(&room_id, &outbound).await?,
-    };
+    let external_id = crate::messaging::send(
+        &state,
+        &ident,
+        &channel_name,
+        room_id,
+        parent_external_id.as_deref(),
+        &outbound,
+    )
+    .await?;
 
     let msg = Message {
         id: 0,
         project_ident: ident.clone(),
         source: "agent".into(),
-        external_message_id: Some(external_id.clone()),
+        external_message_id: external_id,
         content: outbound.body.clone(),
         sent_at: now_ms(),
         confirmed_at: None,
@@ -7384,12 +7330,9 @@ pub async fn taking_action_on(
     };
 
     let db = state.db.clone();
-    let ident_clone = ident.clone();
-    let aid = agent_id;
-    let row_id = spawn_blocking(move || {
+    let (row_id, external_id) = spawn_blocking(move || {
         let conn = db.lock().unwrap();
-        db::upsert_agent(&conn, &ident_clone, &aid)?;
-        db::insert_message(&conn, &msg)
+        crate::messaging::store(&conn, &msg)
     })
     .await??;
 
@@ -8433,6 +8376,291 @@ mod tests {
             artifact_auth_enforced: false,
             remote: Default::default(),
         }
+    }
+
+    #[derive(Default)]
+    struct ExternalMessages(std::sync::Mutex<Vec<Option<String>>>);
+
+    #[async_trait::async_trait]
+    impl crate::channel::ChannelPlugin for ExternalMessages {
+        fn name(&self) -> &str {
+            "external"
+        }
+        fn register_room(&self, _: &str, _: Option<&str>) {}
+        async fn start(
+            &self,
+            _: tokio::sync::mpsc::Sender<crate::channel::PluginEvent>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn ensure_room(&self, ident: &str) -> anyhow::Result<String> {
+            Ok(format!("room-{ident}"))
+        }
+        async fn send(&self, _: &str, _: &str) -> anyhow::Result<String> {
+            let mut calls = self.0.lock().unwrap();
+            calls.push(None);
+            Ok(format!("provider-{}", calls.len()))
+        }
+        async fn reply(&self, _: &str, parent: &str, _: &str) -> anyhow::Result<String> {
+            let mut calls = self.0.lock().unwrap();
+            calls.push(Some(parent.into()));
+            Ok(format!("provider-{}", calls.len()))
+        }
+        async fn fetch_since(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::channel::InboundMessage>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_external_projects_keep_provider_rooms_and_thread_identifiers() {
+        let mut state = test_state();
+        state.default_channel = crate::messaging::INTERNAL.into();
+        let plugin = std::sync::Arc::new(ExternalMessages::default());
+        state.plugins = std::sync::Arc::new(std::collections::HashMap::from([(
+            "external".into(),
+            plugin.clone() as std::sync::Arc<dyn crate::channel::ChannelPlugin>,
+        )]));
+        let Json(project) = register_project(
+            State(state.clone()),
+            Json(RegisterProjectRequest {
+                ident: "external".into(),
+                channel: Some("external".into()),
+                repo_url: Some("https://github.com/example/external.git".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(project.room_id, "room-external");
+        let Json(sent) = send_message(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("external".into()),
+            Json(serde_json::from_value(serde_json::json!({"body":"send"})).unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent.external_message_id, "provider-1");
+        let Json(reply) = reply_to_message(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path(("external".into(), sent.message_id)),
+            Json(serde_json::from_value(serde_json::json!({"body":"reply"})).unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply.external_message_id, "provider-2");
+        assert_eq!(
+            *plugin.0.lock().unwrap(),
+            vec![None, Some("provider-1".into())]
+        );
+        let conn = state.db.lock().unwrap();
+        let stored = db::get_message_by_id(&conn, "external", reply.message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.external_message_id.as_deref(), Some("provider-2"));
+        assert_eq!(stored.parent_message_id, Some(sent.message_id));
+    }
+
+    #[tokio::test]
+    async fn native_projects_and_message_threads_need_no_channel_plugins() {
+        let mut state = test_state();
+        state.default_channel = crate::messaging::INTERNAL.into();
+        for (ident, remote, kind) in [
+            ("native", None, db::PROJECT_KIND_ADHOC),
+            (
+                "repo",
+                Some("https://github.com/example/repo.git"),
+                db::PROJECT_KIND_REPO,
+            ),
+        ] {
+            let Json(project) = register_project(
+                State(state.clone()),
+                Json(RegisterProjectRequest {
+                    ident: ident.into(),
+                    channel: None,
+                    repo_url: remote.map(String::from),
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(project.channel_name, crate::messaging::INTERNAL);
+            assert_eq!(project.room_id, ident);
+            assert_eq!(project.kind, kind);
+        }
+        let Json(again) = register_project(
+            State(state.clone()),
+            Json(RegisterProjectRequest {
+                ident: "native".into(),
+                channel: None,
+                repo_url: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.room_id, "native");
+        let Json(room) = create_project_room(State(state.clone()), Path("native".into()))
+            .await
+            .unwrap();
+        assert_eq!(room.room_id, "native");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-agent-id", "writer".parse().unwrap());
+        let Json(sent) = send_message(
+            State(state.clone()),
+            headers.clone(),
+            Path("native".into()),
+            Json(
+                serde_json::from_value(serde_json::json!({
+                    "body":"hello", "subject":"Subject", "hostname":"host", "event_at":123
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sent.external_message_id,
+            format!("internal:{}", sent.message_id)
+        );
+        let Json(reply) = reply_to_message(
+            State(state.clone()),
+            headers.clone(),
+            Path(("native".into(), sent.message_id)),
+            Json(serde_json::from_value(serde_json::json!({"body":"reply"})).unwrap()),
+        )
+        .await
+        .unwrap();
+        let Json(action) = taking_action_on(
+            State(state.clone()),
+            headers.clone(),
+            Path(("native".into(), sent.message_id)),
+            Json(serde_json::from_value(serde_json::json!({"body":"working"})).unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply.parent_message_id, sent.message_id);
+        assert_eq!(action.parent_message_id, sent.message_id);
+        {
+            let conn = state.db.lock().unwrap();
+            let stored = db::get_message_by_id(&conn, "native", sent.message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.external_message_id.as_deref(),
+                Some(sent.external_message_id.as_str())
+            );
+            assert_eq!(stored.agent_id.as_deref(), Some("writer"));
+            assert_eq!(stored.subject.as_deref(), Some("Subject"));
+            assert_eq!(stored.event_at, Some(123));
+            let stored = db::get_message_by_id(&conn, "native", action.message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.message_type, "action");
+            assert_eq!(stored.parent_message_id, Some(sent.message_id));
+            assert!(stored.subject.unwrap().starts_with("[ACTION]"));
+        }
+        // Parent lookup is scoped by project, including native projects.
+        let error = reply_to_message(
+            State(state.clone()),
+            headers,
+            Path(("repo".into(), sent.message_id)),
+            Json(serde_json::from_value(serde_json::json!({"body":"wrong project"})).unwrap()),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn native_human_messages_are_durable_and_confirmed_per_agent() {
+        let mut state = test_state();
+        state.default_channel = crate::messaging::INTERNAL.into();
+        let _ = register_project(
+            State(state.clone()),
+            Json(RegisterProjectRequest {
+                ident: "native".into(),
+                channel: None,
+                repo_url: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let Json(sent) = post_human_message(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("native".into()),
+            Json(serde_json::from_value(serde_json::json!({"content":"hello agents"})).unwrap()),
+        )
+        .await
+        .unwrap();
+        assert!(sent.delivered);
+        assert!(sent.delivery_error.is_none());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-agent-id", "reader".parse().unwrap());
+        let Json(unread) =
+            get_unread_messages(State(state.clone()), headers.clone(), Path("native".into()))
+                .await
+                .unwrap();
+        assert_eq!(unread.messages.len(), 1);
+        assert_eq!(unread.messages[0].id, sent.message_id);
+        let _ = confirm_message(
+            State(state.clone()),
+            headers.clone(),
+            Path(("native".into(), sent.message_id)),
+        )
+        .await
+        .unwrap();
+        let Json(unread) =
+            get_unread_messages(State(state.clone()), headers, Path("native".into()))
+                .await
+                .unwrap();
+        assert!(unread.messages.is_empty());
+        let conn = state.db.lock().unwrap();
+        assert_eq!(
+            db::get_unconfirmed_for_agent(&conn, "native", "another")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_external_integration_never_falls_back_to_native_success() {
+        let state = test_state();
+        let result = send_message(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("demo".into()),
+            Json(
+                serde_json::from_value(serde_json::json!({"body":"must not be accepted"})).unwrap(),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(AppError(StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        let result = register_project(
+            State(state.clone()),
+            Json(RegisterProjectRequest {
+                ident: "external".into(),
+                channel: Some("discord".into()),
+                repo_url: Some("https://github.com/example/external.git".into()),
+            }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError(StatusCode::BAD_REQUEST, _))));
+        let conn = state.db.lock().unwrap();
+        assert!(db::get_project(&conn, "external").unwrap().is_none());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     fn test_state() -> AppState {

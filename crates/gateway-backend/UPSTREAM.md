@@ -13,7 +13,8 @@ the original main module. Browser pages and the gateway executable/updater lifec
 are excluded. External channel connectors and plugin ingress/worker behavior are
 retained for the initial compatibility/cutover phase by explicit owner direction.
 Backend password/session helpers remain because API authorization uses them.
-Native channel decoupling is deferred until after verified cutover.
+After verified cutover, native internal rooms and durable message storage no
+longer require channel plugins; optional external integrations remain supported.
 
 Original database and handler tests are retained where they cover the backend.
 The memory rollback SQL fixture is relocated under this crate's test fixtures.
@@ -32,9 +33,9 @@ The second release adds amux-owned `security` and `secure` modules alongside
 the retained compatibility router. These implement installation CA/leaf
 credentials, invitation/CSR enrollment, explicit certificate principals,
 connection retirement and the secure/public listeners. Runtime preparation is
-shared by both modes; secure requests carry their verified principal into the
-existing handler authorization boundary. The original bearer/session path stays
-available in compatibility mode. These additions are not part of the pinned
+used by native secure hosting; secure requests carry their verified principal into
+the existing handler authorization boundary. The retired raw HTTP hosting mode is
+removed; bearer/session handler contracts remain for backend API authorization tests. These additions are not part of the pinned
 upstream source and are covered by separate native transport/security tests.
 
 The amux-owned `task_reviews` module adds atomic, deduplicated completion-review

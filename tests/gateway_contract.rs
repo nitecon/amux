@@ -1,5 +1,7 @@
 //! Black-box gateway client contract: wire identity, claim acknowledgment,
 //! response bounds and honest failure. Uses a local mock; no live gateway.
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use amux::{
     gateway::{Gateway, TaskDetails},
     identity::{AgentIdentity, Provider},
@@ -308,6 +310,8 @@ fn cli_handoff_uses_callers_subscription_and_a_different_exact_executor() {
         .unwrap()
         .register_at(state.path())
         .unwrap();
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_amux"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env("AMUX_STATE_DIR", state.path())
@@ -386,6 +390,8 @@ fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
         reply(200, &released),
         reply(200, &queued),
     ]);
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let run = |args: &[&str]| {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
         for name in actor.environment().keys() {
@@ -596,8 +602,12 @@ fn cli_project_agent_discovery_is_read_only_and_reports_remote_os() {
         ),
         reply(200, &directory),
     ]);
+    let state = tempfile::tempdir().unwrap();
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_amux"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("AMUX_STATE_DIR", state.path())
         .env("AMUX_GATEWAY_KEY", "fixture")
         .args([
             "tasks",
@@ -624,7 +634,29 @@ fn cli_project_agent_discovery_is_read_only_and_reports_remote_os() {
     for request in server.join().unwrap() {
         assert!(request.head.starts_with("get "));
         assert!(!request.head.contains("x-agent-"));
+        assert!(
+            !request.head.contains("authorization:"),
+            "native CLI authenticates with its enrolled certificate"
+        );
     }
+    let refused = std::process::Command::new(env!("CARGO_BIN_EXE_amux"))
+        .env("AMUX_STATE_DIR", state.path())
+        .env("AMUX_GATEWAY_URL", "http://retired.invalid")
+        .env("AMUX_GATEWAY_KEY", "retired-key")
+        .args([
+            "tasks",
+            "--project",
+            "demo",
+            "--gateway-url",
+            "https://another.invalid",
+            "agents",
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("differs from the enrolled connection")
+    );
 }
 
 #[test]
@@ -805,6 +837,8 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
     let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
     let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null});
     let (url, server) = server(vec![reply(200, &owned), reply(200, &parked)]);
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
     for name in actor.environment().keys() {
         command.env_remove(name);
@@ -1348,6 +1382,8 @@ fn assigned_cli_claim_works_when_provider_environment_and_ancestry_are_unavailab
         reply(200, &owned_by(&actor)),
         reply(200, &owned_by(&actor)),
     ]);
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
     for name in actor.environment().keys() {
         command.env_remove(name);

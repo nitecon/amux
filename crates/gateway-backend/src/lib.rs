@@ -17,6 +17,7 @@ pub mod checkouts;
 pub mod db;
 pub mod execution_history;
 pub mod memory_okf;
+pub mod messaging;
 pub mod plugins;
 pub mod projects;
 pub mod router;

@@ -1,4 +1,4 @@
-# Embedded gateway compatibility release
+# Native backend hosting
 
 The first embedded release adds `amux server`. It runs the existing gateway
 backend inside the amux executable, using the original API-key configuration,
@@ -6,30 +6,16 @@ SQLite schema and channel plugins. Desktop and CLI clients continue using their
 configured gateway URL and key. Automatic server/client mode and mTLS belong to
 the separate second release described in [ServerArchitecture.md](../ServerArchitecture.md).
 
-## Running the compatibility server
+## Supported hosting
 
-Run from a directory containing the gateway's existing `.env`, or supply the
-same environment variables to `amux server`. For a new isolated local profile:
+The old raw HTTP compatibility host (`amux server serve` or bare `amux server`)
+and external gateway URL/API-key mode are retired after cutover. Use native secure
+hosting below. New projects default to internal rooms and durable SQLite messaging;
+Discord and WhatsApp are optional integrations for explicitly configured projects.
+Existing externally routed projects retain their channel mapping and provider errors.
+Browser pages and the external gateway updater are not part of amux.
 
-```sh
-GATEWAY_API_KEY='<your existing configured key>' \
-GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=7913 \
-DATABASE_PATH=./data/gateway.db amux server
-```
-
-`amux server serve` is equivalent. This release preserves the gateway defaults,
-including port 7913 and binding to `0.0.0.0` when no host is configured. Existing
-remote TLS proxy arrangements remain applicable. It does not yet implement the
-secure listeners on 24182/24181 in this compatibility mode. Native secure mode
-is separate and described below.
-
-Discord and WhatsApp use their existing environment configuration. Projects,
-tasks and storage APIs can start without configured plugins; operations needing
-channel delivery retain their original plugin requirements and errors. There is
-no replacement internal channel adapter. Browser pages and the gateway's own
-updater are omitted; amux retains its native frontend and updater.
-
-Local operator commands retain their arguments under the `server` prefix:
+Local database operator commands remain available:
 
 ```sh
 amux server task-machine issue PROJECT INSTANCE_ID OS
@@ -41,22 +27,20 @@ amux server user list
 amux server user reset-password USERNAME
 ```
 
-User commands accept a password through standard input or the existing
-`GATEWAY_USER_PASSWORD` environment variable. The server takes an OS-backed
-sidecar lock for its SQLite profile. Stop the previous server before changing
-hosts or switching back to the original gateway: the original executable does
-not participate in this new lock. Keep a backup and use an isolated copied
-profile for cutover testing; never run both channel consumers simultaneously.
+Database operator commands use the local native host's
+`$AMUX_STATE_DIR/server/application.sqlite` by default. Set `DATABASE_PATH` or
+`DATABASE_URL` to administer another installation. User commands accept a password through standard input or
+`GATEWAY_USER_PASSWORD`. Keep the profile in an owner-controlled directory.
 
 ## Native secure mode
 
-Settings offers Server, Client and Legacy modes. Fresh installations without
-existing gateway configuration start a loopback server. Enable network hosting
+Settings offers Server and Client modes. Fresh installations start a loopback server. Enable network hosting
 and set a hostname or IP reachable by clients before generating a peering key.
 Client Settings accepts that address and the key; Generate new replaces the
 previous key, and each key expires within ten minutes. Copy does not extend it.
 Operational traffic uses mTLS on 24182; public discovery on 24181 carries no
-enrollment secret. Existing URL/API-key connections remain in Legacy mode.
+enrollment secret. Retired URL/API-key settings require explicit Server selection
+or Client pairing; they cannot establish a connection.
 
 To run a headless secure host, supply a persistent profile and installation UUID:
 
@@ -97,19 +81,11 @@ tree. [GatewayApiContract.json](GatewayApiContract.json) records all 107 backend
 method/path operations and the two WhatsApp webhook operations. The backend's
 [UPSTREAM.md](../../crates/gateway-backend/UPSTREAM.md) records the extraction boundary.
 
-Run the differential check after building the pinned original gateway and amux:
-
-```sh
-python3 scripts/check_gateway_compatibility.py \
-  --reference /path/to/pinned/gateway --candidate target/debug/amux \
-  --require-positive-coverage
-```
-
-The helper freezes both binaries, records their hashes, uses synthetic credentials
-and writes its SQLite profiles, logs and report beneath `target/test-fixtures`.
-It does not use installed provider settings or a live channel account. Generated
-IDs, timestamps and password salts are normalized for separate-profile comparison;
-same-profile switch checks compare exact durable rows and schema definitions.
+The completed cutover used a real-process differential harness with frozen binary
+hashes and isolated SQLite profiles. That harness depended on retired raw HTTP
+hosting and has now been removed. The results below are historical acceptance
+evidence, not instructions for the current release. Native contract and backend
+tests validate the supported hosting and API behavior.
 
 The local differential checks passed with:
 

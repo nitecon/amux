@@ -41,9 +41,8 @@ the router and existing plugins are not modified.
 
 - **In scope:** the embedded/native amux server (`crates/gateway-backend`),
   desktops and CLIs connected to it in Server or Client mode.
-- **Legacy external gateway:** gets none of this. Clients connected to a legacy
-  gateway do no automatic scheduling or review at all; the user asks an agent
-  to do the work manually.
+- Retired external gateways are no longer a connection mode. Native Server and
+  Client connections use enrolled mTLS profiles.
 - **Out of scope:** changing the existing task REST API contract; the external
   channel plugins' wire protocols (Discord/WhatsApp) stay as they are. Their
   internal message ingestion uses the same durable controller machinery.
@@ -443,11 +442,9 @@ The client keeps only what the server cannot observe or do:
   activity indicator, and `task.*` events refresh that project's task panel.
 - Manual task UI and CLI (`desktop_tasks.rs`, `task_routing.rs`,
   `desktop_routing.rs`).
-- One process-lifetime `client_run` value reported in heartbeats. A successful
-  subscription advertises `server_restart_reminders`; supporting servers own
-  restart eligibility and task lookup. When an older event router omits this
-  flag, the retained local restart journal provides informational continuity
-  after idle. Negotiation selects one authority; a 404 enables no fallback.
+- One process-lifetime `client_run` value reported in heartbeats. The server owns
+  restart eligibility and task lookup. A missing or unavailable event router is
+  a connection error; it does not enable local scheduling or reminder fallback.
 
 Removed from the client in phase 5: the desktop backlog scheduler, client
 autoreview and its journal, the legacy task-stream delivery journal
@@ -466,9 +463,10 @@ use the event delivery boundary above, rather than that provisional prompt
 classifier or local ledger. Raw legacy stream filters remain compatibility
 helpers, with no automatic scheduling authority.
 
-The client detects support by connecting to `/v1/events/stream`; a legacy
-gateway answers 404, and the client then does nothing automatic. This keeps
-`/v1/tasks/capabilities` identical to the legacy gateway.
+The client connects to `/v1/events/stream` on its enrolled native server. Failed
+connections retry without transferring controller authority to the client.
+Native projects and message storage are independent of external channel plugins;
+see [ServerArchitecture.md](ServerArchitecture.md#native-projects-and-messaging).
 
 ## Architecture checks
 
@@ -482,7 +480,7 @@ The application and backend test suites exercise these boundaries directly:
 | Notification batches and assignment compensation are atomic and replay-safe | Notifier and Assignment fault-injection tests |
 | Clients observe/report and deliver safely across reconnects and process changes | Native desktop delivery tests and `tests/event_stream_contract.rs` |
 | Repository identities and OS requirements agree across client/store/controllers | Project and platform tests; Git/project identity contracts |
-| Database upgrades retain user data and reject overwriting active work | `tests/migration_contract.rs` |
+| Native database upgrades retain application data | Backend schema-upgrade tests |
 
 Run `cargo test -p amux -p amux-gateway-backend`,
 `cargo clippy -p amux -p amux-gateway-backend --all-targets -- -D warnings`,

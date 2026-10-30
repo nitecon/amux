@@ -2,7 +2,7 @@
 //! It owns only the socket: the caller handles events and sends acks and
 //! emits through `outgoing`. Frames queued while disconnected are dropped;
 //! the server resends any event that was not acked.
-use crate::gateway_stream::{GatewayClock, NO_EVENT_ROUTER, connect_events, next_json, send_json};
+use crate::gateway_stream::{GatewayClock, connect_events, next_json, send_json};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
@@ -11,8 +11,6 @@ use uuid::Uuid;
 const HEARTBEAT: Duration = Duration::from_secs(20);
 const SILENCE: Duration = Duration::from_secs(60);
 const RECONNECT: Duration = Duration::from_secs(5);
-/// A gateway without the router is checked again rarely.
-const UNSUPPORTED_RETRY: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub enum Incoming {
@@ -24,8 +22,6 @@ pub enum Incoming {
     Event(Value),
     /// The server rejected a frame, e.g. an invalid emit.
     Rejected(String),
-    /// The gateway has no event router (a legacy gateway).
-    Unsupported,
     Lost(String),
 }
 
@@ -54,12 +50,6 @@ pub async fn run(
     loop {
         let wait = match session(&profile, &subscription, &mut outgoing, &incoming).await {
             Ok(()) => return,
-            Err(error) if error == NO_EVENT_ROUTER => {
-                if incoming.send(Incoming::Unsupported).await.is_err() {
-                    return;
-                }
-                UNSUPPORTED_RETRY
-            }
             Err(error) => {
                 if incoming.send(Incoming::Lost(error)).await.is_err() {
                     return;

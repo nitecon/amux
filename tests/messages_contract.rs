@@ -1,5 +1,7 @@
 #[path = "support/identity.rs"]
 mod fixture_identity;
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use amux::{gateway::Gateway, identity::Provider};
 use serde_json::{Value, json};
 use std::{
@@ -174,8 +176,12 @@ fn inline_messages_preserve_text_identity_and_uncertain_publication() {
 #[test]
 fn shipped_cli_reads_threads_and_refuses_unwrapped_publication() {
     let (url, server) = server(vec![(200, json!({"root":{"id":42},"replies":[]}))]);
+    let state = tempfile::tempdir().unwrap();
+    let native = native_cli::NativeCli::new(state.path(), &url);
+    let url = native.url.clone();
     let args = ["messages", "--project", "demo", "--gateway-url", &url];
     let output = Command::new(env!("CARGO_BIN_EXE_amux"))
+        .env("AMUX_STATE_DIR", state.path())
         .args(args)
         .args(["get", "42"])
         .env("AMUX_GATEWAY_KEY", "test-only")
@@ -192,6 +198,7 @@ fn shipped_cli_reads_threads_and_refuses_unwrapped_publication() {
     );
     assert_eq!(server.join().unwrap().len(), 1);
     let output = Command::new(env!("CARGO_BIN_EXE_amux"))
+        .env("AMUX_STATE_DIR", state.path())
         .args(args)
         .args(["send", "must not publish"])
         .env("AMUX_GATEWAY_KEY", "test-only")
@@ -239,6 +246,7 @@ fn launched_agent_publishes_with_its_registered_execution_identity() {
         200,
         json!({"message_id":81,"external_message_id":"external-81"}),
     )]);
+    let _native = native_cli::NativeCli::new(&root.join("state"), &url);
     let body = "handoff\n$(do not execute)";
     let mut agent = Agent(
         Command::new(env!("CARGO_BIN_EXE_amux"))

@@ -13,7 +13,7 @@ use std::{
 
 #[derive(Clone)]
 enum Kind {
-    Legacy { url: String, token: String },
+    Bearer { url: String, token: String },
     Enrolled(EnrolledConnection),
 }
 
@@ -28,7 +28,7 @@ impl fmt::Debug for TransportProfile {
         f.write_str(if self.is_enrolled() {
             "TransportProfile(mTLS)"
         } else {
-            "TransportProfile(legacy)"
+            "TransportProfile(bearer)"
         })
     }
 }
@@ -73,10 +73,10 @@ pub fn origin(value: &str, secure: bool) -> Result<Url> {
 }
 
 impl TransportProfile {
-    pub fn legacy(url: &str, token: String) -> Result<Self> {
+    pub fn bearer(url: &str, token: String) -> Result<Self> {
         origin(url, false)?;
         Ok(Self {
-            kind: Kind::Legacy {
+            kind: Kind::Bearer {
                 url: url.into(),
                 token,
             },
@@ -105,15 +105,15 @@ impl TransportProfile {
 
     pub fn url(&self) -> Result<Url> {
         match &self.kind {
-            Kind::Legacy { url, .. } => origin(url, false),
+            Kind::Bearer { url, .. } => origin(url, false),
             Kind::Enrolled(connection) => origin(&connection.url, true),
         }
     }
 
     pub fn namespace(&self) -> String {
-        // Keep the pre-existing legacy journal identity byte-for-byte.
+        // Bearer profiles retain their existing journal identity.
         let value = match &self.kind {
-            Kind::Legacy { url, token } => format!("{url}\0{token}"),
+            Kind::Bearer { url, token } => format!("{url}\0{token}"),
             Kind::Enrolled(connection) => format!(
                 "amux-mtls-v1\0{}\0{}",
                 connection.cluster_id, connection.node_id
@@ -131,7 +131,7 @@ impl TransportProfile {
             .lock()
             .map_err(|_| anyhow::anyhow!("connection state unavailable"))?;
         let (generation, local) = match &self.kind {
-            Kind::Legacy { .. } => (self.namespace(), None),
+            Kind::Bearer { .. } => (self.namespace(), None),
             Kind::Enrolled(connection) => {
                 let local = LocalProfile::load(&connection.profile_path)
                     .context("could not load enrolled credentials")?;
@@ -154,7 +154,7 @@ impl TransportProfile {
             .timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none());
         let (tls, bearer) = match (&self.kind, local) {
-            (Kind::Legacy { token, .. }, _) => (None, Some(token.clone())),
+            (Kind::Bearer { token, .. }, _) => (None, Some(token.clone())),
             (Kind::Enrolled(_), Some(local)) => {
                 let root =
                     read_private(&local.root_pem_path).context("could not load server trust")?;

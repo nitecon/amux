@@ -742,43 +742,6 @@ fn buffered_human_input_blocks_work_offers_before_the_provider_echoes_it() {
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn compatibility_snapshot_survives_same_connection_close_and_restart_pause() {
-    let mut app = desktop();
-    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
-    app.registry = Some(agent.directory.clone());
-    let _frames = router(&mut app);
-    app.delegation.events.server_restart_reminders = Some(false);
-    project(&mut app, &agent, "alpha");
-    scan(&mut app);
-    app.workspaces[0].gateway.tasks = vec![
-        json!({"id":Uuid::new_v4(),"status":"in_progress","owner_origin":app.delegation.candidates[0].target.origin}),
-    ];
-    app.save_restart_tasks();
-    let path = agent.directory.join("restart-tasks.json");
-    let saved = std::fs::read(&path).unwrap();
-    // Shutdown of a local listener keeps the source/owners for the callback's
-    // second save. Closing the window must preserve that same snapshot.
-    app.events_stop();
-    app.embedded.stopping = true;
-    drop(app.update(super::super::Message::ServerStopped(
-        super::super::ServerExit::Close,
-        Ok(()),
-    )));
-    assert_eq!(std::fs::read(&path).unwrap(), saved);
-    app.pause_for_restart();
-    assert!(app.restarting);
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        saved,
-        "restart pause cannot delete its just-saved journal"
-    );
-    // Changing actual server/identity still clears compatibility state.
-    app.reset_delegation();
-    assert!(!path.exists());
-}
-
-#[cfg(any(target_os = "linux", windows))]
-#[test]
 fn async_verification_rechecks_the_current_logical_instance_and_project() {
     for changed in ["instance", "project"] {
         let mut app = desktop();
@@ -887,88 +850,6 @@ fn explicit_continuity_receiver_keeps_previous_owner_facts_without_rebinding_ass
     deliver(&mut app);
     assert_eq!(results(&mut frames), ["delivered"]);
     assert_eq!(wait_lines(&agent, 2).len(), 2);
-}
-
-#[cfg(any(target_os = "linux", windows))]
-#[test]
-fn older_router_fallback_waits_for_negotiation_and_current_servers_never_run_it() {
-    let mut app = desktop();
-    let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
-    app.registry = Some(agent.directory.clone());
-    project(&mut app, &agent, "alpha");
-    scan(&mut app);
-    let task = json!({"id":Uuid::new_v4(),"kind":"normal","title":"Saved work","status":"in_progress","project_ident":"alpha",
-        "owner_origin":{"session_id":session(&app,&agent),"instance_id":Uuid::new_v4(),"provider":"codex","os":"linux"}});
-    app.workspaces[0].gateway.tasks = vec![task.clone()];
-    app.workspaces[0].gateway.loaded_at = Some(Instant::now());
-    app.save_restart_tasks();
-    app.load_restart_tasks();
-    let journal = agent.directory.join("restart-tasks.json");
-    assert!(
-        journal.exists(),
-        "loading waits for a protocol decision before retiring the journal"
-    );
-    app.restart_reminders();
-    assert!(app.delegation.events.pending.is_empty());
-    drop(app.events_incoming(Incoming::Unsupported));
-    app.restart_reminders();
-    assert!(
-        app.delegation.events.pending.is_empty(),
-        "404 has no automatic fallback"
-    );
-    let _frames = router(&mut app);
-    drop(app.events_incoming(Incoming::Connected {
-        clock: None,
-        server_restart_reminders: false,
-    }));
-    app.restart_reminders();
-    assert!(!journal.exists());
-    assert_eq!(
-        app.delegation.events.pending.len(),
-        1,
-        "successful older-router subscription enables HEAD continuity"
-    );
-    assert_eq!(app.delegation.events.pending[0]["local"], true);
-    assert!(
-        app.delegation.events.pending[0]["payload"]["instructions"]
-            .as_str()
-            .unwrap()
-            .contains("not an ownership handoff")
-    );
-    app.events_stop();
-    assert_eq!(app.delegation.events.pending.len(), 1);
-    let mut frames = router(&mut app);
-    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
-    deliver(&mut app);
-    assert!(wait_lines(&agent, 1)[0].contains("not an ownership handoff"));
-    assert!(
-        results(&mut frames).is_empty(),
-        "older-router local continuity is never reported as a work offer"
-    );
-    app.delegation.events.restart = vec![task.clone()];
-    app.restart_reminders();
-    assert_eq!(app.delegation.events.pending.len(), 1);
-    drop(app.events_incoming(Incoming::Connected {
-        clock: None,
-        server_restart_reminders: true,
-    }));
-    app.delegation.events.restart = vec![task];
-    app.restart_reminders();
-    assert!(
-        app.delegation.events.pending.is_empty(),
-        "supporting server owns scheduling exclusively"
-    );
-    app.save_restart_tasks();
-    assert!(
-        !journal.exists(),
-        "supporting server does not need a client journal"
-    );
-    std::fs::write(&journal, b"old compatibility snapshot").unwrap();
-    app.reset_delegation();
-    assert!(
-        !journal.exists(),
-        "server/identity reset retires old compatibility work"
-    );
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1226,7 +1107,7 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
     project(&mut app, &agent, "e2e");
     scan(&mut app);
     let me = session(&app, &agent);
-    let profile = amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+    let profile = amux::gateway_transport::TransportProfile::bearer(&endpoint, KEY.into()).unwrap();
     let (outgoing, outgoing_rx) = mpsc::channel(256);
     let (incoming_tx, mut incoming) = mpsc::channel(256);
     let subscription = amux::event_client::Subscription {
@@ -1595,9 +1476,13 @@ fn project_inventory_rejects_old_gateway_replies_after_switch_and_disconnect() {
     app.preferences.path = Some(settings.path().join("preferences.json"));
     // Dropping the returned Tasks drives the real synchronous preference and
     // callback paths without making a gateway request or opening a provider.
-    app.preferences.current.mode = GatewayMode::Legacy;
-    app.preferences.current.url = "http://127.0.0.1:41001".into();
-    app.preferences.current.api_key = "fixture-key".into();
+    app.preferences.current.mode = GatewayMode::Client;
+    app.preferences.current.enrolled = Some(amux::gateway_preferences::EnrolledConnection {
+        url: "https://127.0.0.1:41001".into(),
+        cluster_id: Uuid::new_v4().to_string(),
+        node_id: Uuid::new_v4().to_string(),
+        profile_path: settings.path().join("unused-profile.json"),
+    });
     app.preferences.draft = app.preferences.current.clone();
     let projects = |ident: &str| {
         vec![ProjectOverview {
@@ -1616,9 +1501,12 @@ fn project_inventory_rejects_old_gateway_replies_after_switch_and_disconnect() {
             "gateway-a".into(),
         )),
     );
-    app.preferences.draft.url = "http://127.0.0.1:41002".into();
+    app.preferences.draft.enrolled.as_mut().unwrap().url = "https://127.0.0.1:41002".into();
     drop(app.save_preferences());
-    assert_eq!(app.preferences.current.url, "http://127.0.0.1:41002");
+    assert_eq!(
+        app.preferences.current.enrolled.as_ref().unwrap().url,
+        "https://127.0.0.1:41002"
+    );
     assert!(app.design.projects.is_empty());
     assert!(
         app.design.projects_polled.is_none(),
@@ -1647,7 +1535,7 @@ fn project_inventory_rejects_old_gateway_replies_after_switch_and_disconnect() {
     assert_eq!(app.design.projects[0].ident, "gateway-b");
 
     // Switching back also reloads; the first A connection's reply stays stale.
-    app.preferences.draft.url = "http://127.0.0.1:41001".into();
+    app.preferences.draft.enrolled.as_mut().unwrap().url = "https://127.0.0.1:41001".into();
     drop(app.save_preferences());
     let returned_epoch = app.delegation.epoch;
     assert!(app.design.projects.is_empty());
@@ -1660,8 +1548,7 @@ fn project_inventory_rejects_old_gateway_replies_after_switch_and_disconnect() {
     assert_eq!(app.design.projects[0].ident, "fresh-a");
 
     app.design.projects_polled = Some(Instant::now());
-    app.preferences.draft.url.clear();
-    app.preferences.draft.api_key.clear();
+    app.preferences.draft.enrolled = None;
     drop(app.save_preferences());
     assert!(!app.preferences.current.has_connection());
     assert!(app.design.projects.is_empty());

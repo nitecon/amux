@@ -132,7 +132,7 @@ impl TaskDetails {
 
 impl Gateway {
     pub fn new(base: &str, token: String) -> Result<Self> {
-        Self::from_profile(crate::gateway_transport::TransportProfile::legacy(
+        Self::from_profile(crate::gateway_transport::TransportProfile::bearer(
             base, token,
         )?)
     }

@@ -3,9 +3,9 @@
 Automatic task work runs on the amux server (embedded **Server** mode, or
 **Client** mode against a dedicated amux server) through its event router; see
 [StateMachine.md](StateMachine.md). Enable **Let the amux server assign queued
-work and send task notifications to agents in this app** in Settings. A legacy
-gateway has no event router: the desktop then does no automatic assignment,
-review or terminal notification, and you ask an agent directly.
+work and send task notifications to agents in this app** in Settings. Connections
+use native enrolled Server or Client profiles; the retired external gateway
+connection mode is no longer supported.
 
 The desktop connects to `/v1/events/stream`, reports each running agent
 (`client.heartbeat`) and its terminal activity (`terminal.activity`: last output
@@ -74,9 +74,8 @@ After the desktop restarts, the server also reminds resumed sessions about
 their remaining in-progress tasks. A fresh execution receives an explicit
 prior-execution notice without acquiring ownership. These informational
 reminders wait for idle; reconnecting the same desktop does not produce another
-restart reminder. Supporting servers advertise `server_restart_reminders` at
-subscription. An older event router without this flag uses the retained local
-restart journal instead; a legacy gateway returning 404 enables no fallback.
+restart reminder. The native server owns restart continuity; the desktop has no
+local restart-reminder scheduler or older-gateway fallback.
 The reminder plugin switch gates periodic nudges, while startup continuity
 remains available.
 
@@ -181,7 +180,7 @@ mutation and delivery authorization still require the exact execution identity.
 Use the bundled `amux agents` command to inspect local running peers. The desktop
 makes the bundled CLI available on terminal PATH.
 Gateway task commands use the saved gateway preferences and resolve the project
-automatically; environment variables and flags can override those settings. amux
+automatically from the enrolled native profile. amux
 owns assignment and registration. No agent-tools update, provider hook,
 or actor announcement is required. Notifications are filtered per native agent: assigned task creation, comments,
 and completion go only to the owner; unassigned TODO work waits for assignment to
@@ -202,7 +201,7 @@ credentials are not used by desktop lifecycle notifications.
 
 The event client uses bounded connection attempts, a 60-second stream silence
 deadline and five-second reconnect retries, including after sleep or a VPN route
-change; a gateway without the event router is rechecked every five minutes. On
+change; a server without the event router is treated as an unavailable native connection. On
 reconnect the server resends any notification that was not acknowledged.
 Connection loss and recovery produce deduplicated, dismissible corner
 notifications without resizing the terminal.

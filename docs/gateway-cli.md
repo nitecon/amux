@@ -5,14 +5,14 @@ Scratch text and Markdown documents travel inline in existing task specification
 and message bodies. There is no separate document store or binary attachment API
 in this candidate.
 
-`amux tasks` uses the gateway URL and API key saved in desktop Preferences and
-resolves the project from the checkout’s Git origin. Its optional `--project` and
-`--gateway-url` flags, or `AMUX_GATEWAY_PROJECT`, `AMUX_GATEWAY_URL` and
-`AMUX_GATEWAY_KEY`, override those settings.
+`amux tasks` uses the enrolled native Server or Client connection saved in Settings
+and resolves the project from the checkout's Git origin. `--project` or
+`AMUX_GATEWAY_PROJECT` can select the project. `--gateway-url` can verify the saved
+endpoint but cannot select a different authority; pair that server in Settings first.
+The retired `AMUX_GATEWAY_URL`/`AMUX_GATEWAY_KEY` connection fallback is removed.
 
-For the message commands below, set `AMUX_GATEWAY_URL`, `AMUX_GATEWAY_PROJECT`,
-and `AMUX_GATEWAY_KEY` in the environment. Keep the key out of command arguments. The URL must be an HTTP(S)
-origin without a path prefix. The project value is the gateway project identifier.
+For the message commands below, set `AMUX_GATEWAY_PROJECT` to the native project
+identifier. Connection credentials come from the enrolled profile.
 
 ```sh
 amux messages list --limit 50 --offset 0
@@ -228,7 +228,7 @@ The older selected-task reminder path is described in
 The gateway sidebar accepts a task title and multiline handoff context for the
 automatically resolved workspace project. The desktop matches the workspace’s
 Git origin to the gateway’s canonical repository mapping, including aliases;
-URL and API key are configured in the separate **Preferences → Gateway** window.
+the enrolled connection is configured in **Settings → Gateway Server**.
 It uses the same gateway client and acceptance checks
 as the CLI. This is a desktop user action, not an agent execution: it sends no
 agent session headers and does not claim or start the task.

@@ -1,4 +1,6 @@
 #![cfg(unix)]
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use std::{
     fs,
     io::Write,
@@ -14,7 +16,7 @@ fn assigned_environment_does_not_require_a_particular_native_caller() {
     fs::create_dir_all(&target).unwrap();
     let fixture = tempfile::tempdir_in(target).unwrap();
     let root = fixture.path();
-    let operation = "amux tasks --project demo --gateway-url http://127.0.0.1:9 claim 00000000-0000-4000-8000-000000000001";
+    let operation = "amux tasks --project demo claim 00000000-0000-4000-8000-000000000001";
     let script = format!(
         "#!/bin/sh\nif [ \"$1\" = nested ]; then {operation}; result=$?; exit $result; fi\nread -r go\ncase $MODE in same) codex nested ;; other) claude ;; *) {operation} ;; esac\nresult=$?\nexit $result\n"
     );
@@ -31,6 +33,7 @@ fn assigned_environment_does_not_require_a_particular_native_caller() {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
     .unwrap();
+    let _native = native_cli::NativeCli::new(&root.join("state"), "http://127.0.0.1:9");
     for (mode, expected) in [
         ("direct", "gateway unavailable"),
         ("same", "gateway unavailable"),
@@ -68,8 +71,6 @@ fn assigned_environment_does_not_require_a_particular_native_caller() {
                 "tasks",
                 "--project",
                 "demo",
-                "--gateway-url",
-                "http://127.0.0.1:9",
                 "claim",
                 "00000000-0000-4000-8000-000000000001",
             ])
@@ -103,13 +104,7 @@ fn plain_shell_agent_uses_explicit_assignment_without_inherited_actor_fields() {
     let root = fixture.path();
     fs::write(root.join("codex"), "#!/bin/sh\nread -r assigned\n\"$AMUX_TEST_CLI\" --agent \"$assigned\" tasks --project demo claim 00000000-0000-4000-8000-000000000001\n").unwrap();
     fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
-    amux::gateway_preferences::GatewayPreferences {
-        url: "http://127.0.0.1:9".into(),
-        api_key: "test-only".into(),
-        ..Default::default()
-    }
-    .save(&root.join("gateway-preferences.json"))
-    .unwrap();
+    let _native = native_cli::NativeCli::new(root, "http://127.0.0.1:9");
     let mut command = Command::new(root.join("codex"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("AMUX_AGENT_")
@@ -137,7 +132,7 @@ fn plain_shell_agent_uses_explicit_assignment_without_inherited_actor_fields() {
     writeln!(child.stdin.as_mut().unwrap(), "{}", actor.session_id).unwrap();
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Reaching transport proves saved URL/key and the actual registered executor
+    // Reaching transport proves saved enrolled identity and the actual registered executor
     // were accepted; no provider hook or inherited actor UUID was supplied.
     assert!(!output.status.success());
     assert!(stderr.contains("gateway unavailable"), "{stderr}");

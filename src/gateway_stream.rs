@@ -119,8 +119,7 @@ async fn connect_credentials(
 }
 
 /// Upgrade `/v1/events/stream` with the profile's current credentials. The
-/// caller sends its own subscribe frame. A gateway without the event router
-/// (a legacy gateway) is reported as [`NO_EVENT_ROUTER`].
+/// caller sends its own subscribe frame. Failed upgrades reconnect normally.
 pub async fn connect_events(
     profile: &crate::gateway_transport::TransportProfile,
 ) -> Result<(Socket, Option<GatewayClock>), String> {
@@ -136,8 +135,6 @@ pub async fn connect_events(
     )
     .await
 }
-
-pub const NO_EVENT_ROUTER: &str = "Gateway has no event router";
 
 async fn upgrade(
     url: &str,
@@ -183,14 +180,7 @@ async fn upgrade(
     })
     .await
     .map_err(|_| "Gateway upgrade timed out")?
-    .map_err(|error| match error {
-        tungstenite::Error::Http(response)
-            if response.status() == 404 && path == "/v1/events/stream" =>
-        {
-            NO_EVENT_ROUTER
-        }
-        _ => "Gateway upgrade rejected or unavailable",
-    })?;
+    .map_err(|_| "Gateway upgrade rejected or unavailable")?;
     let clock = response
         .headers()
         .get("date")

@@ -19,6 +19,7 @@ const PROJECT: &str = "operator-fixture";
 struct Fixture {
     database_path: PathBuf,
     sequence: AtomicUsize,
+    instance_id: String,
     root: tempfile::TempDir,
 }
 
@@ -32,8 +33,9 @@ impl Fixture {
         fs::create_dir(root.path().join("tmp")).unwrap();
         fs::create_dir(root.path().join("profile")).unwrap();
         Self {
-            database_path: root.path().join("profile/gateway.sqlite"),
+            database_path: root.path().join("profile/application.sqlite"),
             sequence: AtomicUsize::new(0),
+            instance_id: Uuid::new_v4().to_string(),
             root,
         }
     }
@@ -56,6 +58,24 @@ impl Fixture {
             .env("GATEWAY_HOST", "127.0.0.1")
             .env("GATEWAY_PORT", "0")
             .env("RUST_LOG", "warn");
+        command
+    }
+
+    fn secure_command(&self, profile: &Path) -> Command {
+        let mut command = self.command(&["server", "secure"]);
+        command
+            .arg("--profile")
+            .arg(profile)
+            .args([
+                "--bind",
+                "127.0.0.1:0",
+                "--discovery-bind",
+                "127.0.0.1:0",
+                "--name",
+                "127.0.0.1",
+                "--instance-id",
+            ])
+            .arg(&self.instance_id);
         command
     }
 
@@ -145,7 +165,7 @@ impl RunningServer {
             .path()
             .join(format!("server-{sequence}.stderr"));
         let child = fixture
-            .command(&["server"])
+            .secure_command(&fixture.root.path().join("profile"))
             .stdin(Stdio::null())
             .stdout(Stdio::from(fs::File::create(&stdout).unwrap()))
             .stderr(Stdio::from(fs::File::create(&stderr).unwrap()))
@@ -159,25 +179,28 @@ impl RunningServer {
     }
 
     async fn ready(&mut self) -> String {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_millis(500))
-            .build()
-            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
+        let profile_path = self
+            .stdout
+            .parent()
+            .unwrap()
+            .join("profile/local-client.json");
         loop {
             let logs = fs::read_to_string(&self.stdout).unwrap();
-            if let Some(endpoint) = logs
-                .lines()
-                .find_map(|line| line.strip_prefix("amux gateway API listening on "))
-                && let Ok(response) = client
-                    .get(format!("{endpoint}/v1/projects"))
-                    .bearer_auth(KEY)
-                    .send()
-                    .await
-                && response.status().is_success()
-            {
-                return endpoint.into();
+            if let Ok(local) = amux_gateway_backend::security::LocalProfile::load(&profile_path) {
+                let connection = amux::gateway_preferences::EnrolledConnection {
+                    url: local.url.clone(),
+                    cluster_id: local.cluster_id,
+                    node_id: local.node_id,
+                    profile_path: profile_path.clone(),
+                };
+                if let Ok(profile) =
+                    amux::gateway_transport::TransportProfile::enrolled(&connection)
+                    && let Ok(gateway) = amux::gateway::Gateway::from_profile(profile)
+                    && gateway.projects().await.is_ok()
+                {
+                    return local.url;
+                }
             }
             assert!(
                 self.child.try_wait().unwrap().is_none(),
@@ -209,17 +232,17 @@ async fn profile_lock_rejects_duplicate_and_alias_servers_then_releases_after_pr
     let fixture = Fixture::new();
     let mut first = RunningServer::start(&fixture);
     first.ready().await;
-    let duplicate = output(&mut fixture.command(&["server"]), None);
+    let duplicate = output(
+        &mut fixture.secure_command(&fixture.root.path().join("profile")),
+        None,
+    );
     assert!(!duplicate.status.success());
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("profile is already owned"));
     #[cfg(unix)]
     {
-        let alias = fixture.root.path().join("same-database.sqlite");
-        std::os::unix::fs::symlink(&fixture.database_path, &alias).unwrap();
-        let duplicate = output(
-            fixture.command(&["server"]).env("DATABASE_PATH", alias),
-            None,
-        );
+        let alias = fixture.root.path().join("same-profile");
+        std::os::unix::fs::symlink(fixture.root.path().join("profile"), &alias).unwrap();
+        let duplicate = output(&mut fixture.secure_command(&alias), None);
         assert!(!duplicate.status.success());
         assert!(String::from_utf8_lossy(&duplicate.stderr).contains("profile is already owned"));
     }

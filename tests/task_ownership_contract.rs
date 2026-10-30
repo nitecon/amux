@@ -2,6 +2,8 @@
 //! read before sending any mutation. This is a client preflight, not atomic
 //! server authorization.
 #![cfg(unix)]
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use amux::identity::{AgentIdentity, live_agents};
 use serde_json::{Value, json};
 use std::{
@@ -139,7 +141,8 @@ fn run(
         thread::sleep(Duration::from_millis(25));
     };
     let (url, server) = server(replies(&actor));
-    writeln!(agent.stdin.as_mut().unwrap(), "{url}").unwrap();
+    let native = native_cli::NativeCli::new(&root.join("state"), &url);
+    writeln!(agent.stdin.as_mut().unwrap(), "{}", native.url).unwrap();
     let output = agent.wait_with_output().unwrap();
     let (requests, listener) = server.join().unwrap();
     assert!(

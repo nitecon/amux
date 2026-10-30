@@ -1,5 +1,7 @@
 #[path = "support/identity.rs"]
 mod fixture_identity;
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use amux::{
     gateway::{Gateway, TaskDetails},
     identity::Provider,
@@ -307,6 +309,7 @@ fn registered_agent_cli_delegates_without_agent_tools() {
     )
     .unwrap();
     let (url, server) = server(vec![(200, receipt())]);
+    let _native = native_cli::NativeCli::new(&root.join("state"), &url);
     let body = "inline\n$(must stay literal)";
     struct Agent(std::process::Child);
     impl Drop for Agent {

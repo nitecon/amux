@@ -404,7 +404,7 @@ impl Dispatcher {
         state: PathBuf,
     ) -> Result<Self> {
         Self::from_profile(
-            crate::gateway_transport::TransportProfile::legacy(base, token)?,
+            crate::gateway_transport::TransportProfile::bearer(base, token)?,
             project,
             machine,
             state,

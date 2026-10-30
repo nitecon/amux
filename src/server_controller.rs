@@ -212,9 +212,6 @@ pub async fn ensure_local_with_executable(
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .kill_on_drop(true);
-    // The compatibility entry loads .env; a native auto-start uses only this
-    // explicitly owned profile and the environment its parent supplied.
-    command.env("AMUX_NATIVE_SERVER", "1");
     #[cfg(target_os = "linux")]
     {
         let parent = std::process::id();

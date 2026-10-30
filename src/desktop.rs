@@ -12,8 +12,6 @@ mod desktop_design;
 mod desktop_harness;
 #[path = "desktop_icon.rs"]
 mod desktop_icon;
-#[path = "desktop_migration.rs"]
-mod desktop_migration;
 #[path = "desktop_routing.rs"]
 mod desktop_routing;
 #[path = "desktop_tasks.rs"]
@@ -78,9 +76,7 @@ enum Message {
     DismissToast(u64),
     DismissHarnessNotice,
     WindowReady,
-    Preference(PreferenceField, Secret),
     SavePreferences,
-    Migration(desktop_migration::Message),
     GatewayMode(GatewayMode),
     NetworkHosting(bool),
     ServerName(String),
@@ -133,11 +129,6 @@ enum Message {
     Close(iced::window::Id),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PreferenceField {
-    Url,
-    ApiKey,
-}
 #[derive(Clone)]
 struct Secret(String);
 impl std::fmt::Debug for Secret {
@@ -173,24 +164,21 @@ struct EmbeddedServer {
     stopping: bool,
 }
 
-// Absence is deliberately distinct from invalid or explicitly saved settings.
+// A new install may start a local server. Failed settings must stay
+// disconnected until the user chooses a connection, preserving the saved file.
 fn startup_connection(
-    saved: Option<GatewayPreferences>,
+    saved: anyhow::Result<Option<GatewayPreferences>>,
     environment: GatewayPreferences,
-) -> GatewayPreferences {
-    if let Some(saved) = saved {
-        return saved;
-    }
-    if !environment.url.trim().is_empty()
-        || !environment.api_key.trim().is_empty()
-        || !environment.machine_id.is_empty()
-        || !environment.machine_key.is_empty()
-    {
-        return environment;
-    }
-    GatewayPreferences {
-        mode: GatewayMode::Server,
-        ..environment
+) -> (GatewayPreferences, String) {
+    match saved {
+        Ok(saved) => (saved.unwrap_or(environment), String::new()),
+        Err(error) => (
+            GatewayPreferences {
+                mode: GatewayMode::Client,
+                ..Default::default()
+            },
+            format!("{error}. Save corrected preferences to replace them."),
+        ),
     }
 }
 
@@ -343,7 +331,6 @@ struct Desktop {
     updates: Updates,
     harness: desktop_harness::State,
     toasts: desktop_toasts::State,
-    migration: desktop_migration::State,
     workspaces: Vec<Workspace>,
     active: usize,
     workspace_dialog: WorkspaceDialog,
@@ -405,16 +392,10 @@ impl Desktop {
             .as_deref()
             .map(GatewayPreferences::load)
             .transpose();
-        let (preferences, preferences_error) = match loaded {
-            Ok(saved) => (
-                startup_connection(saved.flatten(), GatewayPreferences::from_environment()),
-                String::new(),
-            ),
-            Err(error) => (
-                GatewayPreferences::default(),
-                format!("{error}. Save corrected preferences to replace them."),
-            ),
-        };
+        let (preferences, preferences_error) = startup_connection(
+            loaded.map(Option::flatten),
+            GatewayPreferences::from_environment(),
+        );
         let mut app = Self {
             design: desktop_design::State::default(),
             main_window,
@@ -422,7 +403,6 @@ impl Desktop {
             embedded: EmbeddedServer::default(),
             harness: desktop_harness::State::startup(),
             toasts: desktop_toasts::State::default(),
-            migration: desktop_migration::State::default(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
@@ -432,7 +412,6 @@ impl Desktop {
             delegation: desktop_delegation::Bridge::default(),
             client_run: Uuid::new_v4(),
         };
-        app.load_restart_tasks();
         app.notify_exits = app.preferences.current.notify_exits;
         if app.notify_exits {
             app.notifier = Some(Notifier::native());
@@ -1216,25 +1195,11 @@ impl Desktop {
                     }
                 }
             }
-            Message::Migration(message) => return self.migration_message(message),
             Message::DismissToast(id) => self.toasts.dismiss(id),
             Message::DismissHarnessNotice => self.harness.notice_dismissed = true,
-            Message::Preference(field, Secret(value)) => {
-                if value.len() <= 16 * 1024
-                    && !self.embedded.busy
-                    && !self.embedded.stopping
-                    && !self.migration.busy
-                {
-                    let draft = &mut self.preferences.draft;
-                    *match field {
-                        PreferenceField::Url => &mut draft.url,
-                        PreferenceField::ApiKey => &mut draft.api_key,
-                    } = value;
-                }
-            }
             Message::SavePreferences => return self.save_preferences(),
             Message::GatewayMode(mode) => {
-                if !self.embedded.busy && !self.embedded.stopping && !self.migration.busy {
+                if !self.embedded.busy && !self.embedded.stopping {
                     if mode == GatewayMode::Client
                         && self.preferences.draft.mode == GatewayMode::Server
                     {
@@ -1764,7 +1729,6 @@ impl Desktop {
             return Task::none();
         };
         self.dirty = true;
-        self.save_restart_tasks();
         if !self.save() {
             self.updates.error = "Layout could not be saved; restart cancelled.".into();
             return Task::none();
@@ -1894,7 +1858,7 @@ impl Desktop {
             self.embedded.pair_address = connection.url.clone();
         }
         self.close_design_popovers();
-        iced::widget::operation::focus("gateway-url")
+        iced::widget::operation::focus("server-address")
     }
 
     fn close_preferences(&mut self) -> Task<Message> {
@@ -1921,7 +1885,6 @@ impl Desktop {
                     "An update is installing. Wait for it to finish before closing amux.".into();
             } else {
                 self.dirty = true;
-                self.save_restart_tasks();
                 if !self.save() {
                     if let Some(running) = &self.updates.running {
                         running.reopen();
@@ -2093,7 +2056,7 @@ impl Desktop {
     }
 
     fn save_preferences(&mut self) -> Task<Message> {
-        if self.embedded.busy || self.embedded.stopping || self.migration.busy {
+        if self.embedded.busy || self.embedded.stopping {
             return Task::none();
         }
         let mode_changed = self.preferences.current.mode != self.preferences.draft.mode;
@@ -2120,8 +2083,6 @@ impl Desktop {
         let connection_changed = mode_changed
             || server_changed
             || authority_changed
-            || self.preferences.current.url.trim() != self.preferences.draft.url.trim()
-            || self.preferences.current.api_key.trim() != self.preferences.draft.api_key.trim()
             || self.preferences.current.automatic_notifications
                 != self.preferences.draft.automatic_notifications;
         if connection_changed && self.pending_gateway_action() {
@@ -2129,8 +2090,6 @@ impl Desktop {
             return Task::none();
         }
         let mut draft = self.preferences.draft.clone();
-        draft.url = draft.url.trim().to_owned();
-        draft.api_key = draft.api_key.trim().to_owned();
         draft.machine_key = draft.machine_key.trim().to_owned();
         draft.machine_id = draft.machine_id.trim().to_owned();
         if let Err(error) = draft.validate() {
@@ -2212,21 +2171,7 @@ impl Desktop {
 
     fn preferences_view(&self) -> Element<'_, Message> {
         let draft = &self.preferences.draft;
-        let field = |label, value, kind, secure| {
-            column![
-                text(label).size(13),
-                text_input("", value)
-                    .id(if matches!(kind, PreferenceField::Url) {
-                        "gateway-url"
-                    } else {
-                        "gateway-key"
-                    })
-                    .secure(secure)
-                    .on_input(move |value| Message::Preference(kind, Secret(value)))
-            ]
-            .spacing(4)
-        };
-        let available = !self.embedded.busy && !self.embedded.stopping && !self.migration.busy;
+        let available = !self.embedded.busy && !self.embedded.stopping;
         let mode = |name, label, description, mode| {
             desktop_design::mode_card(
                 name,
@@ -2242,22 +2187,12 @@ impl Desktop {
             desktop_design::settings_label("GATEWAY OPERATING MODE"),
             row![
                 mode("server", "Server", "Host task data locally and serve paired clients.", GatewayMode::Server),
-                mode("cpu", "Client", "Connect to another machine running an amux Server.", GatewayMode::Client),
-                mode("refresh", "Legacy gateway", "Connect to an existing gateway with a URL and API key.", GatewayMode::Legacy)
+                mode("cpu", "Client", "Connect to another machine running an amux Server.", GatewayMode::Client)
             ]
             .spacing(12),
         ]
         .spacing(18);
         content = match draft.mode {
-            GatewayMode::Legacy => content.push(desktop_design::settings_card(
-                column![
-                    text("Connect to an existing gateway with its URL and API key."),
-                    field("Gateway URL", &draft.url, PreferenceField::Url, false),
-                    field("API key", &draft.api_key, PreferenceField::ApiKey, true),
-                    self.migration_view()
-                ]
-                .spacing(14),
-            )),
             GatewayMode::Server => {
                 let mut controls = column![
                     text("This machine stores task data and serves paired clients. Local connections also use mutual TLS."),
@@ -2325,6 +2260,7 @@ impl Desktop {
                     text("Join another amux server using its address and a temporary peering key."),
                     text("Server address"),
                     text_input("https://server:24182", &self.embedded.pair_address)
+                        .id("server-address")
                         .on_input(Message::PairAddress),
                     text("Peering key"),
                     text_input(
@@ -2349,7 +2285,7 @@ impl Desktop {
             .push(text(&self.embedded.status))
             .push(desktop_design::settings_label("TASK AUTOMATION"))
             .push(checkbox(draft.automatic_notifications).label("Let the amux server assign queued work and send task notifications to agents in this app").on_toggle(Message::AutomaticNotifications))
-            .push(text("On amux servers (Server or Client mode) the server decides: idle agents receive eligible tasks oldest first, completed tasks get one review by a different agent, and owners and requesters hear about their tasks. Explicit User review still waits for your decision. A legacy gateway gets no automatic task work; ask an agent directly.").size(12))
+            .push(text("On amux servers (Server or Client mode) the server decides: idle agents receive eligible tasks oldest first, completed tasks get one review by a different agent, and owners and requesters hear about their tasks. Explicit User review still waits for your decision.").size(12))
             .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
             .push(text("Repository matching is required. Settings are saved on this device.").size(12))
             .push(text(&self.workspaces[self.active].gateway.status).size(13));
@@ -2702,7 +2638,6 @@ mod tests {
             },
             harness: desktop_harness::State::default(),
             toasts: desktop_toasts::State::default(),
-            migration: desktop_migration::State::default(),
             embedded: EmbeddedServer::default(),
             preferences: Preferences {
                 current: GatewayPreferences::default(),
@@ -2886,14 +2821,14 @@ mod tests {
         let count = app.workspaces.len();
         let _ = app.update(Message::Preferences(true));
         assert!(app.preferences.open);
-        app.preferences.draft.url = "https://gateway.nitecon.org".into();
+        app.preferences.draft.projects_dir = "fixture-projects".into();
         let _ = app.update(Message::Updates(true));
         assert_eq!(app.preferences.tab, PreferencesTab::Updates);
-        assert_eq!(app.preferences.draft.url, "https://gateway.nitecon.org");
+        assert_eq!(app.preferences.draft.projects_dir, "fixture-projects");
         let _ = app.update(Message::Preferences(false));
         assert!(!app.preferences.open);
         assert_eq!(app.workspaces.len(), count);
-        assert!(app.preferences.draft.url.is_empty());
+        assert!(app.preferences.draft.projects_dir.is_empty());
     }
 
     #[test]
@@ -3061,15 +2996,29 @@ mod tests {
         assert!(app.updates.error.contains("offline"));
     }
 
-    fn preferences_fixture() -> (tempfile::TempDir, Desktop) {
+    pub(super) fn preferences_fixture() -> (tempfile::TempDir, Desktop) {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
         std::fs::create_dir_all(&base).unwrap();
         let dir = tempfile::tempdir_in(base).unwrap();
         let mut app = desktop();
         app.preferences.path = Some(dir.path().join("preferences.json"));
+        let profile_dir = dir.path().join("native-profile");
+        let security = amux_gateway_backend::security::SecurityStore::open(
+            &profile_dir,
+            &["localhost".into()],
+        )
+        .unwrap();
+        let local = security
+            .provision_local("https://127.0.0.1:9", &Uuid::new_v4().to_string())
+            .unwrap();
         app.preferences.draft = GatewayPreferences {
-            url: "http://127.0.0.1:9".into(),
-            api_key: "fixture-key".into(),
+            mode: GatewayMode::Client,
+            enrolled: Some(EnrolledConnection {
+                url: local.url,
+                cluster_id: local.cluster_id,
+                node_id: local.node_id,
+                profile_path: amux_gateway_backend::security::local_profile_path(&profile_dir),
+            }),
             ..Default::default()
         };
         (dir, app)
@@ -3104,11 +3053,12 @@ mod tests {
     #[test]
     fn invalid_preferences_and_pending_posts_do_not_replace_the_connection() {
         let (_dir, mut app) = preferences_fixture();
-        app.preferences.draft.url = "https://user:secret@example.test".into();
+        app.preferences.draft.enrolled.as_mut().unwrap().url =
+            "https://user:secret@example.test".into();
         let _ = app.update(Message::SavePreferences);
-        assert!(app.preferences.current.url.is_empty());
+        assert!(app.preferences.current.enrolled.is_none());
         assert!(!app.preferences.status.contains("secret"));
-        app.preferences.draft.url = "https://example.test".into();
+        app.preferences.draft.enrolled.as_mut().unwrap().url = "https://example.test".into();
         app.workspaces[0].gateway.request = Some(TaskRequest {
             id: Uuid::new_v4(),
             title: "pending".into(),
@@ -3116,7 +3066,7 @@ mod tests {
             state: TaskRequestState::Sending,
         });
         let _ = app.update(Message::SavePreferences);
-        assert!(app.preferences.current.url.is_empty());
+        assert!(app.preferences.current.enrolled.is_none());
         assert!(!app.preferences.path.as_ref().unwrap().exists());
     }
 
@@ -3638,34 +3588,25 @@ mod tests {
     }
 
     #[test]
-    fn fresh_server_default_preserves_saved_and_environment_connections() {
-        let fresh = startup_connection(None, GatewayPreferences::default());
+    fn fresh_server_default_preserves_saved_client_selection() {
+        let (fresh, error) = startup_connection(Ok(None), GatewayPreferences::default());
         assert_eq!(fresh.mode, GatewayMode::Server);
-        let saved_blank = startup_connection(
-            Some(GatewayPreferences::default()),
+        assert!(error.is_empty());
+        let client = GatewayPreferences {
+            mode: GatewayMode::Client,
+            ..Default::default()
+        };
+        let (restored, error) = startup_connection(Ok(Some(client)), fresh);
+        assert_eq!(restored.mode, GatewayMode::Client);
+        assert!(!restored.has_connection());
+        assert!(error.is_empty());
+        let (invalid, error) = startup_connection(
+            Err(anyhow::anyhow!("Invalid settings")),
             GatewayPreferences::default(),
         );
-        assert_eq!(saved_blank.mode, GatewayMode::Legacy);
-        let legacy = GatewayPreferences {
-            url: "https://existing.example".into(),
-            api_key: "existing-key".into(),
-            ..GatewayPreferences::default()
-        };
-        let environment = startup_connection(None, legacy.clone());
-        assert_eq!(environment.mode, GatewayMode::Legacy);
-        assert_eq!(environment.url, legacy.url);
-        let saved = startup_connection(Some(legacy.clone()), fresh);
-        assert_eq!(saved.url, legacy.url);
-        assert_eq!(saved.api_key, legacy.api_key);
-        assert_eq!(saved.mode, GatewayMode::Legacy);
-        let partial = startup_connection(
-            None,
-            GatewayPreferences {
-                api_key: "explicit-partial".into(),
-                ..GatewayPreferences::default()
-            },
-        );
-        assert_eq!(partial.mode, GatewayMode::Legacy);
+        assert_eq!(invalid.mode, GatewayMode::Client);
+        assert!(!invalid.has_connection());
+        assert!(!error.is_empty());
     }
 
     #[test]
@@ -3738,21 +3679,16 @@ mod tests {
     }
 
     #[test]
-    fn mode_selection_preserves_legacy_credentials_and_pairing_secret_is_ephemeral() {
+    fn mode_selection_and_pairing_secret_are_generation_fenced() {
         let mut app = desktop();
-        app.preferences.draft.url = "https://legacy.example".into();
-        app.preferences.draft.api_key = "legacy-key".into();
         app.embedded.pair_invitation = "temporary-secret".into();
         let _ = app.update(Message::GatewayMode(GatewayMode::Server));
         assert!(app.embedded.pair_invitation.is_empty());
         let _ = app.update(Message::GatewayMode(GatewayMode::Client));
-        let _ = app.update(Message::GatewayMode(GatewayMode::Legacy));
-        assert_eq!(app.preferences.draft.url, "https://legacy.example");
-        assert_eq!(app.preferences.draft.api_key, "legacy-key");
-        assert_eq!(app.preferences.current.mode, GatewayMode::Legacy);
+        assert_eq!(app.preferences.current.mode, GatewayMode::Server);
         app.embedded.busy = true;
         let _ = app.update(Message::GatewayMode(GatewayMode::Server));
-        assert_eq!(app.preferences.draft.mode, GatewayMode::Legacy);
+        assert_eq!(app.preferences.draft.mode, GatewayMode::Client);
         let _ = app.update(Message::PairConnected(99, Err("stale-pair".into())));
         assert!(!app.embedded.status.contains("stale-pair"));
         let stale_connection = EnrolledConnection {
@@ -3762,8 +3698,8 @@ mod tests {
             profile_path: PathBuf::from("target/test-fixtures/unused-stale-client-profile.json"),
         };
         let _ = app.update(Message::PairConnected(99, Ok(stale_connection)));
-        assert_eq!(app.preferences.current.mode, GatewayMode::Legacy);
-        assert_eq!(app.preferences.draft.mode, GatewayMode::Legacy);
+        assert_eq!(app.preferences.current.mode, GatewayMode::Server);
+        assert_eq!(app.preferences.draft.mode, GatewayMode::Client);
         assert!(app.preferences.current.enrolled.is_none());
         assert!(app.preferences.draft.enrolled.is_none());
         assert!(app.embedded.local.is_none());
@@ -3772,8 +3708,7 @@ mod tests {
     #[test]
     fn lifecycle_failures_keep_the_window_and_existing_connection_usable() {
         let mut app = desktop();
-        app.preferences.current.url = "https://legacy.example".into();
-        app.preferences.current.api_key = "legacy-key".into();
+        app.preferences.current.server.server_name = "existing-server".into();
         app.embedded.stopping = true;
         let _ = app.update(Message::ServerStopped(
             ServerExit::Close,
@@ -3782,7 +3717,10 @@ mod tests {
         assert!(!app.embedded.stopping);
         assert!(!app.restarting);
         assert!(app.embedded.status.contains("fixture stop failure"));
-        assert_eq!(app.preferences.current.url, "https://legacy.example");
+        assert_eq!(
+            app.preferences.current.server.server_name,
+            "existing-server"
+        );
         app.embedded.busy = true;
         app.preferences.open = true;
         let _ = app.close_preferences();
@@ -3794,8 +3732,11 @@ mod tests {
             Err("fixture reconfigure failure".into()),
         ));
         assert!(!app.embedded.busy);
-        assert_eq!(app.preferences.current.mode, GatewayMode::Legacy);
-        assert_eq!(app.preferences.current.url, "https://legacy.example");
+        assert_eq!(app.preferences.current.mode, GatewayMode::Server);
+        assert_eq!(
+            app.preferences.current.server.server_name,
+            "existing-server"
+        );
     }
     #[test]
     fn saving_unchanged_server_preferences_retries_a_failed_start() {

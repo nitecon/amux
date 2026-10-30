@@ -943,9 +943,25 @@ mod tests {
     }
 
     fn app() -> Desktop {
+        // These tests drive synchronous UI callbacks; keep one immutable
+        // native credential fixture alive for the test process.
+        static PROFILE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
         let mut app = super::super::tests::desktop();
-        app.preferences.current.url = "http://127.0.0.1:9".into();
-        app.preferences.current.api_key = "fixture-only".into();
+        let directory = PROFILE.get_or_init(|| {
+            let (directory, _) = super::super::tests::preferences_fixture();
+            directory
+        });
+        let profile_path = amux_gateway_backend::security::local_profile_path(
+            &directory.path().join("native-profile"),
+        );
+        let local = amux_gateway_backend::security::LocalProfile::load(&profile_path).unwrap();
+        app.preferences.current.mode = GatewayMode::Client;
+        app.preferences.current.enrolled = Some(EnrolledConnection {
+            url: local.url,
+            cluster_id: local.cluster_id,
+            node_id: local.node_id,
+            profile_path,
+        });
         app
     }
     fn task(id: Uuid, project: &str) -> Value {

@@ -43,7 +43,8 @@ impl RuntimeConfig {
             .map_err(|_| {
                 anyhow::anyhow!("Missing required environment variable: GATEWAY_API_KEY")
             })?;
-        let default_channel = std::env::var("DEFAULT_CHANNEL").unwrap_or_else(|_| "discord".into());
+        let default_channel =
+            std::env::var("DEFAULT_CHANNEL").unwrap_or_else(|_| crate::messaging::INTERNAL.into());
         let host = std::env::var("GATEWAY_HOST").unwrap_or_else(|_| "0.0.0.0".into());
         let port: u16 = std::env::var("GATEWAY_PORT")
             .unwrap_or_else(|_| "7913".into())
@@ -174,10 +175,9 @@ pub async fn prepare(config: RuntimeConfig) -> Result<Prepared> {
     if whatsapp.is_none() {
         tracing::warn!("WhatsApp plugin disabled: WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, and WHATSAPP_WEBHOOK_VERIFY_TOKEN are not set");
     }
-    if plugins.is_empty() {
-        tracing::warn!("No channel plugins are enabled; comms send/receive is unavailable, but API routes will still start");
-    }
-    if !plugins.contains_key(&config.default_channel) {
+    if config.default_channel != crate::messaging::INTERNAL
+        && !plugins.contains_key(&config.default_channel)
+    {
         tracing::warn!(
             "DEFAULT_CHANNEL='{}' is not among the enabled plugins: {:?}",
             config.default_channel,
@@ -428,7 +428,7 @@ mod tests {
             listen_addr: "127.0.0.1:1".parse().unwrap(),
             database: db::DatabaseConfig::sqlite(":memory:"),
             api_key: "runtime-fixture-key".into(),
-            default_channel: "discord".into(),
+            default_channel: crate::messaging::INTERNAL.into(),
             retention_days: 30,
             bot_retention_days: 7,
             artifact_operations: db::ArtifactOperationsEnvelope::default(),
@@ -467,6 +467,26 @@ mod tests {
         assert_eq!(
             projects.json::<serde_json::Value>().await.unwrap(),
             serde_json::json!([])
+        );
+        let registered = client.post(format!("{endpoint}/v1/projects"))
+            .bearer_auth("runtime-fixture-key")
+            .json(&serde_json::json!({"ident":"native", "repo_url":"https://github.com/example/native.git"}))
+            .send().await.unwrap();
+        assert_eq!(registered.status(), reqwest::StatusCode::OK);
+        let registered: serde_json::Value = registered.json().await.unwrap();
+        assert_eq!(registered["channel_name"], "internal");
+        let sent = client
+            .post(format!("{endpoint}/v1/projects/native/messages"))
+            .bearer_auth("runtime-fixture-key")
+            .json(&serde_json::json!({"body":"durable native message"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sent.status(), reqwest::StatusCode::OK);
+        let sent: serde_json::Value = sent.json().await.unwrap();
+        assert_eq!(
+            sent["external_message_id"],
+            format!("internal:{}", sent["message_id"])
         );
         let browser = client
             .get(&endpoint)

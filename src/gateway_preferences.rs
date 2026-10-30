@@ -10,7 +10,6 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum GatewayMode {
     #[default]
-    Legacy,
     Server,
     Client,
 }
@@ -74,8 +73,6 @@ pub struct GatewayPreferences {
     pub mode: GatewayMode,
     pub server: ServerPreferences,
     pub enrolled: Option<EnrolledConnection>,
-    pub url: String,
-    pub api_key: String,
     pub automatic_notifications: bool,
     pub notify_exits: bool,
     pub auto_resume: bool,
@@ -90,11 +87,9 @@ pub struct GatewayPreferences {
 impl Default for GatewayPreferences {
     fn default() -> Self {
         Self {
-            mode: GatewayMode::Legacy,
+            mode: GatewayMode::Server,
             server: ServerPreferences::default(),
             enrolled: None,
-            url: String::new(),
-            api_key: String::new(),
             automatic_notifications: false,
             notify_exits: false,
             auto_resume: true,
@@ -109,9 +104,17 @@ impl Default for GatewayPreferences {
 impl GatewayPreferences {
     pub fn from_environment() -> Self {
         let value = |name| std::env::var(name).unwrap_or_default();
+        // An old environment-only connection must not silently select a new
+        // local authority after its transport is retired.
+        let retired_connection = ["AMUX_GATEWAY_URL", "AMUX_GATEWAY_KEY"]
+            .iter()
+            .any(|name| !value(*name).trim().is_empty());
         Self {
-            url: value("AMUX_GATEWAY_URL"),
-            api_key: value("AMUX_GATEWAY_KEY"),
+            mode: if retired_connection {
+                GatewayMode::Client
+            } else {
+                GatewayMode::Server
+            },
             automatic_notifications: false,
             machine_id: value("AMUX_GATEWAY_MACHINE_ID"),
             machine_key: value("AMUX_GATEWAY_MACHINE_KEY"),
@@ -124,21 +127,14 @@ impl GatewayPreferences {
     }
 
     pub fn has_connection(&self) -> bool {
-        match self.mode {
-            GatewayMode::Legacy => !self.url.trim().is_empty() && !self.api_key.trim().is_empty(),
-            GatewayMode::Server | GatewayMode::Client => self.enrolled.is_some(),
-        }
+        self.enrolled.is_some()
     }
 
     pub fn resolved_url(&self) -> Result<String> {
-        match self.mode {
-            GatewayMode::Legacy => Ok(self.url.trim().to_owned()),
-            GatewayMode::Server | GatewayMode::Client => self
-                .enrolled
-                .as_ref()
-                .map(|connection| connection.url.clone())
-                .context("Connect to the server before using tasks"),
-        }
+        self.enrolled
+            .as_ref()
+            .map(|connection| connection.url.clone())
+            .context("Connect to the server before using tasks")
     }
 
     pub fn authority_namespace(&self) -> Result<String> {
@@ -146,43 +142,27 @@ impl GatewayPreferences {
     }
 
     pub fn transport_profile(&self) -> Result<crate::gateway_transport::TransportProfile> {
-        if self.mode != GatewayMode::Legacy {
-            if self.mode == GatewayMode::Server {
-                self.server.client_url().context(
-                    "Enter a server hostname or IP address, without a scheme, path or port",
-                )?;
-            }
-            let connection = self
-                .enrolled
-                .as_ref()
-                .context("Connect to the server before using tasks")?;
-            return crate::gateway_transport::TransportProfile::enrolled(connection);
+        if self.mode == GatewayMode::Server {
+            self.server
+                .client_url()
+                .context("Enter a server hostname or IP address, without a scheme, path or port")?;
         }
-        if self.url.trim().is_empty() || self.api_key.trim().is_empty() {
-            bail!("Open Gateway preferences to enter a URL and API key");
-        }
-        self.api_key
-            .parse::<reqwest::header::HeaderValue>()
-            .map_err(|_| anyhow::anyhow!("API key contains invalid header characters"))?;
-        crate::gateway_transport::TransportProfile::legacy(&self.url, self.api_key.clone())
+        let connection = self
+            .enrolled
+            .as_ref()
+            .context("Connect to the server before using tasks")?;
+        crate::gateway_transport::TransportProfile::enrolled(connection)
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.mode != GatewayMode::Legacy {
-            if self.server.secure_port == 0
-                || self.server.discovery_port == 0
-                || self.server.secure_port == self.server.discovery_port
-            {
-                bail!("Choose different nonzero secure and discovery ports");
-            }
-            if self.enrolled.is_some() {
-                self.transport_profile()?;
-            }
-        } else if self.automatic_notifications
-            || !self.url.trim().is_empty()
-            || !self.api_key.trim().is_empty()
+        if self.server.secure_port == 0
+            || self.server.discovery_port == 0
+            || self.server.secure_port == self.server.discovery_port
         {
-            self.gateway()?;
+            bail!("Choose different nonzero secure and discovery ports");
+        }
+        if self.enrolled.is_some() {
+            self.transport_profile()?;
         }
         if !self.machine_id.is_empty() || !self.machine_key.is_empty() {
             let id = uuid::Uuid::parse_str(&self.machine_id)
@@ -209,7 +189,20 @@ impl GatewayPreferences {
         if bytes.len() > 32 * 1024 {
             bail!("Saved gateway preferences exceed 32 KiB");
         }
-        let preferences: Self = serde_json::from_slice(&bytes)
+        let mut stored: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("Saved gateway preferences are invalid"))?;
+        // Retire the old connection without selecting a different authority or
+        // discarding unrelated device preferences. A user must explicitly pair
+        // or choose Server before any network requests can resume.
+        if stored.get("mode").and_then(serde_json::Value::as_str) == Some("legacy")
+            || (stored.get("mode").is_none()
+                && (stored.get("url").is_some() || stored.get("api_key").is_some()))
+        {
+            stored["mode"] = serde_json::json!("client");
+            stored["enrolled"] = serde_json::Value::Null;
+            stored["automatic_notifications"] = serde_json::json!(false);
+        }
+        let preferences: Self = serde_json::from_value(stored)
             .map_err(|_| anyhow::anyhow!("Saved gateway preferences are invalid"))?;
         preferences.validate()?;
         Ok(Some(preferences))

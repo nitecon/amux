@@ -1,5 +1,7 @@
 //! Automatic gateway project resolution: real temporary Git workspaces and a
 //! private local HTTP fixture. No live gateway, user keys or model turns.
+#[path = "support/native_cli.rs"]
+mod native_cli;
 use amux::{
     gateway::Gateway,
     gateway_project::{matching, origin, repository},
@@ -439,6 +441,7 @@ fn workspace_without_origin_makes_no_gateway_request() {
 
 /// Run the real CLI against the fixture with a private state directory.
 fn cli(url: &str, state: &Path, directory: &Path, args: &[&str]) -> std::process::Output {
+    let _native = native_cli::NativeCli::new(state, url);
     let mut command = Command::new(env!("CARGO_BIN_EXE_amux"));
     command
         .args(["tasks"])

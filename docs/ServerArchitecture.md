@@ -119,10 +119,10 @@ or a facade forwarding to an external gateway does not meet these two gates.
 
 ### Release 2 implementation boundary
 
-The native implementation adds Server, Client and Legacy connection modes to
+The native implementation provides Server and Client connection modes in
 Settings. A fresh install without saved or environment gateway configuration
 starts its own loopback server; network hosting is an explicit Settings choice.
-Existing gateway URL/key configuration stays in Legacy mode. The bundled CLI
+Retired gateway URL/key configuration no longer establishes a connection. The bundled CLI
 owns the server process and its SQLite profile lock; closing its owning desktop
 or CLI stops that process. Attaching to an existing headless server does not
 transfer ownership. A parent file lease and platform process handles prevent an
@@ -174,55 +174,33 @@ route on public discovery. Database download, an authoritative offline replica,
 live memory injection and CA-root rollover remain separate work. This release
 does not claim those capabilities from having ported the gateway backend.
 
-## Legacy gateway migration
+## Native projects and messaging
 
-Settings → Gateway Server → Legacy gateway provides a four-step migration wizard:
-choose the source, prepare and review a snapshot, import, then explicitly switch
-this machine to Server mode. Importing alone leaves the legacy connection active.
-This is an operator migration of the entire database, separate from the scoped
-client/offline replication design below.
+Cutover is complete. Settings and the CLI connect to the native amux server through
+an enrolled mTLS profile. The retired external gateway URL/API-key mode, snapshot
+migration wizard and `amux server migrate` command are no longer supported.
+Previously saved connection settings retain unrelated preferences, but an old
+Legacy connection must be replaced by starting a Server or pairing a Client.
 
-Choose a readable legacy SQLite database or a consistent exported SQLite backup.
-The importer uses SQLite Online Backup, including committed WAL data while the
-source remains online. It copies all application tables, identifiers, history,
-indexes and triggers, including memories and client mappings, skills, patterns,
-artifacts, users and database settings. It verifies integrity and foreign keys,
-exercises backend schema upgrades on a private copy, and rejects lost table rows.
-Compatibility backfills are shown in the preview. The original snapshot is kept
-as an owner-only `server/legacy-source-SHA256.sqlite` backup; the upgraded database
-and inventory/checksums become `server/application.sqlite` and `server/migration.json`.
-These files contain complete operator data and must not be shared with ordinary
-clients as replication snapshots.
+New project registrations default to the `internal` channel, with the project
+identity as their native room. Repository metadata and project IDs retain their
+existing meaning. Internal registration and messaging need no Discord or WhatsApp
+configuration. Message sends, replies and actions commit to SQLite before returning
+an `internal:<message_id>` receipt in the existing `external_message_id` response
+field. This is a durable native receipt, not an external-provider acknowledgment.
+Thread parents remain project-scoped; per-agent confirmations and human-message
+unread delivery retain their existing behavior.
 
-The local server must be stopped and unused. Its normal profile lock prevents an
-import during hosting. Existing empty databases are backed up; populated databases
-or local changes are never merged or overwritten. Installation uses an atomic
-replacement. Repeating the same import is a no-op. A final, newer snapshot from
-the same source may replace an earlier import only while the imported database
-is still untouched; previous generations are backed up. Stop legacy writes before
-the final snapshot and cutover: imports do not replicate later source changes.
+External integrations remain optional. An explicit project channel (or a configured
+`DEFAULT_CHANNEL`) selects that integration; existing projects keep their channel
+and room. Missing integrations and provider send failures remain errors rather than
+silently falling back to internal storage. Human posts are stored first and report
+external delivery failures separately, as before. Native human posts report delivery
+once stored for agents to read. Incoming external messages still enter through the
+durable Inbound controller; task controllers and their event contracts are unchanged.
 
-Switching is an explicit final action. It saves a protected legacy-connection
-backup and uses the existing server startup/mTLS lifecycle. Other machines keep
-their connections until paired with the new server. Channel names and room IDs
-are preserved, but plugin tokens/environment files are host configuration and
-are not copied. Configure the same external plugins before switching.
-
-For headless import, without switching saved preferences:
-
-```sh
-amux server migrate --source /path/to/gateway.sqlite --preview
-amux server migrate --source /path/to/gateway.sqlite
-```
-
-`--state-dir PATH` selects an explicit destination for isolated testing or hosting.
-The wizard can also download a full snapshot over HTTPS from
-`GET /v1/admin/migration/snapshot` using the configured operator API key. It
-requires a declared length (maximum 2 GiB) and `X-Amux-Snapshot-Sha256`, rejects
-redirects and checksum mismatches, and never installs partial downloads. Older
-external gateways do not have this endpoint: use the local/file path until the
-delegated gateway export task is deployed. This does not supply client replication
-or automatically migrate a remote gateway's host configuration.
+The release sequence below records the historical cutover implementation. References
+to Legacy mode or migration in that sequence are superseded by this section.
 
 ## Direction and scope
 
@@ -236,8 +214,7 @@ can designate one machine as the network server and switch other installs to
 Keep the existing native frontend. Port backend behavior with its current IDs,
 constraints, payloads, and ownership rules before redesigning internals. Exclude
 the gateway web frontend. Preserve existing external notification/channel integrations
-for the initial compatibility/cutover phase; introducing a native replacement is
-post-cutover work. Internal task events, messages, stream receipts, and cancellation are backend
+alongside native internal messaging after cutover. Internal task events, messages, stream receipts, and cancellation are backend
 contracts and remain in scope. See [MemoryArchitecture.md](MemoryArchitecture.md)
 for memory, indexing, OKF, and terminal-driven context injection.
 

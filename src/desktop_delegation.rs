@@ -346,7 +346,7 @@ impl Desktop {
                     })
                     .collect();
                 if serial >= self.delegation.scan_applied {
-                    let server_state = self.server_schedules() && self.delegation.events.connected;
+                    let server_state = self.delegation.events.connected;
                     for workspace in &mut self.workspaces {
                         for (_, pane) in workspace.panes.iter_mut() {
                             for tab in &mut pane.tabs {
@@ -432,8 +432,7 @@ impl Desktop {
         tasks
     }
 
-    /// Keep agents and their projects current; on embedded and native servers,
-    /// also talk to the event router. A legacy gateway gets nothing automatic.
+    /// Keep agents and their projects current and report to the server event router.
     pub fn delegation_tick(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
         if self
@@ -443,12 +442,8 @@ impl Desktop {
         {
             tasks.push(self.delegation_scan());
         }
-        if self.server_schedules() {
-            tasks.extend(self.resolve_projects(self.preferences.current.automatic_notifications));
-            tasks.push(self.events_tick());
-        } else if self.delegation.events.running() {
-            self.events_stop();
-        }
+        tasks.extend(self.resolve_projects(self.preferences.current.automatic_notifications));
+        tasks.push(self.events_tick());
         Task::batch(tasks)
     }
 }
@@ -524,7 +519,6 @@ impl Desktop {
     /// Poll gateway-wide presence every 30 seconds while the gateway is used.
     pub(super) fn gateway_stats_tick(&mut self) -> Task<Message> {
         if !self.preferences.current.has_connection()
-            || !self.server_schedules()
             || self
                 .design
                 .gateway_stats_polled
@@ -551,7 +545,6 @@ impl Desktop {
     /// gateway's project list with the machines that have each checked out.
     pub(super) fn projects_tick(&mut self) -> Task<Message> {
         if !self.preferences.current.has_connection()
-            || !self.server_schedules()
             || self
                 .design
                 .projects_polled
@@ -642,8 +635,6 @@ impl Desktop {
     pub(super) fn design_connection(&self) -> String {
         if !self.preferences.current.has_connection() {
             "Gateway: Not configured".into()
-        } else if !self.server_schedules() {
-            "Gateway: Legacy · no automatic task work".into()
         } else if self.delegation.events.connected {
             "Gateway: Connected".into()
         } else if !self.preferences.current.automatic_notifications {

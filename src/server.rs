@@ -1,22 +1,10 @@
-//! Compatibility hosting and the existing local gateway operator commands.
+//! Native server hosting and local database operator commands.
 use amux_gateway_backend::{db, runtime, task_dispatch, ui_auth};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Import a consistent legacy gateway SQLite snapshot into an unused local server.
-    Migrate {
-        #[arg(long)]
-        source: std::path::PathBuf,
-        #[arg(long)]
-        state_dir: Option<std::path::PathBuf>,
-        /// Inspect and validate a snapshot without installing it.
-        #[arg(long)]
-        preview: bool,
-    },
-    /// Serve the existing gateway API with GATEWAY_* and database environment settings.
-    Serve,
     /// Host native mTLS APIs and public discovery using a separate security profile.
     Secure {
         #[arg(long)]
@@ -104,45 +92,13 @@ pub enum UserCommand {
     List,
 }
 
-pub fn run(command: Option<Command>) -> Result<()> {
-    if std::env::var_os("AMUX_NATIVE_SERVER").as_deref() != Some(std::ffi::OsStr::new("1")) {
-        dotenvy::dotenv().ok();
-    }
+pub fn run(command: Command) -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .try_init();
-    match command.unwrap_or(Command::Serve) {
-        Command::Migrate {
-            source,
-            state_dir,
-            preview,
-        } => {
-            let directory = state_dir.map_or_else(crate::identity::state_directory, Ok)?;
-            let snapshot = crate::migration::prepare_local(&source, &directory)?;
-            println!("{}", snapshot.summary());
-            if !preview {
-                let report = crate::migration::install(&snapshot, &directory)?;
-                println!(
-                    "Imported into {}. Saved connection preferences were not changed; choose Server in Settings when ready to cut over.",
-                    report.database.display()
-                );
-            }
-            Ok(())
-        }
-        Command::Serve => {
-            let config = runtime::RuntimeConfig::from_env()?;
-            let _profile_lock = profile_lock(&config.database)?;
-            tokio::runtime::Runtime::new()?.block_on(async move {
-                let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
-                println!(
-                    "amux gateway API listening on http://{}",
-                    listener.local_addr()?
-                );
-                runtime::serve(config, listener).await
-            })
-        }
+    match command {
         Command::Secure {
             profile,
             bind,
@@ -194,7 +150,7 @@ pub fn run(command: Option<Command>) -> Result<()> {
             Ok(())
         }
         Command::TaskMachine { action } => {
-            let database = db::open_config(&db::DatabaseConfig::from_env()?)?;
+            let database = db::open_config(&operator_database()?)?;
             let conn = database.lock().unwrap();
             match action {
                 MachineCommand::Issue {
@@ -213,7 +169,7 @@ pub fn run(command: Option<Command>) -> Result<()> {
             Ok(())
         }
         Command::Task { action } => {
-            let database = db::open_config(&db::DatabaseConfig::from_env()?)?;
+            let database = db::open_config(&operator_database()?)?;
             let conn = database.lock().unwrap();
             let task = match action {
                 TaskCommand::ClaimInfo { project, task_id } => {
@@ -241,6 +197,24 @@ pub fn run(command: Option<Command>) -> Result<()> {
         }
         Command::User { action } => user(action),
     }
+}
+
+/// Use the native application's database unless the operator explicitly
+/// selects another database for recovery or administration.
+fn operator_database() -> Result<db::DatabaseConfig> {
+    let configured = db::DatabaseConfig::from_env()?;
+    let explicit_location = ["DATABASE_PATH", "DATABASE_URL"]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()));
+    if configured.sqlite_path().is_some() && !explicit_location {
+        let directory = crate::identity::state_directory()?.join("server");
+        amux_gateway_backend::security::private_directory(&directory)?;
+        let path = directory.join("application.sqlite");
+        return Ok(db::DatabaseConfig::sqlite(
+            path.to_str().context("database path is not UTF8")?,
+        ));
+    }
+    Ok(configured)
 }
 
 pub(crate) fn profile_lock(config: &db::DatabaseConfig) -> Result<Option<std::fs::File>> {
@@ -280,7 +254,7 @@ pub(crate) fn profile_lock(config: &db::DatabaseConfig) -> Result<Option<std::fs
 }
 
 fn user(action: UserCommand) -> Result<()> {
-    let database = db::open_config(&db::DatabaseConfig::from_env()?)?;
+    let database = db::open_config(&operator_database()?)?;
     let conn = database.lock().unwrap();
     let password = || -> Result<String> {
         if let Ok(value) = std::env::var("GATEWAY_USER_PASSWORD") {

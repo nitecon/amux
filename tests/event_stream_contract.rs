@@ -614,7 +614,7 @@ async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
 async fn the_desktop_event_client_reports_agents_and_receives_their_work() {
     use amux::event_client::{self, Incoming, Subscription};
     let server = Server::start().await;
-    let profile = amux::gateway_transport::TransportProfile::legacy(
+    let profile = amux::gateway_transport::TransportProfile::bearer(
         &format!("http://{}", server.endpoint),
         KEY.into(),
     )
@@ -691,13 +691,13 @@ async fn the_desktop_event_client_reports_agents_and_receives_their_work() {
 }
 
 #[tokio::test]
-async fn a_gateway_without_the_event_router_is_reported_as_unsupported() {
+async fn a_missing_event_router_is_reported_as_a_reconnecting_failure() {
     use amux::event_client::{self, Incoming, Subscription};
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let legacy = axum::Router::new().fallback(|| async { axum::http::StatusCode::NOT_FOUND });
     tokio::spawn(async move { axum::serve(listener, legacy).await.unwrap() });
-    let profile = amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+    let profile = amux::gateway_transport::TransportProfile::bearer(&endpoint, KEY.into()).unwrap();
     let (_outgoing, outgoing_rx) = tokio::sync::mpsc::channel(1);
     let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(4);
     let subscription = Subscription {
@@ -715,7 +715,7 @@ async fn a_gateway_without_the_event_router_is_reported_as_unsupported() {
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(first, Incoming::Unsupported), "{first:?}");
+    assert!(matches!(first, Incoming::Lost(_)), "{first:?}");
 }
 
 async fn next_incoming(
@@ -958,7 +958,7 @@ async fn event_client_negotiates_old_new_and_missing_router_without_version_gues
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let profile =
-            amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+            amux::gateway_transport::TransportProfile::bearer(&endpoint, KEY.into()).unwrap();
         let (outgoing, outgoing_rx) = tokio::sync::mpsc::channel(8);
         let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(8);
         let subscription = Subscription {
@@ -989,7 +989,7 @@ async fn event_client_negotiates_old_new_and_missing_router_without_version_gues
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, Router::new()).await.unwrap() });
-    let profile = amux::gateway_transport::TransportProfile::legacy(&endpoint, KEY.into()).unwrap();
+    let profile = amux::gateway_transport::TransportProfile::bearer(&endpoint, KEY.into()).unwrap();
     let (_outgoing, outgoing_rx) = tokio::sync::mpsc::channel(8);
     let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(8);
     let client = tokio::spawn(event_client::run(
@@ -1006,7 +1006,7 @@ async fn event_client_negotiates_old_new_and_missing_router_without_version_gues
         tokio::time::timeout(Duration::from_secs(5), incoming.recv())
             .await
             .unwrap(),
-        Some(Incoming::Unsupported)
+        Some(Incoming::Lost(_))
     ));
     client.abort();
     server.abort();

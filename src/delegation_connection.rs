@@ -70,7 +70,7 @@ pub async fn run(
     commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<ConnectionEvent>,
 ) {
-    match crate::gateway_transport::TransportProfile::legacy(&url, key) {
+    match crate::gateway_transport::TransportProfile::bearer(&url, key) {
         Ok(profile) => run_profile(profile, consumer, cursor, commands, events).await,
         Err(_) => {
             let _ = events
