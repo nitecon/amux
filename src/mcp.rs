@@ -60,7 +60,7 @@ pub enum Kind {
     Positional,
     /// Several whitespace-separated positional values.
     Words,
-    /// `flag value`
+    /// `--flag=value`, one argument so a value starting with `-` stays a value.
     Option(&'static str),
 }
 
@@ -183,7 +183,7 @@ pub const TOOLS: &[Tool] = &[
         command: &["search"],
         args: &[
             pos("query", "Search query"),
-            opt("limit", "-k", "Number of results (default 10)"),
+            opt("limit", "--limit", "Number of results (default 10)"),
         ],
     },
     Tool {
@@ -195,10 +195,10 @@ pub const TOOLS: &[Tool] = &[
             pos("content", "Memory content"),
             opt(
                 "memory_type",
-                "-m",
+                "--memory-type",
                 "user, feedback, project or reference (default user)",
             ),
-            opt("tags", "-t", "Comma-separated tags"),
+            opt("tags", "--tags", "Comma-separated tags"),
             opt("scope", "--scope", "project (default) or global"),
         ],
     },
@@ -342,7 +342,7 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
         match arg.kind {
             Kind::Positional => positionals.push(value),
             Kind::Words => positionals.extend(value.split_whitespace().map(str::to_owned)),
-            Kind::Option(flag) => options.extend([flag.to_owned(), value]),
+            Kind::Option(flag) => options.push(format!("{flag}={value}")),
         }
     }
     let mut argv: Vec<String> = tool.command.iter().map(|s| (*s).to_owned()).collect();
@@ -536,6 +536,14 @@ pub fn launch_arguments(
     if !bundled.is_empty() {
         env.insert("AMUX_BUNDLED_DIR", &bundled);
     }
+    // Codex forwards only allowlisted variables to MCP servers, so pass the
+    // resolved state directory: task commands read gateway preferences there.
+    let state = crate::identity::state_directory()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !state.is_empty() {
+        env.insert("AMUX_STATE_DIR", &state);
+    }
     let command = amux.to_string_lossy();
     match provider {
         crate::identity::Provider::Claude => vec![
@@ -595,9 +603,14 @@ mod tests {
         let tool = TOOLS.iter().find(|t| t.name == "code_read").unwrap();
         assert_eq!(
             argv(tool, &json!({"file": "a.rs", "lines": 3})).unwrap(),
-            ["read", "--lines", "3", "--", "a.rs"]
+            ["read", "--lines=3", "--", "a.rs"]
         );
         assert!(argv(tool, &json!({})).is_err());
+        let tool = TOOLS.iter().find(|t| t.name == "task_create").unwrap();
+        assert_eq!(
+            argv(tool, &json!({"title": "T", "specification": "- item"})).unwrap(),
+            ["tasks", "create", "--specification=- item", "--", "T"]
+        );
         let tool = TOOLS.iter().find(|t| t.name == "memory_get").unwrap();
         assert_eq!(
             argv(tool, &json!({"ids": "ab12 cd34"})).unwrap(),
@@ -626,6 +639,13 @@ mod tests {
         );
         let config: Value = serde_json::from_str(&claude[1]).unwrap();
         assert_eq!(config["mcpServers"]["amux"]["command"], "/opt/amux/amux");
+        assert_eq!(
+            config["mcpServers"]["amux"]["env"]["AMUX_STATE_DIR"],
+            crate::identity::state_directory()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
         assert_eq!(
             config["mcpServers"]["amux"]["env"]["AMUX_AGENT_NAME"],
             "A \"quoted\" name"
