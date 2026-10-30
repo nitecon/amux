@@ -1,5 +1,6 @@
 #[path = "support/identity.rs"]
 mod fixture_identity;
+#[cfg(unix)]
 #[path = "support/native_cli.rs"]
 mod native_cli;
 use amux::{
