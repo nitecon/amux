@@ -1,0 +1,2 @@
+# Hashed byte-for-byte by tests/updater_contract.rs; never convert line endings.
+tests/fixtures/updater/*.rs -text
