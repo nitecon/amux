@@ -52,6 +52,16 @@ The top-right bell shows app updates. Direct-download installs use
 package-managed installs show their own upgrade instructions.
 Restart is explicit and reopens previously running tabs in place. See [app updates](docs/updates.md).
 
+Release bundles include pinned builds of [agent-tools](https://github.com/nitecon/agent-tools)
+and [agent-memory](https://github.com/nitecon/agent-memory)
+(see `packaging/bundled-tools.json`). With **Give agents amux tools (MCP)** on
+(Settings → Workspaces & Terminals, the default), each Codex and Claude session the
+desktop starts gets an `amux mcp` stdio server: amux task actions, memory
+search/store/get and agent-tools read, symbol, search, Markdown and knowledge-graph
+lookups. Each tool runs the bundled command and returns its output unchanged.
+New sessions also start with relevant project memory unless that provider already
+runs the `memory setup hooks` hook. Outside the desktop, use `amux agent <provider> --mcp`.
+
 `whoami` prints the calling agent’s project UUID, terminal agent name and execution
 identity. The desktop registers agents started from shell tabs as well as its
 Codex and Claude buttons. `amux agents` lists live local agents. Provider commands must already

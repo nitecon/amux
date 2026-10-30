@@ -446,6 +446,8 @@ struct Platform {
     extension: &'static str,
     cli: String,
     gui: String,
+    /// Bundled agent-tools and memory executables, see `crate::mcp`.
+    tools: [String; 2],
 }
 
 impl Platform {
@@ -464,14 +466,20 @@ impl Platform {
             extension,
             cli: format!("amux{suffix}"),
             gui: format!("amux-desktop{suffix}"),
+            tools: [format!("agent-tools{suffix}"), format!("memory{suffix}")],
         })
     }
 
     fn payload(&self) -> Vec<&str> {
         let mut names = vec![self.gui.as_str(), BUILD_FILE, SUMS_FILE];
         names.extend(DOCUMENTS);
+        names.extend(self.tools.iter().map(String::as_str));
         names.push(self.cli.as_str());
         names
+    }
+
+    fn executable(&self, name: &str) -> bool {
+        name == self.cli || name == self.gui || self.tools.iter().any(|t| t == name)
     }
 }
 
@@ -487,6 +495,9 @@ struct Build {
     gui_binary_sha256: String,
     #[serde(default)]
     candidate_only: bool,
+    /// SHA-256 of each bundled tool executable, by file name.
+    #[serde(default)]
+    bundled_sha256: std::collections::BTreeMap<String, String>,
 }
 
 fn read_build(path: &Path) -> Result<Build> {
@@ -918,10 +929,7 @@ fn extract(bytes: &[u8], platform: &Platform, out: &Path) -> Result<HashSet<Stri
         if !wanted.contains(&name.as_str()) {
             return Ok(());
         }
-        let mut file = create(
-            &out.join(&name),
-            name == platform.cli || name == platform.gui,
-        )?;
+        let mut file = create(&out.join(&name), platform.executable(&name))?;
         let copied = io::copy(&mut Read::take(reader, MAX_ENTRY + 1), &mut file)?;
         ensure!(copied <= MAX_ENTRY, "archive entry {name} is too large");
         file.sync_all()?;
@@ -1013,6 +1021,20 @@ fn verify_staged(
             &sha256_file(&dir.join(name))? == expected,
             "bundle {name} does not match its BUILD.json"
         );
+    }
+    // A bundled tool is installed only when BUILD.json lists its exact hash.
+    for name in &platform.tools {
+        let listed = build.bundled_sha256.get(name);
+        ensure!(
+            names.contains(name) == listed.is_some(),
+            "bundle {name} and its BUILD.json entry differ"
+        );
+        if let Some(expected) = listed {
+            ensure!(
+                &sha256_file(&dir.join(name))? == expected,
+                "bundle {name} does not match its BUILD.json"
+            );
+        }
     }
     Ok(build)
 }

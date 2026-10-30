@@ -126,6 +126,12 @@ struct Bundle {
     candidate: bool,
     cli: Vec<u8>,
     gui: Vec<u8>,
+    /// Bundled tool executables (`crate::mcp`), listed in BUILD.json.
+    tools: Vec<(String, Vec<u8>)>,
+}
+
+fn tool(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
 impl Bundle {
@@ -136,7 +142,15 @@ impl Bundle {
             candidate: true,
             cli: format!("cli {revision}").into_bytes(),
             gui: format!("gui {revision}").into_bytes(),
+            tools: Vec::new(),
         }
+    }
+
+    fn with_tools(mut self) -> Self {
+        self.tools = ["agent-tools", "memory"]
+            .map(|name| (tool(name), format!("{name} {}", self.revision).into_bytes()))
+            .to_vec();
+        self
     }
 
     fn build_json(&self) -> Vec<u8> {
@@ -148,6 +162,9 @@ impl Bundle {
             "gui_binary_sha256": sha(&self.gui),
             "candidate_only": self.candidate,
             "runner": "fixture",
+            "bundled_sha256": self.tools.iter()
+                .map(|(name, bytes)| (name.clone(), json!(sha(bytes))))
+                .collect::<serde_json::Map<_, _>>(),
         }))
         .unwrap()
     }
@@ -159,6 +176,13 @@ impl Bundle {
             (CLI.into(), Entry::File(self.cli.clone())),
             (GUI.into(), Entry::File(self.gui.clone())),
         ]
+        .into_iter()
+        .chain(
+            self.tools
+                .iter()
+                .map(|(name, bytes)| (name.clone(), Entry::File(bytes.clone()))),
+        )
+        .collect()
     }
 
     fn install(&self, dir: &Path) {
@@ -694,11 +718,20 @@ async fn tampered_or_malformed_releases_leave_the_install_untouched() {
     let mislabeled = Bundle::new("1234567000000000000000000000000000000000");
     let mut forged_gui = good.entries();
     forged_gui[3].1 = Entry::File(b"forged".to_vec());
+    let tooled = Bundle::new(NEWER).with_tools();
+    let mut forged_tool = tooled.entries();
+    forged_tool[4].1 = Entry::File(b"forged".to_vec());
 
     // (expected error, archive, metadata tampering)
     let mut cases: Vec<(&str, Vec<u8>, Option<&str>)> = vec![
         ("bundle is missing", without_gui, None),
         ("does not match its BUILD.json", archive(&forged_gui), None),
+        ("does not match its BUILD.json", archive(&forged_tool), None),
+        (
+            "and its BUILD.json entry differ",
+            with(vec![(tool("memory"), Entry::File(b"unlisted".to_vec()))]),
+            None,
+        ),
         (
             "aarch64-apple-darwin is not",
             archive(&foreign.entries()),
@@ -792,6 +825,33 @@ async fn tampered_or_malformed_releases_leave_the_install_untouched() {
             !root.path().join("escape").exists(),
             "{case}: wrote outside"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bundled_tools_are_installed_with_amux() {
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    Bundle::new(INSTALLED).install(&dir);
+    let server = Server::start();
+    let newer = Bundle::new(NEWER).with_tools();
+    let mut spec = review(NEWER, "2026-10-03T00:00:00Z");
+    spec.archive = Some(archive(&newer.entries()));
+    server.publish(&[
+        release(&server, review(INSTALLED, "2026-10-02T00:00:00Z")),
+        release(&server, spec),
+    ]);
+    updates::update(&Running::at(dir.join(CLI)), &server.source())
+        .await
+        .unwrap();
+    for (name, bytes) in &newer.tools {
+        assert_eq!(&fs::read(dir.join(name)).unwrap(), bytes, "{name}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join(name)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "{name} is executable");
+        }
     }
 }
 

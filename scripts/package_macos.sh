@@ -11,6 +11,8 @@
 #   MAS_APP_IDENTITY         "3rd Party Mac Developer Application: ..." keychain identity
 #   MAS_INSTALLER_IDENTITY   "3rd Party Mac Developer Installer: ..." keychain identity
 #   MAS_PROVISIONING_PROFILE path to the App Store provisioning profile
+#   AMUX_BUNDLED_DIR         folder with the pinned agent-tools and memory
+#                            executables (scripts/fetch_bundled_tools.py)
 set -eu
 
 bin=$1
@@ -26,8 +28,16 @@ sed -e "s/__VERSION__/$version/g" -e "s/__BUNDLE_ID__/$bundle_id/g" \
     "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
 # The desktop finds the CLI beside itself, so both live in Contents/MacOS.
 cp "$bin/amux-desktop" "$bin/amux" "$app/Contents/MacOS/"
+tools=""
+if [ -n "${AMUX_BUNDLED_DIR:-}" ]; then
+    tools="agent-tools memory"
+    for tool in $tools; do cp "$AMUX_BUNDLED_DIR/$tool" "$app/Contents/MacOS/"; done
+fi
 cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
 printf '\nEmbedded gateway backend: nitecon/agent-gateway, commit 986d84544aae086579c72349a1afc366cef6b589 (Apache-2.0). Ported API-only backend; see crates/gateway-backend/UPSTREAM.md in the source distribution.\n' >> "$app/Contents/Resources/LICENSE"
+if [ -n "$tools" ]; then
+    printf 'Bundled executables: nitecon/agent-tools and nitecon/agent-memory (Apache-2.0), unmodified release builds pinned in packaging/bundled-tools.json.\n' >> "$app/Contents/Resources/LICENSE"
+fi
 
 # CI release metadata for `amux --update`, sealed by the app signature below.
 # Local builds have none and are never updated in place.
@@ -53,9 +63,11 @@ if [ -n "${MAS_APP_IDENTITY:-}" ]; then
     : "${MAS_INSTALLER_IDENTITY:?set MAS_INSTALLER_IDENTITY to build the App Store package}"
     : "${MAS_PROVISIONING_PROFILE:?set MAS_PROVISIONING_PROFILE to build the App Store package}"
     cp "$MAS_PROVISIONING_PROFILE" "$app/Contents/embedded.provisionprofile"
-    # Sign the nested CLI first, then the app that seals it.
-    codesign --force --timestamp --sign "$MAS_APP_IDENTITY" \
-        --entitlements "$root/packaging/macos/cli.entitlements" "$app/Contents/MacOS/amux"
+    # Sign the nested executables first, then the app that seals them.
+    for exe in amux $tools; do
+        codesign --force --timestamp --sign "$MAS_APP_IDENTITY" \
+            --entitlements "$root/packaging/macos/cli.entitlements" "$app/Contents/MacOS/$exe"
+    done
     codesign --force --timestamp --sign "$MAS_APP_IDENTITY" \
         --entitlements "$root/packaging/macos/amux.entitlements" "$app"
     codesign --verify --strict --verbose=2 "$app"
@@ -63,7 +75,7 @@ if [ -n "${MAS_APP_IDENTITY:-}" ]; then
         "$out/amux-macos-v$version.pkg"
 else
     # Ad-hoc signature so the unsigned build still launches on Apple Silicon.
-    codesign --force --sign - "$app/Contents/MacOS/amux"
+    for exe in amux $tools; do codesign --force --sign - "$app/Contents/MacOS/$exe"; done
     codesign --force --sign - "$app"
 fi
 

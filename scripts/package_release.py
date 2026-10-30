@@ -35,8 +35,10 @@ def package(artifacts, output, tag, revision):
         ("x86_64-pc-windows-msvc", "windows", "amux.exe", "amux-desktop.exe"),
     ]:
         bundle = artifacts / f"amux-{target}-{revision}"
+        suffix = ".exe" if platform == "windows" else ""
+        tools = {f"agent-tools{suffix}", f"memory{suffix}"}
         names = {cli, gui, "BUILD.json", "SHA256SUMS", "LICENSE", "ICED_TERM_LICENSE",
-                 "REVIEW.md", "notification-validation.md"}
+                 "REVIEW.md", "notification-validation.md"} | tools
         if {p.name for p in bundle.iterdir()} != names:
             raise ValueError(f"{target}: incomplete or unexpected bundle files")
         if any(p.is_symlink() or not p.is_file() for p in bundle.iterdir()):
@@ -48,11 +50,15 @@ def package(artifacts, output, tag, revision):
         checksums = dict(line.split()[::-1] for line in
                          (bundle / "SHA256SUMS").read_text(encoding="utf-8-sig").splitlines()
                          if line.strip())
-        if set(checksums) != {cli, gui}:
+        if set(checksums) != {cli, gui} | tools:
             raise ValueError(f"{target}: executable checksum list differs")
-        for name, field in [(cli, "binary_sha256"), (gui, "gui_binary_sha256")]:
+        if set(build.get("bundled_sha256", {})) != tools:
+            raise ValueError(f"{target}: bundled tool metadata differs")
+        expected = {cli: build["binary_sha256"], gui: build["gui_binary_sha256"],
+                    **build["bundled_sha256"]}
+        for name in sorted({cli, gui} | tools):
             path = bundle / name
-            if sha(path) != checksums[name] or sha(path) != build[field]:
+            if sha(path) != checksums[name] or sha(path) != expected[name]:
                 raise ValueError(f"{target}: {name} checksum differs")
             data = path.read_bytes()
             if platform == "linux":
@@ -63,7 +69,7 @@ def package(artifacts, output, tag, revision):
                 pe = struct.unpack_from("<I", data, 0x3c)[0]
                 subsystem = struct.unpack_from("<H", data, pe + 24 + 68)[0]
                 if (data[:2] != b"MZ" or data[pe:pe + 4] != b"PE\0\0"
-                        or subsystem != (3 if name == cli else 2)):
+                        or subsystem != (2 if name == gui else 3)):
                     raise ValueError(f"{name}: incorrect Windows executable subsystem")
         if platform == "linux":
             archive = output / f"amux-linux-x86_64-{tag}.tar.gz"

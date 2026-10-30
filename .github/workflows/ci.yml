@@ -15,6 +15,9 @@ permissions:
 env:
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
+  # Pinned agent-tools and memory (packaging/bundled-tools.json) for `amux mcp`
+  # tests and release bundles.
+  AMUX_BUNDLED_DIR: target/bundled
 
 jobs:
   build:
@@ -37,6 +40,8 @@ jobs:
       - name: Validate release version
         if: startsWith(github.ref, 'refs/tags/v')
         run: python scripts/package_release.py --check-tag '${{ github.ref_name }}'
+      - name: Fetch bundled agent-tools and memory
+        run: python scripts/fetch_bundled_tools.py --target ${{ matrix.target }} --output target/bundled
       - name: Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt --component clippy
       - name: Select Rust
@@ -79,10 +84,15 @@ jobs:
           New-Item -ItemType Directory -Force bundle | Out-Null
           Copy-Item 'target/${{ matrix.target }}/release/${{ matrix.binary }}' bundle/
           Copy-Item 'target/${{ matrix.target }}/release/${{ matrix.gui }}' bundle/
+          $ext = if ($IsWindows) { '.exe' } else { '' }
+          $tools = @("agent-tools$ext", "memory$ext")
+          foreach ($tool in $tools) { Copy-Item "target/bundled/$tool" bundle/ }
           Copy-Item docs/windows-review.md bundle/REVIEW.md
           Copy-Item docs/notification-validation.md bundle/notification-validation.md
           Copy-Item LICENSE bundle/
           Add-Content bundle/LICENSE "`nEmbedded gateway backend: nitecon/agent-gateway, commit 986d84544aae086579c72349a1afc366cef6b589 (Apache-2.0). Ported API-only backend; see crates/gateway-backend/UPSTREAM.md in the source distribution.`n"
+          $pins = Get-Content packaging/bundled-tools.json -Raw | ConvertFrom-Json
+          Add-Content bundle/LICENSE "Bundled executables: nitecon/agent-tools $($pins.'agent-tools'.version) and nitecon/agent-memory $($pins.memory.version) (Apache-2.0), unmodified release builds.`n"
           Copy-Item vendor/iced_term/LICENSE bundle/ICED_TERM_LICENSE
           # Preserve the existing update archive format while including icon attribution.
           Add-Content bundle/ICED_TERM_LICENSE "`nLucide icons`n"
@@ -90,7 +100,9 @@ jobs:
           # binary_sha256 stays the CLI hash for existing reviewers.
           $hash = (Get-FileHash 'bundle/${{ matrix.binary }}' -Algorithm SHA256).Hash.ToLower()
           $gui = (Get-FileHash 'bundle/${{ matrix.gui }}' -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.binary }}", "$gui  ${{ matrix.gui }}" | Set-Content bundle/SHA256SUMS -Encoding utf8
+          $bundled = [ordered]@{}
+          foreach ($tool in $tools) { $bundled[$tool] = (Get-FileHash "bundle/$tool" -Algorithm SHA256).Hash.ToLower() }
+          @("$hash  ${{ matrix.binary }}", "$gui  ${{ matrix.gui }}") + ($tools | ForEach-Object { "$($bundled[$_])  $_" }) | Set-Content bundle/SHA256SUMS -Encoding utf8
           $package = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           $metadata = @{
             revision = '${{ github.sha }}'
@@ -100,6 +112,7 @@ jobs:
             binary_sha256 = $hash
             gui_binary = '${{ matrix.gui }}'
             gui_binary_sha256 = $gui
+            bundled_sha256 = $bundled
             version = ($package.packages | Where-Object { $_.name -eq 'amux' }).version
             candidate_only = -not ('${{ github.ref }}'.StartsWith('refs/tags/v'))
             native_runtime_acceptance = 'pending CMUX platform review'
@@ -130,6 +143,8 @@ jobs:
         with:
           key: aarch64-apple-darwin
           cache-on-failure: true
+      - name: Fetch bundled agent-tools and memory
+        run: python3 scripts/fetch_bundled_tools.py --target aarch64-apple-darwin --output target/bundled
       - name: Core behavioral tests
         run: cargo test --locked --no-default-features --tests --no-fail-fast
       - name: Check desktop and CLI
@@ -168,6 +183,8 @@ jobs:
           codesign --verify --strict macos/amux.app
           macos/amux.app/Contents/MacOS/amux --version
           macos/amux.app/Contents/MacOS/amux-desktop --version
+          AGENT_TOOLS_NO_UPDATE=1 macos/amux.app/Contents/MacOS/agent-tools --version
+          AGENT_MEMORY_NO_UPDATE=1 macos/amux.app/Contents/MacOS/memory --version
           rm -rf macos/amux.app
       - name: Upload to App Store Connect
         if: env.MAS_APP_IDENTITY != '' && startsWith(github.ref, 'refs/tags/v')

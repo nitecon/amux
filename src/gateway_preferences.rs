@@ -80,6 +80,8 @@ pub struct GatewayPreferences {
     pub auto_update: bool,
     /// Parent folder for projects checked out from the sidebar.
     pub projects_dir: String,
+    /// Give launched agents the `amux mcp` tools (tasks, agent-tools, memory).
+    pub mcp_tools: bool,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -95,6 +97,7 @@ impl Default for GatewayPreferences {
             auto_resume: true,
             auto_update: false,
             projects_dir: String::new(),
+            mcp_tools: true,
             machine_id: String::new(),
             machine_key: String::new(),
         }

@@ -51,9 +51,15 @@ enum Operation {
     Agent {
         #[arg(value_enum)]
         provider: Provider,
+        /// Register `amux mcp` (tasks, agent-tools and memory) for this session.
+        #[arg(long)]
+        mcp: bool,
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Serve amux tasks and the bundled agent-tools and memory commands as an
+    /// MCP stdio server for one agent session.
+    Mcp,
     /// Print the calling agent's full execution identity.
     Whoami,
     /// List live amux-launched agent sessions, including three in one project.
@@ -331,8 +337,15 @@ fn run(cli: Cli) -> Result<u8> {
             #[cfg(not(feature = "desktop"))]
             bail!("desktop not included; build without --no-default-features");
         }
-        Operation::Agent { provider, args } => {
-            return launch_agent(project_dir, provider, args);
+        Operation::Agent {
+            provider,
+            mcp,
+            args,
+        } => {
+            return launch_agent(project_dir, provider, mcp, args);
+        }
+        Operation::Mcp => {
+            amux::mcp::serve()?;
         }
         Operation::Whoami => println!(
             "{}",
@@ -552,7 +565,7 @@ async fn cli_gateway(
 /// already guards bound owner_origin claims, but until it enforces the exact
 /// owner atomically for every claim type, ownership can change between this read
 /// and the mutation.
-fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Result<u8> {
+fn launch_agent(project: PathBuf, provider: Provider, mcp: bool, args: Vec<String>) -> Result<u8> {
     let actor = AgentIdentity::new(provider, &project)?.resume_at(
         &identity::state_directory()?,
         std::time::Duration::from_secs(5),
@@ -561,7 +574,7 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
         .iter()
         .map(String::as_str)
         .eq(amux::session::resume_arguments(provider).iter().copied());
-    let mut status = launch_agent_once(&project, provider, &args, &actor)?;
+    let mut status = launch_agent_once(&project, provider, mcp, &args, &actor)?;
     // Missing native conversation history exits with 1. Retry only the standard
     // restore invocation, once, leaving custom arguments and signals alone.
     if restoring && status.code() == Some(1) {
@@ -569,7 +582,7 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
             "Unable to resume {}; starting a new session.",
             provider.command()
         );
-        status = launch_agent_once(&project, provider, &[], &actor)?;
+        status = launch_agent_once(&project, provider, mcp, &[], &actor)?;
     }
     Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
 }
@@ -577,10 +590,25 @@ fn launch_agent(project: PathBuf, provider: Provider, args: Vec<String>) -> Resu
 fn launch_agent_once(
     project: &std::path::Path,
     provider: Provider,
+    mcp: bool,
     args: &[String],
     actor: &AgentIdentity,
 ) -> Result<std::process::ExitStatus> {
     let directory = amux::workspace_launch::external_path(project.canonicalize()?);
+    // Codex reads `-c` overrides before its subcommand; Claude's --mcp-config
+    // takes several values, so it goes last where it cannot swallow a prompt.
+    let registration = if mcp {
+        amux::mcp::launch_arguments(provider, &std::env::current_exe()?, &actor.environment())
+    } else {
+        Vec::new()
+    };
+    let mut args = args.to_vec();
+    if matches!(provider, Provider::Codex) {
+        args.splice(0..0, registration);
+    } else {
+        args.extend(registration);
+    }
+    let args = args.as_slice();
     let mut command = Command::new(provider.command());
     command
         .args(args)

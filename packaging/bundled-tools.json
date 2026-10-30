@@ -1,0 +1,26 @@
+{
+  "agent-tools": {
+    "repo": "nitecon/agent-tools",
+    "version": "v2.0.0",
+    "checksums": "SHA256SUMS.txt",
+    "assets": {
+      "x86_64-unknown-linux-gnu": "agent-tools-v2.0.0-x86_64-unknown-linux-gnu.tar.gz",
+      "x86_64-pc-windows-msvc": "agent-tools-v2.0.0-x86_64-pc-windows-msvc.zip",
+      "aarch64-apple-darwin": "agent-tools-v2.0.0-aarch64-apple-darwin.tar.gz"
+    }
+  },
+  "memory": {
+    "repo": "nitecon/agent-memory",
+    "version": "v1.13.9",
+    "sha256": {
+      "agent-memory-linux-x86_64.tar.gz": "8c1a44234d2ef37c1fa0bd0da5dce60987bdf191ece4a610ffb89e97281cba4d",
+      "agent-memory-windows-x86_64.zip": "4cf2b45cacb445273009e80bf7f89713f230a1588cfa29cd286ac6897a666c87",
+      "agent-memory-macos-aarch64.tar.gz": "f6840248b4e6df6fbf9ead1361d21d4dec00b39a7d4f071408b59a807b746a55"
+    },
+    "assets": {
+      "x86_64-unknown-linux-gnu": "agent-memory-linux-x86_64.tar.gz",
+      "x86_64-pc-windows-msvc": "agent-memory-windows-x86_64.zip",
+      "aarch64-apple-darwin": "agent-memory-macos-aarch64.tar.gz"
+    }
+  }
+}

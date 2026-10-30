@@ -92,6 +92,7 @@ enum Message {
     ServerReconfigured(u64, Result<(), String>),
     AutomaticNotifications(bool),
     AutoResume(bool),
+    McpTools(bool),
     ExitNotifications(bool),
     AutoUpdate(bool),
     ProjectsDir(String),
@@ -720,20 +721,12 @@ impl Desktop {
             match std::env::current_exe().and_then(|exe| amux::cli_path::cli_beside(&exe)) {
                 Ok(exe) => {
                     backend.program = exe.display().to_string();
-                    backend.args = vec![
-                        "--project-dir".into(),
-                        directory.display().to_string(),
-                        "agent".into(),
-                        provider.command().into(),
-                    ];
-                    if resume {
-                        backend.args.push("--".into());
-                        backend.args.extend(
-                            amux::session::resume_arguments(provider)
-                                .iter()
-                                .map(|s| (*s).into()),
-                        );
-                    }
+                    backend.args = agent_arguments(
+                        directory,
+                        provider,
+                        resume,
+                        self.preferences.current.mcp_tools,
+                    );
                 }
                 Err(e) => {
                     return Tab {
@@ -974,6 +967,7 @@ impl Desktop {
             Message::Design(value) => return self.design_message(value),
             Message::WindowReady => {}
             Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
+            Message::McpTools(value) => self.preferences.draft.mcp_tools = value,
             Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
             Message::AutoUpdate(value) => self.preferences.draft.auto_update = value,
             Message::ProjectsDir(value) => self.preferences.draft.projects_dir = value,
@@ -2584,10 +2578,59 @@ fn short_title(title: &str) -> String {
     short
 }
 
+/// `amux` arguments that start one provider session in a desktop tab.
+fn agent_arguments(
+    directory: &std::path::Path,
+    provider: Provider,
+    resume: bool,
+    mcp: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "--project-dir".into(),
+        directory.display().to_string(),
+        "agent".into(),
+        provider.command().into(),
+    ];
+    if mcp {
+        args.push("--mcp".into());
+    }
+    if resume {
+        args.push("--".into());
+        args.extend(
+            amux::session::resume_arguments(provider)
+                .iter()
+                .map(|s| (*s).into()),
+        );
+    }
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn agent_tabs_register_amux_mcp_only_when_enabled() {
+        let dir = std::path::Path::new("/p");
+        assert_eq!(
+            agent_arguments(dir, Provider::Claude, true, true),
+            [
+                "--project-dir",
+                "/p",
+                "agent",
+                "claude",
+                "--mcp",
+                "--",
+                "--continue"
+            ]
+        );
+        assert_eq!(
+            agent_arguments(dir, Provider::Codex, false, false),
+            ["--project-dir", "/p", "agent", "codex"]
+        );
+        assert!(GatewayPreferences::default().mcp_tools, "on by default");
+    }
 
     // No display, provider process, network, or environment mutation is involved.
     pub(super) fn desktop() -> Desktop {
