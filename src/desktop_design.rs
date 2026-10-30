@@ -158,6 +158,69 @@ fn templates_view<'a>() -> Element<'a, Message> {
     content.into()
 }
 
+/// Settings section label, e.g. GATEWAY OPERATING MODE.
+pub(super) fn settings_label<'a>(label: &'a str) -> Element<'a, Message> {
+    text(label).size(11).color(MUTED).into()
+}
+/// Amber notice for settings with side effects.
+pub(super) fn settings_callout<'a>(note: &'a str) -> Element<'a, Message> {
+    container(
+        row![text("!").size(13).color(AMBER), text(note).size(13)]
+            .spacing(12)
+            .align_y(Alignment::Center),
+    )
+    .padding([14, 18])
+    .width(Length::Fill)
+    .style(|_| {
+        let mut style = surface(Color::from_rgb8(38, 32, 18), true);
+        style.border.color = Color::from_rgb8(113, 83, 22);
+        style
+    })
+    .into()
+}
+/// Groups related settings in one panel.
+pub(super) fn settings_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding([20, 24])
+        .width(Length::Fill)
+        .style(|_| surface(CARD, true))
+        .into()
+}
+/// Radio-style card for picking one option; disabled when `message` is None.
+pub(super) fn mode_card<'a>(
+    name: &str,
+    title: &'a str,
+    description: &'a str,
+    selected: bool,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    button(
+        column![
+            row![
+                icon(name),
+                text(title).size(15),
+                Space::new().width(Length::Fill),
+                text(if selected { "◉" } else { "○" })
+                    .size(16)
+                    .color(if selected { CYAN } else { MUTED })
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            text(description).size(12).color(MUTED)
+        ]
+        .spacing(8),
+    )
+    .on_press_maybe(message)
+    .padding([14, 16])
+    .width(Length::Fill)
+    .style(move |theme, status| {
+        let mut style = button_style(selected, theme, status);
+        style.text_color = if selected { CYAN } else { Color::WHITE };
+        style.border.radius = 7.0.into();
+        style
+    })
+    .into()
+}
 fn surface(color: Color, rounded: bool) -> container::Style {
     container::Style {
         background: Some(color.into()),
@@ -1854,13 +1917,31 @@ impl Desktop {
         .into()
     }
     fn settings_modal(&self) -> Element<'_, Message> {
-        let tab = |label, kind| {
-            control(
-                "settings",
-                label,
-                Message::PreferencesTab(kind),
-                self.preferences.tab == kind,
+        let nav = |name, label, kind| {
+            let selected = self.preferences.tab == kind;
+            button(
+                row![icon(name), text(label).size(13)]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
             )
+            .on_press(Message::PreferencesTab(kind))
+            .padding([9, 12])
+            .width(Length::Fill)
+            .style(move |theme, status| {
+                let mut style = button_style(selected, theme, status);
+                if !selected {
+                    style.border.color = Color::TRANSPARENT;
+                }
+                style
+            })
+        };
+        let group = |label| {
+            container(text(label).size(10).color(MUTED)).padding(iced::Padding {
+                top: 12.0,
+                left: 12.0,
+                bottom: 2.0,
+                ..Default::default()
+            })
         };
         let body: Element<'_,Message>=match self.preferences.tab {
             PreferencesTab::Gateway=>self.preferences_view(),
@@ -1868,7 +1949,8 @@ impl Desktop {
             PreferencesTab::Harness=>self.harness_view(),
             PreferencesTab::Templates=>templates_view(),
             PreferencesTab::General=>column![
-                text("Workspaces & Terminals").size(18),
+                text("Workspaces & Terminals").size(22),
+                settings_card(column![
                 checkbox(self.preferences.draft.notify_exits).label("Notify on process exit").on_toggle(Message::ExitNotifications),
                 text("Notifications report terminal process exits.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.auto_update).label("Install updates automatically").on_toggle(Message::AutoUpdate),
@@ -1877,60 +1959,94 @@ impl Desktop {
                 text_input("Folder where projects from other machines are checked out", &self.preferences.draft.projects_dir).on_input(Message::ProjectsDir),
                 text("Right-click a grayed-out project in the sidebar and choose Check out in project dir to clone it here.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.auto_resume).label("Resume agent sessions on startup").on_toggle(Message::AutoResume),
-                text("Saved running terminals reopen on startup. This option also reopens agent tabs with their native conversation resume.").size(12),
+                text("Saved running terminals reopen on startup. This option also reopens agent tabs with their native conversation resume.").size(12).color(MUTED),
+                ].spacing(14)),
                 text("Repository matching is required for gateway delivery.").size(12).color(CYAN)
             ].spacing(18).into(),
         };
-        container(
-            column![
-                container(
-                    row![
-                        icon("settings"),
-                        text("amux Settings & Gateway Preferences").size(16),
-                        Space::new().width(Length::Fill),
-                        control("x", "", Message::Preferences(false), false)
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center)
-                )
-                .padding(18)
-                .style(|_| surface(Color::from_rgb8(21, 30, 47), false)),
-                container(
-                    row![
-                        tab("Gateway Server", PreferencesTab::Gateway),
-                        tab("Workspaces & Terminals", PreferencesTab::General),
-                        tab("Agent Instructions", PreferencesTab::Harness),
-                        tab("Instruction templates", PreferencesTab::Templates),
-                        tab("Updates", PreferencesTab::Updates)
-                    ]
-                    .spacing(6)
-                )
-                .padding([0, 16]),
-                container(scrollable(body).height(Length::Fill)).padding(20),
-                container(
-                    column![
-                        text(&self.preferences.status).size(11).color(
-                            if self.preferences.status.starts_with("Not saved") {
-                                AMBER
-                            } else {
-                                MUTED
-                            }
-                        ),
-                        row![
-                            Space::new().width(Length::Fill),
-                            control("x", "Cancel", Message::Preferences(false), false),
-                            control("settings", "Save & Close", Message::SavePreferences, true)
-                        ]
-                        .spacing(8)
-                    ]
-                    .spacing(8)
-                )
-                .padding(16),
+        let mode = match self.preferences.current.mode {
+            GatewayMode::Server => "Server mode",
+            GatewayMode::Client => "Client mode",
+            GatewayMode::Legacy => "Legacy gateway",
+        };
+        let header = container(
+            row![
+                container(icon("settings").width(18).height(18))
+                    .padding(9)
+                    .style(|_| surface(Color::from_rgb8(8, 51, 68), true)),
+                column![
+                    text("amux Settings & Gateway Preferences").size(16),
+                    text(format!("v{} · {mode}", env!("CARGO_PKG_VERSION")))
+                        .font(iced::Font::MONOSPACE)
+                        .size(11)
+                        .color(MUTED)
+                ]
+                .spacing(3),
+                Space::new().width(Length::Fill),
+                control("x", "", Message::Preferences(false), false)
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(Alignment::Center),
         )
-        .width(620)
-        .height(650)
+        .padding([14, 20])
+        .style(|_| surface(Color::from_rgb8(21, 30, 47), false));
+        let sidebar = container(
+            column![
+                group("INFRASTRUCTURE"),
+                nav("server", "Gateway Server", PreferencesTab::Gateway),
+                nav(
+                    "terminal",
+                    "Workspaces & Terminals",
+                    PreferencesTab::General
+                ),
+                group("AI & AUTOMATION"),
+                nav("cpu", "Agent Instructions", PreferencesTab::Harness),
+                nav("file", "Instruction Templates", PreferencesTab::Templates),
+                group("SYSTEM"),
+                nav("refresh", "Updates", PreferencesTab::Updates),
+            ]
+            .spacing(4),
+        )
+        .padding(14)
+        .width(230)
+        .height(Length::Fill)
+        .style(|_| surface(PANEL, false));
+        // Right padding keeps content clear of the scrollbar.
+        let content = scrollable(container(body).padding(iced::Padding {
+            top: 24.0,
+            right: 32.0,
+            bottom: 24.0,
+            left: 28.0,
+        }))
+        .width(Length::Fill)
+        .height(Length::Fill);
+        let footer = container(
+            row![
+                text(&self.preferences.status).size(12).color(
+                    if self.preferences.status.starts_with("Not saved") {
+                        AMBER
+                    } else {
+                        MUTED
+                    }
+                ),
+                Space::new().width(Length::Fill),
+                control("x", "Cancel", Message::Preferences(false), false),
+                control("settings", "Save & Close", Message::SavePreferences, true)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([12, 20])
+        .style(|_| surface(Color::from_rgb8(21, 30, 47), false));
+        container(column![
+            header,
+            row![sidebar, content].height(Length::Fill),
+            footer
+        ])
+        .width(Length::Fill)
+        .max_width(940)
+        .height(Length::Fill)
+        .max_height(680)
         .style(|_| surface(Color::from_rgb8(17, 24, 38), true))
         .into()
     }

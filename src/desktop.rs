@@ -1878,10 +1878,7 @@ impl Desktop {
                     .then_some(Message::CheckUpdates),
             ),
         );
-        scrollable(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        content.into()
     }
 
     fn open_preferences(&mut self, tab: PreferencesTab) -> Task<Message> {
@@ -2230,40 +2227,37 @@ impl Desktop {
             .spacing(4)
         };
         let available = !self.embedded.busy && !self.embedded.stopping && !self.migration.busy;
-        let mode = |label, mode| {
-            button(text(label)).on_press_maybe(
+        let mode = |name, label, description, mode| {
+            desktop_design::mode_card(
+                name,
+                label,
+                description,
+                draft.mode == mode,
                 (available && draft.mode != mode).then_some(Message::GatewayMode(mode)),
             )
         };
         let mut content = column![
-            text("Gateway Server").size(20),
-            text("Changing gateways clears this app's task and project lists and reloads them from the selected gateway. Switching back reloads them again.").size(12),
+            text("Gateway Server").size(22),
+            desktop_design::settings_callout("Changing gateways clears this app's task and project lists and reloads them from the selected gateway. Switching back reloads them again."),
+            desktop_design::settings_label("GATEWAY OPERATING MODE"),
             row![
-                mode("Server", GatewayMode::Server),
-                mode("Client", GatewayMode::Client),
-                mode("Legacy gateway", GatewayMode::Legacy)
+                mode("server", "Server", "Host task data locally and serve paired clients.", GatewayMode::Server),
+                mode("cpu", "Client", "Connect to another machine running an amux Server.", GatewayMode::Client),
+                mode("refresh", "Legacy gateway", "Connect to an existing gateway with a URL and API key.", GatewayMode::Legacy)
             ]
-            .spacing(8),
+            .spacing(12),
         ]
-        .spacing(14);
+        .spacing(18);
         content = match draft.mode {
-            GatewayMode::Legacy => content
-                .push(text(
-                    "Connect to an existing gateway with its URL and API key.",
-                ))
-                .push(field(
-                    "Gateway URL",
-                    &draft.url,
-                    PreferenceField::Url,
-                    false,
-                ))
-                .push(field(
-                    "API key",
-                    &draft.api_key,
-                    PreferenceField::ApiKey,
-                    true,
-                ))
-                .push(self.migration_view()),
+            GatewayMode::Legacy => content.push(desktop_design::settings_card(
+                column![
+                    text("Connect to an existing gateway with its URL and API key."),
+                    field("Gateway URL", &draft.url, PreferenceField::Url, false),
+                    field("API key", &draft.api_key, PreferenceField::ApiKey, true),
+                    self.migration_view()
+                ]
+                .spacing(14),
+            )),
             GatewayMode::Server => {
                 let mut controls = column![
                     text("This machine stores task data and serves paired clients. Local connections also use mutual TLS."),
@@ -2324,7 +2318,7 @@ impl Desktop {
                     controls =
                         controls.push(text("Save settings to start or configure the server."));
                 }
-                content.push(controls)
+                content.push(desktop_design::settings_card(controls))
             }
             GatewayMode::Client => {
                 let mut controls = column![
@@ -2348,20 +2342,19 @@ impl Desktop {
                         connection.url, connection.node_id
                     )));
                 }
-                content.push(controls)
+                content.push(desktop_design::settings_card(controls))
             }
         };
         content = content
             .push(text(&self.embedded.status))
+            .push(desktop_design::settings_label("TASK AUTOMATION"))
             .push(checkbox(draft.automatic_notifications).label("Let the amux server assign queued work and send task notifications to agents in this app").on_toggle(Message::AutomaticNotifications))
             .push(text("On amux servers (Server or Client mode) the server decides: idle agents receive eligible tasks oldest first, completed tasks get one review by a different agent, and owners and requesters hear about their tasks. Explicit User review still waits for your decision. A legacy gateway gets no automatic task work; ask an agent directly.").size(12))
             .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
             .push(text("Repository matching is required. Settings are saved on this device.").size(12))
             .push(text(&self.workspaces[self.active].gateway.status).size(13));
-        container(scrollable(content))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        // The settings modal scrolls its content pane.
+        content.into()
     }
 
     fn scope(&self, workspace: usize) -> QueryScope {
