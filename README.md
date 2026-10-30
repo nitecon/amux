@@ -59,8 +59,9 @@ and [agent-memory](https://github.com/nitecon/agent-memory)
 desktop starts gets an `amux mcp` stdio server: amux task actions, memory
 search/store/get and agent-tools read, symbol, search, Markdown and knowledge-graph
 lookups. Each tool runs the bundled command and returns its output unchanged.
-New sessions also start with relevant project memory unless that provider already
-runs the `memory setup hooks` hook. Outside the desktop, use `amux agent <provider> --mcp`.
+New sessions also start with relevant project memory (Claude through MCP instructions,
+Codex through launch-time `developer_instructions` unless you set your own) unless
+that provider already runs the `memory setup hooks` hook. Outside the desktop, use `amux agent <provider> --mcp`.
 
 `whoami` prints the calling agent’s project UUID, terminal agent name and execution
 identity. The desktop registers agents started from shell tabs as well as its

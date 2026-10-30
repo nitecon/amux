@@ -597,11 +597,14 @@ fn launch_agent_once(
     let directory = amux::workspace_launch::external_path(project.canonicalize()?);
     // Codex reads `-c` overrides before its subcommand; Claude's --mcp-config
     // takes several values, so it goes last where it cannot swallow a prompt.
-    let registration = if mcp {
+    let mut registration = if mcp {
         amux::mcp::launch_arguments(provider, &std::env::current_exe()?, &actor.environment())
     } else {
         Vec::new()
     };
+    if mcp && matches!(provider, Provider::Codex) {
+        registration.extend(amux::mcp::codex_context_arguments(&directory));
+    }
     let mut args = args.to_vec();
     if matches!(provider, Provider::Codex) {
         args.splice(0..0, registration);

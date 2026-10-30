@@ -361,7 +361,7 @@ fn directory() -> PathBuf {
 }
 
 /// Run one command and return (output, is_error).
-fn run(bin: Bin, argv: &[String]) -> (String, bool) {
+fn run(bin: Bin, argv: &[String], directory: &Path) -> (String, bool) {
     let Some(path) = bin.path() else {
         return (
             format!("{} is not bundled with this amux", bin.file_name()),
@@ -370,7 +370,7 @@ fn run(bin: Bin, argv: &[String]) -> (String, bool) {
     };
     let output = Command::new(path)
         .args(argv)
-        .current_dir(directory())
+        .current_dir(directory)
         .envs(NO_UPDATE)
         .stdin(Stdio::null())
         .output();
@@ -391,7 +391,7 @@ fn call(params: &Value) -> Value {
     let (text, error) = match available().into_iter().find(|t| t.name == name) {
         None => (format!("unknown tool: {name}"), true),
         Some(tool) => match argv(tool, &params["arguments"]) {
-            Ok(argv) => run(tool.bin, &argv),
+            Ok(argv) => run(tool.bin, &argv, &directory()),
             Err(message) => (message, true),
         },
     };
@@ -416,14 +416,13 @@ pub fn memory_hook_installed(provider: &str) -> bool {
 
 /// Project memory for the start of a session, or None when memory is not
 /// bundled, the provider's own memory hook already supplies it, or it is slow.
-fn startup_context() -> Option<String> {
+pub fn startup_context(provider: &str, project: &Path) -> Option<String> {
     Bin::Memory.path()?;
-    let provider = std::env::var("AMUX_AGENT_PROVIDER").unwrap_or_default();
-    if memory_hook_installed(&provider) {
+    if memory_hook_installed(provider) {
         return None;
     }
-    let project = directory();
     let name = project.file_name()?.to_string_lossy().into_owned();
+    let project = project.to_path_buf();
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(run(
@@ -435,14 +434,25 @@ fn startup_context() -> Option<String> {
                 "--".into(),
                 format!("{name} project: current work, decisions and conventions"),
             ],
+            &project,
         ));
     });
     match receiver.recv_timeout(CONTEXT_WAIT) {
         Ok((text, false)) if !text.trim().is_empty() => Some(format!(
-            "Relevant project memory from amux (memory_search and memory_get fetch more):\n{text}"
+            "Relevant project memory from amux (the amux memory_search and memory_get tools fetch more):\n{text}"
         )),
         _ => None,
     }
+}
+
+/// True when the user's Codex config sets its own developer instructions,
+/// which a launch override would replace.
+fn codex_sets_developer_instructions() -> bool {
+    crate::harness::Environment::discover()
+        .ok()
+        .and_then(|e| std::fs::read_to_string(e.codex_home.join("config.toml")).ok())
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        .is_some_and(|config| config.contains_key("developer_instructions"))
 }
 
 fn respond(id: &Value, message: Value) -> Value {
@@ -467,7 +477,11 @@ fn handle(message: &Value) -> Option<Value> {
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "amux", "version": env!("CARGO_PKG_VERSION")},
             });
-            if let Some(context) = startup_context() {
+            // Codex ignores server instructions; it gets this context at launch.
+            let provider = std::env::var("AMUX_AGENT_PROVIDER").unwrap_or_default();
+            if provider != "codex"
+                && let Some(context) = startup_context(&provider, &directory())
+            {
                 result["instructions"] = context.into();
             }
             result
@@ -546,6 +560,24 @@ pub fn launch_arguments(
                 format!("mcp_servers.amux.env={table}"),
             ]
         }
+    }
+}
+
+/// Codex ignores MCP server instructions, so its startup memory goes in as
+/// launch-time developer instructions, unless the user configures their own.
+pub fn codex_context_arguments(project: &Path) -> Vec<String> {
+    if codex_sets_developer_instructions() {
+        return Vec::new();
+    }
+    match startup_context("codex", project) {
+        Some(context) => vec![
+            "-c".into(),
+            format!(
+                "developer_instructions={}",
+                toml_edit::Value::from(context.as_str())
+            ),
+        ],
+        None => Vec::new(),
     }
 }
 
