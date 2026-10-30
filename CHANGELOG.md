@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.0.59 - 2026-10-30
+
+### Added
+- `amux mcp`: Codex and Claude sessions started by the desktop get an MCP
+  server with amux task actions plus curated agent-tools (read, symbols,
+  search, Markdown, knowledge graph) and memory (search, store, get) tools.
+  Turn it off with Settings > Workspaces & Terminals > Give agents amux tools.
+- Release bundles include pinned, checksum-verified agent-tools v2.0.0 and
+  agent-memory v1.13.9, installed and updated together with amux.
+- New sessions start with relevant project memory unless the provider
+  already runs the memory hook.
+- Copy buttons on the instruction templates.
+
+### Changed
+- Use native internal messaging and retire legacy gateway hosting.
+
 ## v0.0.58 - 2026-10-29
 
 ### Changed
