@@ -8,7 +8,10 @@
   search, Markdown, knowledge graph) and memory (search, store, get) tools.
   Turn it off with Settings > Workspaces & Terminals > Give agents amux tools.
 - Release bundles include pinned, checksum-verified agent-tools v2.0.0 and
-  agent-memory v1.13.9, installed and updated together with amux.
+  agent-memory v1.13.9, installed and updated together with amux. The in-app
+  updater in v0.0.58 and earlier installs only amux itself, so after that
+  first update the bundled tools arrive with the next update; extract the
+  full bundle to get them immediately. Until then sessions get the task tools.
 - New sessions start with relevant project memory unless the provider
   already runs the memory hook.
 - Copy buttons on the instruction templates.
