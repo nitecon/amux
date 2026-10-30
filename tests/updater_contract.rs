@@ -3,6 +3,12 @@
 //! repo-built test executable.
 #![cfg(all(target_arch = "x86_64", any(target_os = "linux", windows)))]
 
+// Frozen shipped updater: exercise the first upgrade with its actual allowlist,
+// not today's implementation configured to look like an older installation.
+#[path = "fixtures/updater/v0_0_58.rs"]
+#[allow(dead_code)]
+mod pre_bundling;
+
 use amux::updates::{self, Channel, Guidance, InstallMethod, ReleaseSource, Running};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -852,6 +858,157 @@ async fn bundled_tools_are_installed_with_amux() {
             let mode = fs::metadata(dir.join(name)).unwrap().permissions().mode();
             assert_eq!(mode & 0o111, 0o111, "{name} is executable");
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_updater_first_upgrade_restores_only_the_installed_release_helpers() {
+    assert_eq!(
+        sha(include_bytes!("fixtures/updater/v0_0_58.rs")),
+        "da089abb8453552332ebb2e6240ff838bb8669bbbae7ace9095b2be53f0355e5",
+        "the shipped updater fixture must stay byte-for-byte unchanged"
+    );
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    Bundle::new(INSTALLED).install(&dir);
+    let server = Server::start();
+    let newer = Bundle::new(NEWER).with_tools();
+    let mut spec = review(NEWER, "2026-10-03T00:00:00Z");
+    spec.archive = Some(archive(&newer.entries()));
+    let old_release = release(&server, review(INSTALLED, "2026-10-02T00:00:00Z"));
+    let new_release = release(&server, spec);
+    server.publish(&[old_release.clone(), new_release.clone()]);
+    let source = server.source();
+    pre_bundling::update(
+        &pre_bundling::Running::at(dir.join(CLI)),
+        &pre_bundling::ReleaseSource {
+            api_url: source.api_url.clone(),
+            download_prefix: source.download_prefix.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(installed_revision(&dir), NEWER);
+    for (name, _) in &newer.tools {
+        assert!(
+            !dir.join(name).exists(),
+            "frozen updater must reproduce the omission"
+        );
+    }
+    let before = snapshot(&dir);
+    // Bootstrap must not turn into a silent application upgrade if a newer
+    // release appears while the just-installed version starts its first agent.
+    server.publish(&[
+        old_release,
+        new_release,
+        release(
+            &server,
+            review(
+                "ddddddd000000000000000000000000000000000",
+                "2026-10-04T00:00:00Z",
+            ),
+        ),
+    ]);
+    let running = Running::at(dir.join(CLI));
+    let result = updates::restore_bundled_tools(&running, &source)
+        .await
+        .unwrap();
+    assert!(result.contains("Restored bundled tools"), "{result}");
+    for (name, bytes) in before {
+        assert_eq!(
+            fs::read(dir.join(&name)).unwrap(),
+            bytes,
+            "application payload {name} changed"
+        );
+    }
+    for (name, bytes) in &newer.tools {
+        assert_eq!(&fs::read(dir.join(name)).unwrap(), bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o111,
+                0
+            );
+        }
+    }
+    assert!(!updates::restart_status(&running).required);
+    let requests = server.requests.load(std::sync::atomic::Ordering::SeqCst);
+    updates::restore_bundled_tools(&running, &source)
+        .await
+        .unwrap();
+    assert_eq!(
+        requests,
+        server.requests.load(std::sync::atomic::Ordering::SeqCst),
+        "complete bundle must do no network work"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_revision_update_repairs_missing_helpers_without_replacing_the_app() {
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    let bundle = Bundle::new(INSTALLED).with_tools();
+    bundle.install(&dir); // Equivalent on-disk state after the old updater.
+    fs::write(dir.join(tool("memory")), b"older unpinned memory").unwrap();
+    let mut before = snapshot(&dir);
+    before.remove(&tool("memory"));
+    let server = Server::start();
+    let mut spec = review(INSTALLED, "2026-10-02T00:00:00Z");
+    spec.archive = Some(archive(&bundle.entries()));
+    server.publish(&[release(&server, spec)]);
+    let result = updates::update(&Running::at(dir.join(CLI)), &server.source())
+        .await
+        .unwrap();
+    assert!(result.contains("Restored bundled tools"), "{result}");
+    for (name, bytes) in before {
+        assert_eq!(fs::read(dir.join(name)).unwrap(), bytes);
+    }
+    for (name, bytes) in &bundle.tools {
+        assert_eq!(&fs::read(dir.join(name)).unwrap(), bytes);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn helper_restore_rejects_changed_or_tampered_release_payloads() {
+    for tamper_bytes in [true, false] {
+        let root = fixture_root();
+        let dir = root.path().join("bundle");
+        let bundle = Bundle::new(INSTALLED).with_tools();
+        bundle.install(&dir);
+        let before = snapshot(&dir);
+        let server = Server::start();
+        let mut entries = bundle.entries();
+        if tamper_bytes {
+            let helper = tool("memory");
+            entries
+                .iter_mut()
+                .find(|(name, _)| name == &helper)
+                .unwrap()
+                .1 = Entry::File(b"tampered".to_vec());
+        } else {
+            // Even a self-consistent re-published archive must match the
+            // installed metadata, rather than changing the immutable pin.
+            let changed = Bundle {
+                tools: vec![
+                    (tool("memory"), b"different pin".to_vec()),
+                    (tool("agent-tools"), b"different pin".to_vec()),
+                ],
+                ..Bundle::new(INSTALLED)
+            };
+            entries = changed.entries();
+        }
+        let mut spec = review(INSTALLED, "2026-10-02T00:00:00Z");
+        spec.archive = Some(archive(&entries));
+        server.publish(&[release(&server, spec)]);
+        let result =
+            updates::restore_bundled_tools(&Running::at(dir.join(CLI)), &server.source()).await;
+        assert!(result.is_err());
+        assert_eq!(
+            snapshot(&dir),
+            before,
+            "failed repair changed installed files"
+        );
     }
 }
 

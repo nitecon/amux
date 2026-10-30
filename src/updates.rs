@@ -260,6 +260,63 @@ pub fn cli_update() -> Result<String> {
 /// release. Installation failures restore the previous bundle where possible;
 /// incomplete rollback is reported explicitly.
 pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String> {
+    apply(running, source, false).await
+}
+
+/// Restore helpers omitted by older updaters, without changing the installed
+/// application revision or following a newer release.
+pub async fn restore_bundled_tools(running: &Running, source: &ReleaseSource) -> Result<String> {
+    apply(running, source, true).await
+}
+
+/// Called before starting an MCP-enabled agent. Complete bundles and local
+/// development builds do no network work. Errors can be reported without
+/// preventing the agent's ordinary task tools from starting.
+pub fn bootstrap_bundled_tools() -> Result<()> {
+    let running = Running::capture()?;
+    let Some(platform) = Platform::current().filter(|p| p.os != "macos") else {
+        return Ok(());
+    };
+    let Some(dir) = running.exe.parent() else {
+        return Ok(());
+    };
+    let Ok(build) = read_build(&dir.join(BUILD_FILE)) else {
+        return Ok(());
+    };
+    if tools_to_restore(dir, &build, &platform).is_empty() {
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                restore_bundled_tools(&running, &ReleaseSource::github()),
+            )
+            .await
+            .context("restoring bundled tools timed out; retry with amux --update")?
+        })?;
+    Ok(())
+}
+
+fn tools_to_restore(dir: &Path, build: &Build, platform: &Platform) -> HashSet<String> {
+    platform
+        .tools
+        .iter()
+        .filter(|name| {
+            build.bundled_sha256.get(*name).is_some_and(|expected| {
+                match sha256_file(&dir.join(name)) {
+                    Ok(actual) => &actual != expected,
+                    Err(_) => true,
+                }
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+async fn apply(running: &Running, source: &ReleaseSource, restore_only: bool) -> Result<String> {
     let detected = detect(&running.exe);
     let dir = match &detected.method {
         InstallMethod::Direct { dir, .. } => dir.clone(),
@@ -302,9 +359,35 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
         "installation changed before update lock was acquired; nothing was changed"
     );
     let stale = cleanup_backups(&dir);
+    let installed_build = if platform.os == "macos" {
+        None
+    } else {
+        Some(read_build(&dir.join(BUILD_FILE)).context("reading installed BUILD.json")?)
+    };
+    let missing = if platform.os != "macos" {
+        installed_build
+            .as_ref()
+            .map(|build| tools_to_restore(&dir, build, &platform))
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+    if restore_only && missing.is_empty() {
+        return Ok("Bundled tools are already present.".into());
+    }
     let releases = fetch_releases(source).await?;
     let selection = select(&releases, &detected, source);
-    let Some(release) = selection.available else {
+    let repair = !missing.is_empty() && (restore_only || selection.available.is_none());
+    let release = if repair {
+        selection.installed
+    } else {
+        selection.available
+    };
+    let Some(release) = release else {
+        ensure!(
+            !repair,
+            "cannot find the installed release to restore its bundled tools; download the complete bundle from {RELEASES_PAGE}"
+        );
         return Ok(match selection.note {
             Some(note) => format!("No update applied: {note}"),
             None => "amux is up to date.".into(),
@@ -356,6 +439,9 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
         .tempdir_in(&root)
         .with_context(|| format!("cannot write to {}", root.display()))?;
     let installed = |build: &Build| -> Result<()> {
+        if repair {
+            return Ok(());
+        }
         if let InstallMethod::Direct { revision, .. } = &detected.method {
             ensure!(
                 &build.revision != revision,
@@ -383,6 +469,26 @@ pub async fn update(running: &Running, source: &ReleaseSource) -> Result<String>
     }
     let names = extract(&bytes, &platform, staging.path())?;
     let build = verify_staged(staging.path(), &names, &platform, release)?;
+    if repair {
+        let previous = installed_build.context("installed BUILD.json is missing")?;
+        ensure!(
+            build.revision == previous.revision
+                && build.binary_sha256 == previous.binary_sha256
+                && build.gui_binary_sha256 == previous.gui_binary_sha256
+                && build.bundled_sha256 == previous.bundled_sha256,
+            "release bundle differs from the installed BUILD.json; nothing was changed"
+        );
+        ensure!(
+            missing.is_subset(&names),
+            "release bundle is missing the required bundled tools"
+        );
+        install(&dir, staging.path(), &missing, &platform, false)?;
+        return Ok(format!(
+            "Restored bundled tools for the installed {} release in {}.",
+            release.tag_name,
+            dir.display()
+        ));
+    }
     installed(&build)?;
 
     let cli_is_self = same_file(&dir.join(&platform.cli), std::env::current_exe().ok());

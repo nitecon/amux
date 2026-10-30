@@ -595,6 +595,14 @@ fn launch_agent_once(
     actor: &AgentIdentity,
 ) -> Result<std::process::ExitStatus> {
     let directory = amux::workspace_launch::external_path(project.canonicalize()?);
+    if mcp
+        && std::env::var_os("AMUX_BUNDLED_DIR").is_none()
+        && let Err(error) = amux::updates::bootstrap_bundled_tools()
+    {
+        eprintln!(
+            "amux: bundled tools could not be restored: {error:#}. Retry with amux --update."
+        );
+    }
     // Codex reads `-c` overrides before its subcommand; Claude's --mcp-config
     // takes several values, so it goes last where it cannot swallow a prompt.
     let mut registration = if mcp {

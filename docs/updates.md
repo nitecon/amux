@@ -19,6 +19,16 @@ files still in use can remain as backup images until a later update can remove
 them. Failures report whether restoration was complete; retain any reported
 backup files if manual recovery is necessary.
 
+Updaters shipped before bundled agent-tools and memory skip those two files.
+After such an upgrade, starting an MCP-enabled agent restores missing or mismatched
+helpers from the exact installed release. Archive checksums, executable hashes and
+the installed build's helper pins are verified before installation; the application
+revision stays unchanged. If recovery cannot finish (for example while offline),
+the agent still starts with available tools and reports the failure. Run
+`amux --update` to retry recovery; an otherwise up-to-date installation can repair
+its bundled helpers without replacing either amux executable. A release that is
+no longer discoverable requires downloading its complete bundle manually.
+
 On macOS the app replaces the whole `amux.app` (Apple Silicon releases from
 v0.0.28 on). It verifies the archive checksums, `Contents/Resources/BUILD.json`
 and the app's code signature seal, then renames the new app into place beside
