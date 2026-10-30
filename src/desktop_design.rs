@@ -645,7 +645,7 @@ impl Desktop {
         .style(|_| surface(Color::from_rgb8(15, 21, 32), false));
         let mut sidebar = column![
             row![
-                text("WORKSPACES").size(11).color(MUTED),
+                text("LOCAL PROJECTS").size(11).color(MUTED),
                 Space::new().width(Length::Fill),
                 control("plus", "New", Message::NewWorkspace, true)
             ]
@@ -802,7 +802,7 @@ impl Desktop {
         }
         let projects = self.sidebar_projects();
         if !projects.is_empty() {
-            sidebar = sidebar.push(text("PROJECTS").size(11).color(MUTED));
+            sidebar = sidebar.push(text("REMOTE PROJECTS").size(11).color(MUTED));
         }
         for project in projects {
             let mut details = column![].spacing(6);
@@ -817,14 +817,16 @@ impl Desktop {
             let row = mouse_area(
                 container(
                     row![
-                        text(&project.ident).size(12).color(MUTED),
+                        text(&project.ident).size(13).color(MUTED),
                         Space::new().width(Length::Fill),
                         text(place).size(10).color(MUTED)
                     ]
+                    .spacing(8)
                     .align_y(Alignment::Center),
                 )
-                .padding([6, 8])
-                .width(Length::Fill),
+                .padding([10, 12])
+                .width(Length::Fill)
+                .style(|_| surface(CARD, true)),
             )
             .on_right_press(action(Action::ProjectMenu(project.ident.clone())));
             sidebar = sidebar.push(
@@ -841,7 +843,12 @@ impl Desktop {
         }
         let sidebar = container(
             column![
-                scrollable(sidebar).height(Length::Fill),
+                // Right padding keeps the cards clear of the scrollbar.
+                scrollable(container(sidebar).padding(iced::Padding {
+                    right: 12.0,
+                    ..Default::default()
+                }))
+                .height(Length::Fill),
                 button(
                     row![
                         icon("settings"),
