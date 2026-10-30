@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.58 - 2026-10-29
+
+### Changed
+- Label the sidebar sections Local Projects and Remote Projects, show each
+  remote project in its own card, and keep cards clear of the scrollbar.
+- Redesign the settings window: grouped navigation on the left, a header with
+  version and gateway mode, gateway modes as selectable cards, settings grouped
+  in panels, and padded content that no longer clips at the bottom.
+
 ## v0.0.57 - 2026-10-29
 
 ### Changed
