@@ -18,8 +18,8 @@ credentials, deploy the gateway, launch executors or deliver prompts.
 The wrapper session is amux's execution identity, not a provider-native
 conversation ID. A gateway operator issues the machine credential with
 `gateway task-machine issue`. Supply it as `AMUX_GATEWAY_MACHINE_ID` and
-`AMUX_GATEWAY_MACHINE_KEY`, alongside `AMUX_GATEWAY_URL`, `AMUX_GATEWAY_PROJECT`
-and `AMUX_GATEWAY_KEY`; amux never writes the machine key to disk.
+`AMUX_GATEWAY_MACHINE_KEY`, alongside `AMUX_GATEWAY_PROJECT`; dispatch uses the
+enrolled Server or Client connection. amux never writes the machine key to disk.
 
 Each generation gets its own session secret: 32 bytes from the OS random source,
 stored hex-encoded under the amux state directory in `dispatch/keys/` with
