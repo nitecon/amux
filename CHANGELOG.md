@@ -9,9 +9,9 @@
   Turn it off with Settings > Workspaces & Terminals > Give agents amux tools.
 - Release bundles include pinned, checksum-verified agent-tools v2.0.0 and
   agent-memory v1.13.9, installed and updated together with amux. The in-app
-  updater in v0.0.58 and earlier installs only amux itself, so after that
-  first update the bundled tools arrive with the next update; extract the
-  full bundle to get them immediately. Until then sessions get the task tools.
+  updater in v0.0.58 and earlier installs only amux itself; the first
+  MCP-enabled agent start then restores the tools from the installed release
+  after verifying their checksums (`amux --update` retries if offline).
 - New sessions start with relevant project memory unless the provider
   already runs the memory hook.
 - Copy buttons on the instruction templates.
