@@ -33,6 +33,7 @@ pub(super) enum Filter {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Action {
+    CopyTemplate(&'static str),
     ToggleTasks,
     DetachTasks,
     DockTasks,
@@ -148,12 +149,23 @@ fn templates_view<'a>() -> Element<'a, Message> {
         );
     }
     for template in TEMPLATES {
-        content = content.push(text(template.name).size(15)).push(
-            container(text(template.text).font(iced::Font::MONOSPACE).size(12))
-                .padding(10)
-                .width(Length::Fill)
-                .style(|_| surface(CARD, true)),
-        );
+        content = content
+            .push(
+                row![
+                    text(template.name).size(15),
+                    Space::new().width(Length::Fill),
+                    button(text("Copy template").size(12))
+                        .on_press(action(Action::CopyTemplate(template.text))),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .push(
+                container(text(template.text).font(iced::Font::MONOSPACE).size(12))
+                    .padding(10)
+                    .width(Length::Fill)
+                    .style(|_| surface(CARD, true)),
+            );
     }
     content.into()
 }
@@ -419,6 +431,7 @@ fn tabs(workspace: &Workspace) -> impl Iterator<Item = &Tab> {
 impl Desktop {
     pub(super) fn design_message(&mut self, message: Action) -> Task<Message> {
         match message {
+            Action::CopyTemplate(content) => return iced::clipboard::write(content.to_owned()),
             Action::ToggleTasks => self.design.tasks_collapsed = !self.design.tasks_collapsed,
             Action::DetachTasks => {
                 if self.design.task_window.is_none() {
