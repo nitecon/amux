@@ -11,6 +11,25 @@ fn codex_context_respects_user_instructions_and_the_memory_hook() {
 
     std::fs::write(&config, "developer_instructions = \"mine\"\n").unwrap();
     assert!(amux::mcp::codex_context_arguments(project).is_empty());
+    std::fs::write(
+        &config,
+        "[profiles.work]\ndeveloper_instructions = \"mine\"\n",
+    )
+    .unwrap();
+    assert!(amux::mcp::codex_context_arguments(project).is_empty());
+
+    // Trusted project config, with nothing at the user level.
+    std::fs::write(&config, "").unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let nested = repo.path().join("src");
+    std::fs::create_dir_all(repo.path().join(".codex")).unwrap();
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(
+        repo.path().join(".codex").join("config.toml"),
+        "developer_instructions = \"project rules\"\n",
+    )
+    .unwrap();
+    assert!(amux::mcp::codex_context_arguments(&nested).is_empty());
 
     std::fs::write(
         &config,

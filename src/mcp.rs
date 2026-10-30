@@ -445,14 +445,21 @@ pub fn startup_context(provider: &str, project: &Path) -> Option<String> {
     }
 }
 
-/// True when the user's Codex config sets its own developer instructions,
-/// which a launch override would replace.
-fn codex_sets_developer_instructions() -> bool {
-    crate::harness::Environment::discover()
+/// True when any Codex config that may apply sets developer instructions,
+/// which a launch override would replace: the user config (any profile) or a
+/// project `.codex/config.toml` in the project folder or a parent.
+fn codex_sets_developer_instructions(project: &Path) -> bool {
+    let user = crate::harness::Environment::discover()
         .ok()
-        .and_then(|e| std::fs::read_to_string(e.codex_home.join("config.toml")).ok())
-        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
-        .is_some_and(|config| config.contains_key("developer_instructions"))
+        .map(|e| e.codex_home.join("config.toml"));
+    user.into_iter()
+        .chain(
+            project
+                .ancestors()
+                .map(|d| d.join(".codex").join("config.toml")),
+        )
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .any(|text| text.contains("developer_instructions"))
 }
 
 fn respond(id: &Value, message: Value) -> Value {
@@ -574,7 +581,7 @@ pub fn launch_arguments(
 /// Codex ignores MCP server instructions, so its startup memory goes in as
 /// launch-time developer instructions, unless the user configures their own.
 pub fn codex_context_arguments(project: &Path) -> Vec<String> {
-    if codex_sets_developer_instructions() {
+    if codex_sets_developer_instructions(project) {
         return Vec::new();
     }
     match startup_context("codex", project) {
