@@ -140,13 +140,22 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
     use std::{io::Read, process::Stdio};
     let parent = directory(parent.to_str().context("Directory must be valid Unicode")?)?;
     let destination = parent.join(clone_name(&repository)?);
-    // Reserve a new folder atomically; never clone into an existing checkout.
-    std::fs::create_dir(&destination).with_context(|| {
-        format!(
-            "Cannot create {}. Choose a parent without an existing folder of that name",
-            destination.display()
-        )
-    })?;
+    // Reserve atomically so a concurrent checkout cannot be overwritten. An
+    // existing matching checkout can be opened without changing its contents.
+    if let Err(error) = std::fs::create_dir(&destination) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            return tokio::task::spawn_blocking(move || {
+                existing_checkout(&parent, &destination, &repository)
+            })
+            .await?;
+        }
+        return Err(error).with_context(|| {
+            format!(
+                "Cannot create {}. Choose a parent without an existing folder of that name",
+                destination.display()
+            )
+        });
+    }
     let mut log = tempfile::tempfile()?;
     let mut command = tokio::process::Command::new("git");
     command
@@ -176,6 +185,59 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
         "Check Git installation and repository access.",
         destination.display()
     )
+}
+
+fn existing_checkout(parent: &Path, destination: &Path, repository: &str) -> Result<PathBuf> {
+    let conflict = || {
+        format!(
+            "{} already exists and is not a checkout of the requested repository. Choose another parent folder",
+            destination.display()
+        )
+    };
+    let directory = external_path(destination.canonicalize().with_context(conflict)?);
+    let (status, root) = crate::git::observe(
+        &directory,
+        &["rev-parse", "--show-toplevel"],
+        "checkout root",
+    )
+    .with_context(conflict)?;
+    anyhow::ensure!(
+        status.success()
+            && root.len() <= 4096
+            && Path::new(root.trim_end_matches(['\r', '\n']))
+                .canonicalize()
+                .is_ok_and(|root| external_path(root) == directory),
+        "{}",
+        conflict()
+    );
+    let (status, origin) = crate::git::observe(
+        &directory,
+        &["config", "--local", "--get", "remote.origin.url"],
+        "checkout origin",
+    )
+    .with_context(conflict)?;
+    let origin = origin.trim_end_matches(['\r', '\n']);
+    let matches = match (
+        crate::gateway_project::repository(origin),
+        crate::gateway_project::repository(repository.trim()),
+    ) {
+        (Some(origin), Some(repository)) => origin == repository,
+        // Local repositories are also accepted by git clone. Resolve relative
+        // paths against the same directories Git uses for each URL.
+        (None, None) if !origin.is_empty() => parent
+            .join(repository.trim())
+            .canonicalize()
+            .ok()
+            .zip(directory.join(origin).canonicalize().ok())
+            .is_some_and(|(requested, existing)| requested == existing),
+        _ => false,
+    };
+    anyhow::ensure!(
+        status.success() && origin.len() <= 4096 && matches,
+        "{}",
+        conflict()
+    );
+    Ok(external_path(directory))
 }
 
 #[cfg(test)]
@@ -298,7 +360,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clone_creates_checkout_and_refuses_existing_destination() {
+    async fn clone_creates_checkout_and_reuses_existing_destination() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
         std::fs::create_dir_all(&root).unwrap();
         let fixture = tempfile::tempdir_in(root).unwrap();
@@ -318,14 +380,130 @@ mod tests {
             .unwrap();
         assert!(checkout.join(".git").is_dir());
         std::fs::write(checkout.join("keep"), "untouched").unwrap();
-        assert!(
+        assert_eq!(
             clone_repository(parent, origin.display().to_string())
                 .await
-                .is_err()
+                .unwrap(),
+            checkout
         );
         assert_eq!(
             std::fs::read_to_string(checkout.join("keep")).unwrap(),
             "untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn clone_reuses_matching_remote_across_transports_and_preserves_changes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let checkout = fixture.path().join("project");
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(fixture.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "project"]);
+        git(&[
+            "-C",
+            "project",
+            "remote",
+            "add",
+            "origin",
+            "git@example.org:team/project.git",
+        ]);
+        std::fs::write(checkout.join("keep"), "local changes").unwrap();
+        assert_eq!(
+            clone_repository(
+                fixture.path().into(),
+                "https://example.org/team/project.git".into()
+            )
+            .await
+            .unwrap(),
+            external_path(checkout.canonicalize().unwrap())
+        );
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("keep")).unwrap(),
+            "local changes"
+        );
+        // Same folder name from a different owner must never open this checkout.
+        assert!(
+            clone_repository(
+                fixture.path().into(),
+                "https://example.org/other/project.git".into()
+            )
+            .await
+            .is_err()
+        );
+        git(&["-C", "project", "remote", "remove", "origin"]);
+        assert!(
+            clone_repository(
+                fixture.path().into(),
+                "https://example.org/team/project.git".into()
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn clone_rejects_existing_non_checkout_without_touching_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        // A child of a matching repository is not itself a checkout root.
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(fixture.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(fixture.path())
+                .args([
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://example.org/team/project.git"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let destination = fixture.path().join("project");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep"), "untouched").unwrap();
+        assert!(
+            clone_repository(
+                fixture.path().into(),
+                "https://example.org/team/project.git".into()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination.join("keep")).unwrap(),
+            "untouched"
+        );
+        std::fs::remove_file(destination.join("keep")).unwrap();
+        std::fs::remove_dir(&destination).unwrap();
+        std::fs::write(&destination, "existing file").unwrap();
+        assert!(
+            clone_repository(
+                fixture.path().into(),
+                "https://example.org/team/project.git".into()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination).unwrap(),
+            "existing file"
         );
     }
 }
