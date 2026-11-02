@@ -150,6 +150,8 @@ enum MessageOperation {
 
 #[derive(Subcommand)]
 enum TaskOperation {
+    /// Read-only local Git work inventory with optional gateway and exact-SHA CI facts.
+    Report(amux::work_report::Args),
     /// List tasks (default: todo and in_progress).
     List {
         /// Comma-separated statuses: todo, in_progress, user_review, done, cancelled.
@@ -462,6 +464,82 @@ fn run(cli: Cli) -> Result<u8> {
             json,
             operation,
         } => {
+            // Reports must work without enrollment and must not start a server,
+            // register projects, assign an actor, or write task/release state.
+            if let TaskOperation::Report(args) = &operation {
+                let runtime = tokio::runtime::Runtime::new()?;
+                let report = runtime.block_on(async {
+                    let mut report = amux::work_report::local(&project_dir, args).await?;
+                    if args.offline {
+                        report.partial.push(
+                            "Offline: gateway tasks/reviews and GitHub CI not requested".into(),
+                        );
+                    } else {
+                        let tasks = async {
+                            let config = amux::gateway_preferences::GatewayPreferences::load(
+                                &identity::state_directory()?.join("gateway-preferences.json"),
+                            )?
+                            .context("No saved gateway connection")?;
+                            if let Some(url) = &gateway_url {
+                                anyhow::ensure!(
+                                    amux::gateway_transport::origin(&config.resolved_url()?, true)?
+                                        == amux::gateway_transport::origin(url, true)?,
+                                    "Gateway override differs from enrolled connection"
+                                );
+                            }
+                            let gateway = config.gateway()?;
+                            let project = if let Some(project) = &project {
+                                project.clone()
+                            } else {
+                                let projects = gateway.projects().await?;
+                                let root = amux::project_identity::resolve(&project_dir)?.directory;
+                                if let Some(remote) =
+                                    amux::gateway_project::configured_origin(&root)?
+                                {
+                                    amux::gateway_project::matching(&remote, &projects)?.context(
+                                        "No existing gateway project maps to this repository",
+                                    )?
+                                } else {
+                                    let binding = amux::gateway_project::bound_project_at(
+                                        &identity::state_directory()?,
+                                        &root,
+                                    )?
+                                    .context("No existing project binding")?;
+                                    anyhow::ensure!(
+                                        amux::gateway_project::local_only(&binding, &projects)?,
+                                        "Invalid project binding"
+                                    );
+                                    binding
+                                }
+                            };
+                            report.enrich_tasks(&gateway, &project).await
+                        };
+                        match tokio::time::timeout(std::time::Duration::from_secs(60), tasks).await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => report
+                                .partial
+                                .push(format!("Gateway task/review facts unavailable: {error:#}")),
+                            Err(_) => report.partial.push(
+                                "Gateway task/review lookup timed out; inventory may be incomplete"
+                                    .into(),
+                            ),
+                        }
+                        if let Err(error) = report.enrich_ci(&project_dir).await {
+                            report
+                                .partial
+                                .push(format!("Exact-SHA GitHub CI facts unavailable: {error:#}"));
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(report)
+                })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print!("{}", report.render());
+                }
+                return Ok(0);
+            }
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
                 let (gateway, _server, preferences) = cli_gateway(gateway_url).await?;

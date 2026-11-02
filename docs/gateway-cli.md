@@ -257,6 +257,41 @@ task comment. Submission does not mark the task done. Agents started with amux
 MCP tools also run Claude Code with its commit and pull request attribution
 turned off.
 
+## Work reports
+
+```sh
+amux tasks report v0.0.58..v0.0.59
+amux tasks report --since 2026-10-29 --until 2026-10-31
+amux tasks report v0.0.58..HEAD --offline
+```
+
+Reports read local Git history without GitHub compare limits. Ref ranges resolve
+both endpoints to immutable commit SHAs and exclude the first endpoint. Date
+windows use commit timestamps reachable from HEAD, include the start, and exclude
+the end; dates are UTC midnight or explicit RFC3339 timestamps. Files are the
+union touched by the selected commits, including merge-parent changes and files
+later reverted. Shallow history is explicitly marked incomplete.
+
+Commits are grouped by valid `AmuxID:` trailers; commits without an ID remain
+visible. With a saved, reachable gateway connection, the report adds current task
+titles/statuses and each task's latest linked review task and non-system comment
+verbatim. It also lists tasks completed within the endpoint commit-time window
+(or supplied date window) without a matching trailer in the selected commits as
+**completed, not released**. This is a correlation signal: untrailered commits may
+still contain that work. For ref ranges the completion-time window excludes the
+first endpoint timestamp and includes the last.
+
+GitHub CI is fetched with `gh api`, paginated and filtered to the exact endpoint
+SHA. Each workflow run retains its run ID, attempt, status and conclusion; a green
+branch status never substitutes for an endpoint's result. Missing gateway data,
+missing `gh`, authentication failures, missing CI runs and offline mode produce a
+**partial** report with an as-of timestamp. `--json` provides the same facts as
+structured output.
+
+The command never creates a project, starts the local server, submits a task
+mutation, changes Git state, or gates completion or releases. Outcome synthesis
+and decisions remain ordinary agent-written comments on a report task.
+
 ## Desktop task submission
 
 The gateway sidebar accepts a task title and multiline handoff context for the
