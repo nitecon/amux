@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.60 - 2026-11-02
+
+### Fixed
+- Reuse an existing project checkout when its repository root and origin match
+  the requested project, including equivalent SSH/HTTPS origins and resolved
+  local origins, instead of trying to clone it again. Conflicting directories,
+  nested checkouts, files and missing origins remain errors.
+
 ## v0.0.59 - 2026-10-30
 
 ### Added
