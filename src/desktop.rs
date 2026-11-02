@@ -114,6 +114,7 @@ enum Message {
     TasksLoaded(QueryScope, Result<serde_json::Value, String>),
     GatewayStats(Result<amux::gateway::PresenceSummary, String>),
     ProjectsLoaded(u64, Result<Vec<amux::gateway::ProjectOverview>, String>),
+    LocalProjectsLoaded(u64, Vec<desktop_workspace::LocalProject>),
     RoutingLoaded(
         QueryScope,
         Result<(amux::task_routing::Directory, Option<String>), String>,
@@ -936,6 +937,9 @@ impl Desktop {
             }
             Message::GatewayStats(result) => self.design.gateway_stats = result.ok(),
             Message::ProjectsLoaded(epoch, result) => self.projects_loaded(epoch, result),
+            Message::LocalProjectsLoaded(revision, projects) => {
+                self.local_projects_loaded(revision, projects);
+            }
             Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
             Message::TaskTarget(choice) => {
                 let panel = &mut self.workspaces[self.active].gateway;
@@ -1640,7 +1644,7 @@ impl Desktop {
                         self.projects_tick(),
                     ])
                 };
-                return Task::batch([gateway_ticks, updates]);
+                return Task::batch([gateway_ticks, updates, self.local_projects_tick()]);
             }
         }
         Task::none()

@@ -4,6 +4,42 @@ use amux::workspace_launch;
 use desktop_design::browser::{BrowserMessage, FileBrowser};
 use iced::widget::column;
 
+#[derive(Debug, Clone)]
+pub(super) struct LocalProject {
+    pub directory: PathBuf,
+    pub canonical_remote: Option<String>,
+}
+
+/// Inspect immediate checkout folders only, without registering or changing them.
+fn discover_local_projects(parent: &std::path::Path) -> Vec<LocalProject> {
+    let Ok(parent) = workspace_launch::directory(&parent.to_string_lossy()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut projects: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() || !path.join(".git").exists() {
+                return None;
+            }
+            let directory = workspace_launch::external_path(path.canonicalize().ok()?);
+            let canonical_remote = amux::gateway_project::configured_origin(&directory)
+                .ok()
+                .flatten();
+            Some(LocalProject {
+                directory,
+                canonical_remote,
+            })
+        })
+        .collect();
+    projects.sort_by(|a, b| a.directory.cmp(&b.directory));
+    projects.dedup_by(|a, b| a.directory == b.directory);
+    projects
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Kind {
     #[default]
@@ -45,6 +81,87 @@ pub(super) struct WorkspaceDialog {
 }
 
 impl Desktop {
+    pub(super) fn local_projects_tick(&mut self) -> Task<Message> {
+        let directory = PathBuf::from(self.preferences.current.projects_dir.trim());
+        if self
+            .design
+            .local_projects_polled
+            .as_ref()
+            .is_some_and(|(root, at)| root == &directory && at.elapsed() < Duration::from_secs(30))
+        {
+            return Task::none();
+        }
+        if self
+            .design
+            .local_projects_polled
+            .as_ref()
+            .is_none_or(|(root, _)| root != &directory)
+        {
+            self.design.local_projects.clear();
+        }
+        self.design.local_projects_revision += 1;
+        let revision = self.design.local_projects_revision;
+        self.design.local_projects_polled = Some((directory.clone(), Instant::now()));
+        if directory.as_os_str().is_empty() {
+            return Task::none();
+        }
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || discover_local_projects(&directory))
+                    .await
+                    .unwrap_or_default()
+            },
+            move |projects| Message::LocalProjectsLoaded(revision, projects),
+        )
+    }
+
+    pub(super) fn local_projects_loaded(&mut self, revision: u64, projects: Vec<LocalProject>) {
+        if revision == self.design.local_projects_revision
+            && self
+                .design
+                .local_projects_polled
+                .as_ref()
+                .is_some_and(|(directory, _)| {
+                    directory == std::path::Path::new(self.preferences.current.projects_dir.trim())
+                })
+        {
+            self.design.local_projects = projects;
+        }
+    }
+
+    pub(super) fn unadded_local_projects(&self) -> Vec<&LocalProject> {
+        if self
+            .design
+            .local_projects_polled
+            .as_ref()
+            .is_none_or(|(directory, _)| {
+                directory != std::path::Path::new(self.preferences.current.projects_dir.trim())
+            })
+        {
+            return Vec::new();
+        }
+        self.design
+            .local_projects
+            .iter()
+            .filter(|project| {
+                !self
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.directory == project.directory)
+            })
+            .collect()
+    }
+
+    pub(super) fn open_local_project(&mut self, directory: PathBuf) -> Task<Message> {
+        if self.workspace_dialog.open {
+            return Task::none();
+        }
+        let open = self.open_workspace_dialog();
+        self.workspace_dialog.folder = directory.display().to_string();
+        self.workspace_dialog.folders = Some(FileBrowser::new(directory, false, None));
+        open
+    }
+
     // Indices change when a workspace closes. Route delayed responses by their
     // runtime workspace identity before applying the existing revision fences.
     pub(super) fn retarget_workspace_message(&self, message: Message) -> Option<Message> {
@@ -562,6 +679,129 @@ fn browser_footer<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_project_discovery_lists_only_immediate_checkouts_without_modifying_them() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        let parent = workspace_launch::external_path(fixture.path().canonicalize().unwrap());
+        for name in ["zeta", "alpha with spaces", "ordinary/nested"] {
+            let directory = parent.join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&directory)
+                    .args(["init", "--quiet"])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let alpha = parent.join("alpha with spaces");
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&alpha)
+                .args([
+                    "config",
+                    "remote.origin.url",
+                    "https://github.com/example/alpha.git"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let before = std::fs::read(alpha.join(".git/config")).unwrap();
+        let projects = discover_local_projects(&parent);
+        assert_eq!(
+            projects
+                .iter()
+                .map(|p| p.directory.clone())
+                .collect::<Vec<_>>(),
+            [alpha.clone(), parent.join("zeta")]
+        );
+        assert_eq!(
+            projects[0].canonical_remote.as_deref(),
+            Some("github.com/example/alpha")
+        );
+        assert!(projects[1].canonical_remote.is_none());
+        assert_eq!(std::fs::read(alpha.join(".git/config")).unwrap(), before);
+        assert!(discover_local_projects(&parent.join("missing")).is_empty());
+    }
+
+    #[test]
+    fn unadded_local_projects_hide_open_and_remote_duplicates_and_use_existing_add_dialog() {
+        let mut app = super::super::tests::desktop();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        let parent = workspace_launch::external_path(fixture.path().canonicalize().unwrap());
+        let opened = parent.join("opened");
+        let unopened = parent.join("unopened");
+        std::fs::create_dir(&opened).unwrap();
+        std::fs::create_dir(&unopened).unwrap();
+        app.preferences.current.projects_dir = parent.display().to_string();
+        app.workspaces[0].directory = opened.clone();
+        drop(app.local_projects_tick());
+        let revision = app.design.local_projects_revision;
+        let projects = vec![
+            LocalProject {
+                directory: opened,
+                canonical_remote: None,
+            },
+            LocalProject {
+                directory: unopened.clone(),
+                canonical_remote: Some("github.com/example/repo".into()),
+            },
+        ];
+        app.local_projects_loaded(revision, projects.clone());
+        assert_eq!(
+            app.unadded_local_projects()
+                .iter()
+                .map(|p| &p.directory)
+                .collect::<Vec<_>>(),
+            [&unopened]
+        );
+        app.design.projects = vec![amux::gateway::ProjectOverview {
+            ident: "remote-repo".into(),
+            canonical_remote: Some("github.com/example/repo".into()),
+            machines: vec![],
+            agents: 0,
+            active: 0,
+        }];
+        assert!(
+            app.sidebar_projects().is_empty(),
+            "show the existing local checkout once"
+        );
+        let count = app.workspaces.len();
+        drop(app.design_message(desktop_design::Action::AddLocalProject(unopened.clone())));
+        assert_eq!(
+            app.workspaces.len(),
+            count,
+            "discovery and selection do not add workspaces"
+        );
+        assert!(app.workspace_dialog.open);
+        assert_eq!(app.workspace_dialog.tab, Kind::General);
+        assert_eq!(app.workspace_dialog.folder, unopened.display().to_string());
+        assert_eq!(
+            app.workspace_dialog.folders.as_ref().unwrap().directory,
+            unopened
+        );
+
+        app.preferences.current.projects_dir = parent.join("another").display().to_string();
+        assert!(app.unadded_local_projects().is_empty());
+        drop(app.local_projects_tick());
+        app.local_projects_loaded(revision, projects);
+        assert!(
+            app.unadded_local_projects().is_empty(),
+            "discard replies for an old directory"
+        );
+        app.preferences.current.projects_dir.clear();
+        drop(app.local_projects_tick());
+        assert!(app.unadded_local_projects().is_empty());
+    }
 
     #[test]
     fn browsed_folder_survives_cancel_and_saved_session_reload() {

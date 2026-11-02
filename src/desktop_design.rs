@@ -49,6 +49,7 @@ pub(super) enum Action {
     /// Clone the menu's project: into the Default Projects directory when true,
     /// otherwise into a folder chosen in the file browser.
     CheckoutProject(bool),
+    AddLocalProject(PathBuf),
     View(View),
     Filter(Filter),
     TaskSearch(String),
@@ -89,6 +90,9 @@ pub(super) struct State {
     /// Gateway projects with the machines that have them checked out.
     pub(super) projects: Vec<amux::gateway::ProjectOverview>,
     pub(super) projects_polled: Option<std::time::Instant>,
+    pub(super) local_projects: Vec<desktop_workspace::LocalProject>,
+    pub(super) local_projects_polled: Option<(PathBuf, std::time::Instant)>,
+    pub(super) local_projects_revision: u64,
 }
 impl State {
     fn task_drawer_width(&self) -> f32 {
@@ -481,6 +485,9 @@ impl Desktop {
                 self.design.project_menu = Some((ident, self.design.cursor));
             }
             Action::DismissProjectMenu => self.design.project_menu = None,
+            Action::AddLocalProject(directory) => {
+                return self.open_local_project(directory);
+            }
             Action::CheckoutProject(projects_dir) => {
                 let Some((ident, _)) = self.design.project_menu.take() else {
                     return Task::none();
@@ -912,6 +919,42 @@ impl Desktop {
                         .padding(14)
                         .width(300)
                         .style(|_| surface(CARD, true)),
+                    tooltip::Position::Right,
+                )
+                .delay(Duration::from_millis(250)),
+            );
+        }
+        let local_projects = self.unadded_local_projects();
+        if !local_projects.is_empty() {
+            sidebar = sidebar.push(text("LOCAL · NOT ADDED").size(11).color(MUTED));
+        }
+        for project in local_projects {
+            let name = project
+                .directory
+                .file_name()
+                .unwrap_or(project.directory.as_os_str());
+            sidebar = sidebar.push(
+                tooltip(
+                    button(
+                        row![
+                            icon("folder-git"),
+                            text(name.to_string_lossy().into_owned())
+                                .size(13)
+                                .color(MUTED),
+                            Space::new().width(Length::Fill),
+                            text("Not added").size(10).color(MUTED)
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .on_press(action(Action::AddLocalProject(project.directory.clone())))
+                    .padding([10, 12])
+                    .width(Length::Fill)
+                    .style(button::text),
+                    text(format!(
+                        "{}\nAdd this existing checkout to amux",
+                        project.directory.display()
+                    )),
                     tooltip::Position::Right,
                 )
                 .delay(Duration::from_millis(250)),
@@ -2305,11 +2348,17 @@ impl Desktop {
     /// Gateway projects not open on this machine: those checked out on other
     /// machines first, then the rest, each alphabetically.
     pub(super) fn sidebar_projects(&self) -> Vec<&amux::gateway::ProjectOverview> {
+        let local = self.unadded_local_projects();
         let mut projects: Vec<_> = self
             .design
             .projects
             .iter()
             .filter(|p| !self.workspaces.iter().any(|w| w.gateway.project == p.ident))
+            .filter(|p| {
+                !local.iter().any(|local| {
+                    local.canonical_remote.is_some() && local.canonical_remote == p.canonical_remote
+                })
+            })
             .collect();
         projects.sort_by(|a, b| {
             (a.machines.is_empty(), &a.ident).cmp(&(b.machines.is_empty(), &b.ident))
