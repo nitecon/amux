@@ -328,6 +328,11 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
         "{error}"
     );
     assert!(error.contains("rebase was aborted"), "{error}");
+    assert!(error.contains("main moved"), "{error}");
+    assert!(
+        error.contains("Run git pull --rebase, resolve the conflicts, then git push"),
+        "{error}"
+    );
     assert_eq!(fixture.remote_main(), remote);
     assert!(!fixture.work.join(".git/rebase-merge").exists());
     assert!(!fixture.work.join(".git/rebase-apply").exists());

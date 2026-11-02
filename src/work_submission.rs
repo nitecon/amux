@@ -384,7 +384,7 @@ impl Repo {
         {
             return Err(rejected.context(kept(&commit)));
         }
-        self.rebase_preserving_index()
+        self.rebase_preserving_index(upstream.branch())
             .with_context(|| kept(&self.git(&["rev-parse", "HEAD"]).unwrap_or(commit)))?;
         let commit = self.git(&["rev-parse", "HEAD"])?;
         self.git(&push).with_context(|| kept(&commit))?;
@@ -393,7 +393,7 @@ impl Repo {
 
     /// Rebase autostash does not restore staged snapshots. Save tracked work
     /// explicitly and apply it with --index after either success or abort.
-    fn rebase_preserving_index(&self) -> Result<()> {
+    fn rebase_preserving_index(&self, branch: &str) -> Result<()> {
         let git_dir = PathBuf::from(self.git(&["rev-parse", "--absolute-git-dir"])?);
         let stash = if self
             .git(&["status", "--porcelain", "--untracked-files=no"])?
@@ -425,9 +425,9 @@ impl Repo {
                 self.git(&["stash", "drop", "stash@{0}"])?;
             }
         }
-        rebased.context(
-            "rebase failed; any active rebase was aborted and staged and unstaged work restored",
-        )?;
+        rebased.with_context(|| format!(
+            "{branch} moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. Run git pull --rebase, resolve the conflicts, then git push"
+        ))?;
         Ok(())
     }
 
