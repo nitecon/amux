@@ -245,8 +245,10 @@ Settings → Workspaces & Terminals → Work submission selects the mode:
 - **Commit and push** (default): `git add` and `git commit --only` the listed
   paths, so other agents' staged changes in the shared checkout stay staged,
   then push to the branch's upstream. If the upstream moved ahead, amux fetches,
-  rebases once with `--autostash` and pushes again. A rebase conflict is aborted
-  and the commit stays local with an explanatory error.
+  saves tracked work, rebases once, restores staged and unstaged changes with
+  `git stash apply --index`, and pushes again. A rebase conflict is aborted
+  and the commit stays local with an explanatory error. If restoring work
+  conflicts, the stash is retained and the error identifies it for recovery.
 - **Pull request**: builds the commit on the fetched upstream in a temporary
   index, so the checkout's branch, index and working tree do not change, pushes
   it to `<prefix><full task UUID>` (prefix `amux/` by default) and

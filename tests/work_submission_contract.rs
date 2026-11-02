@@ -271,9 +271,16 @@ fn rejected_requests_leave_the_repository_untouched() {
 #[test]
 fn a_remote_that_moved_ahead_is_rebased_onto_and_pushed() {
     let fixture = Fixture::new();
+    fixture.write("gone.txt", "older saved work\n");
+    git(&fixture.work, &["stash", "push", "-m", "older stash"]);
+    let prior_stash = git(&fixture.work, &["rev-parse", "refs/stash"]);
+    git(&fixture.work, &["config", "rebase.autoStash", "true"]);
     fixture.push_elsewhere("c.txt", "from another machine\n");
     fixture.write("a.txt", "a changed\n");
-    fixture.write("b.txt", "uncommitted work\n");
+    fixture.write("b.txt", "staged draft\n");
+    git(&fixture.work, &["add", "b.txt"]);
+    fixture.write("b.txt", "later unstaged draft\n");
+    fixture.write("untracked.txt", "untracked draft\n");
     let outcome = fixture
         .submit(&Preferences::default(), MESSAGE, &["a.txt"])
         .unwrap();
@@ -290,7 +297,16 @@ fn a_remote_that_moved_ahead_is_rebased_onto_and_pushed() {
     assert_clean_message(&fixture.work, "HEAD");
     assert_eq!(
         std::fs::read_to_string(fixture.work.join("b.txt")).unwrap(),
-        "uncommitted work\n"
+        "later unstaged draft\n"
+    );
+    assert_eq!(git(&fixture.work, &["show", ":b.txt"]), "staged draft");
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("untracked.txt")).unwrap(),
+        "untracked draft\n"
+    );
+    assert_eq!(
+        git(&fixture.work, &["rev-parse", "refs/stash"]),
+        prior_stash
     );
 }
 
@@ -300,7 +316,9 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
     fixture.push_elsewhere("a.txt", "theirs\n");
     let remote = fixture.remote_main();
     fixture.write("a.txt", "ours\n");
-    fixture.write("b.txt", "uncommitted work\n");
+    fixture.write("b.txt", "staged draft\n");
+    git(&fixture.work, &["add", "b.txt"]);
+    fixture.write("b.txt", "later unstaged draft\n");
     let error = fixture
         .submit(&Preferences::default(), MESSAGE, &["a.txt"])
         .unwrap_err();
@@ -325,8 +343,69 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
     );
     assert_eq!(
         std::fs::read_to_string(fixture.work.join("b.txt")).unwrap(),
-        "uncommitted work\n"
+        "later unstaged draft\n"
     );
+    assert_eq!(git(&fixture.work, &["show", ":b.txt"]), "staged draft");
+    assert_eq!(git(&fixture.work, &["stash", "list"]), "");
+}
+
+#[test]
+fn a_rebase_that_cannot_start_restores_staged_and_unstaged_work() {
+    let fixture = Fixture::new();
+    fixture.push_elsewhere("untracked.txt", "upstream file\n");
+    let remote = fixture.remote_main();
+    fixture.write("a.txt", "task edit\n");
+    fixture.write("b.txt", "staged draft\n");
+    git(&fixture.work, &["add", "b.txt"]);
+    fixture.write("b.txt", "later unstaged draft\n");
+    fixture.write("untracked.txt", "untracked draft\n");
+    let error = fixture
+        .submit(&Preferences::default(), MESSAGE, &["a.txt"])
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("staged and unstaged work restored"));
+    assert_eq!(fixture.remote_main(), remote);
+    assert_eq!(git(&fixture.work, &["show", ":b.txt"]), "staged draft");
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("b.txt")).unwrap(),
+        "later unstaged draft\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("untracked.txt")).unwrap(),
+        "untracked draft\n"
+    );
+    assert_eq!(git(&fixture.work, &["stash", "list"]), "");
+}
+
+#[test]
+fn a_stash_restore_conflict_retains_both_snapshots_and_does_not_push() {
+    let fixture = Fixture::new();
+    fixture.push_elsewhere("b.txt", "upstream edit\n");
+    let remote = fixture.remote_main();
+    fixture.write("a.txt", "task edit\n");
+    fixture.write("b.txt", "staged draft\n");
+    git(&fixture.work, &["add", "b.txt"]);
+    fixture.write("b.txt", "later unstaged draft\n");
+    let error = fixture
+        .submit(&Preferences::default(), MESSAGE, &["a.txt"])
+        .unwrap_err();
+    let error = format!("{error:#}");
+    let stash = git(&fixture.work, &["rev-parse", "refs/stash"]);
+    assert!(
+        error.contains("could not restore staged and unstaged work"),
+        "{error}"
+    );
+    assert!(error.contains(&stash), "{error}");
+    assert_eq!(
+        git(&fixture.work, &["show", &format!("{stash}^2:b.txt")]),
+        "staged draft"
+    );
+    assert_eq!(
+        git(&fixture.work, &["show", &format!("{stash}:b.txt")]),
+        "later unstaged draft"
+    );
+    assert_eq!(fixture.remote_main(), remote);
+    assert_eq!(git(&fixture.work, &["show", "HEAD:a.txt"]), "task edit");
+    assert!(!fixture.work.join(".git/rebase-merge").exists());
 }
 
 #[test]

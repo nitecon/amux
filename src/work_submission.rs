@@ -383,17 +383,51 @@ impl Repo {
         {
             return Err(rejected.context(kept(&commit)));
         }
-        if let Err(conflict) = self.git(&["rebase", "--autostash", "@{upstream}"]) {
-            let _ = self.git(&["rebase", "--abort"]);
-            bail!(
-                "{}: {} moved and rebasing onto it conflicted, so the rebase was aborted. Run git pull --rebase, resolve the conflicts, then git push. ({conflict:#})",
-                kept(&commit),
-                upstream.branch()
-            );
-        }
+        self.rebase_preserving_index()
+            .with_context(|| kept(&self.git(&["rev-parse", "HEAD"]).unwrap_or(commit)))?;
         let commit = self.git(&["rev-parse", "HEAD"])?;
         self.git(&push).with_context(|| kept(&commit))?;
         Ok(commit)
+    }
+
+    /// Rebase autostash does not restore staged snapshots. Save tracked work
+    /// explicitly and apply it with --index after either success or abort.
+    fn rebase_preserving_index(&self) -> Result<()> {
+        let git_dir = PathBuf::from(self.git(&["rev-parse", "--absolute-git-dir"])?);
+        let stash = if self
+            .git(&["status", "--porcelain", "--untracked-files=no"])?
+            .is_empty()
+        {
+            None
+        } else {
+            self.git(&["stash", "push", "--message", "amux submit-work rebase"])?;
+            Some(self.git(&["rev-parse", "refs/stash"])?)
+        };
+        let rebased = self.git(&["rebase", "--no-autostash", "@{upstream}"]);
+        if rebased.is_err()
+            && (git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists())
+        {
+            self.git(&["rebase", "--abort"]).with_context(|| {
+                format!(
+                    "could not abort rebase; saved work remains in stash {}",
+                    stash.as_deref().unwrap_or("(none)")
+                )
+            })?;
+        }
+        if let Some(stash) = stash {
+            self.git(&["stash", "apply", "--index", &stash])
+                .with_context(|| format!(
+                    "could not restore staged and unstaged work; it remains saved in stash {stash}. Resolve the checkout before retrying; recover with git stash apply --index {stash}"
+                ))?;
+            // Never drop another caller's newer stash.
+            if self.git(&["rev-parse", "refs/stash"])? == stash {
+                self.git(&["stash", "drop", "stash@{0}"])?;
+            }
+        }
+        rebased.context(
+            "rebase failed; any active rebase was aborted and staged and unstaged work restored",
+        )?;
+        Ok(())
     }
 
     /// Build the commit on the fetched upstream in a temporary index, push it
