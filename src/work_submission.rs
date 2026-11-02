@@ -217,6 +217,7 @@ impl Repo {
     fn new(root: &Path) -> Result<Self> {
         let root = root
             .canonicalize()
+            .map(crate::workspace_launch::external_path)
             .with_context(|| format!("cannot open project root {}", root.display()))?;
         Ok(Self { root, index: None })
     }
@@ -301,7 +302,7 @@ impl Repo {
         let mut missing = Vec::new();
         let resolved = loop {
             match parent.canonicalize() {
-                Ok(resolved) => break resolved,
+                Ok(resolved) => break crate::workspace_launch::external_path(resolved),
                 Err(_) => {
                     missing.push(parent.file_name().context("path has no existing folder")?);
                     parent = parent.parent().context("path has no existing folder")?;
