@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.0.61 - 2026-11-02
+
+### Added
+- Submit task work through `amux submit-work` or the `submit_work` MCP tool,
+  with configurable commit-and-push or pull-request submission, scoped file
+  selection, attribution removal and an `AmuxID` commit trailer.
+- Read-only work reports between Git refs or date windows, including task and
+  review context, exact-commit CI results and explicit partial-data reporting.
+- Local checkouts not yet added to amux appear greyed out at the bottom of the
+  project list. Select one to add its existing folder without cloning again.
+
+### Fixed
+- Preserve separate staged and unstaged drafts during submission rebase retries
+  and conflicts, with draft-safe, non-interactive recovery instructions.
+- Reject pull-request submissions when selected files have upstream changes,
+  preventing stale local files from reverting newer work.
+- Normalize Windows submission and test-fixture paths consistently.
+
 ## v0.0.60 - 2026-11-02
 
 ### Fixed
