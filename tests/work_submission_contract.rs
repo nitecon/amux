@@ -12,15 +12,19 @@ use uuid::Uuid;
 const TASK: &str = "01a19a44-e705-743e-86f7-126db8e7b5eb";
 const MESSAGE: &str = "Fix the parser\n\nHandles empty input.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n🤖 Generated with [Claude Code](https://claude.com/claude-code)";
 
-fn git(directory: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+fn git_output(directory: &Path, arguments: &[&str]) -> std::process::Output {
+    Command::new("git")
         .arg("-C")
         .arg(directory)
         .args(arguments)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", directory.join("no-global-config"))
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn git(directory: &Path, arguments: &[&str]) -> String {
+    let output = git_output(directory, arguments);
     assert!(
         output.status.success(),
         "git {arguments:?}: {}",
@@ -319,6 +323,7 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
     fixture.write("b.txt", "staged draft\n");
     git(&fixture.work, &["add", "b.txt"]);
     fixture.write("b.txt", "later unstaged draft\n");
+    fixture.write("untracked.txt", "untracked draft\n");
     let error = fixture
         .submit(&Preferences::default(), MESSAGE, &["a.txt"])
         .unwrap_err();
@@ -329,10 +334,18 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
     );
     assert!(error.contains("rebase was aborted"), "{error}");
     assert!(error.contains("main moved"), "{error}");
-    assert!(
-        error.contains("Run git pull --rebase, resolve the conflicts, then git push"),
-        "{error}"
-    );
+    for step in [
+        "git stash push --include-untracked",
+        "git rev-parse refs/stash",
+        "Run git pull --rebase",
+        "git add the resolved files",
+        "git rebase --continue",
+        "then git push",
+        "git stash apply --index <saved-stash-id>",
+        "before dropping only that saved stash",
+    ] {
+        assert!(error.contains(step), "missing {step}: {error}");
+    }
     assert_eq!(fixture.remote_main(), remote);
     assert!(!fixture.work.join(".git/rebase-merge").exists());
     assert!(!fixture.work.join(".git/rebase-apply").exists());
@@ -351,6 +364,44 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
         "later unstaged draft\n"
     );
     assert_eq!(git(&fixture.work, &["show", ":b.txt"]), "staged draft");
+    assert_eq!(git(&fixture.work, &["stash", "list"]), "");
+
+    // Exercise the recovery steps with the exact dirty state preserved above.
+    // Retrying the old advice without saving drafts cannot start the rebase.
+    let blocked = git_output(&fixture.work, &["pull", "--rebase"]);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("unstaged changes"));
+    git(&fixture.work, &["stash", "push", "--include-untracked"]);
+    let saved = git(&fixture.work, &["rev-parse", "refs/stash"]);
+    let conflicted = git_output(&fixture.work, &["pull", "--rebase"]);
+    assert!(!conflicted.status.success());
+    assert_eq!(
+        git(&fixture.work, &["diff", "--name-only", "--diff-filter=U"]),
+        "a.txt"
+    );
+    fixture.write("a.txt", "resolved\n");
+    git(&fixture.work, &["add", "a.txt"]);
+    git(
+        &fixture.work,
+        &["-c", "core.editor=true", "rebase", "--continue"],
+    );
+    git(&fixture.work, &["push"]);
+    assert_eq!(
+        fixture.remote_main(),
+        git(&fixture.work, &["rev-parse", "HEAD"])
+    );
+    git(&fixture.work, &["stash", "apply", "--index", &saved]);
+    assert_eq!(git(&fixture.work, &["show", ":b.txt"]), "staged draft");
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("b.txt")).unwrap(),
+        "later unstaged draft\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("untracked.txt")).unwrap(),
+        "untracked draft\n"
+    );
+    assert_eq!(git(&fixture.work, &["rev-parse", "stash@{0}"]), saved);
+    git(&fixture.work, &["stash", "drop", "stash@{0}"]);
     assert_eq!(git(&fixture.work, &["stash", "list"]), "");
 }
 
