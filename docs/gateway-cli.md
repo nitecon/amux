@@ -223,6 +223,40 @@ Enable fresh automatic notifications in desktop Gateway preferences; see
 The older selected-task reminder path is described in
 [reminder validation](reminder-validation.md).
 
+## Submitting work
+
+Agents finish code work with one call that does not depend on how the project
+publishes changes:
+
+```sh
+amux submit-work <owned-task-id> 'Fix the parser' src/parser.rs 'docs/new file.md'
+```
+
+The MCP tool `submit_work` takes `task_id`, `message` and `paths` (a JSON array,
+so paths may contain spaces) and runs the same command. Before changing the
+repository it confirms the caller's exact ownership, requires at least one path,
+and requires every path to be inside the project root and modified, added or
+deleted. It removes attribution lines such as `Co-Authored-By` and appends an
+`AmuxID: <task-id>` trailer. Git runs with the project's hooks and identity,
+never with `--author`, `--no-verify` or a force push.
+
+Settings → Workspaces & Terminals → Work submission selects the mode:
+
+- **Commit and push** (default): `git add` and `git commit --only` the listed
+  paths, so other agents' staged changes in the shared checkout stay staged,
+  then push to the branch's upstream. If the upstream moved ahead, amux fetches,
+  rebases once with `--autostash` and pushes again. A rebase conflict is aborted
+  and the commit stays local with an explanatory error.
+- **Pull request**: builds the commit on the fetched upstream in a temporary
+  index, so the checkout's branch, index and working tree do not change, pushes
+  it to `<prefix><full task UUID>` (prefix `amux/` by default) and
+  opens a pull request with `gh pr create`.
+
+The result, a commit SHA or pull request URL plus the file list, is posted as a
+task comment. Submission does not mark the task done. Agents started with amux
+MCP tools also run Claude Code with its commit and pull request attribution
+turned off.
+
 ## Desktop task submission
 
 The gateway sidebar accepts a task title and multiline handoff context for the

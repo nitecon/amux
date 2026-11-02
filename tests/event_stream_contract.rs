@@ -90,7 +90,10 @@ impl Server {
         response.json().await.unwrap()
     }
 
-    async fn socket(&self, key: &str) -> Result<Socket, tokio_tungstenite::tungstenite::Error> {
+    async fn socket(
+        &self,
+        key: &str,
+    ) -> Result<Socket, Box<tokio_tungstenite::tungstenite::Error>> {
         let mut request = format!("ws://{}/v1/events/stream", self.endpoint)
             .into_client_request()
             .unwrap();

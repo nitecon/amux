@@ -1,4 +1,4 @@
-//! `done` and `release` confirm exact execution ownership with an authoritative
+//! `done`, `release` and `submit-work` confirm exact execution ownership with an authoritative
 //! read before sending any mutation. This is a client preflight, not atomic
 //! server authorization.
 #![cfg(unix)]
@@ -107,7 +107,7 @@ fn run(
     let root = fixture.path();
     fs::write(
         root.join("codex"),
-        "#!/bin/sh\nread -r url\namux tasks --gateway-url \"$url\" \"$OP\" \"$TASK\"\nresult=$?\nexit $result\n",
+        "#!/bin/sh\nread -r url\nif [ \"$OP\" = submit-work ]; then\n  amux submit-work --gateway-url \"$url\" \"$TASK\" \"Finish\" changed.txt\nelse\n  amux tasks --gateway-url \"$url\" \"$OP\" \"$TASK\"\nfi\nresult=$?\nexit $result\n",
     )
     .unwrap();
     fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -187,10 +187,15 @@ fn done_and_release_refuse_without_exact_confirmed_ownership() {
             t
         }),
     ];
-    for op in ["done", "release"] {
+    // submit-work refuses before reading or changing the checkout.
+    for op in ["done", "release", "submit-work"] {
         for (case, reply) in refusals {
             let (ok, stderr, requests) = run(op, |a| vec![reply(a)]);
             assert!(!ok, "{op} with {case} must be refused: {stderr}");
+            assert!(
+                op != "submit-work" || stderr.contains("work was not submitted:"),
+                "{case}: {stderr}"
+            );
             assert_eq!(requests.len(), 1, "{op} with {case}: only the read is sent");
             assert!(
                 requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK}?comments=0 ")),

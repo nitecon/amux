@@ -82,6 +82,8 @@ pub struct GatewayPreferences {
     pub projects_dir: String,
     /// Give launched agents the `amux mcp` tools (tasks, agent-tools, memory).
     pub mcp_tools: bool,
+    /// How `amux submit-work` publishes an agent's finished work.
+    pub work_submission: crate::work_submission::Preferences,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -98,6 +100,7 @@ impl Default for GatewayPreferences {
             auto_update: false,
             projects_dir: String::new(),
             mcp_tools: true,
+            work_submission: Default::default(),
             machine_id: String::new(),
             machine_key: String::new(),
         }

@@ -1929,6 +1929,35 @@ impl Desktop {
         .style(|_| surface(Color::from_rgb8(16, 23, 37), false))
         .into()
     }
+    /// How agents' `amux submit-work` publishes finished work.
+    fn work_submission_view(&self) -> Element<'_, Message> {
+        use amux::work_submission::Mode;
+        let draft = &self.preferences.draft.work_submission;
+        let mode = |name, label, description, mode| {
+            mode_card(
+                name,
+                label,
+                description,
+                draft.mode == mode,
+                (draft.mode != mode).then_some(Message::SubmissionMode(mode)),
+            )
+        };
+        settings_card(
+            column![
+                text("Work submission").size(15),
+                text("Agents finish code work with amux submit-work, which commits only the files they list and posts the result on the task.").size(12).color(MUTED),
+                row![
+                    mode("send", "Commit and push", "Commit to the current branch and push it to its upstream.", Mode::CommitAndPush),
+                    mode("git", "Pull request", "Push a task branch from the upstream and open a pull request with gh.", Mode::PullRequest)
+                ]
+                .spacing(12),
+                text("Pull request branch prefix").size(13),
+                text_input("amux/", &draft.branch_prefix).on_input(Message::SubmissionBranchPrefix),
+                text("Task branches are named with this prefix and the full task ID.").size(12).color(MUTED),
+            ]
+            .spacing(14),
+        )
+    }
     fn settings_modal(&self) -> Element<'_, Message> {
         let nav = |name, label, kind| {
             let selected = self.preferences.tab == kind;
@@ -1976,6 +2005,7 @@ impl Desktop {
                 checkbox(self.preferences.draft.mcp_tools).label("Give agents amux tools (MCP)").on_toggle(Message::McpTools),
                 text("New Claude and Codex sessions get amux tasks plus the bundled agent-tools and memory commands as MCP tools, and start with relevant project memory. Applies to agents started after saving.").size(12).color(MUTED),
                 ].spacing(14)),
+                self.work_submission_view(),
                 text("Repository matching is required for gateway delivery.").size(12).color(CYAN)
             ].spacing(18).into(),
         };

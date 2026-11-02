@@ -1,4 +1,5 @@
-//! Bounded, read-only Git observations used to identify a local checkout.
+//! Git process setup shared by bounded, read-only checkout observations and
+//! work submission.
 use anyhow::{Context, Result, bail};
 use std::{
     io::Read,
@@ -7,6 +8,27 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+/// A `git` command that cannot prompt and ignores inherited `GIT_*` variables,
+/// which could redirect it to another repository, index or work tree. `keep`
+/// names inherited variables to preserve, such as push transport settings.
+pub(crate) fn command(keep: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command.stdin(Stdio::null());
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if name.starts_with("GIT_") && !keep.contains(&name.as_ref()) {
+            command.env_remove(&key);
+        }
+    }
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command
+}
 
 /// Keep the exit status so callers distinguish absent configuration from a
 /// failed repository lookup. Errors never include arguments or Git output.
@@ -17,7 +39,7 @@ pub(crate) fn observe(
     arguments: &[&str],
     purpose: &'static str,
 ) -> Result<(ExitStatus, String)> {
-    let mut command = Command::new("git");
+    let mut command = command(&[]);
     command
         .args([
             "--no-optional-locks",
@@ -27,20 +49,8 @@ pub(crate) fn observe(
         ])
         .arg(directory)
         .args(arguments)
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(key);
-        }
-    }
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
-    }
     let mut child = command
         .spawn()
         .with_context(|| format!("cannot run git to read the {purpose}"))?;

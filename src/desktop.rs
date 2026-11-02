@@ -96,6 +96,8 @@ enum Message {
     ExitNotifications(bool),
     AutoUpdate(bool),
     ProjectsDir(String),
+    SubmissionMode(amux::work_submission::Mode),
+    SubmissionBranchPrefix(String),
     Delegation(u64, desktop_delegation::Event),
     Updates(bool),
     CheckUpdates,
@@ -971,6 +973,10 @@ impl Desktop {
             Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
             Message::AutoUpdate(value) => self.preferences.draft.auto_update = value,
             Message::ProjectsDir(value) => self.preferences.draft.projects_dir = value,
+            Message::SubmissionMode(value) => self.preferences.draft.work_submission.mode = value,
+            Message::SubmissionBranchPrefix(value) => {
+                self.preferences.draft.work_submission.branch_prefix = value
+            }
             Message::AutomaticNotifications(value) => {
                 self.preferences.draft.automatic_notifications = value
             }
@@ -2865,9 +2871,20 @@ mod tests {
         let _ = app.update(Message::Preferences(true));
         assert!(app.preferences.open);
         app.preferences.draft.projects_dir = "fixture-projects".into();
+        let _ = app.update(Message::SubmissionMode(
+            amux::work_submission::Mode::PullRequest,
+        ));
+        let _ = app.update(Message::SubmissionBranchPrefix("work/".into()));
         let _ = app.update(Message::Updates(true));
         assert_eq!(app.preferences.tab, PreferencesTab::Updates);
         assert_eq!(app.preferences.draft.projects_dir, "fixture-projects");
+        assert_eq!(
+            app.preferences.draft.work_submission,
+            amux::work_submission::Preferences {
+                mode: amux::work_submission::Mode::PullRequest,
+                branch_prefix: "work/".into(),
+            }
+        );
         let _ = app.update(Message::Preferences(false));
         assert!(!app.preferences.open);
         assert_eq!(app.workspaces.len(), count);

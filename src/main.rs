@@ -85,6 +85,17 @@ enum Operation {
         #[command(subcommand)]
         operation: MessageOperation,
     },
+    /// Commit an owned task's listed changed files and publish them as chosen
+    /// in Settings (commit and push, or pull request); the result is posted on
+    /// the task. Never commit task work directly.
+    SubmitWork {
+        #[arg(long, env = "AMUX_GATEWAY_PROJECT")]
+        project: Option<String>,
+        #[arg(long)]
+        gateway_url: Option<String>,
+        #[command(flatten)]
+        work: WorkArgs,
+    },
     /// Exact-session task dispatch through the gateway's credential-bound API.
     /// Needs the enrolled connection plus operator-issued AMUX_GATEWAY_MACHINE_ID
     /// and AMUX_GATEWAY_MACHINE_KEY; amux never provisions or stores them.
@@ -249,11 +260,25 @@ enum TaskOperation {
     Cancellation {
         id: Uuid,
     },
+    /// Reached through the top-level `submit-work`, sharing task resolution.
+    #[command(skip)]
+    SubmitWork(WorkArgs),
     /// Bind this Git checkout, which has no origin remote, to an existing ad-hoc
     /// gateway project. Only this exact checkout root uses the binding.
     Bind {
         ident: String,
     },
+}
+
+#[derive(clap::Args)]
+struct WorkArgs {
+    /// The owned task the work completes.
+    task: Uuid,
+    /// Commit message; attribution lines such as Co-Authored-By are removed.
+    message: String,
+    /// Changed files to submit: modified, added or deleted, inside the project.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -303,7 +328,21 @@ fn run(cli: Cli) -> Result<u8> {
         .project_dir
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
-    match cli.command.unwrap_or(Operation::Desktop) {
+    let operation = match cli.command.unwrap_or(Operation::Desktop) {
+        Operation::SubmitWork {
+            project,
+            gateway_url,
+            work,
+        } => Operation::Tasks {
+            project,
+            gateway_url,
+            json: false,
+            operation: TaskOperation::SubmitWork(work),
+        },
+        operation => operation,
+    };
+    match operation {
+        Operation::SubmitWork { .. } => unreachable!("rewritten as a task operation"),
         Operation::Server { command } => amux::server::run(command)?,
         Operation::Harness { operation } => {
             let environment = amux::harness::Environment::discover()?;
@@ -365,7 +404,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => {
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
-                let (gateway, _server) = cli_gateway(gateway_url).await?;
+                let (gateway, _server, _) = cli_gateway(gateway_url).await?;
                 match operation {
                     MessageOperation::List { limit, offset } => {
                         gateway.messages(&project, limit, offset).await
@@ -406,7 +445,7 @@ fn run(cli: Cli) -> Result<u8> {
             let executor = Executor::load(&state, actor)?;
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
-                let (gateway, _server) = cli_gateway(gateway_url).await?;
+                let (gateway, _server, _) = cli_gateway(gateway_url).await?;
                 let dispatcher = Dispatcher::from_profile(
                     gateway.transport_profile(),
                     &project,
@@ -425,7 +464,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => {
             let runtime = tokio::runtime::Runtime::new()?;
             let value = runtime.block_on(async {
-                let (gateway, _server) = cli_gateway(gateway_url).await?;
+                let (gateway, _server, preferences) = cli_gateway(gateway_url).await?;
                 if let TaskOperation::Bind { ident } = &operation {
                     let directory = project_dir.canonicalize()?;
                     anyhow::ensure!(amux::gateway_project::configured_origin(&directory)?.is_none(), "workspace has a Git origin; it resolves by repository and cannot be bound");
@@ -511,6 +550,15 @@ fn run(cli: Cli) -> Result<u8> {
                         gateway.confirm_owner(&project, id, &actor).await?;
                         gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":format!("Agent reports execution started: session={} instance={}; recorded as a comment, not an atomic gateway lifecycle transition", actor.session_id, actor.instance_id)})), Some(&actor)).await
                     },
+                    TaskOperation::SubmitWork(work) => {
+                        gateway.confirm_owner(&project, work.task, &actor).await.context("work was not submitted")?;
+                        let paths = work.paths.iter().map(std::path::absolute).collect::<std::io::Result<Vec<_>>>()?;
+                        let request = amux::work_submission::Request { root: &actor.project_directory, task_id: work.task, message: &work.message, paths: &paths };
+                        let outcome = amux::work_submission::submit(&request, &preferences.work_submission, amux::work_submission::open_pull_request)?;
+                        let comment = gateway.request(Method::POST, &project, &[&work.task.to_string(), "comments"], Some(json!({"content": outcome.comment()})), Some(&actor)).await
+                            .with_context(|| format!("work was submitted as {}, but posting the result on the task failed", outcome.reference))?;
+                        Ok(json!({"task_id": work.task, "reference": outcome.reference, "files": outcome.files, "comment_id": comment["id"]}))
+                    },
                     TaskOperation::Done { id } | TaskOperation::Release { id } => {
                         gateway.confirm_owner(&project, id, &actor).await?;
                         let status = if matches!(operation, TaskOperation::Done { .. }) { "done" } else { "todo" };
@@ -529,9 +577,15 @@ fn run(cli: Cli) -> Result<u8> {
     Ok(0)
 }
 
+/// The enrolled gateway, the local server it needs in Server mode, and the
+/// saved preferences.
 async fn cli_gateway(
     url: Option<String>,
-) -> Result<(Gateway, Option<amux::server_controller::LocalServer>)> {
+) -> Result<(
+    Gateway,
+    Option<amux::server_controller::LocalServer>,
+    amux::gateway_preferences::GatewayPreferences,
+)> {
     use amux::gateway_preferences::{GatewayMode, GatewayPreferences};
     let state = identity::state_directory()?;
     let path = state.join("gateway-preferences.json");
@@ -557,7 +611,7 @@ async fn cli_gateway(
     } else {
         None
     };
-    Ok((config.gateway()?, server))
+    Ok((config.gateway()?, server, config))
 }
 
 /// Only the exact owning execution may report start, complete or release a task.

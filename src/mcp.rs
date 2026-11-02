@@ -20,6 +20,9 @@ pub const NO_UPDATE: [(&str, &str); 2] = [
     ("AGENT_MEMORY_NO_UPDATE", "1"),
     ("AGENT_TOOLS_NO_UPDATE", "1"),
 ];
+/// Claude Code settings that disable its commit and pull request attribution.
+pub const CLAUDE_NO_ATTRIBUTION: &str =
+    r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}"#;
 /// Startup memory context is skipped rather than delay the agent's start.
 const CONTEXT_WAIT: Duration = Duration::from_secs(5);
 
@@ -60,6 +63,9 @@ pub enum Kind {
     Positional,
     /// Several whitespace-separated positional values.
     Words,
+    /// A JSON array of strings, each passed as its own positional value, so
+    /// values may contain whitespace.
+    List,
     /// `--flag=value`, one argument so a value starting with `-` stays a value.
     Option(&'static str),
 }
@@ -175,6 +181,25 @@ pub const TOOLS: &[Tool] = &[
         bin: Bin::Amux,
         command: &["tasks", "done"],
         args: &[ID],
+    },
+    Tool {
+        name: "submit_work",
+        description: "Finish code work on an owned task: commit exactly the listed changed files (and push, or open a pull request, as set in amux Settings), then post the result on the task. Never commit directly or add Co-Authored-By or other attribution lines.",
+        bin: Bin::Amux,
+        command: &["submit-work"],
+        args: &[
+            pos("task_id", "Owned task ID"),
+            pos(
+                "message",
+                "Commit message: a subject line, then an optional body",
+            ),
+            Arg {
+                name: "paths",
+                description: "Changed files to submit (modified, added or deleted), relative to the project or absolute",
+                kind: Kind::List,
+                required: true,
+            },
+        ],
     },
     Tool {
         name: "memory_search",
@@ -308,10 +333,12 @@ fn schema(tool: &Tool) -> Value {
         .args
         .iter()
         .map(|a| {
-            (
-                a.name.to_owned(),
-                json!({"type": "string", "description": a.description}),
-            )
+            let mut schema = match a.kind {
+                Kind::List => json!({"type": "array", "items": {"type": "string"}}),
+                _ => json!({"type": "string"}),
+            };
+            schema["description"] = a.description.into();
+            (a.name.to_owned(), schema)
         })
         .collect();
     let required: Vec<&str> = tool
@@ -328,6 +355,14 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
     let mut options = Vec::new();
     let mut positionals = Vec::new();
     for arg in tool.args {
+        if matches!(arg.kind, Kind::List) {
+            let values = list(arguments.get(arg.name), arg.name)?;
+            if values.is_empty() && arg.required {
+                return Err(format!("missing required argument: {}", arg.name));
+            }
+            positionals.extend(values);
+            continue;
+        }
         let value = match arguments.get(arg.name) {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(s.clone()),
@@ -343,6 +378,7 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
             Kind::Positional => positionals.push(value),
             Kind::Words => positionals.extend(value.split_whitespace().map(str::to_owned)),
             Kind::Option(flag) => options.push(format!("{flag}={value}")),
+            Kind::List => unreachable!("handled above"),
         }
     }
     let mut argv: Vec<String> = tool.command.iter().map(|s| (*s).to_owned()).collect();
@@ -350,6 +386,24 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
     argv.push("--".into());
     argv.extend(positionals);
     Ok(argv)
+}
+
+/// The non-empty strings of an array argument; absent means none.
+fn list(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
+    let items = match value {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(format!("{name} must be an array of strings")),
+    };
+    items
+        .iter()
+        .filter(|item| item.as_str().is_none_or(|s| !s.trim().is_empty()))
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{name} must be an array of strings"))
+        })
+        .collect()
 }
 
 fn directory() -> PathBuf {
@@ -553,7 +607,13 @@ pub fn launch_arguments(
     }
     let command = amux.to_string_lossy();
     match provider {
+        // Work is committed by `amux submit-work`, which never adds attribution;
+        // these settings stop Claude Code adding its own to commits and PRs
+        // (`attribution` is current, `includeCoAuthoredBy` the legacy key).
+        // --mcp-config takes several values, so it stays last.
         crate::identity::Provider::Claude => vec![
+            "--settings".into(),
+            CLAUDE_NO_ATTRIBUTION.into(),
             "--mcp-config".into(),
             json!({"mcpServers": {"amux": {"command": command, "args": ["mcp"], "env": env}}})
                 .to_string(),
@@ -626,6 +686,38 @@ mod tests {
     }
 
     #[test]
+    fn list_arguments_pass_each_element_as_one_positional() {
+        let tool = TOOLS.iter().find(|t| t.name == "submit_work").unwrap();
+        let id = "01a19a44-e705-743e-86f7-126db8e7b5eb";
+        assert_eq!(
+            argv(
+                tool,
+                &json!({"task_id": id, "message": "- Fix it", "paths": ["a b.rs", "-c.rs"]})
+            )
+            .unwrap(),
+            ["submit-work", "--", id, "- Fix it", "a b.rs", "-c.rs"]
+        );
+        for paths in [json!([]), json!(null), json!("a.rs"), json!([1])] {
+            assert!(
+                argv(
+                    tool,
+                    &json!({"task_id": id, "message": "m", "paths": paths})
+                )
+                .is_err(),
+                "{paths}"
+            );
+        }
+        assert_eq!(
+            schema(tool)["properties"]["paths"],
+            json!({"type": "array", "items": {"type": "string"}, "description": tool.args[2].description})
+        );
+        assert_eq!(
+            schema(tool)["required"],
+            json!(["task_id", "message", "paths"])
+        );
+    }
+
+    #[test]
     fn tool_names_are_unique() {
         let mut names: Vec<_> = TOOLS.iter().map(|t| t.name).collect();
         names.sort_unstable();
@@ -644,7 +736,12 @@ mod tests {
             Path::new("/opt/amux/amux"),
             &env,
         );
-        let config: Value = serde_json::from_str(&claude[1]).unwrap();
+        assert_eq!(claude[0], "--settings");
+        let settings: Value = serde_json::from_str(&claude[1]).unwrap();
+        assert_eq!(settings["attribution"], json!({"commit": "", "pr": ""}));
+        assert_eq!(settings["includeCoAuthoredBy"], false);
+        assert_eq!(claude[2], "--mcp-config");
+        let config: Value = serde_json::from_str(&claude[3]).unwrap();
         assert_eq!(config["mcpServers"]["amux"]["command"], "/opt/amux/amux");
         assert_eq!(
             config["mcpServers"]["amux"]["env"]["AMUX_STATE_DIR"],

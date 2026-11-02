@@ -32,6 +32,7 @@ pub mod terminal_lifetime;
 
 pub mod updates;
 
+pub mod work_submission;
 pub mod workspace_launch;
 
 pub mod gateway_stream;

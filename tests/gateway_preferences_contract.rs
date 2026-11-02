@@ -24,10 +24,15 @@ fn native_connection_and_device_preferences_round_trip_without_secrets() {
         enrolled: Some(connection(dir.path())),
         automatic_notifications: true,
         projects_dir: "my-projects".into(),
+        work_submission: amux::work_submission::Preferences {
+            mode: amux::work_submission::Mode::PullRequest,
+            branch_prefix: "work/".into(),
+        },
         ..Default::default()
     };
     settings.save(&path).unwrap();
     let restored = GatewayPreferences::load(&path).unwrap().unwrap();
+    assert_eq!(restored.work_submission, settings.work_submission);
     assert_eq!(restored.mode, GatewayMode::Client);
     assert_eq!(restored.enrolled, settings.enrolled);
     assert_eq!(restored.projects_dir, "my-projects");
@@ -70,6 +75,7 @@ fn retired_connections_become_disconnected_without_switching_authority() {
         assert!(!restored.automatic_notifications);
         assert!(!restored.auto_resume);
         assert_eq!(restored.projects_dir, "existing-projects");
+        assert_eq!(restored.work_submission, Default::default());
         assert!(restored.gateway().is_err());
         restored.save(&path).unwrap();
         let saved = std::fs::read_to_string(&path).unwrap();
