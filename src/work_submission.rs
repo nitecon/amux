@@ -426,7 +426,7 @@ impl Repo {
             }
         }
         rebased.with_context(|| format!(
-            "{branch} moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. If you have unrelated drafts, save them with git stash push --include-untracked and record that stash's ID with git rev-parse refs/stash. Run git pull --rebase; resolve conflicts, git add the resolved files, and git rebase --continue until finished, then git push. Restore saved drafts with git stash apply --index <saved-stash-id>; verify the staged and unstaged drafts before dropping only that saved stash"
+            "{branch} moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. If you have unrelated drafts, save them with git stash push --include-untracked and record that stash's ID with git rev-parse refs/stash. Run git pull --rebase; resolve conflicts, git add the resolved files, and git -c core.editor=true rebase --continue until finished, then git push. Restore saved drafts with git stash apply --index <saved-stash-id>; verify the staged and unstaged drafts before dropping only that saved stash"
         ))?;
         Ok(())
     }

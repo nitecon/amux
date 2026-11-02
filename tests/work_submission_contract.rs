@@ -339,7 +339,7 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
         "git rev-parse refs/stash",
         "Run git pull --rebase",
         "git add the resolved files",
-        "git rebase --continue",
+        "git -c core.editor=true rebase --continue",
         "then git push",
         "git stash apply --index <saved-stash-id>",
         "before dropping only that saved stash",
