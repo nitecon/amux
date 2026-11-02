@@ -40,7 +40,7 @@ impl Fixture {
     /// A pushed checkout tracking `origin/main` with a.txt, b.txt and gone.txt.
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = amux::workspace_launch::external_path(temp.path().canonicalize().unwrap());
         let (remote, work, hooks) = (
             root.join("remote.git"),
             root.join("work"),
@@ -388,6 +388,51 @@ fn pull_request_mode_pushes_a_task_branch_without_changing_the_checkout() {
     assert_eq!(pull.title, "Fix the parser");
     assert!(pull.body.ends_with(&format!("\n\nAmuxID: {TASK}")));
     assert!(!pull.body.to_lowercase().contains("co-authored-by"));
+}
+
+#[test]
+fn pull_request_mode_rejects_upstream_changes_to_selected_files_without_losing_work() {
+    for (upstream_text, local_text) in [
+        (
+            "new header\nmiddle\nold tail\n",
+            "old header\nmiddle\nlocal tail\n",
+        ),
+        ("upstream replacement\n", "local replacement\n"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write("a.txt", "old header\nmiddle\nold tail\n");
+        git(&fixture.work, &["add", "a.txt"]);
+        git(&fixture.work, &["commit", "-m", "base text"]);
+        git(&fixture.work, &["push"]);
+        fixture.push_elsewhere("a.txt", upstream_text);
+        let upstream = fixture.remote_main();
+        fixture.write("a.txt", local_text);
+        fixture.write("b.txt", "another agent's staged work\n");
+        git(&fixture.work, &["add", "b.txt"]);
+        let before = fixture.snapshot();
+        let preferences = Preferences {
+            mode: Mode::PullRequest,
+            branch_prefix: "amux/".into(),
+        };
+        let error = fixture
+            .submit(&preferences, MESSAGE, &["a.txt"])
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("selected paths differ"), "{error}");
+        assert!(error.contains("a.txt"), "{error}");
+        assert!(error.contains("Reconcile"), "{error}");
+        assert_eq!(fixture.snapshot(), before);
+        assert_eq!(fixture.remote_main(), upstream);
+        assert_eq!(
+            git(&fixture.remote, &["show", "main:a.txt"]),
+            upstream_text.trim()
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.work.join("a.txt")).unwrap(),
+            local_text
+        );
+        assert!(git(&fixture.remote, &["for-each-ref", "refs/heads/amux/"]).is_empty());
+    }
 }
 
 #[test]

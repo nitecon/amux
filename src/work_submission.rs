@@ -408,6 +408,15 @@ impl Repo {
     ) -> Result<PullRequest> {
         self.git(&["fetch", &upstream.remote])?;
         let base = self.git(&["rev-parse", "--verify", "@{upstream}^{commit}"])?;
+        // Whole-file staging is safe only when upstream still has the same
+        // selected files as our checkout base; otherwise it could revert edits.
+        let changed = self.git_paths(&["diff", "--name-only", "HEAD", &base], files)?;
+        if !changed.is_empty() {
+            bail!(
+                "selected paths differ between HEAD and {}: {changed}. Reconcile these paths with upstream before submitting; no task branch was pushed and your checkout was not changed",
+                upstream.branch()
+            );
+        }
         let scratch = tempfile::tempdir().context("cannot create a temporary index")?;
         let staging = Repo {
             root: self.root.clone(),
