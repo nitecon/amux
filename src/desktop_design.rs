@@ -883,6 +883,46 @@ impl Desktop {
                 );
             }
         }
+        for project in self.unadded_local_projects() {
+            let name = project
+                .directory
+                .file_name()
+                .unwrap_or(project.directory.as_os_str());
+            sidebar = sidebar.push(
+                tooltip(
+                    container(
+                        row![
+                            text("●").size(12).color(MUTED),
+                            column![
+                                text(name.to_string_lossy().into_owned())
+                                    .size(13)
+                                    .color(MUTED),
+                                text("Not added").size(10).color(MUTED)
+                            ]
+                            .spacing(2)
+                            .width(Length::Fill),
+                            button(text("Add").size(11).color(CYAN))
+                                .on_press(action(Action::AddLocalProject(
+                                    project.directory.clone()
+                                )))
+                                .padding([5, 8])
+                                .style(button::text)
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([10, 6])
+                    .width(Length::Fill)
+                    .style(|_| surface(CARD, true)),
+                    text(format!(
+                        "{}\nAdd this existing checkout to amux",
+                        project.directory.display()
+                    )),
+                    tooltip::Position::Right,
+                )
+                .delay(Duration::from_millis(250)),
+            );
+        }
         let projects = self.sidebar_projects();
         if !projects.is_empty() {
             sidebar = sidebar.push(text("REMOTE PROJECTS").size(11).color(MUTED));
@@ -919,42 +959,6 @@ impl Desktop {
                         .padding(14)
                         .width(300)
                         .style(|_| surface(CARD, true)),
-                    tooltip::Position::Right,
-                )
-                .delay(Duration::from_millis(250)),
-            );
-        }
-        let local_projects = self.unadded_local_projects();
-        if !local_projects.is_empty() {
-            sidebar = sidebar.push(text("LOCAL · NOT ADDED").size(11).color(MUTED));
-        }
-        for project in local_projects {
-            let name = project
-                .directory
-                .file_name()
-                .unwrap_or(project.directory.as_os_str());
-            sidebar = sidebar.push(
-                tooltip(
-                    button(
-                        row![
-                            icon("folder-git"),
-                            text(name.to_string_lossy().into_owned())
-                                .size(13)
-                                .color(MUTED),
-                            Space::new().width(Length::Fill),
-                            text("Not added").size(10).color(MUTED)
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                    )
-                    .on_press(action(Action::AddLocalProject(project.directory.clone())))
-                    .padding([10, 12])
-                    .width(Length::Fill)
-                    .style(button::text),
-                    text(format!(
-                        "{}\nAdd this existing checkout to amux",
-                        project.directory.display()
-                    )),
                     tooltip::Position::Right,
                 )
                 .delay(Duration::from_millis(250)),
