@@ -1034,6 +1034,89 @@ mod tests {
     }
 
     #[test]
+    fn local_task_reads_settle_after_a_delegation_reset() {
+        let mut app = app();
+        drop(app.query(0));
+        let id = Uuid::new_v4();
+        drop(app.manage_task(Action::Open(id)));
+        app.delegation.scan_completed = Some(Instant::now());
+        drop(app.routing_tick());
+        let scope = app.scope(0);
+        let loading = app.workspaces[0].gateway.detail.loading.unwrap();
+        assert!(app.workspaces[0].gateway.loading);
+        assert!(app.workspaces[0].gateway.routing.loading);
+
+        let epoch = app.delegation.epoch;
+        app.reset_delegation();
+        assert_ne!(app.delegation.epoch, epoch);
+        drop(app.update(Message::TasksLoaded(scope.clone(), Ok(json!([])))));
+        drop(app.update(Message::RoutingLoaded(scope.clone(), Err("offline".into()))));
+        drop(app.update(Message::TaskDetailLoaded(
+            scope.clone(),
+            id,
+            loading,
+            Ok(task(id, &scope.project)),
+        )));
+        let panel = &app.workspaces[0].gateway;
+        assert!(!panel.loading);
+        assert!(panel.loaded_at.is_some());
+        assert!(!panel.routing.loading);
+        assert!(panel.detail.loading.is_none());
+        assert!(panel.detail.task.is_some());
+        drop(app.query(0));
+        assert!(
+            app.workspaces[0].gateway.loading,
+            "the next query must start"
+        );
+    }
+
+    #[test]
+    fn local_project_resolution_can_retry_after_a_delegation_reset() {
+        let mut app = app();
+        app.workspaces[0].gateway.project.clear();
+        drop(app.query(0));
+        let scope = app.scope(0);
+        assert!(app.workspaces[0].gateway.loading);
+        app.reset_delegation();
+        drop(app.update(Message::ProjectResolved(scope, Err("lookup failed".into()))));
+        assert!(!app.workspaces[0].gateway.loading);
+        drop(app.query(0));
+        assert!(
+            app.workspaces[0].gateway.loading,
+            "project lookup must retry"
+        );
+    }
+
+    #[test]
+    fn local_task_mutation_receipts_settle_after_a_delegation_reset() {
+        let mut app = app();
+        let id = Uuid::new_v4();
+        open(&mut app, id);
+        drop(app.manage_task(Action::Edit));
+        drop(app.manage_task(Action::Save));
+        let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+        let scope = app.scope(0);
+        assert!(app.pending_gateway_action());
+        app.reset_delegation();
+        let mut changed = task(id, &scope.project);
+        changed["title"] = json!("Saved");
+        drop(app.update(Message::TaskChanged(
+            scope,
+            id,
+            pending,
+            Change::Edit,
+            Ok(changed),
+        )));
+        let detail = &app.workspaces[0].gateway.detail;
+        assert!(detail.pending.is_none());
+        assert_eq!(detail.task.as_ref().unwrap()["title"], "Saved");
+        assert!(
+            !app.pending_gateway_action(),
+            "the receipt must unblock navigation and connection changes"
+        );
+    }
+
+    #[test]
     fn remote_close_and_resume_confirm_only_the_originating_project() {
         for (action, change, before, after) in [
             (Action::Close, Change::Close, "todo", "done"),

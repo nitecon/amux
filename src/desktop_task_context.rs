@@ -124,7 +124,13 @@ impl Desktop {
             canonical_remote,
             project: panel.project.trim().to_owned(),
             revision: panel.revision,
-            epoch: self.delegation.epoch,
+            // Local connection changes already advance the panel revision.
+            // Only remote contexts are reset with the delegation inventory;
+            // local in-flight replies must still settle after a failed reset.
+            epoch: match target {
+                TaskWorkspace::Local(_) => 0,
+                TaskWorkspace::Remote(_) => self.delegation.epoch,
+            },
         }
     }
 
