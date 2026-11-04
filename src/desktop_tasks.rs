@@ -1,4 +1,4 @@
-//! Existing-task actions stay in the gateway sidebar and are attributed to the user.
+//! Local and remote project task actions share the same user-attributed gateway API.
 use super::*;
 use amux::task_management::TaskEdits;
 use desktop_routing::Choice;
@@ -8,7 +8,6 @@ use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub(super) enum Action {
-    AnimateDrawer,
     Open(Uuid),
     AssignTask(Uuid),
     Back,
@@ -54,7 +53,6 @@ enum Mode {
 #[derive(Default)]
 pub(super) struct Panel {
     pub selected: Option<Uuid>,
-    opened_at: Option<std::time::Instant>,
     task: Option<Value>,
     loading: Option<Uuid>,
     pending: Option<Uuid>,
@@ -69,15 +67,6 @@ pub(super) struct Panel {
 }
 
 impl Panel {
-    pub(super) fn drawer_progress(&self) -> f32 {
-        self.opened_at.map_or(1.0, |opened| {
-            let elapsed = (opened.elapsed().as_secs_f32() / 0.18).min(1.0);
-            1.0 - (1.0 - elapsed).powi(3)
-        })
-    }
-    pub(super) fn animating(&self) -> bool {
-        self.selected.is_some() && self.drawer_progress() < 1.0
-    }
     pub fn refresh_with_list(&self) -> bool {
         self.selected.is_some()
             && self.mode == Mode::View
@@ -109,11 +98,12 @@ fn message(action: Action) -> Message {
 }
 
 impl Desktop {
+    #[cfg(test)]
     pub(super) fn refresh_open_task(&mut self, index: usize) -> Task<Message> {
         self.load_task_detail(index)
     }
     pub(super) fn manage_task(&mut self, action: Action) -> Task<Message> {
-        let panel = &mut self.workspaces[self.active].gateway.detail;
+        let panel = &mut self.task_panel_mut(self.task_workspace()).detail;
         match action {
             Action::Open(id) | Action::AssignTask(id) => {
                 if panel.unresolved() {
@@ -124,7 +114,6 @@ impl Desktop {
                 }
                 *panel = Panel {
                     selected: Some(id),
-                    opened_at: Some(std::time::Instant::now()),
                     mode: if matches!(action, Action::AssignTask(_)) {
                         Mode::Assign
                     } else {
@@ -132,7 +121,7 @@ impl Desktop {
                     },
                     ..Default::default()
                 };
-                let detail = self.load_task_detail(self.active);
+                let detail = self.load_task_detail_for(self.task_workspace());
                 return if matches!(action, Action::AssignTask(_)) {
                     Task::batch([detail, self.refresh_task_targets()])
                 } else {
@@ -146,7 +135,7 @@ impl Desktop {
             }
             Action::Refresh => {
                 if panel.pending.is_none() {
-                    return self.load_task_detail(self.active);
+                    return self.load_task_detail_for(self.task_workspace());
                 }
             }
             Action::Edit if panel.ready() => {
@@ -213,16 +202,22 @@ impl Desktop {
         Task::none()
     }
 
+    #[cfg(test)]
     fn load_task_detail(&mut self, index: usize) -> Task<Message> {
-        let scope = self.scope(index);
-        let panel = &mut self.workspaces[index].gateway.detail;
+        self.load_task_detail_for(TaskWorkspace::Local(index))
+    }
+
+    pub(super) fn load_task_detail_for(&mut self, index: TaskWorkspace) -> Task<Message> {
+        let scope = self.task_scope(index);
+        let gateway = self.preferences.current.gateway();
+        let panel = &mut self.task_panel_mut(index).detail;
         let Some(id) = panel.selected else {
             return Task::none();
         };
         if panel.loading.is_some() || panel.pending.is_some() || scope.project.is_empty() {
             return Task::none();
         }
-        let gateway = match self.preferences.current.gateway() {
+        let gateway = match gateway {
             Ok(gateway) => gateway,
             Err(error) => {
                 panel.status = error.to_string();
@@ -253,7 +248,7 @@ impl Desktop {
         if !self.scope_current(&scope) {
             return;
         }
-        let panel = &mut self.workspaces[scope.workspace].gateway.detail;
+        let panel = &mut self.task_panel_mut(scope.workspace).detail;
         if panel.selected != Some(id) || panel.loading != Some(request) {
             return;
         }
@@ -271,8 +266,11 @@ impl Desktop {
     }
 
     fn change_task(&mut self, change: Change) -> Task<Message> {
-        let scope = self.scope(self.active);
-        let panel = &self.workspaces[self.active].gateway.detail;
+        let scope = self.task_scope(self.task_workspace());
+        if !self.remote_binding_current(scope.workspace) {
+            return Task::none();
+        }
+        let panel = &self.task_panel(self.task_workspace()).detail;
         let Some(id) = panel.selected else {
             return Task::none();
         };
@@ -284,8 +282,8 @@ impl Desktop {
                 let Some(Choice::Session(target, _)) = &panel.recipient else {
                     return Task::none();
                 };
-                if !self.workspaces[self.active]
-                    .gateway
+                if !self
+                    .task_panel(self.task_workspace())
                     .routing
                     .available(target)
                     || !amux::task_platform::matches(
@@ -293,7 +291,7 @@ impl Desktop {
                         Some(&target.origin.os),
                     )
                 {
-                    self.workspaces[self.active].gateway.detail.status =
+                    self.task_panel_mut(self.task_workspace()).detail.status =
                         "Result recipient is unavailable or incompatible; refresh agents.".into();
                     return Task::none();
                 }
@@ -306,7 +304,7 @@ impl Desktop {
                 specification: panel.specification.text(),
             }),
             Change::Comment if panel.task.as_ref().unwrap()["status"] == "user_review" => {
-                let routing = &self.workspaces[self.active].gateway.routing;
+                let routing = &self.task_panel(self.task_workspace()).routing;
                 let live = routing
                     .directory
                     .as_ref()
@@ -328,19 +326,19 @@ impl Desktop {
                 let Some(Choice::Session(target, _)) = &panel.recipient else {
                     return Task::none();
                 };
-                if !self.workspaces[self.active]
-                    .gateway
+                if !self
+                    .task_panel(self.task_workspace())
                     .routing
                     .available(target)
                 {
-                    self.workspaces[self.active].gateway.detail.status = "Selected agent is unavailable. Refresh agents and select a live execution.".into();
+                    self.task_panel_mut(self.task_workspace()).detail.status = "Selected agent is unavailable. Refresh agents and select a live execution.".into();
                     return Task::none();
                 }
                 if !amux::task_platform::matches(
                     panel.task.as_ref().unwrap(),
                     Some(&target.origin.os),
                 ) {
-                    self.workspaces[self.active].gateway.detail.status =
+                    self.task_panel_mut(self.task_workspace()).detail.status =
                         "Selected agent does not match this task's OS requirement.".into();
                     return Task::none();
                 }
@@ -367,22 +365,24 @@ impl Desktop {
         let gateway = match gateway {
             Ok(gateway) => gateway,
             Err(error) => {
-                self.workspaces[self.active].gateway.detail.status = error.to_string();
+                self.task_panel_mut(self.task_workspace()).detail.status = error.to_string();
                 return Task::none();
             }
         };
         let request = Uuid::new_v4();
-        let panel = &mut self.workspaces[self.active].gateway.detail;
+        let panel = &mut self.task_panel_mut(self.task_workspace()).detail;
         panel.pending = Some(request);
         panel.status = "Saving…".into();
         Task::perform(
             async move {
                 // Resolve the workspace repository again before applying a user mutation.
                 let result = async {
-                    anyhow::ensure!(
-                        gateway.resolve_project(scope.directory.clone()).await? == scope.project,
-                        "Workspace repository changed; refresh the task before continuing"
-                    );
+                    if let Some(directory) = scope.directory.clone() {
+                        anyhow::ensure!(
+                            gateway.resolve_project(directory).await? == scope.project,
+                            "Workspace repository changed; refresh the task before continuing"
+                        );
+                    }
                     match mutation {
                         Mutation::Edit(edits) => {
                             gateway.edit_desktop_task(&scope.project, id, &edits).await
@@ -443,7 +443,7 @@ impl Desktop {
         if !self.scope_current(&scope) {
             return Task::none();
         }
-        let panel = &mut self.workspaces[scope.workspace].gateway.detail;
+        let panel = &mut self.task_panel_mut(scope.workspace).detail;
         if panel.selected != Some(id) || panel.pending != Some(request) {
             return Task::none();
         }
@@ -452,7 +452,7 @@ impl Desktop {
             Ok(mut value) => {
                 if matches!(change, Change::Close | Change::Resume) {
                     *panel = Panel::default();
-                    return self.query(scope.workspace);
+                    return self.query_tasks(scope.workspace);
                 }
                 // A reply to parked work returns the task, not the comment.
                 let returned = value["status"].as_str().map(|status| status == "todo");
@@ -488,8 +488,8 @@ impl Desktop {
                 }
                 .into();
                 Task::batch([
-                    self.load_task_detail(scope.workspace),
-                    self.query(scope.workspace),
+                    self.load_task_detail_for(scope.workspace),
+                    self.query_tasks(scope.workspace),
                 ])
             }
             Err(error) => {
@@ -503,7 +503,7 @@ impl Desktop {
     }
 
     pub(super) fn task_detail_view(&self) -> Element<'_, Message> {
-        let panel = &self.workspaces[self.active].gateway.detail;
+        let panel = &self.task_panel(self.task_workspace()).detail;
         let ready = panel.ready();
         let control = |label: &'static str, action, enabled: bool| {
             button(text(label).size(13)).on_press_maybe(enabled.then(|| message(action)))
@@ -617,7 +617,7 @@ impl Desktop {
             let watching = panel.mode == Mode::Watch;
             let choices: Vec<_> = self.task_agent_choices().into_iter().filter(|choice| matches!(choice, Choice::Session(target, _) if amux::task_platform::matches(task, Some(&target.origin.os)))).collect();
             let current = panel.recipient.clone();
-            let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.workspaces[self.active].gateway.routing.available(target) && amux::task_platform::matches(task, Some(&target.origin.os))));
+            let available = current.as_ref().is_some_and(|c| matches!(c, Choice::Session(target, _) if self.task_panel(self.task_workspace()).routing.available(target) && amux::task_platform::matches(task, Some(&target.origin.os))));
             body = body
                 .push(
                     text(if watching {
@@ -628,7 +628,7 @@ impl Desktop {
                     .size(15),
                 )
                 .push(text("Local and gateway agents for this repository:").size(13))
-                .push(text(&self.workspaces[self.active].gateway.routing.status).size(12));
+                .push(text(&self.task_panel(self.task_workspace()).routing.status).size(12));
             for choice in &choices {
                 let selected = current.as_ref() == Some(choice);
                 body = body.push(
@@ -980,6 +980,62 @@ mod tests {
     }
 
     #[test]
+    fn remote_close_and_resume_confirm_only_the_originating_project() {
+        for (action, change, before, after) in [
+            (Action::Close, Change::Close, "todo", "done"),
+            (Action::Resume, Change::Resume, "user_review", "todo"),
+        ] {
+            let mut app = app();
+            for ident in ["remote-a", "remote-b"] {
+                app.design.projects.push(amux::gateway::ProjectOverview {
+                    ident: ident.into(),
+                    ..Default::default()
+                });
+            }
+            drop(app.select_remote_project("remote-a".into()));
+            let id = Uuid::new_v4();
+            drop(app.manage_task(Action::Open(id)));
+            let scope = app.task_scope(app.task_workspace());
+            assert!(scope.directory.is_none());
+            assert!(
+                app.task_panel(scope.workspace).routing.loading,
+                "remote recipients load even without a local native-process scan"
+            );
+            assert!(app.workspaces.iter().all(|w| !w.gateway.routing.loading));
+            let loading = app.task_panel(scope.workspace).detail.loading.unwrap();
+            let mut value = task(id, &scope.project);
+            value["status"] = json!(before);
+            app.task_detail_loaded(scope.clone(), id, loading, Ok(value));
+            drop(app.manage_task(action));
+            let pending = app.task_panel(scope.workspace).detail.pending.unwrap();
+            drop(app.select_remote_project("remote-b".into()));
+            let other = Uuid::new_v4();
+            drop(app.manage_task(Action::Open(other)));
+            let mut response = task(id, &scope.project);
+            response["status"] = json!(after);
+            drop(app.task_changed(
+                scope.clone(),
+                id,
+                Uuid::new_v4(),
+                change,
+                Ok(response.clone()),
+            ));
+            assert_eq!(app.task_panel(scope.workspace).detail.selected, Some(id));
+            drop(app.task_changed(scope.clone(), id, pending, change, Ok(response)));
+            assert!(app.task_panel(scope.workspace).detail.selected.is_none());
+            assert_eq!(
+                app.task_panel(app.task_workspace()).detail.selected,
+                Some(other)
+            );
+            assert!(
+                app.workspaces
+                    .iter()
+                    .all(|w| w.gateway.detail.selected.is_none())
+            );
+        }
+    }
+
+    #[test]
     fn closing_or_requeueing_returns_its_workspace_to_the_list_after_confirmation() {
         for (action, change, before, after) in [
             (Action::Close, Change::Close, "todo", "done"),
@@ -1233,54 +1289,78 @@ mod tests {
             delegation::Origin,
             task_routing::{Available, Directory, SessionTarget},
         };
-        let mut app = app();
-        let id = Uuid::new_v4();
-        open(&mut app, id);
-        let target = SessionTarget {
-            origin: Origin {
-                session_id: Uuid::new_v4(),
-                instance_id: Uuid::new_v4(),
-                provider: Provider::Codex,
-                os: "linux".into(),
-            },
-            generation: Uuid::new_v4(),
-        };
-        app.workspaces[0].gateway.routing.directory = Some(Directory {
-            canonical_remote: Some("github.com/nitecon/amux".into()),
-            targets: vec![Available {
-                target: target.clone(),
-                seen_at: unix_ms() as i64,
-                expires_at: unix_ms() as i64 + 120_000,
-                display_name: Some("Ada Lovelace - Codex".into()),
-                hostname: Some("Defcon2".into()),
-            }],
-        });
-        app.workspaces[0].gateway.routing.checked = Some(Instant::now());
-        let choices = app.task_agent_choices();
-        assert_eq!(choices.len(), 1);
-        assert!(choices[0].to_string().contains("Ada Lovelace"));
-        assert!(choices[0].to_string().contains("Defcon2"));
-        app.workspaces[0].gateway.detail.mode = Mode::Assign;
-        app.workspaces[0].gateway.detail.recipient = Some(choices[0].clone());
-        app.workspaces[0]
-            .gateway
-            .routing
-            .directory
-            .as_mut()
-            .unwrap()
-            .targets[0]
-            .target
-            .generation = Uuid::new_v4();
-        let _ = app.manage_task(Action::Assign);
-        assert!(app.workspaces[0].gateway.detail.pending.is_none());
-        // A watcher selection is fenced by the same exact advertised generation.
-        app.workspaces[0].gateway.detail.mode = Mode::Watch;
-        let _ = app.manage_task(Action::Watch);
-        assert!(app.workspaces[0].gateway.detail.pending.is_none());
-        app.workspaces[0].gateway.routing.checked =
-            Instant::now().checked_sub(Duration::from_secs(61));
-        assert!(app.task_agent_choices().is_empty());
-        assert!(!app.workspaces[0].gateway.routing.available(&target));
+        for remote in [false, true] {
+            let mut app = app();
+            if remote {
+                app.design.projects.push(amux::gateway::ProjectOverview {
+                    ident: "remote".into(),
+                    ..Default::default()
+                });
+                drop(app.select_remote_project("remote".into()));
+            }
+            let context = app.task_workspace();
+            let id = Uuid::new_v4();
+            drop(app.manage_task(Action::Open(id)));
+            let loading = app.task_panel(context).detail.loading.unwrap();
+            let scope = app.task_scope(context);
+            let project = scope.project.clone();
+            app.task_detail_loaded(scope, id, loading, Ok(task(id, &project)));
+            let target = SessionTarget {
+                origin: Origin {
+                    session_id: Uuid::new_v4(),
+                    instance_id: Uuid::new_v4(),
+                    provider: Provider::Codex,
+                    os: "linux".into(),
+                },
+                generation: Uuid::new_v4(),
+            };
+            app.task_panel_mut(context).routing.directory = Some(Directory {
+                canonical_remote: Some("github.com/nitecon/amux".into()),
+                targets: vec![Available {
+                    target: target.clone(),
+                    seen_at: unix_ms() as i64,
+                    expires_at: unix_ms() as i64 + 120_000,
+                    display_name: Some("Ada Lovelace - Codex".into()),
+                    hostname: Some("Defcon2".into()),
+                }],
+            });
+            app.task_panel_mut(context).routing.checked = Some(Instant::now());
+            let choices = app.task_agent_choices();
+            assert_eq!(choices.len(), 1);
+            assert!(choices[0].to_string().contains("Ada Lovelace"));
+            assert!(choices[0].to_string().contains("Defcon2"));
+            app.task_panel_mut(context).detail.mode = Mode::Assign;
+            app.task_panel_mut(context).detail.recipient = Some(choices[0].clone());
+            drop(app.manage_task(Action::Assign));
+            assert!(
+                app.task_panel(context).detail.pending.is_some(),
+                "a live recipient in the selected project must be usable"
+            );
+            app.task_panel_mut(context).detail.pending = None;
+            app.task_panel_mut(context).detail.mode = Mode::Watch;
+            drop(app.manage_task(Action::Watch));
+            assert!(app.task_panel(context).detail.pending.is_some());
+            app.task_panel_mut(context).detail.pending = None;
+            app.task_panel_mut(context).detail.mode = Mode::Assign;
+            app.task_panel_mut(context)
+                .routing
+                .directory
+                .as_mut()
+                .unwrap()
+                .targets[0]
+                .target
+                .generation = Uuid::new_v4();
+            let _ = app.manage_task(Action::Assign);
+            assert!(app.task_panel_mut(context).detail.pending.is_none());
+            // A watcher selection is fenced by the same exact advertised generation.
+            app.task_panel_mut(context).detail.mode = Mode::Watch;
+            let _ = app.manage_task(Action::Watch);
+            assert!(app.task_panel_mut(context).detail.pending.is_none());
+            app.task_panel_mut(context).routing.checked =
+                Instant::now().checked_sub(Duration::from_secs(61));
+            assert!(app.task_agent_choices().is_empty());
+            assert!(!app.task_panel_mut(context).routing.available(&target));
+        }
     }
 
     #[test]

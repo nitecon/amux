@@ -165,13 +165,7 @@ impl Desktop {
     // Indices change when a workspace closes. Route delayed responses by their
     // runtime workspace identity before applying the existing revision fences.
     pub(super) fn retarget_workspace_message(&self, message: Message) -> Option<Message> {
-        let remap = |mut scope: QueryScope| {
-            scope.workspace = self
-                .workspaces
-                .iter()
-                .position(|w| w.id == scope.workspace_id)?;
-            Some(scope)
-        };
+        let remap = |scope: QueryScope| self.retarget_task_scope(scope);
         Some(match message {
             Message::ProjectResolved(scope, result) => {
                 Message::ProjectResolved(remap(scope)?, result)

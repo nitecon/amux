@@ -14,8 +14,11 @@ mod desktop_harness;
 mod desktop_icon;
 #[path = "desktop_routing.rs"]
 mod desktop_routing;
+#[path = "desktop_task_context.rs"]
+mod desktop_task_context;
 #[path = "desktop_tasks.rs"]
 mod desktop_tasks;
+use desktop_task_context::{RemoteWorkspace, TaskWorkspace};
 #[path = "desktop_toasts.rs"]
 mod desktop_toasts;
 #[path = "desktop_workspace.rs"]
@@ -254,11 +257,13 @@ impl Updates {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QueryScope {
-    workspace: usize,
+    workspace: TaskWorkspace,
     workspace_id: Uuid,
-    directory: PathBuf,
+    directory: Option<PathBuf>,
+    canonical_remote: Option<String>,
     project: String,
     revision: u64,
+    epoch: u64,
 }
 
 #[derive(Default)]
@@ -281,6 +286,15 @@ struct TaskPanel {
 }
 
 impl TaskPanel {
+    fn unresolved(&self) -> bool {
+        self.detail.unresolved()
+            || self.request.as_ref().is_some_and(|request| {
+                matches!(
+                    request.state,
+                    TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
+                )
+            })
+    }
     fn can_prepare_release(&self) -> bool {
         self.request.is_none()
             && self.draft_title.is_empty()
@@ -336,6 +350,8 @@ struct Desktop {
     harness: desktop_harness::State,
     toasts: desktop_toasts::State,
     workspaces: Vec<Workspace>,
+    remote_workspaces: Vec<RemoteWorkspace>,
+    remote_active: Option<usize>,
     active: usize,
     workspace_dialog: WorkspaceDialog,
     closing_workspace: Option<Uuid>,
@@ -408,7 +424,7 @@ impl Desktop {
             harness: desktop_harness::State::startup(),
             toasts: desktop_toasts::State::default(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
-            workspaces: Vec::new(), active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
+            workspaces: Vec::new(), remote_workspaces: Vec::new(), remote_active: None, active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
             status: "Configure the gateway in Preferences to receive task notifications in agent terminals.".into(),
             registry: state.ok(),
             snapshot_path: amux::identity::state_directory().ok().map(|p| p.join("layout.json")), dirty: false, restarting: false,
@@ -461,6 +477,7 @@ impl Desktop {
         if directory != home && !app.workspaces.iter().any(|w| w.directory == directory) {
             app.add_workspace(directory.clone());
         }
+        app.show_tasks();
         if let Some(error) = state_error {
             app.status =
                 format!("App state unavailable: {error}. Local terminals remain available.");
@@ -865,6 +882,7 @@ impl Desktop {
     }
 
     fn add_workspace_with_script(&mut self, directory: PathBuf, init_script: Option<PathBuf>) {
+        self.remote_active = None;
         self.show_terminals();
         let tab = self.terminal_with_script(&directory, None, init_script.as_deref());
         let (panes, focused) = pane_grid::State::new(Pane {
@@ -885,7 +903,7 @@ impl Desktop {
     }
 
     fn focus(&self) -> Task<Message> {
-        if self.preferences.open || self.workspace_dialog.open {
+        if self.preferences.open || self.workspace_dialog.open || self.tasks_visible() {
             return Task::none();
         }
         let workspace = &self.workspaces[self.active];
@@ -905,6 +923,21 @@ impl Desktop {
         let Some(message) = self.retarget_workspace_message(message) else {
             return Task::none();
         };
+        if self.remote_active.is_some()
+            && matches!(
+                &message,
+                Message::NewTab(_)
+                    | Message::SelectTab(..)
+                    | Message::Split(_)
+                    | Message::Focus(_)
+                    | Message::CloseTab(..)
+                    | Message::RestartTab(..)
+                    | Message::Resize(_)
+            )
+        {
+            self.status = "Check out this project locally to use terminals.".into();
+            return Task::none();
+        }
         if (self.embedded.busy || self.embedded.stopping)
             && matches!(
                 &message,
@@ -942,7 +975,7 @@ impl Desktop {
             }
             Message::RoutingLoaded(scope, result) => self.routing_loaded(scope, result),
             Message::TaskTarget(choice) => {
-                let panel = &mut self.workspaces[self.active].gateway;
+                let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel.request.is_none() {
                     panel.routing.choice = choice;
                     panel.draft_status.clear();
@@ -1010,9 +1043,11 @@ impl Desktop {
             Message::CancelCloseWorkspace => self.closing_workspace = None,
             Message::SelectWorkspace(index) => {
                 if index < self.workspaces.len() {
-                    self.show_terminals();
+                    if self.remote_active.take().is_some() {
+                        self.show_tasks();
+                    }
                     self.active = index;
-                    return self.focus();
+                    return Task::batch([self.query(index), self.focus()]);
                 }
             }
             Message::NewTab(provider) => {
@@ -1479,21 +1514,21 @@ impl Desktop {
                 if !self.scope_current(&scope) {
                     return Task::none();
                 }
-                self.workspaces[scope.workspace].gateway.loading = false;
+                self.task_panel_mut(scope.workspace).loading = false;
                 match result {
                     Ok(project) => {
-                        self.bind_project(scope.workspace, project);
-                        return self.query(scope.workspace);
+                        self.bind_task_project(scope.workspace, project);
+                        return self.query_tasks(scope.workspace);
                     }
                     Err(error) => {
-                        self.workspaces[scope.workspace].gateway.status =
+                        self.task_panel_mut(scope.workspace).status =
                             format!("Could not connect this repository: {error}");
                     }
                 }
             }
-            Message::RefreshTasks => return self.query(self.active),
+            Message::RefreshTasks => return self.query_tasks(self.task_workspace()),
             Message::TaskTitle(title) => {
-                let panel = &mut self.workspaces[self.active].gateway;
+                let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel.request.is_none() {
                     if title.len() <= 1024 {
                         panel.draft_title = title;
@@ -1504,7 +1539,7 @@ impl Desktop {
                 }
             }
             Message::TaskContext(action) => {
-                let panel = &mut self.workspaces[self.active].gateway;
+                let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel.request.is_none() {
                     let previous = panel.draft_context.text();
                     panel.draft_context.perform(action);
@@ -1518,7 +1553,7 @@ impl Desktop {
             }
             Message::SubmitTask => return self.create_task(),
             Message::PrepareReleaseTask => {
-                let panel = &mut self.workspaces[self.active].gateway;
+                let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel.can_prepare_release() {
                     panel.draft_title = "Prepare and publish a new release".into();
                     panel.draft_context = text_editor::Content::with_text(RELEASE_TASK_CONTEXT);
@@ -1527,7 +1562,7 @@ impl Desktop {
                 }
             }
             Message::NewTaskRequest => {
-                let panel = &mut self.workspaces[self.active].gateway;
+                let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel
                     .request
                     .as_ref()
@@ -1542,13 +1577,13 @@ impl Desktop {
             }
             Message::TaskCreated(scope, request_id, result) => {
                 let current = self.scope_current(&scope);
-                let Some(workspace) = self.workspaces.get_mut(scope.workspace) else {
-                    return Task::none();
-                };
-                if workspace.directory != scope.directory {
+                let existing = self.task_scope(scope.workspace);
+                if existing.workspace_id != scope.workspace_id
+                    || existing.directory != scope.directory
+                {
                     return Task::none();
                 }
-                let panel = &mut workspace.gateway;
+                let panel = self.task_panel_mut(scope.workspace);
                 let Some(request) = &mut panel.request else {
                     return Task::none();
                 };
@@ -1566,14 +1601,14 @@ impl Desktop {
                 // A project rebind must not discard the original request's receipt.
                 // Refresh only if this workspace still shows the submitted project.
                 if accepted && current && panel.project.trim() == scope.project {
-                    return self.query(scope.workspace);
+                    return self.query_tasks(scope.workspace);
                 }
             }
             Message::TasksLoaded(scope, result) => {
                 if !self.scope_current(&scope) {
                     return Task::none();
                 }
-                let panel = &mut self.workspaces[scope.workspace].gateway;
+                let panel = &mut self.task_panel_mut(scope.workspace);
                 panel.loading = false;
                 panel.loaded_at = None;
                 match result {
@@ -1594,10 +1629,10 @@ impl Desktop {
                     }
                 }
                 if std::mem::take(&mut panel.refresh_pending) {
-                    return self.query(scope.workspace);
+                    return self.query_tasks(scope.workspace);
                 }
                 if panel.loaded_at.is_some() && panel.detail.refresh_with_list() {
-                    return self.refresh_open_task(scope.workspace);
+                    return self.load_task_detail_for(scope.workspace);
                 }
             }
             Message::DeliveryTick => {
@@ -1644,7 +1679,12 @@ impl Desktop {
                         self.projects_tick(),
                     ])
                 };
-                return Task::batch([gateway_ticks, updates, self.local_projects_tick()]);
+                return Task::batch([
+                    gateway_ticks,
+                    updates,
+                    self.local_projects_tick(),
+                    self.task_view_tick(),
+                ]);
             }
         }
         Task::none()
@@ -1913,7 +1953,7 @@ impl Desktop {
         if self.design.task_window == Some(window) {
             return format!(
                 "amux · Gateway tasks · {}",
-                self.workspaces[self.active].gateway.project
+                self.task_panel(self.task_workspace()).project
             );
         }
         "amux · agent workspaces".into()
@@ -1927,7 +1967,7 @@ impl Desktop {
                 .padding(20)
                 .into();
             }
-            return self.design_tasks(true);
+            return self.design_tasks();
         }
         self.view()
     }
@@ -2048,15 +2088,7 @@ impl Desktop {
     }
 
     fn pending_gateway_action(&self) -> bool {
-        self.workspaces.iter().any(|w| {
-            w.gateway.detail.unresolved()
-                || w.gateway.request.as_ref().is_some_and(|request| {
-                    matches!(
-                        request.state,
-                        TaskRequestState::Sending | TaskRequestState::Unconfirmed(_)
-                    )
-                })
-        })
+        self.task_contexts().any(|(_, panel)| panel.unresolved())
     }
 
     fn save_preferences(&mut self) -> Task<Message> {
@@ -2292,24 +2324,23 @@ impl Desktop {
             .push(text("On amux servers (Server or Client mode) the server decides: idle agents receive eligible tasks oldest first, completed tasks get one review by a different agent, and owners and requesters hear about their tasks. Explicit User review still waits for your decision.").size(12))
             .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
             .push(text("Repository matching is required. Settings are saved on this device.").size(12))
-            .push(text(&self.workspaces[self.active].gateway.status).size(13));
+            .push(text(&self.task_panel(self.task_workspace()).status).size(13));
         // The settings modal scrolls its content pane.
         content.into()
     }
 
+    #[cfg(test)]
     fn scope(&self, workspace: usize) -> QueryScope {
-        let current = &self.workspaces[workspace];
-        QueryScope {
-            workspace,
-            workspace_id: current.id,
-            directory: current.directory.clone(),
-            project: current.gateway.project.trim().to_owned(),
-            revision: current.gateway.revision,
-        }
+        self.task_scope(TaskWorkspace::Local(workspace))
     }
 
+    #[cfg(test)]
     fn bind_project(&mut self, workspace: usize, project: String) {
-        let panel = &mut self.workspaces[workspace].gateway;
+        self.bind_task_project(TaskWorkspace::Local(workspace), project);
+    }
+
+    fn bind_task_project(&mut self, workspace: TaskWorkspace, project: String) {
+        let panel = self.task_panel_mut(workspace);
         panel.routing = Default::default();
         panel.project = project;
         panel.detail = Default::default();
@@ -2322,10 +2353,21 @@ impl Desktop {
     }
 
     fn scope_current(&self, scope: &QueryScope) -> bool {
-        self.workspaces.get(scope.workspace).is_some() && self.scope(scope.workspace) == *scope
+        let exists = match scope.workspace {
+            TaskWorkspace::Local(index) => self.workspaces.get(index).is_some(),
+            TaskWorkspace::Remote(index) => self.remote_workspaces.get(index).is_some(),
+        };
+        exists && self.task_scope(scope.workspace) == *scope
     }
 
     fn query(&mut self, workspace: usize) -> Task<Message> {
+        self.query_tasks(TaskWorkspace::Local(workspace))
+    }
+
+    fn query_tasks(&mut self, workspace: TaskWorkspace) -> Task<Message> {
+        if !self.remote_binding_current(workspace) {
+            return Task::none();
+        }
         if self.embedded.busy
             || self.embedded.stopping
             || (self.preferences.current.mode == GatewayMode::Server
@@ -2333,22 +2375,27 @@ impl Desktop {
         {
             return Task::none();
         }
-        let scope = self.scope(workspace);
-        let panel = &mut self.workspaces[workspace].gateway;
+        let scope = self.task_scope(workspace);
+        let gateway = self.preferences.current.gateway();
+        let panel = self.task_panel_mut(workspace);
         if panel.loading {
             return Task::none();
         }
         panel.queried_at = Some(Instant::now());
-        let gateway = self.preferences.current.gateway();
         match gateway {
             Ok(gateway) => {
                 panel.loading = true;
                 if scope.project.is_empty() {
+                    let Some(directory) = scope.directory.clone() else {
+                        panel.loading = false;
+                        panel.status = "Select a gateway project.".into();
+                        return Task::none();
+                    };
                     panel.status = "Resolving project from repository…".into();
                     return Task::perform(
                         async move {
                             let result = gateway
-                                .resolve_project(scope.directory.clone())
+                                .resolve_project(directory)
                                 .await
                                 .map_err(|e| e.to_string());
                             (scope, result)
@@ -2376,8 +2423,12 @@ impl Desktop {
     }
 
     fn create_task(&mut self) -> Task<Message> {
-        let scope = self.scope(self.active);
-        let panel = &mut self.workspaces[self.active].gateway;
+        let scope = self.task_scope(self.task_workspace());
+        if !self.remote_binding_current(scope.workspace) {
+            return Task::none();
+        }
+        let gateway = self.preferences.current.gateway();
+        let panel = self.task_panel_mut(scope.workspace);
         if panel.request.is_some() {
             return Task::none();
         }
@@ -2394,7 +2445,6 @@ impl Desktop {
             panel.draft_status = "Not submitted: task title or context is too long".into();
             return Task::none();
         }
-        let gateway = self.preferences.current.gateway();
         let gateway = match gateway {
             Ok(gateway) => gateway,
             Err(error) => {
@@ -2423,12 +2473,15 @@ impl Desktop {
                 // A desktop user's request is not attributed to any agent execution.
                 // The shared client validates the accepted task UUID/project/status.
                 let result = async {
-                    let directory = scope.directory.clone();
                     // A local-only checkout has no origin; its recipients must say so too.
-                    let actual = tokio::task::spawn_blocking(move || {
-                        amux::gateway_project::configured_origin(&directory)
-                    })
-                    .await??;
+                    let actual = if let Some(directory) = scope.directory.clone() {
+                        tokio::task::spawn_blocking(move || {
+                            amux::gateway_project::configured_origin(&directory)
+                        })
+                        .await??
+                    } else {
+                        scope.canonical_remote.clone()
+                    };
                     if routing != amux::task_routing::Routing::Auto {
                         anyhow::ensure!(
                             remote.map(|remote| {
@@ -2458,7 +2511,7 @@ impl Desktop {
     }
 
     fn task_form(&self) -> Element<'_, Message> {
-        let panel = &self.workspaces[self.active].gateway;
+        let panel = &self.task_panel(self.task_workspace());
         if let Some(request) = &panel.request {
             let mut receipt = column![text(&request.title).size(14)].spacing(6);
             match &request.state {
@@ -2521,11 +2574,6 @@ impl Desktop {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::Design(desktop_design::Action::Cursor(position)))
                 }
-                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
-                    iced::mouse::Button::Left,
-                )) => Some(Message::Design(
-                    desktop_design::Action::FinishTaskDrawerResize,
-                )),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
@@ -2550,14 +2598,6 @@ impl Desktop {
             iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Save),
             iced::window::close_requests().map(Message::Close),
             iced::time::every(Duration::from_millis(250)).map(|_| Message::DeliveryTick),
-            if self.design.task_window.is_none()
-                && self.workspaces[self.active].gateway.detail.animating()
-            {
-                iced::time::every(Duration::from_millis(16))
-                    .map(|_| Message::ManageTask(desktop_tasks::Action::AnimateDrawer))
-            } else {
-                Subscription::none()
-            },
         ])
     }
 
@@ -2701,6 +2741,8 @@ mod tests {
                 status: String::new(),
             },
             workspaces,
+            remote_workspaces: Vec::new(),
+            remote_active: None,
             active: 0,
             workspace_dialog: WorkspaceDialog::default(),
             closing_workspace: None,
@@ -3647,7 +3689,7 @@ mod tests {
         assert!(app.workspaces[0].gateway.tasks.is_empty());
         assert!(app.workspaces[0].gateway.loaded_at.is_none());
         let mut wrong_directory = app.scope(0);
-        wrong_directory.directory = PathBuf::from("/different-project");
+        wrong_directory.directory = Some(PathBuf::from("/different-project"));
         assert!(!app.scope_current(&wrong_directory));
     }
 

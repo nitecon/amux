@@ -20,6 +20,7 @@ const RED: Color = Color::from_rgb8(248, 113, 113);
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum View {
     #[default]
+    Tasks,
     Terminals,
     Files,
     Git,
@@ -34,12 +35,9 @@ pub(super) enum Filter {
 #[derive(Debug, Clone)]
 pub(super) enum Action {
     CopyTemplate(&'static str),
-    ToggleTasks,
     DetachTasks,
     DockTasks,
     Cursor(iced::Point),
-    ResizeTaskDrawer,
-    FinishTaskDrawerResize,
     TabMenu(pane_grid::Pane, u64),
     DismissTabMenu,
     CloseMenuTab,
@@ -50,6 +48,7 @@ pub(super) enum Action {
     /// otherwise into a folder chosen in the file browser.
     CheckoutProject(bool),
     AddLocalProject(PathBuf),
+    RemoteProject(String),
     View(View),
     Filter(Filter),
     TaskSearch(String),
@@ -64,11 +63,8 @@ pub(super) enum Action {
 #[derive(Default)]
 pub(super) struct State {
     pub(super) task_window: Option<iced::window::Id>,
-    tasks_collapsed: bool,
     cursor: iced::Point,
     viewport: Option<iced::Size>,
-    task_drawer_fraction: Option<f32>,
-    resizing_task_drawer: bool,
     tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
     project_menu: Option<(String, iced::Point)>,
     mode: View,
@@ -93,14 +89,6 @@ pub(super) struct State {
     pub(super) local_projects: Vec<desktop_workspace::LocalProject>,
     pub(super) local_projects_polled: Option<(PathBuf, std::time::Instant)>,
     pub(super) local_projects_revision: u64,
-}
-impl State {
-    fn task_drawer_width(&self) -> f32 {
-        let window = self.viewport.map_or(1200.0, |size| size.width);
-        let available = (window - 24.0).max(1.0);
-        (window * self.task_drawer_fraction.unwrap_or(1.0 / 3.0))
-            .clamp(available.min(360.0), available)
-    }
 }
 #[derive(Debug, Clone)]
 pub(super) struct ProjectData {
@@ -434,9 +422,20 @@ fn tabs(workspace: &Workspace) -> impl Iterator<Item = &Tab> {
 }
 impl Desktop {
     pub(super) fn design_message(&mut self, message: Action) -> Task<Message> {
+        if self.remote_active.is_some()
+            && matches!(
+                &message,
+                Action::Single
+                    | Action::Browse(_)
+                    | Action::TabMenu(..)
+                    | Action::RestartMenuTab
+                    | Action::CloseMenuTab
+            )
+        {
+            return Task::none();
+        }
         match message {
             Action::CopyTemplate(content) => return iced::clipboard::write(content.to_owned()),
-            Action::ToggleTasks => self.design.tasks_collapsed = !self.design.tasks_collapsed,
             Action::DetachTasks => {
                 if self.design.task_window.is_none() {
                     let (id, open) = iced::window::open(iced::window::Settings {
@@ -452,24 +451,12 @@ impl Desktop {
                 }
             }
             Action::DockTasks => {
-                self.design.tasks_collapsed = false;
+                self.show_tasks();
                 if let Some(id) = self.design.task_window.take() {
                     return iced::window::close(id);
                 }
             }
-            Action::Cursor(position) => {
-                self.design.cursor = position;
-                if self.design.resizing_task_drawer
-                    && let Some(viewport) = self.design.viewport
-                {
-                    let available = (viewport.width - 24.0).max(1.0);
-                    let width =
-                        (viewport.width - position.x - 12.0).clamp(available.min(360.0), available);
-                    self.design.task_drawer_fraction = Some(width / viewport.width.max(1.0));
-                }
-            }
-            Action::ResizeTaskDrawer => self.design.resizing_task_drawer = true,
-            Action::FinishTaskDrawerResize => self.design.resizing_task_drawer = false,
+            Action::Cursor(position) => self.design.cursor = position,
             Action::TabMenu(pane, tab) => {
                 let workspace = &self.workspaces[self.active];
                 if workspace
@@ -488,6 +475,7 @@ impl Desktop {
             Action::AddLocalProject(directory) => {
                 return self.open_local_project(directory);
             }
+            Action::RemoteProject(project) => return self.select_remote_project(project),
             Action::CheckoutProject(projects_dir) => {
                 let Some((ident, _)) = self.design.project_menu.take() else {
                     return Task::none();
@@ -530,10 +518,16 @@ impl Desktop {
                 }
             }
             Action::View(mode) => {
+                if self.remote_active.is_some() && mode != View::Tasks {
+                    self.status =
+                        "Check out this project locally to use terminals and files.".into();
+                    return Task::none();
+                }
                 self.design.tab_menu = None;
                 self.design.mode = mode;
                 let workspace = &self.workspaces[self.active];
                 match mode {
+                    View::Tasks => return self.query_tasks(self.task_workspace()),
                     View::Files => {
                         // The Files view uses the shared browser, confined to this workspace.
                         self.design.project = None;
@@ -578,6 +572,7 @@ impl Desktop {
                 .hidden_events
                 .extend(self.design_events().into_iter().map(|e| e.key)),
             Action::Single => {
+                self.show_terminals();
                 let w = &mut self.workspaces[self.active];
                 if w.panes.maximized().is_some() {
                     w.panes.restore();
@@ -633,6 +628,14 @@ impl Desktop {
     }
     pub(super) fn design_view(&self) -> Element<'_, Message> {
         let workspace = &self.workspaces[self.active];
+        let project_context = if self.remote_active.is_some() {
+            format!(
+                "Gateway project: {}",
+                self.task_panel(self.task_workspace()).project
+            )
+        } else {
+            workspace.directory.display().to_string()
+        };
         let all_tabs: Vec<_> = self.workspaces.iter().flat_map(tabs).collect();
         let agents = all_tabs
             .iter()
@@ -667,9 +670,7 @@ impl Desktop {
                 container(
                     row![
                         icon("folder-git"),
-                        text(workspace.directory.display().to_string())
-                            .font(iced::Font::MONOSPACE)
-                            .size(11)
+                        text(project_context).font(iced::Font::MONOSPACE).size(11)
                     ]
                     .spacing(8)
                 )
@@ -748,7 +749,7 @@ impl Desktop {
             } else {
                 "idle".into()
             };
-            let selected = index == self.active;
+            let selected = self.remote_active.is_none() && index == self.active;
             let mut diagnostic = column![
                 text(workspace_name(w)).size(14),
                 text(w.directory.display().to_string())
@@ -888,19 +889,36 @@ impl Desktop {
                 .directory
                 .file_name()
                 .unwrap_or(project.directory.as_os_str());
+            let task_project = project.canonical_remote.as_ref().and_then(|remote| {
+                self.design
+                    .projects
+                    .iter()
+                    .find(|item| item.canonical_remote.as_ref() == Some(remote))
+            });
+            let title: Element<'_, Message> = if let Some(task_project) = task_project {
+                button(
+                    text(name.to_string_lossy().into_owned())
+                        .size(13)
+                        .color(MUTED),
+                )
+                .on_press(action(Action::RemoteProject(task_project.ident.clone())))
+                .padding(0)
+                .style(button::text)
+                .into()
+            } else {
+                text(name.to_string_lossy().into_owned())
+                    .size(13)
+                    .color(MUTED)
+                    .into()
+            };
             sidebar = sidebar.push(
                 tooltip(
                     container(
                         row![
                             text("●").size(12).color(MUTED),
-                            column![
-                                text(name.to_string_lossy().into_owned())
-                                    .size(13)
-                                    .color(MUTED),
-                                text("Not added").size(10).color(MUTED)
-                            ]
-                            .spacing(2)
-                            .width(Length::Fill),
+                            column![title, text("Not added").size(10).color(MUTED)]
+                                .spacing(2)
+                                .width(Length::Fill),
                             button(text("Add").size(11).color(CYAN))
                                 .on_press(action(Action::AddLocalProject(
                                     project.directory.clone()
@@ -928,6 +946,8 @@ impl Desktop {
             sidebar = sidebar.push(text("REMOTE PROJECTS").size(11).color(MUTED));
         }
         for project in projects {
+            let selected = self.remote_active.is_some()
+                && self.task_panel(self.task_workspace()).project == project.ident;
             let mut details = column![].spacing(6);
             for line in self.project_lines(&project.ident, None) {
                 details = details.push(text(line).size(11));
@@ -949,8 +969,18 @@ impl Desktop {
                 )
                 .padding([10, 12])
                 .width(Length::Fill)
-                .style(|_| surface(CARD, true)),
+                .style(move |_| {
+                    surface(
+                        if selected {
+                            Color::from_rgb8(13, 39, 51)
+                        } else {
+                            CARD
+                        },
+                        true,
+                    )
+                }),
             )
+            .on_press(action(Action::RemoteProject(project.ident.clone())))
             .on_right_press(action(Action::ProjectMenu(project.ident.clone())));
             sidebar = sidebar.push(
                 tooltip(
@@ -998,6 +1028,18 @@ impl Desktop {
         .style(|_| surface(PANEL, false));
         let toolbar = container(
             row![
+                control(
+                    "server",
+                    "Tasks",
+                    action(Action::View(View::Tasks)),
+                    self.tasks_visible()
+                ),
+                control(
+                    "terminal",
+                    "Terminals",
+                    action(Action::View(View::Terminals)),
+                    !self.tasks_visible()
+                ),
                 text(if self.design.compact { "" } else { "LAUNCH:" })
                     .size(9)
                     .color(MUTED),
@@ -1062,7 +1104,46 @@ impl Desktop {
         .padding([5, 12])
         .height(44)
         .style(|_| surface(PANEL, false));
-        let center: Element<'_, Message> = if self.design.mode == View::Terminals {
+        let toolbar = if self.remote_active.is_some() {
+            container(
+                row![
+                    text("Task workspace · no local workspace required")
+                        .size(12)
+                        .color(MUTED),
+                    Space::new().width(Length::Fill),
+                    control(
+                        "folder-git",
+                        "Check out locally",
+                        action(Action::ProjectMenu(
+                            self.task_panel(self.task_workspace()).project.clone()
+                        )),
+                        false
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding([5, 12])
+            .height(44)
+            .style(|_| surface(PANEL, false))
+        } else {
+            toolbar
+        };
+        let center: Element<'_, Message> = if self.tasks_visible() {
+            if self.design.task_window.is_some() {
+                container(
+                    column![
+                        text("Tasks are open in a separate window"),
+                        control("back", "Show tasks here", action(Action::DockTasks), false)
+                    ]
+                    .spacing(12),
+                )
+                .center(Length::Fill)
+                .into()
+            } else {
+                self.design_tasks()
+            }
+        } else if self.design.mode == View::Terminals {
             self.design_terminals()
         } else {
             self.project_view()
@@ -1074,60 +1155,17 @@ impl Desktop {
                 column![center, toolbar]
                     .width(Length::Fill)
                     .height(Length::Fill),
-                self.task_sidebar()
             ]
             .height(Length::Fill)
         ]
         .into();
         // Modal focus operations and input must not reach widgets underneath.
-        let task_drawer = self.design.task_window.is_none()
-            && self.workspaces[self.active]
-                .gateway
-                .detail
-                .selected
-                .is_some();
         let base = if self.preferences.open || self.workspace_dialog.open {
             inert(base)
         } else {
             base
         };
         let mut layers = stack![base];
-        if task_drawer && !self.preferences.open && !self.workspace_dialog.open {
-            // A detail drawer floats over the terminal without squeezing it.
-            let width = self.design.task_drawer_width();
-            let progress = self.workspaces[self.active]
-                .gateway
-                .detail
-                .drawer_progress();
-            layers = layers.push(
-                container(
-                    iced::widget::float(opaque(
-                        container(row![
-                            mouse_area(
-                                container(Space::new())
-                                    .width(8)
-                                    .height(Length::Fill)
-                                    .style(|_| surface(LINE, false))
-                            )
-                            .interaction(iced::mouse::Interaction::ResizingHorizontally)
-                            .on_press(action(Action::ResizeTaskDrawer)),
-                            self.design_tasks(true),
-                        ])
-                        .width(width)
-                        .height(Length::Fill),
-                    ))
-                    .translate(move |_, _| iced::Vector::new(width * (1.0 - progress), 0.0)),
-                )
-                .align_right(Length::Fill)
-                .height(Length::Fill)
-                .padding(iced::Padding {
-                    top: 48.0,
-                    right: 12.0,
-                    bottom: 12.0,
-                    left: 12.0,
-                }),
-            );
-        }
         if self.design.events {
             layers = layers.push(
                 container(opaque(self.events_view()))
@@ -1535,56 +1573,36 @@ impl Desktop {
         .height(Length::Fill)
         .into()
     }
-    fn task_sidebar(&self) -> Element<'_, Message> {
-        if self.design.task_window.is_none()
-            && self.workspaces[self.active]
-                .gateway
-                .detail
-                .selected
-                .is_some()
-        {
-            return Space::new().width(320).height(Length::Fill).into();
-        }
-        if self.design.task_window.is_some() || self.design.tasks_collapsed {
-            return container(
+    pub(super) fn design_tasks(&self) -> Element<'_, Message> {
+        let panel = self.task_panel(self.task_workspace());
+        let detail: Element<'_, Message> = if panel.detail.selected.is_some() {
+            self.task_detail_view()
+        } else {
+            container(
                 column![
-                    control("back", "", action(Action::DockTasks), false),
-                    control("single", "", action(Action::DetachTasks), false),
+                    text("Select a task").size(20),
+                    text("Review work, post comments, or dispatch a task from the project queue.")
+                        .size(13)
+                        .color(MUTED),
                 ]
-                .spacing(8),
+                .spacing(10),
             )
-            .padding(5)
-            .height(Length::Fill)
-            .style(|_| surface(PANEL, false))
-            .into();
-        }
-        self.design_tasks(false)
+            .padding(24)
+            .center(Length::Fill)
+            .into()
+        };
+        row![
+            self.task_queue(Length::Fixed(360.0)),
+            container(detail)
+                .padding(16)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        ]
+        .height(Length::Fill)
+        .into()
     }
 
-    pub(super) fn design_tasks(&self, expanded: bool) -> Element<'_, Message> {
-        let width = if expanded {
-            Length::Fill
-        } else {
-            Length::Fixed(320.0)
-        };
-        let collapse = tooltip(
-            control(
-                "",
-                if expanded { "‹" } else { "›" },
-                action(if expanded {
-                    Action::DockTasks
-                } else {
-                    Action::ToggleTasks
-                }),
-                false,
-            ),
-            text(if expanded {
-                "Return tasks to sidebar"
-            } else {
-                "Collapse task panel"
-            }),
-            tooltip::Position::Bottom,
-        );
+    fn task_queue(&self, width: Length) -> Element<'_, Message> {
         let detached = self.design.task_window.is_some();
         let detach = tooltip(
             control(
@@ -1598,22 +1616,13 @@ impl Desktop {
                 false,
             ),
             text(if detached {
-                "Return tasks to sidebar"
+                "Return tasks to the main window"
             } else {
                 "Open tasks in a separate window"
             }),
             tooltip::Position::Bottom,
         );
-        let panel = &self.workspaces[self.active].gateway;
-        if panel.detail.selected.is_some() {
-            // The detail view's own back button returns to the list, so the collapse arrow is hidden.
-            return container(column![row![detach], self.task_detail_view()].spacing(8))
-                .padding(20)
-                .width(width)
-                .height(Length::Fill)
-                .style(|_| surface(PANEL, true))
-                .into();
-        }
+        let panel = self.task_panel(self.task_workspace());
         let filter = |label, kind| {
             control(
                 "",
@@ -1659,7 +1668,7 @@ impl Desktop {
                 icon("server"),
                 text("GATEWAY TASKS").size(12),
                 Space::new().width(Length::Fill),
-                row![collapse, detach].spacing(4),
+                row![detach].spacing(4),
                 button(text("Raw Events ›").size(10).color(CYAN))
                     .style(button::text)
                     .on_press(action(Action::Events))
@@ -1669,7 +1678,7 @@ impl Desktop {
             container(
                 row![
                     text(format!(
-                        "{} · {} local agents",
+                        "{} · {}",
                         if panel.loaded_at.is_some() {
                             "Tasks loaded"
                         } else if panel.loading {
@@ -1677,9 +1686,21 @@ impl Desktop {
                         } else {
                             "Tasks offline"
                         },
-                        tabs(&self.workspaces[self.active])
-                            .filter(|t| tab_provider(t).is_some() && t.terminal.is_some())
-                            .count()
+                        match self.task_workspace() {
+                            TaskWorkspace::Local(index) => format!(
+                                "{} local agents",
+                                tabs(&self.workspaces[index])
+                                    .filter(|t| tab_provider(t).is_some() && t.terminal.is_some())
+                                    .count()
+                            ),
+                            TaskWorkspace::Remote(_) => self
+                                .design
+                                .projects
+                                .iter()
+                                .find(|p| p.ident == panel.project)
+                                .map(|p| format!("{} gateway agents", p.agents))
+                                .unwrap_or_else(|| "Gateway agents unavailable".into()),
+                        }
                     ))
                     .size(10)
                     .color(MUTED),
@@ -1707,6 +1728,7 @@ impl Desktop {
             // Work in progress by an agent outside this app stays visible at a glance.
             let elsewhere = self.task_owned_elsewhere(task);
             let task_id = Uuid::parse_str(id).ok();
+            let selected = panel.detail.selected == task_id && task_id.is_some();
             let manage = |action: fn(Uuid) -> super::desktop_tasks::Action| {
                 task_id.map(|id| Message::ManageTask(action(id)))
             };
@@ -1760,12 +1782,21 @@ impl Desktop {
                     .width(Length::Fill)
                     .on_press_maybe(manage(super::desktop_tasks::Action::Open))
                     .style(move |theme: &Theme, state| {
-                        let card = surface(CARD, true);
+                        let card = surface(
+                            if selected {
+                                Color::from_rgb8(13, 39, 51)
+                            } else {
+                                CARD
+                            },
+                            true,
+                        );
                         let mut border = card.border;
                         if elsewhere {
                             border.color = ORANGE;
                         }
-                        if matches!(state, button::Status::Hovered | button::Status::Pressed) {
+                        if selected
+                            || matches!(state, button::Status::Hovered | button::Status::Pressed)
+                        {
                             border.color = CYAN;
                         }
                         button::Style {
@@ -1806,7 +1837,7 @@ impl Desktop {
                 .spacing(6)
                 .align_y(Alignment::Center),
                 text(format!(
-                    "Project: {} · repository matching required",
+                    "Project: {}",
                     if panel.project.is_empty() {
                         "resolving…"
                     } else {
@@ -2343,7 +2374,14 @@ impl Desktop {
     pub(super) fn show_terminals(&mut self) {
         self.design.mode = View::Terminals;
     }
+    pub(super) fn show_tasks(&mut self) {
+        self.design.mode = View::Tasks;
+    }
+    pub(super) fn tasks_visible(&self) -> bool {
+        self.remote_active.is_some() || self.design.mode == View::Tasks
+    }
     pub(super) fn clear_project_inventory(&mut self) {
+        self.reset_remote_projects();
         self.design.projects.clear();
         self.design.projects_polled = None;
         self.design.project_menu = None;
@@ -2468,20 +2506,6 @@ fn inert<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 mod tests {
     use super::*;
     #[test]
-    fn task_drawer_starts_at_a_third_and_resizes_within_the_window() {
-        let mut app = super::super::tests::desktop();
-        app.design_viewport(iced::Size::new(1500.0, 900.0));
-        assert_eq!(app.design.task_drawer_width(), 500.0);
-        drop(app.design_message(Action::ResizeTaskDrawer));
-        drop(app.design_message(Action::Cursor(iced::Point::new(588.0, 200.0))));
-        assert!((app.design.task_drawer_width() - 900.0).abs() < 0.01);
-        drop(app.design_message(Action::FinishTaskDrawerResize));
-        drop(app.design_message(Action::Cursor(iced::Point::ORIGIN)));
-        assert!((app.design.task_drawer_width() - 900.0).abs() < 0.01);
-        app.design_viewport(iced::Size::new(300.0, 600.0));
-        assert_eq!(app.design.task_drawer_width(), 276.0);
-    }
-    #[test]
     fn task_search_finds_short_ids_titles_and_tags_across_states_without_changing_the_queue() {
         let mut app = super::super::tests::desktop();
         let tasks = vec![
@@ -2516,8 +2540,7 @@ mod tests {
         assert_eq!(app.design.search, "event search");
         assert_eq!(app.design.filter, Filter::Active);
         assert_eq!(app.workspaces[0].gateway.tasks, tasks);
-        drop(app.design_tasks(false));
-        drop(app.design_tasks(true));
+        drop(app.design_tasks());
         drop(app.design_message(Action::TaskSearch(String::new())));
         assert_eq!(app.design.filter, Filter::Active);
         assert_eq!(app.workspaces[0].gateway.tasks, tasks);
@@ -2539,14 +2562,14 @@ mod tests {
             .map(|w| tabs(w).count())
             .collect::<Vec<_>>();
         app.workspaces[0].gateway.draft_title = "Keep my draft".into();
-        drop(app.design_message(Action::ToggleTasks));
-        assert!(app.design.tasks_collapsed);
+        drop(app.design_message(Action::View(View::Tasks)));
+        assert!(app.tasks_visible());
         drop(app.design_message(Action::DetachTasks));
         let window = app.design.task_window.unwrap();
         assert_ne!(window, app.main_window);
         drop(app.close_window(window));
         assert!(app.design.task_window.is_none());
-        assert!(!app.design.tasks_collapsed);
+        assert!(app.tasks_visible());
         assert_eq!(
             before,
             app.workspaces

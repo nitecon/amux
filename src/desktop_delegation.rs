@@ -123,7 +123,7 @@ pub(super) enum Event {
 
 #[derive(Default)]
 pub(super) struct Bridge {
-    epoch: u64,
+    pub(super) epoch: u64,
     events: events::State,
     status: String,
     candidates: Vec<Candidate>,
@@ -497,14 +497,15 @@ impl Desktop {
     }
     fn refresh_task_project(&mut self, project: &str) -> Task<Message> {
         let mut ready = Vec::new();
-        for (index, w) in self
-            .workspaces
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, w)| w.gateway.project == project)
-        {
-            if w.gateway.loading {
-                w.gateway.refresh_pending = true;
+        let contexts: Vec<_> = self
+            .task_contexts()
+            .filter(|(_, panel)| panel.project == project)
+            .map(|(target, _)| target)
+            .collect();
+        for index in contexts {
+            let panel = self.task_panel_mut(index);
+            if panel.loading {
+                panel.refresh_pending = true;
             } else {
                 ready.push(index);
             }
@@ -512,7 +513,7 @@ impl Desktop {
         Task::batch(
             ready
                 .into_iter()
-                .map(|index| self.query(index))
+                .map(|index| self.query_tasks(index))
                 .collect::<Vec<_>>(),
         )
     }
@@ -590,8 +591,10 @@ impl Desktop {
         epoch: u64,
         result: Result<Vec<amux::gateway::ProjectOverview>, String>,
     ) {
-        if epoch == self.delegation.epoch {
-            self.design.projects = result.unwrap_or_default();
+        if epoch == self.delegation.epoch
+            && let Ok(projects) = result
+        {
+            self.design.projects = projects;
         }
     }
 

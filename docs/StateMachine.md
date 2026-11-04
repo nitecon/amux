@@ -450,6 +450,16 @@ The client keeps only what the server cannot observe or do:
   restart eligibility and task lookup. A missing or unavailable event router is
   a connection error; it does not enable local scheduling or reminder fallback.
 
+Local and remote gateway projects use the same full task view. Selecting a
+remote project from the authenticated inventory opens a task context without
+cloning a repository or advertising a local executor. Task lists, details,
+comments, assignment and dispatch use the existing gateway APIs. Terminal,
+file and Git actions require a real local workspace; terminal and split
+controls remain in the bottom toolbar. The client retains project drafts and
+request receipts independently of terminal selection, fences replies by context
+identity and connection generation, and refreshes the visible task view even
+when no local agent is running. Scheduling remains entirely server-owned.
+
 Removed from the client in phase 5: the desktop backlog scheduler, client
 autoreview and its journal, the legacy task-stream delivery journal
 (`delegation_queue.rs`) and its desktop bridge, the opt-in reminder/dispatch

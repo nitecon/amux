@@ -205,7 +205,7 @@ impl Panel {
 
 impl Desktop {
     pub(super) fn external_task_owner(&self, task: &serde_json::Value) -> String {
-        let panel = &self.workspaces[self.active].gateway.routing;
+        let panel = &self.task_panel(self.task_workspace()).routing;
         let origin =
             serde_json::from_value::<amux::delegation::Origin>(task["owner_origin"].clone()).ok();
         let entry = panel
@@ -236,12 +236,12 @@ impl Desktop {
     }
 
     pub(super) fn refresh_task_targets(&mut self) -> Task<Message> {
-        self.workspaces[self.active].gateway.routing.polled = None;
+        self.task_panel_mut(self.task_workspace()).routing.polled = None;
         self.routing_tick()
     }
 
     pub(super) fn task_agent_choices(&self) -> Vec<Choice> {
-        let panel = &self.workspaces[self.active].gateway.routing;
+        let panel = &self.task_panel(self.task_workspace()).routing;
         if !panel.fresh() {
             return Vec::new();
         }
@@ -285,20 +285,25 @@ impl Desktop {
     pub(super) fn routing_tick(&mut self) -> Task<Message> {
         // Do not spend the 30-second presence poll while a slow native scan
         // temporarily has no fresh actors. Retry on the next UI tick instead.
-        if self
-            .delegation
-            .scan_completed
-            .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
-        {
-            return Task::none();
-        }
         let Ok(gateway) = self.preferences.current.gateway() else {
             return Task::none();
         };
         let mut tasks = Vec::new();
-        for index in 0..self.workspaces.len() {
-            let scope = self.scope(index);
-            let panel = &self.workspaces[index].gateway.routing;
+        let contexts: Vec<_> = self.task_contexts().map(|(context, _)| context).collect();
+        for index in contexts {
+            if !self.remote_binding_current(index) {
+                continue;
+            }
+            if matches!(index, TaskWorkspace::Local(_))
+                && self
+                    .delegation
+                    .scan_completed
+                    .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
+            {
+                continue;
+            }
+            let scope = self.task_scope(index);
+            let panel = &self.task_panel(index).routing;
             if scope.project.is_empty()
                 || panel.loading
                 || panel
@@ -308,14 +313,19 @@ impl Desktop {
                 continue;
             }
             let actors = self.routing_actors(scope.workspace_id);
-            let panel = &mut self.workspaces[index].gateway.routing;
+            let panel = &mut self.task_panel_mut(index).routing;
             panel.loading = true;
             panel.polled = Some(Instant::now());
             let gateway = gateway.clone();
             tasks.push(Task::perform(
                 async move {
                     let result = async {
-                        let directory = scope.directory.clone();
+                        let Some(directory) = scope.directory.clone() else {
+                            let directory = gateway
+                                .task_targets(&scope.project, scope.canonical_remote.as_deref())
+                                .await?;
+                            return Ok::<_, anyhow::Error>((directory, None));
+                        };
                         // A local-only checkout (no origin) is compared by its exact root.
                         let local = tokio::task::spawn_blocking(move || {
                             Ok::<_, anyhow::Error>((
@@ -378,7 +388,7 @@ impl Desktop {
         if !self.scope_current(&scope) {
             return;
         }
-        let panel = &mut self.workspaces[scope.workspace].gateway.routing;
+        let panel = &mut self.task_panel_mut(scope.workspace).routing;
         panel.loading = false;
         panel.checked = Some(Instant::now());
         match result {
@@ -399,7 +409,7 @@ impl Desktop {
     }
 
     pub(super) fn routing_form(&self) -> Element<'_, Message> {
-        let panel = &self.workspaces[self.active].gateway.routing;
+        let panel = &self.task_panel(self.task_workspace()).routing;
         let mut choices = vec![Choice::Auto];
         if panel.fresh() {
             choices.extend([Choice::Unassigned, Choice::Broadcast]);
