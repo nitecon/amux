@@ -136,6 +136,13 @@ pub fn clone_name(repository: &str) -> Result<String> {
     Ok(name.into())
 }
 
+fn clone_reservation(destination: &Path) -> PathBuf {
+    destination.with_file_name(format!(
+        ".{}.amux-clone-incomplete",
+        destination.file_name().unwrap().to_string_lossy()
+    ))
+}
+
 pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<PathBuf> {
     use std::{io::Read, process::Stdio};
     let parent = directory(parent.to_str().context("Directory must be valid Unicode")?)?;
@@ -156,6 +163,14 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
             )
         });
     }
+    // Keep this outside the destination: Git requires an empty clone folder.
+    // A failed or killed clone retains the reservation for subsequent requests.
+    let reservation = clone_reservation(&destination);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&reservation)
+        .with_context(|| format!("Cannot reserve clone at {}. Inspect any previous clone attempt or choose another parent folder", destination.display()))?;
     let mut log = tempfile::tempfile()?;
     let mut command = tokio::process::Command::new("git");
     command
@@ -171,7 +186,14 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
     command.creation_flags(0x08000000);
     let status = tokio::time::timeout(std::time::Duration::from_secs(300), command.status()).await;
     let failure = match status {
-        Ok(Ok(status)) if status.success() => return Ok(destination),
+        Ok(Ok(status)) if status.success() => {
+            // Completion proof also permits successfully cloned empty repositories.
+            std::fs::write(destination.join(".git/amux-clone-complete"), b"complete\n")
+                .context("Git finished, but could not record clone completion")?;
+            std::fs::remove_file(&reservation)
+                .context("Git finished, but could not clear the clone reservation")?;
+            return Ok(destination);
+        }
         Ok(Ok(status)) => format!("Git clone failed ({status})"),
         Ok(Err(error)) => format!("Cannot run Git: {error}"),
         Err(_) => "Git clone timed out after five minutes".into(),
@@ -236,6 +258,17 @@ fn existing_checkout(parent: &Path, destination: &Path, repository: &str) -> Res
         status.success() && origin.len() <= 4096 && matches,
         "{}",
         conflict()
+    );
+    let (head, _) = crate::git::observe(
+        &directory,
+        &["rev-parse", "--verify", "HEAD^{commit}"],
+        "checkout commit",
+    )?;
+    anyhow::ensure!(
+        !clone_reservation(destination).try_exists()?
+            && (head.success() || directory.join(".git/amux-clone-complete").is_file()),
+        "{} is incomplete or its clone is still running. Wait for the clone to finish, or inspect the preserved files and choose another parent folder",
+        destination.display()
     );
     Ok(external_path(directory))
 }
@@ -414,6 +447,18 @@ mod tests {
             "add",
             "origin",
             "git@example.org:team/project.git",
+        ]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-C",
+            "project",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
         ]);
         std::fs::write(checkout.join("keep"), "local changes").unwrap();
         assert_eq!(
