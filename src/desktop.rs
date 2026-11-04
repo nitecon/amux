@@ -2365,7 +2365,7 @@ impl Desktop {
     }
 
     fn query_tasks(&mut self, workspace: TaskWorkspace) -> Task<Message> {
-        if !self.remote_binding_current(workspace) {
+        if !self.ensure_task_binding(workspace) {
             return Task::none();
         }
         if self.embedded.busy
@@ -2424,7 +2424,7 @@ impl Desktop {
 
     fn create_task(&mut self) -> Task<Message> {
         let scope = self.task_scope(self.task_workspace());
-        if !self.remote_binding_current(scope.workspace) {
+        if !self.ensure_task_binding(scope.workspace) {
             return Task::none();
         }
         let gateway = self.preferences.current.gateway();

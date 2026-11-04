@@ -267,7 +267,7 @@ impl Desktop {
 
     fn change_task(&mut self, change: Change) -> Task<Message> {
         let scope = self.task_scope(self.task_workspace());
-        if !self.remote_binding_current(scope.workspace) {
+        if !self.ensure_task_binding(scope.workspace) {
             return Task::none();
         }
         let panel = &self.task_panel(self.task_workspace()).detail;
@@ -977,6 +977,60 @@ mod tests {
         let scope = app.scope(app.active);
         let project = scope.project.clone();
         app.task_detail_loaded(scope, id, request, Ok(task(id, &project)));
+    }
+
+    #[test]
+    fn stale_remote_actions_explain_the_binding_fence_without_losing_drafts() {
+        for missing in [false, true] {
+            let mut app = app();
+            app.design.projects.push(amux::gateway::ProjectOverview {
+                ident: "remote".into(),
+                ..Default::default()
+            });
+            drop(app.select_remote_project("remote".into()));
+            let context = app.task_workspace();
+            let id = Uuid::new_v4();
+            drop(app.manage_task(Action::Open(id)));
+            let request = app.task_panel(context).detail.loading.unwrap();
+            app.task_detail_loaded(app.task_scope(context), id, request, Ok(task(id, "remote")));
+            app.task_panel_mut(context).draft_title = "Keep this draft".into();
+            if missing {
+                app.design.projects.clear();
+            } else {
+                app.design.projects[0].canonical_remote = Some("new/repository".into());
+            }
+            for action in [
+                Action::Close,
+                Action::Resume,
+                Action::Assign,
+                Action::PostComment,
+            ] {
+                app.task_panel_mut(context).status.clear();
+                drop(app.manage_task(action));
+                assert!(
+                    app.task_panel(context)
+                        .status
+                        .contains("Reselect the project")
+                );
+                assert!(app.task_panel(context).detail.pending.is_none());
+            }
+            app.task_panel_mut(context).status.clear();
+            drop(app.create_task());
+            assert!(
+                app.task_panel(context)
+                    .status
+                    .contains("Reselect the project")
+            );
+            assert!(app.task_panel(context).request.is_none());
+            app.task_panel_mut(context).status.clear();
+            app.task_panel_mut(context).loaded_at = Some(Instant::now());
+            drop(app.query_tasks(context));
+            let panel = app.task_panel(context);
+            assert!(panel.status.contains("Reselect the project"));
+            assert!(panel.loaded_at.is_none());
+            assert_eq!(panel.draft_title, "Keep this draft");
+            assert_eq!(panel.detail.selected, Some(id));
+        }
     }
 
     #[test]

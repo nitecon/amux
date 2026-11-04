@@ -62,6 +62,16 @@ impl Desktop {
         }
     }
 
+    pub(super) fn ensure_task_binding(&mut self, target: TaskWorkspace) -> bool {
+        if self.remote_binding_current(target) {
+            return true;
+        }
+        let panel = self.task_panel_mut(target);
+        panel.status = "Project binding changed or is unavailable. Reselect the project from the gateway list before continuing.".into();
+        panel.loaded_at = None;
+        false
+    }
+
     pub(super) fn task_view_tick(&mut self) -> Task<Message> {
         let context = self.task_workspace();
         if !self.tasks_visible() && self.design.task_window.is_none() {
