@@ -71,6 +71,33 @@ async fn normal_clone_failure_remains_an_error_on_retry_and_preserves_partial_fo
     );
 }
 
+#[tokio::test]
+async fn deleting_a_failed_clone_folder_allows_a_fresh_retry() {
+    let fixture = fixture();
+    let parent = fixture.path().join("clones");
+    std::fs::create_dir(&parent).unwrap();
+    let source = fixture.path().join("missing.git");
+    let repository = source.display().to_string();
+    assert!(
+        clone_repository(parent.clone(), repository.clone())
+            .await
+            .is_err()
+    );
+    std::fs::remove_dir_all(parent.join("missing")).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        clone_repository(parent.clone(), repository).await.unwrap(),
+        parent.join("missing").canonicalize().unwrap()
+    );
+}
+
 #[cfg(target_os = "linux")]
 mod live_clone {
     use super::*;

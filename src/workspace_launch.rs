@@ -165,12 +165,11 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
     }
     // Keep this outside the destination: Git requires an empty clone folder.
     // A failed or killed clone retains the reservation for subsequent requests.
+    // Creating the destination above is the lock, so a reservation left by a
+    // clone whose folder was since deleted is stale and is replaced.
     let reservation = clone_reservation(&destination);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&reservation)
-        .with_context(|| format!("Cannot reserve clone at {}. Inspect any previous clone attempt or choose another parent folder", destination.display()))?;
+    std::fs::write(&reservation, b"")
+        .with_context(|| format!("Cannot reserve clone at {}", reservation.display()))?;
     let mut log = tempfile::tempfile()?;
     let mut command = tokio::process::Command::new("git");
     command
