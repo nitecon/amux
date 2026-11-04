@@ -450,6 +450,10 @@ impl Desktop {
         panel.pending = None;
         match result {
             Ok(mut value) => {
+                if matches!(change, Change::Close | Change::Resume) {
+                    *panel = Panel::default();
+                    return self.query(scope.workspace);
+                }
                 // A reply to parked work returns the task, not the comment.
                 let returned = value["status"].as_str().map(|status| status == "todo");
                 if matches!(change, Change::Comment) {
@@ -973,6 +977,67 @@ mod tests {
         let scope = app.scope(app.active);
         let project = scope.project.clone();
         app.task_detail_loaded(scope, id, request, Ok(task(id, &project)));
+    }
+
+    #[test]
+    fn closing_or_requeueing_returns_its_workspace_to_the_list_after_confirmation() {
+        for (action, change, before, after) in [
+            (Action::Close, Change::Close, "todo", "done"),
+            (Action::Resume, Change::Resume, "user_review", "todo"),
+        ] {
+            let mut app = app();
+            let id = Uuid::new_v4();
+            open(&mut app, id);
+            app.workspaces[0].gateway.detail.task.as_mut().unwrap()["status"] = json!(before);
+            drop(app.manage_task(action));
+            let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+            let scope = app.scope(0);
+            assert_eq!(app.workspaces[0].gateway.detail.selected, Some(id));
+
+            app.active = 1;
+            let other = Uuid::new_v4();
+            open(&mut app, other);
+            let mut response = task(id, "project-0");
+            response["status"] = json!(after);
+            drop(app.task_changed(
+                scope.clone(),
+                id,
+                Uuid::new_v4(),
+                change,
+                Ok(response.clone()),
+            ));
+            assert_eq!(
+                app.workspaces[0].gateway.detail.selected,
+                Some(id),
+                "ignore stale confirmations"
+            );
+            drop(app.task_changed(scope, id, pending, change, Ok(response)));
+            assert!(app.workspaces[0].gateway.detail.selected.is_none());
+            assert!(app.workspaces[0].gateway.detail.task.is_none());
+            assert_eq!(app.workspaces[1].gateway.detail.selected, Some(other));
+        }
+    }
+
+    #[test]
+    fn closing_or_requeueing_keeps_unconfirmed_results_visible() {
+        for (action, change, before) in [
+            (Action::Close, Change::Close, "todo"),
+            (Action::Resume, Change::Resume, "user_review"),
+        ] {
+            let mut app = app();
+            let id = Uuid::new_v4();
+            open(&mut app, id);
+            app.workspaces[0].gateway.detail.task.as_mut().unwrap()["status"] = json!(before);
+            drop(app.manage_task(action));
+            let pending = app.workspaces[0].gateway.detail.pending.unwrap();
+            let scope = app.scope(0);
+            drop(app.task_changed(scope, id, pending, change, Err("connection lost".into())));
+            drop(app.manage_task(Action::Back));
+            let panel = &app.workspaces[0].gateway.detail;
+            assert_eq!(panel.selected, Some(id));
+            assert!(panel.uncertain);
+            assert!(panel.status.contains("Result not confirmed"));
+        }
     }
 
     #[test]

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.62 - 2026-11-04
+
+### Fixed
+- Return to the gateway task list after Close task or Return to queue succeeds,
+  including when the action finishes after switching workspaces. Unconfirmed
+  results remain visible for inspection.
+- Show unadded local checkouts alongside added Local Projects, before Remote
+  Projects, using greyed-out cards with an explicit Add button.
+
 ## v0.0.61 - 2026-11-02
 
 ### Added
