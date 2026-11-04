@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.63 - 2026-11-04
+
+### Changed
+- Use a full task queue and detail view for both local and remote projects.
+  Select a gateway project to manage and dispatch tasks without checking out
+  its repository. Terminal and split controls remain in the bottom toolbar;
+  the floating terminal task drawer is removed.
+- Open gateway tasks from an unadded local checkout by clicking its project
+  name, while keeping the explicit Add action for opening a local workspace.
+
+### Fixed
+- Explain when a changed or unavailable remote project binding blocks task
+  actions, preserve drafts, and prompt users to reselect the project.
+- Keep local task queries, detail updates, routing and mutation receipts from
+  becoming stuck after a delegation reset, while retaining connection and
+  remote-project reply fences.
+
 ## v0.0.62 - 2026-11-04
 
 ### Fixed
