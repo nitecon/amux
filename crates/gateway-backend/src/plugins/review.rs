@@ -1,4 +1,4 @@
-//! Review: queues one independent review task for agent-completed tasks, using
+//! Review: queues one independent review task for every completed task, using
 //! the existing deduplicated `task_reviews` store (the same contract as
 //! `POST /v1/projects/{ident}/tasks/{id}/review`).
 use crate::{
@@ -37,11 +37,6 @@ struct Queue;
 #[async_trait]
 impl Step for Queue {
     async fn run(&self, event: &Event, ctx: &StepContext) -> StepOutcome {
-        // Human closure is final. Only an attributed agent completion starts
-        // automatic follow-up work; explicit review requests remain available.
-        if event.payload["actor"].is_null() {
-            return StepOutcome::Stop;
-        }
         let (Some(project), Some(task)) = (
             event.payload["project"].as_str(),
             event.payload["task"]["id"].as_str(),
@@ -84,7 +79,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn human_closures_stay_completed_without_reviews_and_agent_completions_are_reviewed() {
+    async fn human_and_agent_completions_stay_done_and_queue_one_independent_review() {
         for (initial, human) in [
             ("todo", true),
             ("in_progress", true),
@@ -162,14 +157,7 @@ mod tests {
             };
             let ctx = router::test_context(&bus, PLUGIN);
             for _ in 0..2 {
-                assert_eq!(
-                    Queue.run(&event, &ctx).await,
-                    if human {
-                        StepOutcome::Stop
-                    } else {
-                        StepOutcome::Continue
-                    }
-                );
+                assert_eq!(Queue.run(&event, &ctx).await, StepOutcome::Continue);
             }
             let conn = database.lock().unwrap();
             let source = db::get_task_detail(&conn, "p", &id).unwrap().unwrap().task;
@@ -182,7 +170,20 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(reviews, if human { 0 } else { 1 });
+            assert_eq!(reviews, 1);
+            let review_id: String = conn
+                .query_row(
+                    "SELECT review_task_id FROM task_reviews WHERE source_task_id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_ne!(review_id, id);
+            let review = db::get_task_detail(&conn, "p", &review_id)
+                .unwrap()
+                .unwrap()
+                .task;
+            assert_eq!(review.status, "todo");
             worker.abort();
         }
     }
