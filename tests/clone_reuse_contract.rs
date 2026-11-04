@@ -92,10 +92,8 @@ async fn deleting_a_failed_clone_folder_allows_a_fresh_retry() {
             .unwrap()
             .success()
     );
-    assert_eq!(
-        clone_repository(parent.clone(), repository).await.unwrap(),
-        parent.join("missing").canonicalize().unwrap()
-    );
+    let checkout = clone_repository(parent.clone(), repository).await.unwrap();
+    assert!(checkout.ends_with("missing") && checkout.join(".git").is_dir());
 }
 
 #[cfg(target_os = "linux")]
