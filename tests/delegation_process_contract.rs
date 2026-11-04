@@ -130,10 +130,14 @@ struct Tree {
 
 impl Tree {
     fn spawn(root: &str, spec: &str) -> Self {
+        Self::spawn_in(fixtures(), root, spec)
+    }
+
+    fn spawn_in(directory: &Path, root: &str, spec: &str) -> Self {
         let (group, root) = root
             .strip_prefix('%')
             .map_or((false, root), |root| (true, root));
-        let mut child = launch(fixtures(), root, spec, group);
+        let mut child = launch(directory, root, spec, group);
         let pids = ready(&mut child)
             .into_iter()
             .map(|line| {
@@ -243,6 +247,43 @@ fn amux_wrapper_and_nested_shells_are_transparent() {
     let tree = Tree::spawn("sh", "amux>sh>%claude");
     let expected = tree.agent("claude", Provider::Claude);
     assert_eq!(tree.discover(foreground(expected.pid)), Some(expected));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn updater_renaming_and_removing_the_running_wrapper_preserves_discovery() {
+    let directory = tempfile::tempdir_in(fixtures()).unwrap();
+    for alias in ALIASES {
+        std::fs::copy(fixtures().join(alias), directory.path().join(alias)).unwrap();
+    }
+    let tree = Tree::spawn_in(directory.path(), "amux", "codex");
+    let expected = AgentProcess {
+        pid: tree.pid("codex"),
+        generation: identity::process_generation(tree.pid("codex")).unwrap(),
+        provider: Provider::Codex,
+        directory: Some(directory.path().to_path_buf()),
+    };
+    let group = foreground(expected.pid);
+    assert_eq!(tree.discover(group), Some(expected.clone()));
+    let backup = directory.path().join("amux.1234abcd.amux-old");
+    std::fs::rename(directory.path().join("amux"), &backup).unwrap();
+    assert_eq!(
+        tree.discover(group),
+        Some(expected.clone()),
+        "renamed live wrapper"
+    );
+    std::fs::remove_file(backup).unwrap();
+    assert_eq!(
+        tree.discover(group),
+        Some(expected.clone()),
+        "deleted backup image"
+    );
+    assert!(delegation_process::verify(
+        tree.root.id(),
+        &tree.generation,
+        group,
+        &expected
+    ));
 }
 
 #[test]

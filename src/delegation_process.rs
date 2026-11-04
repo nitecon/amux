@@ -204,14 +204,24 @@ fn snapshot() -> HashMap<u32, Node> {
         .collect()
 }
 
-/// Procfs marks a still-running executable whose file an updater replaced.
+/// Keep live amux wrappers recognizable after the updater renames their image.
+/// Only the updater's exact amux[.exe].<8 hex>.amux-old format is transparent.
 fn live_image(path: &Path) -> PathBuf {
-    match path.file_name().and_then(|name| name.to_str()) {
-        Some(name) if name.ends_with(" (deleted)") => {
-            path.with_file_name(name.trim_end_matches(" (deleted)"))
-        }
-        _ => path.to_path_buf(),
-    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    let name = name.strip_suffix(" (deleted)").unwrap_or(name);
+    let original = name
+        .strip_suffix(".amux-old")
+        .and_then(|name| name.rsplit_once('.'))
+        .filter(|(original, nonce)| {
+            (original.eq_ignore_ascii_case("amux") || original.eq_ignore_ascii_case("amux.exe"))
+                && nonce.len() == 8
+                && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .map(|(original, _)| original)
+        .unwrap_or(name);
+    path.with_file_name(original)
 }
 
 fn image_name(node: &Node) -> Option<String> {
@@ -295,4 +305,26 @@ fn in_group(pid: u32, group: i32) -> Option<bool> {
 #[cfg(not(target_os = "linux"))]
 fn in_group(_pid: u32, _group: i32) -> Option<bool> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_wrapper_images_match_only_the_updater_backup_format() {
+        for (image, expected) in [
+            ("amux.1234abcd.amux-old", "amux"),
+            ("amux.1234abcd.amux-old (deleted)", "amux"),
+            ("amux.exe.ABCD1234.amux-old", "amux.exe"),
+            ("amux (deleted)", "amux"),
+            ("amux.nothex00.amux-old", "amux.nothex00.amux-old"),
+            ("amux.1234.amux-old", "amux.1234.amux-old"),
+            ("codex.1234abcd.amux-old", "codex.1234abcd.amux-old"),
+            ("other.1234abcd.amux-old", "other.1234abcd.amux-old"),
+        ] {
+            let path = Path::new("fixture").join(image);
+            assert_eq!(live_image(&path), Path::new("fixture").join(expected));
+        }
+    }
 }
