@@ -3,6 +3,7 @@
 ## v0.0.62 - 2026-11-04
 
 ### Fixed
+- Keep manual task closures final without automatically queueing new review tasks.
 - Return to the gateway task list after Close task or Return to queue succeeds,
   including when the action finishes after switching workspaces. Unconfirmed
   results remain visible for inspection.

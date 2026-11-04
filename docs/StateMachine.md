@@ -325,6 +325,10 @@ Rules carried over from the desktop:
   Any subsequent task or comment mutation invalidates the old offer in that
   mutation's transaction, so a delayed rejection cannot undo progress or a
   newer claim, even when timestamps match.
+- **Review generation:** only completions attributed to an agent automatically
+  create independent review tasks. A human closing a task is a final decision:
+  the original stays done and no review work is queued. Explicit review requests
+  remain available.
 - **Review provider:** reviews of Claude work go to Codex, and reviews of Codex
   work go to Claude. Same-provider fallback is allowed only when the opposite
   provider has no live registration anywhere on this server. Busy agents,

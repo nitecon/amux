@@ -874,6 +874,30 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
 }
 
 #[test]
+fn closing_tasks_rejects_non_completed_or_mismatched_acknowledgments() {
+    let id = uuid::Uuid::parse_str(TASK).unwrap();
+    for result in [
+        json!({"id": TASK, "project_ident": "demo", "status": "todo"}),
+        json!({"id": TASK, "project_ident": "demo", "status": "user_review"}),
+        json!({"id": TASK, "project_ident": "demo", "status": "in_progress"}),
+        json!({"id": uuid::Uuid::new_v4(), "project_ident": "demo", "status": "done"}),
+        json!({"id": TASK, "project_ident": "other", "status": "done"}),
+    ] {
+        let (url, server) = server(vec![reply(200, &result)]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(gateway.close_desktop_task("demo", id))
+            .unwrap_err();
+        assert!(error.to_string().contains("unconfirmed"), "{error:#}");
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1, "never retry an uncertain close");
+        assert_eq!(requests[0].body["status"], "done");
+        assert!(!requests[0].head.contains("x-agent-"));
+    }
+}
+
+#[test]
 fn sidebar_actions_are_human_requests_and_confirm_the_requested_result() {
     use amux::{delegation::Origin, task_management::TaskEdits, task_routing::SessionTarget};
     let target = SessionTarget {
