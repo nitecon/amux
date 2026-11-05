@@ -3,7 +3,7 @@
 //! Fixtures set identity, signing and hooks in repository config so the tests
 //! never depend on the machine's global Git configuration.
 
-use amux::work_submission::{Mode, Outcome, Preferences, PullRequest, Request, submit};
+use amux::work_submission::{Mode, Outcome, Preferences, PullRequest, Request, resume, submit};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -144,6 +144,35 @@ impl Fixture {
         submit(&request, preferences, |_| {
             panic!("commit mode opens no pull request")
         })
+    }
+
+    fn kept_commit(&self) -> String {
+        let missing = self.work.join("missing-remote");
+        git(
+            &self.work,
+            &["config", "remote.origin.pushurl", missing.to_str().unwrap()],
+        );
+        let error = self
+            .submit(&Preferences::default(), MESSAGE, &["a.txt"])
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("kept locally"));
+        git(&self.work, &["config", "--unset", "remote.origin.pushurl"]);
+        git(&self.work, &["rev-parse", "HEAD"])
+    }
+
+    fn resume(&self, commit: &str, paths: &[&str]) -> anyhow::Result<Outcome> {
+        let paths: Vec<_> = paths.iter().map(PathBuf::from).collect();
+        resume(
+            &Request {
+                root: &self.work,
+                task_id: Uuid::parse_str(TASK).unwrap(),
+                message: "Retry publication",
+                paths: &paths,
+            },
+            &Preferences::default(),
+            commit,
+            |_| panic!("commit mode opens no pull request"),
+        )
     }
 }
 
@@ -433,7 +462,7 @@ fn a_rebase_conflict_keeps_the_commit_local_without_losing_work() {
         "Run git pull --rebase",
         "git add the resolved files",
         "git -c core.editor=true rebase --continue",
-        "then git push",
+        "retry amux submit-work --resume-commit",
         "git stash apply --index <saved-stash-id>",
         "before dropping only that saved stash",
     ] {
@@ -528,14 +557,24 @@ fn a_rebase_that_cannot_start_restores_staged_and_unstaged_work() {
 #[test]
 fn a_stash_restore_conflict_retains_both_snapshots_and_does_not_push() {
     let fixture = Fixture::new();
+    for name in ["c.txt", "d.txt", "e.txt", "f.txt"] {
+        fixture.write(name, "base\n");
+    }
+    git(&fixture.work, &["add", "."]);
+    git(&fixture.work, &["commit", "-m", "unrelated files"]);
+    git(&fixture.work, &["push"]);
     fixture.push_elsewhere("b.txt", "upstream edit\n");
     let remote = fixture.remote_main();
     fixture.write("a.txt", "task edit\n");
+    fixture.write("gone.txt", "second task edit\n");
     fixture.write("b.txt", "staged draft\n");
     git(&fixture.work, &["add", "b.txt"]);
     fixture.write("b.txt", "later unstaged draft\n");
+    for name in ["c.txt", "d.txt", "e.txt", "f.txt"] {
+        fixture.write(name, "unrelated draft\n");
+    }
     let error = fixture
-        .submit(&Preferences::default(), MESSAGE, &["a.txt"])
+        .submit(&Preferences::default(), MESSAGE, &["a.txt", "gone.txt"])
         .unwrap_err();
     let error = format!("{error:#}");
     let stash = git(&fixture.work, &["rev-parse", "refs/stash"]);
@@ -555,6 +594,167 @@ fn a_stash_restore_conflict_retains_both_snapshots_and_does_not_push() {
     assert_eq!(fixture.remote_main(), remote);
     assert_eq!(git(&fixture.work, &["show", "HEAD:a.txt"]), "task edit");
     assert!(!fixture.work.join(".git/rebase-merge").exists());
+
+    let kept = git(&fixture.work, &["rev-parse", "HEAD"]);
+    // The owner discards only the obsolete conflicting draft after comparing it.
+    git(
+        &fixture.work,
+        &[
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "b.txt",
+        ],
+    );
+    // Recover the other drafts from the retained stash without staging them.
+    git(
+        &fixture.work,
+        &[
+            "restore",
+            &format!("--source={stash}"),
+            "--worktree",
+            "--",
+            "c.txt",
+            "d.txt",
+            "e.txt",
+            "f.txt",
+        ],
+    );
+    let before = fixture.snapshot();
+    let stashes = git(&fixture.work, &["stash", "list"]);
+    let outcome = fixture.resume(&kept, &["a.txt", "gone.txt"]).unwrap();
+    assert_eq!(outcome.reference, kept);
+    assert_eq!(fixture.remote_main(), kept);
+    assert_eq!(fixture.snapshot(), before);
+    assert_eq!(git(&fixture.work, &["stash", "list"]), stashes);
+    assert_eq!(git(&fixture.work, &["rev-parse", "refs/stash"]), stash);
+    assert_eq!(changed(&fixture.remote, "main"), "M\ta.txt\nM\tgone.txt");
+    for name in ["c.txt", "d.txt", "e.txt", "f.txt"] {
+        assert_eq!(
+            std::fs::read_to_string(fixture.work.join(name)).unwrap(),
+            "unrelated draft\n"
+        );
+    }
+    assert_eq!(
+        fixture.resume(&kept, &["a.txt", "gone.txt"]).unwrap(),
+        outcome
+    );
+    assert_eq!(fixture.snapshot(), before);
+}
+
+#[test]
+fn resume_rejects_wrong_head_task_files_dirty_selection_and_unpublished_parent() {
+    for (case, expected) in [
+        ("head", "current HEAD"),
+        ("task", "matching AmuxID"),
+        ("files", "exactly the listed files"),
+        ("dirty", "uncommitted changes"),
+        ("parent", "other local history"),
+        ("conflict", "resolve all index conflicts"),
+    ] {
+        let fixture = Fixture::new();
+        if case == "parent" {
+            fixture.write("b.txt", "other local commit\n");
+            git(&fixture.work, &["add", "b.txt"]);
+            git(&fixture.work, &["commit", "-m", "other unpublished work"]);
+        }
+        fixture.write("a.txt", "task edit\n");
+        let mut kept = fixture.kept_commit();
+        if case == "head" {
+            kept = "HEAD^".into();
+        }
+        if case == "task" {
+            git(&fixture.work, &["commit", "--amend", "-m", "Other task"]);
+            kept = git(&fixture.work, &["rev-parse", "HEAD"]);
+        }
+        if case == "dirty" {
+            fixture.write("a.txt", "later work\n");
+        }
+        if case == "conflict" {
+            fixture.push_elsewhere("a.txt", "conflicting upstream work\n");
+            git(&fixture.work, &["fetch", "origin"]);
+            assert!(
+                !git_output(&fixture.work, &["merge", "--no-commit", "origin/main"])
+                    .status
+                    .success()
+            );
+        }
+        let paths = if case == "files" {
+            &["b.txt"][..]
+        } else {
+            &["a.txt"][..]
+        };
+        let before = fixture.snapshot();
+        let remote = fixture.remote_main();
+        let error = format!("{:#}", fixture.resume(&kept, paths).unwrap_err());
+        assert!(error.contains(expected), "{case}: {error}");
+        assert_eq!(fixture.snapshot(), before);
+        assert_eq!(fixture.remote_main(), remote);
+    }
+}
+
+#[test]
+fn resume_rebases_once_if_upstream_advanced_and_preserves_unrelated_drafts() {
+    let fixture = Fixture::new();
+    fixture.write("a.txt", "task edit\n");
+    let kept = fixture.kept_commit();
+    fixture.push_elsewhere("c.txt", "upstream work\n");
+    fixture.write("b.txt", "staged draft\n");
+    git(&fixture.work, &["add", "b.txt"]);
+    fixture.write("b.txt", "unstaged draft\n");
+    let outcome = fixture.resume(&kept, &["a.txt"]).unwrap();
+    assert_eq!(fixture.remote_main(), outcome.reference);
+    assert_eq!(git(&fixture.work, &["show", ":b.txt"]), "staged draft");
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("b.txt")).unwrap(),
+        "unstaged draft\n"
+    );
+    assert_eq!(changed(&fixture.remote, "main"), "M\ta.txt");
+    assert_eq!(
+        git(&fixture.remote, &["show", "main:c.txt"]),
+        "upstream work"
+    );
+    assert_clean_message(&fixture.remote, "main");
+}
+
+#[test]
+fn resume_honors_pull_request_settings_without_rewriting_the_commit_or_checkout() {
+    let fixture = Fixture::new();
+    fixture.write("a.txt", "task edit\n");
+    let kept = fixture.kept_commit();
+    fixture.push_elsewhere("c.txt", "upstream work\n");
+    fixture.write("b.txt", "unrelated draft\n");
+    let remote = fixture.remote_main();
+    let before = fixture.snapshot();
+    let paths = [PathBuf::from("a.txt")];
+    let request = Request {
+        root: &fixture.work,
+        task_id: Uuid::parse_str(TASK).unwrap(),
+        message: "Retry publication",
+        paths: &paths,
+    };
+    let preferences = Preferences {
+        mode: Mode::PullRequest,
+        branch_prefix: "review/".into(),
+    };
+    let outcome = resume(&request, &preferences, &kept, |pull| {
+        assert_eq!(pull.head, format!("review/{TASK}"));
+        assert_eq!(pull.title, "Fix the parser");
+        assert!(pull.body.ends_with(&format!("AmuxID: {TASK}")));
+        Ok("https://example.invalid/pull/1".into())
+    })
+    .unwrap();
+    assert_eq!(outcome.reference, "https://example.invalid/pull/1");
+    assert_eq!(fixture.remote_main(), remote);
+    assert_eq!(fixture.snapshot(), before);
+    assert_eq!(
+        git(
+            &fixture.remote,
+            &["rev-parse", &format!("refs/heads/review/{TASK}")]
+        ),
+        kept
+    );
 }
 
 #[test]

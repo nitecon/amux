@@ -190,7 +190,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "submit_work",
-        description: "Finish code work on an owned task: commit exactly the listed changed files (and push, or open a pull request, as set in amux Settings), then post the result on the task. Never commit directly or add Co-Authored-By or other attribution lines.",
+        description: "Finish code work on an owned task: commit exactly the listed changed files (and push, or open a pull request, as set in amux Settings), then post the result on the task. To publish an already-created task commit after recovery, supply resume_commit and its exact file list instead of committing files again. Never commit directly or add attribution lines.",
         bin: Bin::Amux,
         command: &["submit-work"],
         args: &[
@@ -205,6 +205,11 @@ pub const TOOLS: &[Tool] = &[
                 kind: Kind::List,
                 required: true,
             },
+            opt(
+                "resume_commit",
+                "--resume-commit",
+                "Existing HEAD task commit to publish after recovery; its original message is retained",
+            ),
         ],
     },
     Tool {
@@ -463,8 +468,13 @@ fn run_tool(tool: &Tool, arguments: &Value, directory: &Path) -> Result<(String,
     let mut argv = argv(tool, arguments)?;
     let mut paths_file = None;
     if tool.name == "submit_work" {
-        // argv is `submit-work -- task_id message paths...` for this tool.
-        let paths = argv.split_off(4);
+        // Optional flags precede `-- task_id message paths...`.
+        let start = argv
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("argv has a positional separator")
+            + 3;
+        let paths = argv.split_off(start);
         let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
         serde_json::to_writer(&mut file, &paths).map_err(|e| e.to_string())?;
         file.flush().map_err(|e| e.to_string())?;
@@ -737,6 +747,10 @@ mod tests {
             )
             .unwrap(),
             ["submit-work", "--", id, "- Fix it", "a b.rs", "-c.rs"]
+        );
+        assert_eq!(
+            argv(tool, &json!({"task_id": id, "message": "Retry", "paths": ["a b.rs"], "resume_commit": "abc123"})).unwrap(),
+            ["submit-work", "--resume-commit=abc123", "--", id, "Retry", "a b.rs"]
         );
         for paths in [json!([]), json!(null), json!("a.rs"), json!([1])] {
             assert!(

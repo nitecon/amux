@@ -284,6 +284,9 @@ struct WorkArgs {
     task: Uuid,
     /// Commit message; attribution lines such as Co-Authored-By are removed.
     message: String,
+    /// Publish this existing HEAD task commit without committing files again.
+    #[arg(long)]
+    resume_commit: Option<String>,
     /// Changed files to submit: modified, added or deleted, inside the project.
     #[arg(required_unless_present = "paths_file", conflicts_with = "paths_file")]
     paths: Vec<PathBuf>,
@@ -649,7 +652,10 @@ fn run(cli: Cli) -> Result<u8> {
                         };
                         let paths = selected.iter().map(std::path::absolute).collect::<std::io::Result<Vec<_>>>()?;
                         let request = amux::work_submission::Request { root: &actor.project_directory, task_id: work.task, message: &work.message, paths: &paths };
-                        let outcome = amux::work_submission::submit(&request, &preferences.work_submission, amux::work_submission::open_pull_request)?;
+                        let outcome = match work.resume_commit {
+                            Some(commit) => amux::work_submission::resume(&request, &preferences.work_submission, &commit, amux::work_submission::open_pull_request)?,
+                            None => amux::work_submission::submit(&request, &preferences.work_submission, amux::work_submission::open_pull_request)?,
+                        };
                         let comment = gateway.request(Method::POST, &project, &[&work.task.to_string(), "comments"], Some(json!({"content": outcome.comment()})), Some(&actor)).await
                             .with_context(|| format!("work was submitted as {}, but posting the result on the task failed", outcome.reference))?;
                         Ok(json!({"task_id": work.task, "reference": outcome.reference, "files": outcome.files, "comment_id": comment["id"]}))

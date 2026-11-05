@@ -281,6 +281,22 @@ Settings → Workspaces & Terminals → Work submission selects the mode:
   it to `<prefix><full task UUID>` (prefix `amux/` by default) and
   opens a pull request with `gh pr create`.
 
+If publication fails after creating a commit, first resolve the reported checkout
+or stash conflicts while preserving unrelated drafts. Publish the recovered HEAD
+commit without another commit:
+
+```sh
+amux submit-work --resume-commit <recovered-HEAD-SHA> <owned-task-id> 'Resume publication' src/parser.rs 'docs/new file.md'
+```
+
+For MCP, pass the same task and exact `paths` array with `resume_commit` set to
+that SHA. The original commit message is retained. The commit must be HEAD, have
+the matching AmuxID and change exactly the listed files; selected files must have
+no uncommitted changes and the index must have no unresolved conflicts. Other
+drafts and saved stashes are preserved. Resume follows the current submission
+mode and ordinary non-force upstream checks, refuses additional unpublished
+parent history, and returns the commit if it was already published.
+
 The result, a commit SHA or pull request URL plus the file list, is posted as a
 task comment. Submission does not mark the task done. Agents started with amux
 MCP tools also run Claude Code with its commit and pull request attribution

@@ -47,7 +47,8 @@ fn large_submit_work_lists_reach_the_cli_without_os_argument_overflow() {
         .collect();
     let request = json!({"jsonrpc":"2.0", "id":1, "method":"tools/call",
     "params":{"name":"submit_work", "arguments":{
-        "task_id":"not-a-uuid", "message":"Move assets", "paths":paths
+        "task_id":"not-a-uuid", "message":"Move assets", "paths":paths,
+        "resume_commit":"abc123"
     }}});
     writeln!(child.stdin.take().unwrap(), "{request}").unwrap();
     let output = child.wait_with_output().unwrap();

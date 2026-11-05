@@ -125,6 +125,112 @@ pub fn submit(
     Ok(Outcome { reference, files })
 }
 
+/// Publish an existing task commit after a failed submission has been recovered.
+/// Retain the task commit/message without committing files again. Ordinary
+/// publication may rebase that commit if the upstream has advanced.
+pub fn resume(
+    request: &Request<'_>,
+    preferences: &Preferences,
+    commit: &str,
+    open: impl FnOnce(&PullRequest) -> Result<String>,
+) -> Result<Outcome> {
+    let repo = Repo::new(request.root)?;
+    let commit = repo.git(&[
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        &format!("{commit}^{{commit}}"),
+    ])?;
+    if repo.git(&["rev-parse", "HEAD"])? != commit {
+        bail!("resume commit must be the current HEAD; no work was published");
+    }
+    let task = repo.git(&[
+        "log",
+        "-1",
+        "--format=%(trailers:key=AmuxID,valueonly)",
+        &commit,
+    ])?;
+    if task != request.task_id.to_string() {
+        bail!("resume commit must have exactly one matching AmuxID trailer");
+    }
+    let parents = repo.git(&["rev-list", "--parents", "-n", "1", &commit])?;
+    let parents: Vec<_> = parents.split_whitespace().collect();
+    if parents.len() != 2 {
+        bail!("resume requires a single-parent task commit");
+    }
+    let files = repo.pathspecs(request.paths)?;
+    let prefix = repo.git_raw(&["rev-parse", "--show-prefix"])?;
+    let prefix = prefix.trim_end_matches(['\r', '\n']);
+    let selected: HashSet<_> = files.iter().map(|file| format!("{prefix}{file}")).collect();
+    let changed = repo.git_raw(&[
+        "diff-tree",
+        "--no-commit-id",
+        "--name-only",
+        "--no-renames",
+        "-r",
+        "-z",
+        &commit,
+    ])?;
+    let changed: HashSet<_> = changed
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    if changed.len() != selected.len() || changed.iter().any(|path| !selected.contains(*path)) {
+        bail!("resume commit must change exactly the listed files");
+    }
+    if !repo.git_raw(&["ls-files", "--unmerged", "-z"])?.is_empty() {
+        bail!("resolve all index conflicts before resuming publication");
+    }
+    let status = repo.git_raw(&[
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--no-renames",
+        "--untracked-files=all",
+    ])?;
+    if status
+        .split('\0')
+        .filter_map(|record| record.get(3..))
+        .any(|path| selected.contains(path))
+    {
+        bail!("listed files have uncommitted changes; resolve them before resuming publication");
+    }
+    let upstream = repo.upstream()?;
+    repo.git(&["fetch", &upstream.remote])?;
+    let base = repo.git(&["rev-parse", "--verify", "@{upstream}^{commit}"])?;
+    // A lost push reply is safe to retry, even if the upstream has moved on.
+    if repo
+        .git(&["merge-base", "--is-ancestor", &commit, &base])
+        .is_ok()
+    {
+        return Ok(Outcome {
+            reference: commit,
+            files,
+        });
+    }
+    if repo
+        .git(&["merge-base", "--is-ancestor", parents[1], &base])
+        .is_err()
+    {
+        bail!(
+            "resume would publish other local history; reconcile the commit parent with upstream first"
+        );
+    }
+    let reference = match preferences.mode {
+        Mode::CommitAndPush => repo.publish_commit(&upstream, &commit)?,
+        Mode::PullRequest => {
+            let branch = branch_name(&preferences.branch_prefix, request.task_id);
+            repo.ensure_branch_name(&branch)?;
+            let message = repo.git(&["log", "-1", "--format=%B", &commit])?;
+            let pull = repo.push_pull_request(&upstream, &commit, &message, &branch)?;
+            open(&pull).with_context(|| {
+                format!("branch {branch} was pushed, but its pull request could not be opened")
+            })?
+        }
+    };
+    Ok(Outcome { reference, files })
+}
+
 /// Open a pull request with the GitHub CLI and return its URL.
 pub fn open_pull_request(request: &PullRequest) -> Result<String> {
     let output = std::process::Command::new("gh")
@@ -275,9 +381,7 @@ impl Repo {
     /// Root-relative pathspecs for `paths`, each of which must be inside the
     /// root, outside `.git`, and modified, added or deleted.
     fn changed_pathspecs(&self, paths: &[PathBuf]) -> Result<Vec<String>> {
-        if paths.is_empty() {
-            bail!("list at least one changed path to submit");
-        }
+        let files = self.pathspecs(paths)?;
         let status = self.git_raw(&[
             "status",
             "--porcelain=v1",
@@ -293,13 +397,22 @@ impl Repo {
             .split('\0')
             .filter_map(|record| record.get(3..)?.strip_prefix(prefix))
             .collect();
+        for file in &files {
+            if !changed.contains(file.as_str()) {
+                bail!("{file} has no changes to submit");
+            }
+        }
+        Ok(files)
+    }
+
+    fn pathspecs(&self, paths: &[PathBuf]) -> Result<Vec<String>> {
+        if paths.is_empty() {
+            bail!("list at least one changed path to submit");
+        }
         let mut files = Vec::new();
         let mut seen = HashSet::new();
         for path in paths {
             let file = self.pathspec(path)?;
-            if !changed.contains(file.as_str()) {
-                bail!("{file} has no changes to submit");
-            }
             if seen.insert(file.clone()) {
                 files.push(file);
             }
@@ -399,25 +512,53 @@ impl Repo {
         self.git_paths(&["add", "--all"], files)?;
         self.git_paths(&["commit", "--only", "-m", message], files)?;
         let commit = self.git(&["rev-parse", "HEAD"])?;
-        let kept = |commit: &str| format!("commit {commit} is kept locally and was not pushed");
-        let target = format!("HEAD:{}", upstream.merge);
+        self.publish_commit(upstream, &commit)
+    }
+
+    fn publish_commit(&self, upstream: &Upstream, commit: &str) -> Result<String> {
+        let kept = |commit: &str| {
+            format!(
+                "commit {commit} is kept locally and was not pushed. After resolving the checkout, retry amux submit-work --resume-commit {commit} with the same task and file list"
+            )
+        };
+        let target = format!("{commit}:{}", upstream.merge);
         let push = ["push", upstream.remote.as_str(), target.as_str()];
         let Err(rejected) = self.git(&push) else {
-            return Ok(commit);
+            return Ok(commit.to_owned());
         };
         self.git(&["fetch", &upstream.remote])
-            .with_context(|| kept(&commit))?;
-        // Only a remote that moved ahead is retried; other failures are reported.
+            .with_context(|| kept(commit))?;
         if self
-            .git(&["merge-base", "--is-ancestor", "@{upstream}", "HEAD"])
+            .git(&["merge-base", "--is-ancestor", commit, "@{upstream}"])
             .is_ok()
         {
-            return Err(rejected.context(kept(&commit)));
+            return Ok(commit.to_owned());
+        }
+        // Only a remote that moved ahead is retried; other failures are reported.
+        if self
+            .git(&["merge-base", "--is-ancestor", "@{upstream}", commit])
+            .is_ok()
+        {
+            return Err(rejected.context(kept(commit)));
+        }
+        if self.git(&["rev-parse", "HEAD"])? != commit {
+            bail!("{}; HEAD changed before rebase", kept(commit));
         }
         self.rebase_preserving_index(upstream.branch())
-            .with_context(|| kept(&self.git(&["rev-parse", "HEAD"]).unwrap_or(commit)))?;
+            .with_context(|| {
+                kept(
+                    &self
+                        .git(&["rev-parse", "HEAD"])
+                        .unwrap_or_else(|_| commit.to_owned()),
+                )
+            })?;
         let commit = self.git(&["rev-parse", "HEAD"])?;
-        self.git(&push).with_context(|| kept(&commit))?;
+        self.git(&[
+            "push",
+            &upstream.remote,
+            &format!("{commit}:{}", upstream.merge),
+        ])
+        .with_context(|| kept(&commit))?;
         Ok(commit)
     }
 
@@ -456,7 +597,7 @@ impl Repo {
             }
         }
         rebased.with_context(|| format!(
-            "{branch} moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. If you have unrelated drafts, save them with git stash push --include-untracked and record that stash's ID with git rev-parse refs/stash. Run git pull --rebase; resolve conflicts, git add the resolved files, and git -c core.editor=true rebase --continue until finished, then git push. Restore saved drafts with git stash apply --index <saved-stash-id>; verify the staged and unstaged drafts before dropping only that saved stash"
+            "{branch} moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. If you have unrelated drafts, save them with git stash push --include-untracked and record that stash's ID with git rev-parse refs/stash. Run git pull --rebase; resolve conflicts, git add the resolved files, and git -c core.editor=true rebase --continue until finished. Restore saved drafts with git stash apply --index <saved-stash-id>; verify the staged and unstaged drafts before dropping only that saved stash. Use git rev-parse HEAD to obtain the recovered commit, then retry amux submit-work --resume-commit with that commit, the same task and file list"
         ))?;
         Ok(())
     }
@@ -511,6 +652,16 @@ impl Repo {
             );
         }
         let commit = self.git(&["commit-tree", &tree, "-p", &base, "-m", message])?;
+        self.push_pull_request(upstream, &commit, message, branch)
+    }
+
+    fn push_pull_request(
+        &self,
+        upstream: &Upstream,
+        commit: &str,
+        message: &str,
+        branch: &str,
+    ) -> Result<PullRequest> {
         self.git(&[
             "push",
             &upstream.remote,
