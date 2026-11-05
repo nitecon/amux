@@ -665,11 +665,21 @@ fn pull_request_mode_rejects_upstream_changes_to_selected_files_without_losing_w
 
 #[test]
 fn a_project_root_in_a_repository_subdirectory_submits_and_guards_upstream_edits() {
+    check_project_subdirectory("sub");
+}
+
+#[test]
+fn a_project_prefix_with_leading_whitespace_submits_and_guards_upstream_edits() {
+    check_project_subdirectory(" leading");
+}
+
+fn check_project_subdirectory(directory: &str) {
     let fixture = Fixture::new();
-    let project = fixture.work.join("sub");
+    let project = fixture.work.join(directory);
+    let file = format!("{directory}/f.txt");
     std::fs::create_dir(&project).unwrap();
-    fixture.write("sub/f.txt", "base\n");
-    git(&fixture.work, &["add", "sub/f.txt"]);
+    fixture.write(&file, "base\n");
+    git(&fixture.work, &["add", &file]);
     git(&fixture.work, &["commit", "-m", "add sub"]);
     git(&fixture.work, &["push"]);
     let run = |mode: Mode| {
@@ -689,13 +699,13 @@ fn a_project_root_in_a_repository_subdirectory_submits_and_guards_upstream_edits
         })
     };
 
-    fixture.write("sub/f.txt", "committed\n");
+    fixture.write(&file, "committed\n");
     let outcome = run(Mode::CommitAndPush).unwrap();
     assert_eq!(outcome.files, ["f.txt"]);
-    assert_eq!(changed(&fixture.remote, "main"), "M\tsub/f.txt");
+    assert_eq!(changed(&fixture.remote, "main"), format!("M\t{file}"));
 
-    fixture.push_elsewhere("sub/f.txt", "upstream\n");
-    fixture.write("sub/f.txt", "local\n");
+    fixture.push_elsewhere(&file, "upstream\n");
+    fixture.write(&file, "local\n");
     let error = format!("{:#}", run(Mode::PullRequest).unwrap_err());
     assert!(error.contains("selected paths differ"), "{error}");
     assert!(git(&fixture.remote, &["for-each-ref", "refs/heads/amux/"]).is_empty());

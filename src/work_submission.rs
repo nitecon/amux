@@ -287,10 +287,11 @@ impl Repo {
         ])?;
         // Porcelain paths are repository-relative; the project root may be a
         // subdirectory of the repository.
-        let prefix = self.git(&["rev-parse", "--show-prefix"])?;
+        let prefix = self.git_raw(&["rev-parse", "--show-prefix"])?;
+        let prefix = prefix.trim_end_matches(['\r', '\n']);
         let changed: HashSet<_> = status
             .split('\0')
-            .filter_map(|record| record.get(3..)?.strip_prefix(prefix.as_str()))
+            .filter_map(|record| record.get(3..)?.strip_prefix(prefix))
             .collect();
         let mut files = Vec::new();
         let mut seen = HashSet::new();
