@@ -22,6 +22,7 @@ const WAIT: Duration =
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Server {
+    parent: String,
     endpoint: String,
     http: reqwest::Client,
     _root: tempfile::TempDir,
@@ -32,6 +33,49 @@ impl Server {
     async fn start() -> Self {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("events.sqlite");
+        // Historical user work exists before the event router starts. It is
+        // cancelled so it cannot participate in this fixture's assignment queue.
+        let parent = {
+            let database = db::open(path.to_str().unwrap()).unwrap();
+            let conn = database.lock().unwrap();
+            db::insert_project(
+                &conn,
+                &db::Project {
+                    ident: PROJECT.into(),
+                    channel_name: "discord".into(),
+                    room_id: String::new(),
+                    last_msg_id: None,
+                    created_at: 0,
+                    repo_provider: None,
+                    repo_namespace: None,
+                    repo_name: None,
+                    repo_full_name: None,
+                    kind: db::PROJECT_KIND_ADHOC.into(),
+                    archived_at: None,
+                    canonical_remote: None,
+                },
+            )
+            .unwrap();
+            let parent = db::insert_task(
+                &conn,
+                PROJECT,
+                "User feature",
+                None,
+                None,
+                &[],
+                None,
+                "user",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE tasks SET status='cancelled' WHERE id=?1",
+                [&parent.id],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM task_events", []).unwrap();
+            conn.execute("DELETE FROM router_task_outbox", []).unwrap();
+            parent.id
+        };
         let config = RuntimeConfig {
             listen_addr: "127.0.0.1:1".parse().unwrap(),
             database: db::DatabaseConfig::sqlite(path.to_string_lossy()),
@@ -51,6 +95,7 @@ impl Server {
         let server = tokio::spawn(async move { runtime::serve(config, listener).await.unwrap() });
         let http = reqwest::Client::new();
         let server = Self {
+            parent,
             endpoint,
             http,
             _root: root,
@@ -67,7 +112,10 @@ impl Server {
         server
     }
 
-    async fn send(&self, method: reqwest::Method, path: &str, body: Value) -> Value {
+    async fn send(&self, method: reqwest::Method, path: &str, mut body: Value) -> Value {
+        if method == reqwest::Method::POST && path.ends_with("/tasks") {
+            body["parent_task_id"] = json!(self.parent);
+        }
         let response = self
             .http
             .request(method, format!("http://{}{path}", self.endpoint))
@@ -224,6 +272,7 @@ async fn task_mutations_reach_only_subscribed_remote_consumers_at_least_once() {
     assert_eq!(created["source"], "tasks");
     assert_eq!(created["payload"]["project"], PROJECT);
     assert_eq!(created["payload"]["task"]["id"], id);
+    assert_eq!(created["payload"]["task"]["parent"]["id"], server.parent);
     assert_eq!(created["payload"]["actor"]["provider"], "claude");
     let started = event(&mut a, true).await;
     assert_eq!(started["id"], "task.started");
@@ -707,6 +756,12 @@ async fn a_clock_tick_assigns_cross_project_delegation_to_the_destination_deskto
             json!({"ident": SOURCE, "channel": "discord"}),
         )
         .await;
+    let parent = server.http.post(format!("http://{}/v1/projects/{SOURCE}/tasks", server.endpoint))
+        .bearer_auth(KEY)
+        .json(&json!({"title":"Source feature", "goal":"fixture-parent", "routing":{"mode":"unassigned"}}))
+        .send().await.unwrap();
+    assert!(parent.status().is_success());
+    let parent: Value = parent.json().await.unwrap();
     let mut socket = desktop(&server).await;
     activity(&mut socket, now_ms() - 60_000, false).await;
     expect(&mut socket, "agent.idle").await;
@@ -734,7 +789,7 @@ async fn a_clock_tick_assigns_cross_project_delegation_to_the_destination_deskto
         .header("X-Agent-Instance-Id", DELEGATOR_INSTANCE)
         .header("X-Agent-Provider", "codex")
         .header("X-Agent-OS", "windows")
-        .json(&json!({"target_project_ident": PROJECT, "title": "Fix destination code"}))
+        .json(&json!({"target_project_ident": PROJECT, "title": "Fix destination code", "parent_task_id":parent["id"]}))
         .send()
         .await
         .unwrap();

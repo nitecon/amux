@@ -174,6 +174,9 @@ enum TaskOperation {
     },
     Create {
         title: String,
+        /// Existing task whose scope includes this work. Read it before creating a subtask.
+        #[arg(long)]
+        parent: Uuid,
         #[arg(long, alias = "details")]
         specification: Option<String>,
         /// Record a review finding for human triage; do not auto-execute it.
@@ -194,6 +197,9 @@ enum TaskOperation {
     /// A lost reply is uncertain: inspect both projects before manually retrying.
     Delegate {
         title: String,
+        /// Parent task in this project for the cross-project handoff.
+        #[arg(long)]
+        parent: Uuid,
         #[arg(long)]
         target_project: String,
         #[arg(long, alias = "details")]
@@ -562,8 +568,9 @@ fn run(cli: Cli) -> Result<u8> {
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
-                    TaskOperation::Create { title, specification, review_finding, os, notify_results, to_agent, details } => {
-                        let mut body = json!({"title": title, "specification": specification});
+                    TaskOperation::Create { title, parent, specification, review_finding, os, notify_results, to_agent, details } => {
+                        gateway.require_task_hierarchy().await?;
+                        let mut body = json!({"title": title, "parent_task_id":parent, "specification": specification});
                         let mut labels = Vec::new();
                         if review_finding { labels.push("autoreview-finding".to_owned()); }
                         if review_finding && to_agent.is_none() {
@@ -590,6 +597,8 @@ fn run(cli: Cli) -> Result<u8> {
                         } else {
                             gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?
                         };
+                        anyhow::ensure!(task["parent"]["id"] == parent.to_string() && task["parent"]["project_ident"] == project,
+                            "Parent link unconfirmed; inspect the task before retrying. The gateway may need updating.");
                         if review_finding && to_agent.is_none() {
                             anyhow::ensure!(task["status"] == "todo" && task["owner_origin"].is_null() && task["owner_agent_id"].is_null(), "Finding was not left unowned in the queue; inspect task before retrying");
                         }
@@ -605,9 +614,10 @@ fn run(cli: Cli) -> Result<u8> {
                         }
                         Ok(task)
                     },
-                    TaskOperation::Delegate { title, target_project, specification, notify_results, details } => {
+                    TaskOperation::Delegate { title, parent, target_project, specification, notify_results, details } => {
+                        gateway.require_task_hierarchy().await?;
                         let requester = if notify_results { Some(gateway.requester_target(&project, &actor).await?) } else { None };
-                        gateway.delegate_with_requester(&project, &target_project, title, specification, &details.into_details(), &actor, requester.as_ref()).await
+                        gateway.delegate_with_requester(&project, &target_project, parent, title, specification, &details.into_details(), &actor, requester.as_ref()).await
                     },
                     TaskOperation::Rank { id, rank } => gateway.rank(&project, id, rank, &actor).await,
                     TaskOperation::Claim { id } => {

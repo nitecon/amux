@@ -5616,6 +5616,7 @@ pub struct ListTasksQuery {
 
 #[derive(Deserialize)]
 pub struct CreateTaskRequest {
+    pub parent_task_id: Option<String>,
     pub requester: Option<crate::task_dispatch::Target>,
     pub canonical_remote: Option<String>,
     #[serde(default)]
@@ -5635,6 +5636,7 @@ pub struct CreateTaskRequest {
 
 #[derive(Deserialize)]
 pub struct DelegateTaskRequest {
+    pub parent_task_id: Option<String>,
     pub requester: Option<crate::task_dispatch::Target>,
     pub target_project_ident: String,
     pub title: String,
@@ -6092,11 +6094,17 @@ pub async fn create_task_handler(
                 req.canonical_remote.as_deref(),
             )?;
         }
+        let parent = crate::subtasks::parent_for_creation(
+            &conn,
+            &ident_clone,
+            req.parent_task_id.as_deref(),
+            origin.is_some(),
+        )?;
         Ok(crate::task_events::mutation(
             &conn,
             origin.as_ref(),
             |conn| {
-                let task = db::insert_task_with_requester(
+                let mut task = db::insert_task_with_requester(
                     conn,
                     &ident_clone,
                     &title,
@@ -6109,6 +6117,9 @@ pub async fn create_task_handler(
                     &req.routing,
                     req.requester.as_ref(),
                 )?;
+                if let Some(parent) = &parent {
+                    crate::subtasks::attach(conn, parent, &mut task)?;
+                }
                 if task.goal.is_none()
                     && task.owner_agent_id.is_none()
                     && task.status == "todo"
@@ -6168,95 +6179,108 @@ pub async fn delegate_task_handler(
     let hostname = req.hostname;
 
     let db = state.db.clone();
-    let response = spawn_blocking(move || -> anyhow::Result<DelegationResponse> {
+    let response = spawn_blocking(move || -> Result<DelegationResponse> {
         let conn = db.lock().unwrap();
-        crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
-            if db::get_project(conn, &source_ident)?.is_none() {
-                anyhow::bail!("project '{source_ident}' not found");
-            }
-            if db::get_project(conn, &target_ident)?.is_none() {
-                anyhow::bail!("project '{target_ident}' not found");
-            }
+        let parent = crate::subtasks::parent_for_creation(
+            &conn,
+            &source_ident,
+            req.parent_task_id.as_deref(),
+            origin.is_some(),
+        )?;
+        Ok(crate::task_events::mutation(
+            &conn,
+            origin.as_ref(),
+            |conn| {
+                if db::get_project(conn, &source_ident)?.is_none() {
+                    anyhow::bail!("project '{source_ident}' not found");
+                }
+                if db::get_project(conn, &target_ident)?.is_none() {
+                    anyhow::bail!("project '{target_ident}' not found");
+                }
 
-            // The source session requests work from another project; it must
-            // not reserve that project's task for itself.
-            let target_task = db::insert_unassigned_dispatch_task(
-                conn,
-                &target_ident,
-                &title,
-                description.as_deref(),
-                specification.as_deref(),
-                &labels,
-                hostname.as_deref(),
-                &reporter,
-            )?;
-            let source_title = format!("{title} (DELEGATED)");
-            let source_task = db::insert_delegated_task_with_requester(
-                conn,
-                &db::DelegatedTaskInsert {
-                    project_ident: &source_ident,
-                    title: &source_title,
-                    description: description.as_deref(),
-                    details: specification.as_deref(),
-                    labels: &labels,
-                    hostname: hostname.as_deref(),
-                    reporter: &reporter,
-                    target_project_ident: &target_ident,
-                    target_task_id: &target_task.id,
-                },
-                req.requester.as_ref(),
-            )?;
-            let delegation = db::insert_task_delegation(
-                conn,
-                &source_ident,
-                &source_task.id,
-                &target_ident,
-                &target_task.id,
-                requester.as_deref(),
-                hostname.as_deref(),
-            )?;
-            db::insert_comment(
-                conn,
-                &source_task.id,
-                "agent-gateway",
-                "system",
-                &format!(
-                    "Delegated to project `{}` as task `{}`.",
-                    target_ident, target_task.id
-                ),
-            )?;
-            db::insert_comment(
-                conn,
-                &target_task.id,
-                "agent-gateway",
-                "system",
-                &format!(
-                    "Delegated from project `{}`; source tracking task `{}`.",
-                    source_ident, source_task.id
-                ),
-            )?;
-            let message_id = system_nudge(
-                conn,
-                &target_ident,
-                "Delegated task created",
-                crate::templates::render(
-                    crate::templates::DELEGATED_CREATED,
-                    &[
-                        ("source_project", &source_ident),
-                        ("target_task_id", &target_task.id),
-                        ("title", &title),
-                        ("target_project", &target_ident),
-                    ],
-                ),
-            )?;
+                // The source session must not reserve work in the destination project.
+                let mut target_task = db::insert_unassigned_dispatch_task(
+                    conn,
+                    &target_ident,
+                    &title,
+                    description.as_deref(),
+                    specification.as_deref(),
+                    &labels,
+                    hostname.as_deref(),
+                    &reporter,
+                )?;
+                let source_title = format!("{title} (DELEGATED)");
+                let mut source_task = db::insert_delegated_task_with_requester(
+                    conn,
+                    &db::DelegatedTaskInsert {
+                        project_ident: &source_ident,
+                        title: &source_title,
+                        description: description.as_deref(),
+                        details: specification.as_deref(),
+                        labels: &labels,
+                        hostname: hostname.as_deref(),
+                        reporter: &reporter,
+                        target_project_ident: &target_ident,
+                        target_task_id: &target_task.id,
+                    },
+                    req.requester.as_ref(),
+                )?;
+                if let Some(parent) = &parent {
+                    crate::subtasks::attach(conn, parent, &mut source_task)?;
+                }
+                crate::subtasks::attach(conn, &source_task, &mut target_task)?;
+                let delegation = db::insert_task_delegation(
+                    conn,
+                    &source_ident,
+                    &source_task.id,
+                    &target_ident,
+                    &target_task.id,
+                    requester.as_deref(),
+                    hostname.as_deref(),
+                )?;
+                db::insert_comment(
+                    conn,
+                    &source_task.id,
+                    "agent-gateway",
+                    "system",
+                    &format!(
+                        "Delegated to project `{}` as task `{}`.",
+                        target_ident, target_task.id
+                    ),
+                )?;
+                db::insert_comment(
+                    conn,
+                    &target_task.id,
+                    "agent-gateway",
+                    "system",
+                    &format!(
+                        "Delegated from project `{}`; source tracking task `{}`.",
+                        source_ident, source_task.id
+                    ),
+                )?;
+                let message_id = system_nudge(
+                    conn,
+                    &target_ident,
+                    "Delegated task created",
+                    crate::templates::render(
+                        crate::templates::DELEGATED_CREATED,
+                        &[
+                            ("source_project", &source_ident),
+                            ("target_task_id", &target_task.id),
+                            ("title", &title),
+                            ("target_project", &target_ident),
+                        ],
+                    ),
+                )?;
 
-            Ok(DelegationResponse {
-                delegation,
-                source_task,
-                target_task,
-                message_id,
-            })
-        })
+                Ok(DelegationResponse {
+                    delegation,
+                    source_task,
+                    target_task,
+                    message_id,
+                })
+            },
+        )?)
     })
     .await??;
 
@@ -7397,6 +7421,85 @@ mod tests {
         assert!(actions_for_status("nonsense").is_empty());
     }
 
+    fn task_parent_fixture(state: &AppState) -> String {
+        let conn = state.db.lock().unwrap();
+        let task = db::insert_task(
+            &conn,
+            "demo",
+            "Feature request",
+            None,
+            None,
+            &[],
+            None,
+            "user",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tasks SET status='done',done_at=0 WHERE id=?1",
+            [&task.id],
+        )
+        .unwrap();
+        task.id
+    }
+
+    #[tokio::test]
+    async fn agent_creation_requires_a_real_parent_and_publishes_the_link_atomically() {
+        let state = test_state();
+        let create = |value| Json(serde_json::from_value::<CreateTaskRequest>(value).unwrap());
+        let headers = native_task_headers();
+        for body in [
+            serde_json::json!({"title":"Orphan"}),
+            serde_json::json!({"title":"Invalid parent", "parent_task_id":"missing"}),
+        ] {
+            let error = create_task_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path("demo".into()),
+                create(body),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(matches!(
+                error.0,
+                StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+            ));
+        }
+        assert!(
+            db::list_tasks(&state.db.lock().unwrap(), "demo", &["todo".into()], true)
+                .unwrap()
+                .is_empty()
+        );
+        // Users retain top-level creation. A completed feature can receive follow-up work.
+        let parent = task_parent_fixture(&state);
+        let Json(child) = create_task_handler(
+            State(state.clone()),
+            headers,
+            Path("demo".into()),
+            create(serde_json::json!({"title":"Follow-up", "parent_task_id":parent})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(child.task.parent.as_ref().unwrap().id, parent);
+        let conn = state.db.lock().unwrap();
+        let detail = db::get_task_detail(&conn, "demo", &child.task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.task.parent.as_ref().unwrap().id, parent);
+        let listed = db::list_tasks(&conn, "demo", &["todo".into()], true).unwrap();
+        assert_eq!(listed[0].parent.as_ref().unwrap().id, parent);
+        let event = crate::task_events::list(&conn, &Default::default())
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "task_created" && event.task["id"] == child.task.id)
+            .unwrap();
+        assert_eq!(event.task["parent"]["id"], parent);
+        assert_eq!(
+            crate::subtasks::list(&conn, &parent).unwrap()[0].id,
+            child.task.id
+        );
+    }
+
     fn native_task_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
         for (name, value) in [
@@ -7421,7 +7524,7 @@ mod tests {
         let create = |value| Json(serde_json::from_value::<CreateTaskRequest>(value).unwrap());
         let Json(plain) = create_task_handler(
             State(state.clone()),
-            agent.clone(),
+            HeaderMap::new(),
             Path("demo".into()),
             create(serde_json::json!({"title":"General work"})),
         )
@@ -7431,7 +7534,7 @@ mod tests {
             State(state.clone()),
             agent.clone(),
             Path("demo".into()),
-            create(serde_json::json!({"title":"Goal work", "goal":"  release  "})),
+            create(serde_json::json!({"title":"Goal work", "goal":"  release  ", "parent_task_id":plain.task.id})),
         )
         .await
         .unwrap();
@@ -7483,7 +7586,7 @@ mod tests {
             State(state.clone()),
             agent.clone(),
             Path("demo".into()),
-            create(serde_json::json!({"title":"Inherit context"})),
+            create(serde_json::json!({"title":"Inherit context", "parent_task_id":scoped.task.id})),
         )
         .await
         .unwrap();
@@ -7505,7 +7608,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(nudges, 0, "goal work must not create project-wide nudges");
+        assert_eq!(
+            nudges, 1,
+            "only the human-created general task should create a project-wide nudge"
+        );
         let events = crate::task_events::list(&conn, &Default::default()).unwrap();
         let event = events
             .iter()
@@ -7526,7 +7632,7 @@ mod tests {
                 let Json(created) = create_task_handler(
                 State(state.clone()), agent.clone(), Path("demo".into()),
                 Json(serde_json::from_value(serde_json::json!({
-                    "title": "Review task", "labels": if finding { vec!["autoreview-finding", "os:linux", "bug"] } else { vec![] }
+                    "title": "Review task", "parent_task_id": task_parent_fixture(&state), "labels": if finding { vec!["autoreview-finding", "os:linux", "bug"] } else { vec![] }
                 })).unwrap()),
             ).await.unwrap();
                 let id = created.task.id;
@@ -7734,7 +7840,7 @@ mod tests {
             Path("demo".into()),
             Json(
                 serde_json::from_value(serde_json::json!({
-                    "title": "Still needed?", "specification": "Keep this context"
+                    "title": "Still needed?", "parent_task_id": task_parent_fixture(&state), "specification": "Keep this context"
                 }))
                 .unwrap(),
             ),
@@ -8011,6 +8117,7 @@ mod tests {
 
     fn sample_task() -> db::Task {
         db::Task {
+            parent: None,
             id: "task-1".to_string(),
             project_ident: "demo-project".to_string(),
             title: "Demo task".to_string(),

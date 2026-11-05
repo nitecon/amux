@@ -45,7 +45,7 @@ with a known task status. Empty, malformed or mismatched replies leave acceptanc
 uncertain: fetch tasks before retrying. The client does not retry creation or
 establish server request deduplication.
 
-`amux tasks delegate 'Review implementation' --target-project other-project
+`amux tasks delegate 'Review implementation' --parent <parent-task-id> --target-project other-project
 --specification 'Inline handoff context'` uses the existing cross-project
 delegation route. Run it from an amux-launched agent in its original project,
 with `AMUX_GATEWAY_PROJECT` identifying the source project. The result must
@@ -89,8 +89,8 @@ the caller's amux identity (from the agent terminal's environment, or an explici
 | --- | --- |
 | `tasks list [--status S] [--include-stale]` | `amux tasks list [--status S] [--include-stale]`; statuses are `todo`, `in_progress`, `user_review`, `done`, `cancelled` |
 | `tasks get ID` | `amux tasks get ID [--comments N]`; shows the newest 50 comments by default, numbered within the full thread (`--json` for raw gateway JSON) |
-| `tasks add --title T [--description D] [--specification S] [--label L]… [--hostname H]` | `amux tasks create T [--description D] [--specification S] [--label L]… [--hostname H]`; use `--os` and `--review-finding` instead of `os:` or `autoreview-finding` labels |
-| `tasks add-delegated --target-project P --title T --description D --specification S [--label L]… [--hostname H]` | `amux tasks delegate T --target-project P [--description D] [--specification S] [--label L]… [--hostname H]` |
+| `tasks add --title T [--description D] [--specification S] [--label L]… [--hostname H]` | `amux tasks create T --parent <parent-task-id> [--description D] [--specification S] [--label L]… [--hostname H]`; use `--os` and `--review-finding` instead of `os:` or `autoreview-finding` labels |
+| `tasks add-delegated --target-project P --title T --description D --specification S [--label L]… [--hostname H]` | `amux tasks delegate T --parent <parent-task-id> --target-project P [--description D] [--specification S] [--label L]… [--hostname H]` |
 | `tasks claim ID` | `amux tasks claim ID` (also refuses tasks that require another OS) |
 | `tasks release ID` | `amux tasks release ID` (exact owner only) |
 | `tasks done ID` | `amux tasks done ID` (exact owner only) |
@@ -113,6 +113,26 @@ the audit is not part of this released baseline. The deprecation handoff must
 reconcile any such work before switching generated rules; it must not remove a
 newly released workflow without a replacement.
 
+## Subtasks and parent scope
+
+Agents must supply `--parent <task-id>` when creating or delegating work. Read
+that task first and check its scope. Choose another fitting parent if needed;
+if none fits, ask the user to create a top-level task and propose its title and
+description. Users can still create top-level tasks in the desktop composer.
+The gateway rejects agent creation without a parent in the source project.
+The CLI checks `task_hierarchy: 1` at `/v1/tasks/capabilities` before sending
+creation, so an older server cannot silently ignore the parent field. Update
+the server together with clients for this feature.
+
+Task replies expose `parent` with its ID, project and title. The desktop and
+CLI list show children indented beneath their parent, retaining parent context
+when filters or the completed-task window hide it. Existing tasks without a
+recorded parent remain roots. Completed parents may receive follow-up subtasks
+and review findings. Generated reviews are children of the reviewed task;
+cross-project delegation links the source tracker to the supplied parent and
+the destination work to that tracker. Queue rank and dispatch ownership are
+independent of the display hierarchy.
+
 ## Project agents and OS routing
 
 `amux agents` lists local registrations. For the current project's connected
@@ -123,7 +143,7 @@ identity, use:
 amux tasks agents
 amux tasks agents --os windows
 amux tasks reassign <task-id> --to-agent <recipient-session-uuid>
-amux tasks create 'Verify Windows behavior' --os windows
+amux tasks create 'Verify Windows behavior' --parent <parent-task-id> --os windows
 amux tasks set-os <owned-task-id> --os windows
 amux tasks set-os <owned-task-id> --clear
 ```
@@ -155,11 +175,11 @@ For a same-project handoff, create a task for a live agent and subscribe the
 calling execution to its comment and completion updates:
 
 ```sh
-amux tasks create 'Review the design' --to-agent <recipient-session-uuid> --specification 'Review only; report findings.'
-amux tasks create 'Track this work' --notify-results
+amux tasks create 'Review the design' --parent <parent-task-id> --to-agent <recipient-session-uuid> --specification 'Review only; report findings.'
+amux tasks create 'Track this work' --parent <parent-task-id> --notify-results
 amux tasks watch <task-id>
 amux tasks watch <task-id> --clear
-amux tasks delegate 'Review another project' --target-project other-project --notify-results
+amux tasks delegate 'Review another project' --parent <parent-task-id> --target-project other-project --notify-results
 ```
 
 `--to-agent` enables return notices automatically. `--notify-results` adds a

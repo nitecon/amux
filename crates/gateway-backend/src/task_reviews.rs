@@ -216,7 +216,7 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     );
     // This helper only inserts an unowned ordinary task; no dispatch protocol
     // record or submitting-agent claim is created.
-    let task = db::insert_unassigned_dispatch_task(
+    let mut task = db::insert_unassigned_dispatch_task(
         conn,
         project,
         &format!("Review: {}", source.title),
@@ -226,6 +226,7 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         sysinfo::System::host_name().as_deref(),
         "amux-autoreview",
     )?;
+    crate::subtasks::attach(conn, &source, &mut task)?;
     conn.execute(
         "INSERT INTO task_reviews VALUES(?1,?2,?3)",
         params![source.id, completed, task.id],
@@ -318,6 +319,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(review.status, "todo");
+        assert_eq!(review.parent.as_ref().unwrap().id, source.id);
         assert_eq!(review.hostname, sysinfo::System::host_name());
         assert!(review.owner_origin.is_none() && review.owner_agent_id.is_none());
         assert!(review.labels.contains(&"os:linux".into()));

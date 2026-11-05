@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// `GET /v1/presence/summary`: distinct machines, their OSes, live agents and
 /// how many of them are busy.
@@ -454,6 +455,24 @@ impl Gateway {
         Ok(())
     }
 
+    /// Old gateways ignore unknown creation fields, so check before creating work.
+    pub async fn require_task_hierarchy(&self) -> Result<()> {
+        let value = self
+            .exchange(
+                Method::GET,
+                self.base.join("v1/tasks/capabilities")?,
+                None,
+                None,
+                &[],
+            )
+            .await?;
+        ensure!(
+            value["task_hierarchy"].as_u64() == Some(1),
+            "gateway does not support task hierarchy version 1; update the server before creating subtasks. No task creation sent"
+        );
+        Ok(())
+    }
+
     fn projects_url(&self) -> Result<Url> {
         let mut url = self.base.clone();
         url.path_segments_mut()
@@ -691,10 +710,12 @@ impl Gateway {
         Ok(result)
     }
     /// Existing cross-project delegation only; no machine or exact-session routing.
+    #[allow(clippy::too_many_arguments)] // Existing handoff arguments plus the required parent.
     pub async fn delegate(
         &self,
         project: &str,
         target_project: &str,
+        parent: Uuid,
         title: String,
         specification: Option<String>,
         details: &TaskDetails,
@@ -703,6 +724,7 @@ impl Gateway {
         self.delegate_with_requester(
             project,
             target_project,
+            parent,
             title,
             specification,
             details,
@@ -717,6 +739,7 @@ impl Gateway {
         &self,
         project: &str,
         target_project: &str,
+        parent: Uuid,
         title: String,
         specification: Option<String>,
         details: &TaskDetails,
@@ -742,7 +765,7 @@ impl Gateway {
         {
             bail!("delegation context exceeds 64 KiB; use a smaller inline handoff");
         }
-        let mut body = json!({"target_project_ident":target_project,"title":title,"specification":specification});
+        let mut body = json!({"target_project_ident":target_project,"parent_task_id":parent,"title":title,"specification":specification});
         details.apply(&mut body)?;
         if let Some(requester) = requester {
             requester.validate()?;
@@ -768,6 +791,11 @@ impl Gateway {
             .await
             .context("delegation not confirmed; inspect tasks in both projects before retrying")?;
         let source = &result["source_task"];
+        ensure!(
+            source["parent"]["id"] == parent.to_string()
+                && source["parent"]["project_ident"] == project,
+            "delegation parent link unconfirmed; inspect both projects before retrying"
+        );
         if let Some(requester) = requester {
             ensure!(
                 source["requester"] == json!(requester),
@@ -775,6 +803,10 @@ impl Gateway {
             );
         }
         let target = &result["target_task"];
+        ensure!(
+            target["parent"]["id"] == source["id"] && target["parent"]["project_ident"] == project,
+            "delegation target parent link unconfirmed; inspect both projects before retrying"
+        );
         let link = &result["delegation"];
         let source_id = canonical_id(&source["id"]);
         let target_id = canonical_id(&target["id"]);

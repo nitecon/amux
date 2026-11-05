@@ -216,13 +216,15 @@ fn transport_fixture_worker() {
             .resolve("wrong.invalid", ([127,0,0,1],secure_port).into()).build().unwrap();
         assert!(wrong_name.get(format!("https://wrong.invalid:{secure_port}/v1/projects")).send().await.is_err());
 
+        let parent = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"User transport feature", "goal":"fixture-parent", "routing":{"mode":"unassigned"}})), None).await.unwrap();
         let consumer = Uuid::new_v4();
         let (commands, incoming) = mpsc::channel(64);
         let (outgoing, mut events) = mpsc::channel(64);
-        let stream = tokio::spawn(delegation_connection::run_profile(profile.clone(), consumer, None, incoming, outgoing));
+        // The historical parent owns the first task event; observe subsequent work.
+        let stream = tokio::spawn(delegation_connection::run_profile(profile.clone(), consumer, Some(1), incoming, outgoing));
         let initial_connection = loop { if let ConnectionEvent::Subscribed { connection, .. } = event(&mut events, "initial subscription").await { break connection; } };
         let caller = actor(&root);
-        let task = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"Real mTLS task"})), Some(&caller)).await.unwrap();
+        let task = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"Real mTLS task", "parent_task_id":parent["id"]})), Some(&caller)).await.unwrap();
         let received_id = loop { if let ConnectionEvent::Event(item) = event(&mut events, "task event").await { break item.id; } };
         commands.send(StreamCommand { connection: initial_connection, frame: json!({"type":"ack","event_id":received_id,"status":"skipped","message":"isolated transport fixture"}) }).await.unwrap();
         let cursor = loop { if let ConnectionEvent::Recorded { cursor, .. } = event(&mut events, "receipt").await { break cursor; } };

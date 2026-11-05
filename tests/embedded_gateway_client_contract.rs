@@ -283,6 +283,22 @@ impl Fixture {
         requester
     }
 
+    fn parent(&self) -> String {
+        let conn = self.database.lock().unwrap();
+        db::insert_task(
+            &conn,
+            PROJECT,
+            "User feature request",
+            None,
+            None,
+            &[],
+            None,
+            "user",
+        )
+        .unwrap()
+        .id
+    }
+
     fn reopen_database(&self) -> Db {
         db::open_config(&db::DatabaseConfig::sqlite(
             self.database_path.to_string_lossy(),
@@ -839,7 +855,7 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
         .client
         .create_task_with_requester(
             PROJECT,
-            json!({"title":"Native task", "specification":"Persist canonical state"}),
+            json!({"title":"Native task", "parent_task_id":fixture.parent(), "specification":"Persist canonical state"}),
             &fixture.actor,
             &requester,
         )
@@ -973,7 +989,7 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
             Method::POST,
             PROJECT,
             &[],
-            Some(json!({"title":"Standing task", "specification":"Long-lived thread"})),
+            Some(json!({"title":"Standing task", "parent_task_id":fixture.parent(), "specification":"Long-lived thread"})),
             Some(&fixture.actor),
         )
         .await
@@ -1077,22 +1093,23 @@ async fn native_websocket_subscribe_receipts_and_reconnect_use_durable_real_even
             .await
             .is_err()
     );
+    let parent = fixture.parent();
     let consumer = Uuid::from_u128(0x8c6fa383_152b_4f0d_9d6d_cfc0730ce005);
-    let mut socket = gateway_stream::connect(&fixture.endpoint, KEY, consumer, None)
+    let mut socket = gateway_stream::connect(&fixture.endpoint, KEY, consumer, Some(1))
         .await
         .unwrap();
     let subscribed = next_frame(&mut socket).await;
     assert_eq!(subscribed["type"], "subscribed");
     assert_eq!(subscribed["protocol_version"], 1);
     assert_eq!(subscribed["consumer_id"], consumer.to_string());
-    assert_eq!(subscribed["cursor"], 0);
-    assert_eq!(subscribed["latest_event_id"], 0);
+    assert_eq!(subscribed["cursor"], 1);
+    assert_eq!(subscribed["latest_event_id"], 1);
 
     let task = fixture
         .client
         .create_task_with_requester(
             PROJECT,
-            json!({"title":"Streaming native task"}),
+            json!({"title":"Streaming native task", "parent_task_id":parent}),
             &fixture.actor,
             &requester,
         )

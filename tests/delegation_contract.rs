@@ -87,13 +87,33 @@ fn server(replies: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Request
     (url, handle)
 }
 
+const PARENT: &str = "44444444-4444-4444-8444-444444444444";
+
 fn receipt() -> Value {
     json!({
-        "source_task":{"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo","status":"todo","kind":"delegated","delegated_to_project_ident":"other","delegated_to_task_id":"22222222-2222-4222-8222-222222222222"},
-        "target_task":{"id":"22222222-2222-4222-8222-222222222222","project_ident":"other","status":"todo"},
+        "source_task":{"parent":{"id":PARENT,"project_ident":"demo"},"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo","status":"todo","kind":"delegated","delegated_to_project_ident":"other","delegated_to_task_id":"22222222-2222-4222-8222-222222222222"},
+        "target_task":{"parent":{"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo"},"id":"22222222-2222-4222-8222-222222222222","project_ident":"other","status":"todo"},
         "delegation":{"id":"33333333-3333-4333-8333-333333333333","source_project_ident":"demo","target_project_ident":"other","source_task_id":"11111111-1111-4111-8111-111111111111","target_task_id":"22222222-2222-4222-8222-222222222222"},
         "message_id":42
     })
+}
+
+#[test]
+fn old_gateways_fail_the_hierarchy_preflight_without_a_creation_request() {
+    let (url, server) = server(vec![(200, json!({"requester_subscriptions":1}))]);
+    let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(gateway.require_task_hierarchy())
+        .unwrap_err();
+    assert!(error.to_string().contains("No task creation sent"));
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .headers
+            .starts_with("GET /v1/tasks/capabilities ")
+    );
 }
 
 #[test]
@@ -124,6 +144,7 @@ fn delegated_return_subscription_belongs_to_source_and_requires_exact_ack() {
         let result = runtime.block_on(gateway.delegate_with_requester(
             "demo",
             "other",
+            PARENT.parse().unwrap(),
             "Review".into(),
             Some("context".into()),
             &amux::gateway::TaskDetails::default(),
@@ -189,6 +210,7 @@ fn delegation_preserves_inline_context_and_requires_the_requested_linked_records
             .block_on(gateway.delegate(
                 "demo",
                 "other",
+                PARENT.parse().unwrap(),
                 "  Review  ".into(),
                 Some(context.into()),
                 &TaskDetails::default(),
@@ -202,6 +224,7 @@ fn delegation_preserves_inline_context_and_requires_the_requested_linked_records
             .block_on(gateway.delegate(
                 "demo",
                 "other",
+                PARENT.parse().unwrap(),
                 "Review".into(),
                 Some(context.into()),
                 &TaskDetails::default(),
@@ -224,7 +247,7 @@ fn delegation_preserves_inline_context_and_requires_the_requested_linked_records
         );
         assert_eq!(
             request.body,
-            json!({"target_project_ident":"other","title":"Review","specification":context})
+            json!({"target_project_ident":"other","parent_task_id":PARENT,"title":"Review","specification":context})
         );
         let headers = request.headers.to_lowercase();
         assert!(headers.contains(&format!("x-agent-session-id: {}", actor.session_id)));
@@ -256,6 +279,7 @@ fn invalid_delegations_and_unregistered_cli_callers_send_nothing() {
                 .block_on(gateway.delegate(
                     "demo",
                     target,
+                    PARENT.parse().unwrap(),
                     title,
                     context,
                     &TaskDetails::default(),
@@ -295,7 +319,7 @@ fn registered_agent_cli_delegates_without_agent_tools() {
     fs::create_dir_all(&fixtures).unwrap();
     let fixture = tempfile::tempdir_in(fixtures).unwrap();
     let root = fixture.path();
-    fs::write(root.join("codex"), "#!/bin/sh\nread -r go\namux tasks --json delegate Review --target-project other --specification \"$HANDOFF_BODY\"\n").unwrap();
+    fs::write(root.join("codex"), "#!/bin/sh\nread -r go\namux tasks --json delegate Review --parent 44444444-4444-4444-8444-444444444444 --target-project other --specification \"$HANDOFF_BODY\"\n").unwrap();
     fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
     // Only the fixture, the real git and basic shell tools: no agent-tools binary
     // is available. macOS /usr/bin/git is an xcrun stub that fails intermittently,
@@ -309,7 +333,7 @@ fn registered_agent_cli_delegates_without_agent_tools() {
             .chain(["/usr/bin".into(), "/bin".into()]),
     )
     .unwrap();
-    let (url, server) = server(vec![(200, receipt())]);
+    let (url, server) = server(vec![(200, json!({"task_hierarchy":1})), (200, receipt())]);
     let _native = native_cli::NativeCli::new(&root.join("state"), &url);
     let body = "inline\n$(must stay literal)";
     struct Agent(std::process::Child);
@@ -374,9 +398,9 @@ fn registered_agent_cli_delegates_without_agent_tools() {
         .unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&output).unwrap(), receipt());
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].body["specification"], body);
-    let headers = requests[0].headers.to_lowercase();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].body["specification"], body);
+    let headers = requests[1].headers.to_lowercase();
     assert!(headers.contains(&format!(
         "x-agent-session-id: {}",
         record.identity.session_id

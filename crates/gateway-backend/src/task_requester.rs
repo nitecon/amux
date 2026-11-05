@@ -63,7 +63,7 @@ pub fn validate(
 }
 
 pub async fn capabilities() -> Json<Value> {
-    Json(json!({"requester_subscriptions":1}))
+    Json(json!({"requester_subscriptions":1,"task_hierarchy":1}))
 }
 
 #[derive(Deserialize)]

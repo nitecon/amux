@@ -560,6 +560,17 @@ impl Desktop {
                     .width(Length::Fill)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
+        if let Some(parent) = task["parent"]["id"].as_str() {
+            body = body.push(
+                text(format!(
+                    "Parent: {} · {} · {}",
+                    task["parent"]["title"].as_str().unwrap_or("Untitled"),
+                    task["parent"]["project_ident"].as_str().unwrap_or_default(),
+                    parent
+                ))
+                .size(12),
+            );
+        }
         for (label, field) in [
             ("Created", "created_at"),
             ("Updated", "updated_at"),

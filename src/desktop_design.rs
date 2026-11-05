@@ -1434,17 +1434,23 @@ impl Desktop {
         .spacing(10);
         let mut cards = column![text(&panel.status).size(11).color(MUTED),].spacing(8);
         let mut count = 0;
-        for task in task_order(&panel.tasks) {
+        let ordered = task_order(&panel.tasks)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in amux::task_hierarchy::project(&ordered, |task| {
+            matches_task_filter(task, self.design.filter, &self.design.task_search)
+        }) {
+            let task = &entry.task;
             let status = task["status"].as_str().unwrap_or("unknown");
-            if !matches_task_filter(task, self.design.filter, &self.design.task_search) {
-                continue;
-            }
             count += 1;
             let id = task["id"].as_str().unwrap_or("?");
             let owner = self.design_task_owner(task);
             // Work in progress by an agent outside this app stays visible at a glance.
             let elsewhere = self.task_owned_elsewhere(task);
-            let task_id = Uuid::parse_str(id).ok();
+            let task_id = (!entry.stub || task["project_ident"] == panel.project)
+                .then(|| Uuid::parse_str(id).ok())
+                .flatten();
             let selected = panel.detail.selected == task_id && task_id.is_some();
             let manage = |action: fn(Uuid) -> super::desktop_tasks::Action| {
                 task_id.map(|id| Message::ManageTask(action(id)))
@@ -1474,11 +1480,11 @@ impl Desktop {
                     Space::new().width(Length::Fill),
                     status_badge(status),
                 ],
-                text(task["title"].as_str().unwrap_or("Untitled")).size(12),
+                text(task["title"].as_str().unwrap_or("Untitled").to_owned()).size(12),
                 assignee,
                 text(format!(
                     "Project: {}{}",
-                    panel.project,
+                    task["project_ident"].as_str().unwrap_or(&panel.project),
                     task["updated_at"]
                         .as_u64()
                         .map(|ms| format!(
@@ -1493,36 +1499,55 @@ impl Desktop {
             ]
             .spacing(9);
             // Clicking anywhere on the card opens the task; hovering outlines it.
+            let item = if entry.context {
+                item.push(
+                    text("Parent task · context for subtasks")
+                        .size(10)
+                        .color(MUTED),
+                )
+            } else {
+                item
+            };
             cards = cards.push(
-                button(item)
-                    .padding(11)
-                    .width(Length::Fill)
-                    .on_press_maybe(manage(super::desktop_tasks::Action::Open))
-                    .style(move |theme: &Theme, state| {
-                        let card = surface(
-                            if selected {
-                                Color::from_rgb8(13, 39, 51)
-                            } else {
-                                CARD
-                            },
-                            true,
-                        );
-                        let mut border = card.border;
-                        if elsewhere {
-                            border.color = ORANGE;
-                        }
-                        if selected
-                            || matches!(state, button::Status::Hovered | button::Status::Pressed)
-                        {
-                            border.color = CYAN;
-                        }
-                        button::Style {
-                            background: card.background,
-                            text_color: theme.palette().text,
-                            border,
-                            ..Default::default()
-                        }
-                    }),
+                container(
+                    button(item)
+                        .padding(11)
+                        .width(Length::Fill)
+                        .on_press_maybe(manage(super::desktop_tasks::Action::Open))
+                        .style(move |theme: &Theme, state| {
+                            let card = surface(
+                                if selected {
+                                    Color::from_rgb8(13, 39, 51)
+                                } else {
+                                    CARD
+                                },
+                                true,
+                            );
+                            let mut border = card.border;
+                            if elsewhere {
+                                border.color = ORANGE;
+                            }
+                            if selected
+                                || matches!(
+                                    state,
+                                    button::Status::Hovered | button::Status::Pressed
+                                )
+                            {
+                                border.color = CYAN;
+                            }
+                            button::Style {
+                                background: card.background,
+                                text_color: theme.palette().text,
+                                border,
+                                ..Default::default()
+                            }
+                        }),
+                )
+                .padding(iced::Padding {
+                    left: (entry.depth.min(8) * 16) as f32,
+                    ..Default::default()
+                })
+                .width(Length::Fill),
             );
         }
         if count == 0 {

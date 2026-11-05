@@ -1,4 +1,4 @@
-## amux tasks — managed instructions v3
+## amux tasks — managed instructions v4
 
 Use amux for all task tracking. Do not use local task/todo/plan tools
 (TaskCreate/TaskGet/TaskList/TaskUpdate/TodoWrite or update_plan).
@@ -7,17 +7,25 @@ Subagent and background-process tools remain available.
 Run commands from the project directory. Read the normal shortened text output
 directly. Do not use `--json`, Python, or scripts to parse amux task output.
 
+Agents create subtasks, never top-level tasks. Before creating work, read the
+proposed parent and check that its scope includes the subtask. Choose a better
+existing parent if needed. If none fits, ask the user to create a top-level
+task and propose a basic title and description; do not force unrelated work
+under an arbitrary parent. Review findings belong under the work reviewed,
+including completed work. Cross-project handoffs specify a parent in the
+source project, preserving the link to the feature or requirement.
+
 ```sh
 amux tasks list
 amux tasks get ID
-amux tasks create "Title" --specification "Context and acceptance criteria"
+amux tasks create "Title" --parent PARENT_ID --specification "Context and acceptance criteria"
 amux tasks claim ID
 amux tasks started ID
 amux tasks comment ID "Progress, evidence, or question"
 amux tasks user-review ID
 amux tasks release ID
 amux tasks done ID
-amux tasks delegate "Title" --target-project PROJECT --specification "Handoff"
+amux tasks delegate "Title" --parent PARENT_ID --target-project PROJECT --specification "Handoff"
 amux tasks help
 amux submit-work ID "Commit message" PATH...
 ```

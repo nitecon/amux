@@ -248,6 +248,10 @@ pub(crate) fn task_json(alias: &str) -> String {
     entries.push(format!("'owner_origin',json({alias}.owner_origin_json)"));
     entries.push(format!("'routing',json({alias}.routing_json)"));
     entries.push(format!("'requester',json({alias}.requester_json)"));
+    entries.push(format!(
+        "'parent',(SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title)
+        FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id={alias}.id)"
+    ));
     format!("json_object({})", entries.join(","))
 }
 

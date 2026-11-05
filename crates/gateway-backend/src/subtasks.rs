@@ -7,6 +7,54 @@ use axum::{
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 
+/// Parent lookup is scoped to the submitting project; agents cannot create roots.
+pub fn parent_for_creation(
+    conn: &Connection,
+    project: &str,
+    parent_id: Option<&str>,
+    agent: bool,
+) -> Result<Option<db::Task>, AppError> {
+    let Some(id) = parent_id else {
+        return if agent {
+            Err(AppError(StatusCode::BAD_REQUEST,
+                "agent task creation requires parent_task_id; read a fitting parent first. If none fits, ask the user to create a top-level task and propose its title and description".into()))
+        } else {
+            Ok(None)
+        };
+    };
+    db::get_task_detail_recent(conn, project, id, Some(0))?
+        .map(|detail| Some(detail.task))
+        .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "parent task not found in this project; choose a fitting parent or ask the user to create a top-level task".into()))
+}
+
+/// Called within the same mutation as the child's INSERT, before publication.
+pub fn attach(conn: &Connection, parent: &db::Task, child: &mut db::Task) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO task_subtasks(parent_id,child_id) VALUES (?1,?2)",
+        params![parent.id, child.id],
+    )?;
+    child.parent = Some(db::TaskParent {
+        id: parent.id.clone(),
+        project_ident: parent.project_ident.clone(),
+        title: parent.title.clone(),
+    });
+    // The INSERT trigger runs before the link exists. Complete its snapshot
+    // in this transaction, before any consumer can observe the created event.
+    conn.execute(
+        "UPDATE task_events SET task_json=json_set(task_json,'$.parent',json(?1))
+         WHERE id=(SELECT id FROM task_events WHERE kind='task_created'
+                   AND json_extract(task_json,'$.id')=?2 ORDER BY id DESC LIMIT 1)",
+        params![serde_json::to_string(&child.parent)?, child.id],
+    )?;
+    conn.execute(
+        "UPDATE router_task_outbox SET task_json=json_set(task_json,'$.parent',json(?1))
+         WHERE id=(SELECT id FROM router_task_outbox WHERE kind='created'
+                   AND json_extract(task_json,'$.id')=?2 ORDER BY id DESC LIMIT 1)",
+        params![serde_json::to_string(&child.parent)?, child.id],
+    )?;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSubtask {
@@ -52,14 +100,8 @@ pub async fn create(
 ) -> Result<Json<db::Task>, AppError> {
     let origin = crate::routes::task_creation_origin(&headers)?;
     let conn = state.db.lock().unwrap();
-    let parent = db::get_task_detail(&conn, &project, &id)?
+    let parent = db::get_task_detail_recent(&conn, &project, &id, Some(0))?
         .ok_or_else(|| AppError(StatusCode::NOT_FOUND, "parent task not found".into()))?;
-    if parent.task.status == "done" {
-        return Err(AppError(
-            StatusCode::CONFLICT,
-            "reopen the parent before adding subtasks".into(),
-        ));
-    }
     if request.title.trim().is_empty() {
         return Err(AppError(
             StatusCode::BAD_REQUEST,
@@ -77,7 +119,7 @@ pub async fn create(
     }
     let reporter = crate::routes::resolve_identity(None, &headers);
     let task = crate::task_events::mutation(&conn, origin.as_ref(), |tx| {
-        let task = db::insert_task_with_goal(
+        let mut task = db::insert_task_with_goal(
             tx,
             &target.ident,
             request.title.trim(),
@@ -92,10 +134,7 @@ pub async fn create(
                 None
             },
         )?;
-        tx.execute(
-            "INSERT INTO task_subtasks(parent_id,child_id) VALUES (?1,?2)",
-            params![id, task.id],
-        )?;
+        attach(tx, &parent.task, &mut task)?;
         Ok(task)
     })?;
     Ok(Json(task))

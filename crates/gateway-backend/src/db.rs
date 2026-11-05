@@ -7720,8 +7720,16 @@ pub const TASK_RECLAIM_MS: i64 = 15 * 60 * 1000; // 15 minutes
 /// How long a `done` task remains in the default list view before it falls off.
 pub const TASK_DONE_FALLOFF_MS: i64 = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TaskParent {
+    pub id: String,
+    pub project_ident: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Task {
+    pub parent: Option<TaskParent>,
     pub routing: crate::task_targets::Routing,
     pub requester: Option<crate::task_dispatch::Target>,
     pub id: String,
@@ -7780,6 +7788,7 @@ pub struct TaskDelegation {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskSummary {
+    pub parent: Option<TaskParent>,
     pub routing: crate::task_targets::Routing,
     pub requester: Option<crate::task_dispatch::Target>,
     pub id: String,
@@ -8302,6 +8311,7 @@ pub fn insert_pattern_comment(
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     Ok(Task {
+        parent: read_task_parent(row, 22)?,
         id: row.get(0)?,
         project_ident: row.get(1)?,
         title: row.get(2)?,
@@ -8332,7 +8342,23 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
 const TASK_SELECT_COLS: &str =
     "id, project_ident, title, description, details, status, rank, labels, \
      hostname, owner_agent_id, reporter, created_at, updated_at, started_at, done_at, \
-     kind, delegated_to_project_ident, delegated_to_task_id, owner_origin_json, goal, routing_json, requester_json";
+     kind, delegated_to_project_ident, delegated_to_task_id, owner_origin_json, goal, routing_json, requester_json, \
+     (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) \
+      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id)";
+
+fn read_task_parent(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<TaskParent>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
+}
 
 /// Reclaim assigned TODO and ordinary in-progress tasks after [`TASK_RECLAIM_MS`]
 /// without comments or task actions (`updated_at` activity). Reclaimed tasks are
@@ -8650,6 +8676,7 @@ fn insert_task_record(
     )?;
 
     Ok(Task {
+        parent: None,
         requester: requester.cloned(),
         routing,
         id,
@@ -8736,7 +8763,9 @@ pub fn list_tasks(
                     t.owner_agent_id, t.hostname, t.reporter,
                     (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id),
                     t.created_at, t.updated_at, t.kind,
-                    t.delegated_to_project_ident, t.delegated_to_task_id, t.goal, t.routing_json, t.requester_json
+                    t.delegated_to_project_ident, t.delegated_to_task_id, t.goal, t.routing_json, t.requester_json,
+                    (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title)
+                     FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id)
              FROM tasks t
              WHERE t.project_ident = ?1
                AND t.status IN ({in_clause})
@@ -8749,7 +8778,9 @@ pub fn list_tasks(
                     t.owner_agent_id, t.hostname, t.reporter,
                     (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id),
                     t.created_at, t.updated_at, t.kind,
-                    t.delegated_to_project_ident, t.delegated_to_task_id, t.goal, t.routing_json, t.requester_json
+                    t.delegated_to_project_ident, t.delegated_to_task_id, t.goal, t.routing_json, t.requester_json,
+                    (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title)
+                     FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id)
              FROM tasks t
              WHERE t.project_ident = ?1
                AND t.status IN ({in_clause})
@@ -8772,6 +8803,7 @@ pub fn list_tasks(
     let rows = stmt
         .query_map(params_vec.as_slice(), |r| {
             Ok(TaskSummary {
+                parent: read_task_parent(r, 17)?,
                 id: r.get(0)?,
                 title: r.get(1)?,
                 status: r.get(2)?,

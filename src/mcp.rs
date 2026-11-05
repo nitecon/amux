@@ -128,11 +128,17 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "task_create",
-        description: "Create a task in this project.",
+        description: "Create a subtask under a fitting existing parent. Read the parent first and check scope. Choose another fitting parent if needed; if none fits, ask the user to create a top-level task and propose its title and description.",
         bin: Bin::Amux,
         command: &["tasks", "create"],
         args: &[
             pos("title", "Task title"),
+            Arg {
+                name: "parent",
+                description: "Existing parent task UUID whose scope includes this work",
+                kind: Kind::Option("--parent"),
+                required: true,
+            },
             opt(
                 "specification",
                 "--specification",
@@ -675,9 +681,21 @@ mod tests {
         assert!(argv(tool, &json!({})).is_err());
         let tool = TOOLS.iter().find(|t| t.name == "task_create").unwrap();
         assert_eq!(
-            argv(tool, &json!({"title": "T", "specification": "- item"})).unwrap(),
-            ["tasks", "create", "--specification=- item", "--", "T"]
+            argv(
+                tool,
+                &json!({"title": "T", "parent":"P", "specification": "- item"})
+            )
+            .unwrap(),
+            [
+                "tasks",
+                "create",
+                "--parent=P",
+                "--specification=- item",
+                "--",
+                "T"
+            ]
         );
+        assert!(argv(tool, &json!({"title":"T"})).is_err());
         let tool = TOOLS.iter().find(|t| t.name == "memory_get").unwrap();
         assert_eq!(
             argv(tool, &json!({"ids": "ab12 cd34"})).unwrap(),

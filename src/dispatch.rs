@@ -583,6 +583,7 @@ impl Dispatcher {
         &self,
         executor: &Executor,
         target_project: &str,
+        parent: Uuid,
         destination: Destination,
         title: &str,
         specification: &str,
@@ -608,6 +609,7 @@ impl Dispatcher {
         }
         let request_id = Uuid::new_v4();
         let mut body = json!({
+            "parent_task_id": parent,
             "request_id": request_id.to_string(),
             "generation": executor.generation().to_string(),
             "target_project_ident": target_project,
@@ -1004,6 +1006,9 @@ pub enum Command {
     /// Delegate one task to an exact registered target.
     Delegate {
         title: String,
+        /// Existing parent task in the source project. Read and check its scope first.
+        #[arg(long)]
+        parent: Uuid,
         /// Target JSON: {"origin":{session_id,instance_id,provider,os},"generation"}.
         #[arg(
             long,
@@ -1064,6 +1069,7 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
         Command::Requests => Ok(serde_json::to_value(dispatcher.uncertain()?)?),
         Command::Delegate {
             title,
+            parent,
             target,
             machine_target,
             target_project,
@@ -1076,6 +1082,7 @@ pub async fn run(dispatcher: &Dispatcher, executor: &Executor, command: Command)
                 .delegate(
                     executor,
                     &project,
+                    parent,
                     match (target, machine_target) {
                         (Some(target), None) => Destination::Session(parse_target(&target)?),
                         (None, Some(id)) => Destination::Machine(id),

@@ -342,6 +342,8 @@ pub struct Dispatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Delegate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
     pub request_id: String,
     pub generation: String,
     pub target_project_ident: String,
@@ -505,7 +507,13 @@ fn delegate(conn: &Connection, source: &str, actor: &AgentOrigin, req: &Delegate
             {
                 return Err(Conflict("title/specification invalid or too large").into());
             }
-            let task = db::insert_unassigned_dispatch_task(
+            let parent_id = req.parent_task_id.as_deref().ok_or(Conflict(
+                "agent dispatch creation requires parent_task_id; choose a fitting parent or ask the user to create a top-level task with a proposed title and description"
+            ))?;
+            let parent = db::get_task_detail_recent(conn, source, parent_id, Some(0))?
+                .ok_or(Conflict("parent task not found in source project"))?
+                .task;
+            let mut task = db::insert_unassigned_dispatch_task(
                 conn,
                 &target_project,
                 req.title.trim(),
@@ -515,6 +523,7 @@ fn delegate(conn: &Connection, source: &str, actor: &AgentOrigin, req: &Delegate
                 None,
                 &actor.session_id,
             )?;
+            crate::subtasks::attach(conn, &parent, &mut task)?;
             let dispatch = Dispatch {
                 task_id: task.id,
                 project_ident: target_project,
@@ -1039,6 +1048,53 @@ mod tests {
             ))
             .with_state(state.clone())
     }
+    // Existing routing/ownership fixtures now submit children of user work.
+    // The historical parent is outside queue windows and event assertions.
+    fn with_fixture_parent(state: &AppState, method: &str, path: &str, mut body: Value) -> Value {
+        let creation = path.ends_with("/tasks")
+            || path.ends_with("/tasks/delegate")
+            || path.ends_with("/task-dispatches");
+        if method != "POST" || !creation || body.get("parent_task_id").is_some() {
+            return body;
+        }
+        let project = path.split('/').nth(3).unwrap();
+        let conn = state.db.lock().unwrap();
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM tasks WHERE project_ident=?1 AND title='Fixture parent'",
+                [project],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        let parent = existing.unwrap_or_else(|| {
+            let task = db::insert_task(
+                &conn,
+                project,
+                "Fixture parent",
+                None,
+                None,
+                &[],
+                None,
+                "user",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE tasks SET status='done',done_at=0,updated_at=0 WHERE id=?1",
+                [&task.id],
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM task_events WHERE json_extract(task_json,'$.id')=?1",
+                [&task.id],
+            )
+            .unwrap();
+            task.id
+        });
+        body["parent_task_id"] = json!(parent);
+        body
+    }
+
     async fn http(
         state: &AppState,
         agent: &Agent,
@@ -1046,6 +1102,7 @@ mod tests {
         path: &str,
         body: Value,
     ) -> (StatusCode, Value) {
+        let body = with_fixture_parent(state, method, path, body);
         let mut request = Request::builder()
             .method(method)
             .uri(path)
@@ -1640,6 +1697,11 @@ mod tests {
         path: &str,
         body: Value,
     ) -> (StatusCode, Value) {
+        let body = if headers.contains_key("x-agent-session-id") {
+            with_fixture_parent(state, method, path, body)
+        } else {
+            body
+        };
         let mut request = Request::builder()
             .method(method)
             .uri(path)
@@ -1679,6 +1741,109 @@ mod tests {
                 [],
             )
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn all_agent_creation_routes_require_parent_scope_and_preserve_handoff_lineage() {
+        let state = fixture(db::open(":memory:").unwrap());
+        let peers = agents(&state).await;
+        let agent = &peers[0];
+        let (status, root) = desktop_http(
+            &state,
+            human_headers(),
+            "POST",
+            "/v1/projects/example/tasks",
+            json!({"title":"User feature"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(root["parent"].is_null());
+        let (_, foreign) = desktop_http(
+            &state,
+            human_headers(),
+            "POST",
+            "/v1/projects/destination/tasks",
+            json!({"title":"Other feature"}),
+        )
+        .await;
+        for (path, body, expected) in [
+            (
+                "/v1/projects/example/tasks",
+                json!({"title":"Orphan", "parent_task_id":null}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/v1/projects/example/tasks/delegate",
+                json!({"title":"Orphan handoff", "target_project_ident":"destination", "parent_task_id":null}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/v1/projects/example/tasks",
+                json!({"title":"Wrong project", "parent_task_id":foreign["id"]}),
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            assert_eq!(
+                desktop_http(&state, ordinary_headers(agent), "POST", path, body)
+                    .await
+                    .0,
+                expected
+            );
+        }
+        let mut dispatch = agent.delegation(&peers[1], "example");
+        dispatch["parent_task_id"] = Value::Null;
+        assert_eq!(
+            http(
+                &state,
+                agent,
+                "POST",
+                "/v1/projects/example/task-dispatches",
+                dispatch.clone()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let (status, delegated) = desktop_http(&state, ordinary_headers(agent), "POST", "/v1/projects/example/tasks/delegate",
+            json!({"title":"Related handoff", "target_project_ident":"destination", "parent_task_id":root["id"]})).await;
+        assert_eq!(status, StatusCode::OK, "{delegated}");
+        assert_eq!(delegated["source_task"]["parent"]["id"], root["id"]);
+        assert_eq!(
+            delegated["target_task"]["parent"]["id"],
+            delegated["source_task"]["id"]
+        );
+        dispatch["parent_task_id"] = root["id"].clone();
+        let dispatched = ok(
+            &state,
+            agent,
+            "POST",
+            "/v1/projects/example/task-dispatches",
+            dispatch,
+        )
+        .await;
+        assert_eq!(dispatched["task"]["parent"]["id"], root["id"]);
+        let conn = state.db.lock().unwrap();
+        for task in [
+            &delegated["source_task"],
+            &delegated["target_task"],
+            &dispatched["task"],
+        ] {
+            let event = task_events::list(&conn, &Default::default())
+                .unwrap()
+                .into_iter()
+                .find(|event| event.kind == "task_created" && event.task["id"] == task["id"])
+                .unwrap();
+            assert_eq!(event.task["parent"], task["parent"]);
+        }
     }
 
     #[tokio::test]
@@ -1889,7 +2054,11 @@ mod tests {
                 .db
                 .lock()
                 .unwrap()
-                .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE title!='Fixture parent'",
+                    [],
+                    |r| r.get(0),
+                )
                 .unwrap();
             let (code, body) = desktop_http(
                 &state,
@@ -1906,7 +2075,11 @@ mod tests {
                     .db
                     .lock()
                     .unwrap()
-                    .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+                    .query_row(
+                        "SELECT COUNT(*) FROM tasks WHERE title!='Fixture parent'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
                     .unwrap()
             );
         }
@@ -1914,7 +2087,7 @@ mod tests {
         let counts = || {
             let conn = state.db.lock().unwrap();
             conn.query_row(
-                "SELECT (SELECT COUNT(*) FROM tasks),(SELECT COUNT(*) FROM task_events)",
+                "SELECT (SELECT COUNT(*) FROM tasks WHERE title!='Fixture parent'),(SELECT COUNT(*) FROM task_events)",
                 [],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
             )
@@ -2192,8 +2365,12 @@ mod tests {
         );
         let conn = state.db.lock().unwrap();
         assert_eq!(
-            conn.query_row("SELECT count(*) FROM tasks", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
+            conn.query_row(
+                "SELECT count(*) FROM tasks WHERE title!='Fixture parent'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
             3
         );
         assert_eq!(
@@ -3003,7 +3180,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .query_row(
-                    "SELECT count(*) FROM tasks WHERE updated_at=?1",
+                    "SELECT count(*) FROM tasks WHERE title!='Fixture parent' AND updated_at=?1",
                     [stale],
                     |r| r.get::<_, i64>(0)
                 )
@@ -3501,8 +3678,12 @@ mod tests {
         assert_eq!(claimed.len(), 3);
         let conn = state.db.lock().unwrap();
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
+            conn.query_row(
+                "SELECT COUNT(*) FROM tasks WHERE title!='Fixture parent'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
             3
         );
         assert_eq!(
@@ -3725,7 +3906,11 @@ mod tests {
             .db
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE title!='Fixture parent'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         state
             .db
@@ -3753,7 +3938,11 @@ mod tests {
                 .db
                 .lock()
                 .unwrap()
-                .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE title!='Fixture parent'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
                 .unwrap(),
             before
         );
@@ -3868,7 +4057,7 @@ mod tests {
                     conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
                         .get::<_, i64>(0))
                         .unwrap(),
-                    0
+                    i64::from(table == "tasks")
                 );
             }
             assert_eq!(task_events::current_origin(&conn).unwrap(), None);

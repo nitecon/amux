@@ -282,6 +282,7 @@ fn a_lost_delegation_reply_stays_durable_and_only_its_execution_replays_it() {
     let lost = runtime.block_on(dispatcher.delegate(
         &requester,
         "demo",
+        Uuid::from_u128(44),
         Destination::Session(destination.clone()),
         "Implement it",
         "Spec",
@@ -571,6 +572,7 @@ fn invalid_input_persists_and_sends_nothing() {
             .block_on(dispatcher.delegate(
                 &agent,
                 "demo",
+                Uuid::from_u128(44),
                 Destination::Session(me.clone()),
                 &"t".repeat(513),
                 "",
@@ -584,6 +586,7 @@ fn invalid_input_persists_and_sends_nothing() {
             .block_on(dispatcher.delegate(
                 &agent,
                 "../x",
+                Uuid::from_u128(44),
                 Destination::Session(me.clone()),
                 "title",
                 "",
@@ -597,6 +600,7 @@ fn invalid_input_persists_and_sends_nothing() {
             .block_on(dispatcher.delegate(
                 &agent,
                 "demo",
+                Uuid::from_u128(44),
                 Destination::Session(json!({"origin": {}})),
                 "title",
                 "",
@@ -663,6 +667,7 @@ fn corrupt_oversized_or_locked_journals_are_preserved_and_refused() {
         .block_on(dispatcher.delegate(
             &agent,
             "demo",
+            Uuid::from_u128(44),
             Destination::Session(me),
             "title",
             "",
@@ -698,6 +703,7 @@ fn a_request_that_cannot_be_persisted_is_never_sent() {
         .block_on(dispatcher.delegate(
             &agent,
             "demo",
+            Uuid::from_u128(44),
             Destination::Session(me),
             "title",
             "",
@@ -792,6 +798,7 @@ fn work_queues_for_an_offline_machine_without_changing_session_requests() {
         dispatcher.delegate(
             &requester,
             "demo",
+            Uuid::from_u128(44),
             Destination::Machine(windows),
             "Run on Windows",
             "Spec",
@@ -817,6 +824,7 @@ fn work_queues_for_an_offline_machine_without_changing_session_requests() {
         .block_on(dispatcher.delegate(
             &requester,
             "demo",
+            Uuid::from_u128(44),
             Destination::Session(me.clone()),
             "Here",
             "",
@@ -1091,6 +1099,7 @@ fn independent_clients_share_the_journal_while_one_call_is_stalled() {
         clients[i].delegate(
             &agents[i],
             "demo",
+            Uuid::from_u128(44),
             Destination::Session(destination.clone()),
             "Parallel work",
             "",
@@ -1166,6 +1175,7 @@ fn unclaimed_acknowledgments_carry_no_claim_execution_outcome_or_owner() {
             0 => runtime.block_on(dispatcher.delegate(
                 &agent,
                 "demo",
+                Uuid::from_u128(44),
                 Destination::Machine(instance),
                 "Queued",
                 "Spec",
@@ -1276,6 +1286,7 @@ fn a_full_journal_drops_only_its_oldest_settled_request() {
     let lost = runtime.block_on(dispatcher.delegate(
         &agent,
         "demo",
+        Uuid::from_u128(44),
         Destination::Session(me),
         "new work",
         "",
@@ -1343,6 +1354,7 @@ fn a_journal_full_of_uncertain_requests_refuses_before_sending() {
         .block_on(dispatcher.delegate(
             &agent,
             "demo",
+            Uuid::from_u128(44),
             Destination::Session(me),
             "t",
             "",
@@ -1380,6 +1392,7 @@ fn the_byte_bound_also_drops_only_settled_requests() {
             .block_on(dispatcher.delegate(
                 &agent,
                 "demo",
+                Uuid::from_u128(44),
                 Destination::Session(me),
                 "big",
                 &specification,

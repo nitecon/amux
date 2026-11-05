@@ -30,10 +30,12 @@ fn list(tasks: &[Value]) -> String {
         return "No open tasks.\n".into();
     }
     let mut out = String::new();
-    for task in tasks {
+    for row in crate::task_hierarchy::project(tasks, |_| true) {
+        let task = &row.task;
         let _ = write!(
             out,
-            "- [{}] {} — {}",
+            "{}- [{}] {} — {}",
+            "  ".repeat(row.depth.min(16)),
             text(&task["status"]),
             text(&task["id"]),
             text(&task["title"])
@@ -61,6 +63,17 @@ fn task(task: &Value) -> String {
     };
     field("ID", Some(text(&task["id"])));
     field("Status", Some(text(&task["status"])));
+    if let Some(id) = task["parent"]["id"].as_str() {
+        field(
+            "Parent",
+            Some(format!(
+                "{} · {} · {}",
+                id,
+                text(&task["parent"]["project_ident"]),
+                text(&task["parent"]["title"])
+            )),
+        );
+    }
     field("Owner", owner(task));
     field("Reporter", Some(text(&task["reporter"])));
     field("Routing", Some(text(&task["routing"]["mode"])));

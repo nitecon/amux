@@ -16,6 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+const PARENT: &str = "44444444-4444-4444-8444-444444444444";
 const TASK: &str = "01a164c4-5378-7360-ac9a-66b176e315fb";
 const LIMIT: usize = 4 * 1024 * 1024;
 
@@ -296,8 +297,9 @@ fn cli_handoff_uses_callers_subscription_and_a_different_exact_executor() {
     ]});
     let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
     let routing = json!({"mode":"session","target":executor});
-    let accepted = json!({"id":TASK,"title":"Review","project_ident":"demo","status":"todo","requester":requester,"routing":routing,"owner_origin":executor.origin});
+    let accepted = json!({"parent":{"id":PARENT,"project_ident":"demo"},"id":TASK,"title":"Review","project_ident":"demo","status":"todo","requester":requester,"routing":routing,"owner_origin":executor.origin});
     let (url, mock) = server(vec![
+        reply(200, &json!({"task_hierarchy":1})),
         reply(200, &projects),
         reply(200, &directory),
         reply(200, &projects),
@@ -326,6 +328,8 @@ fn cli_handoff_uses_callers_subscription_and_a_different_exact_executor() {
             &url,
             "create",
             "Review",
+            "--parent",
+            PARENT,
             "--to-agent",
             &executor.origin.session_id.to_string(),
         ])
@@ -337,15 +341,15 @@ fn cli_handoff_uses_callers_subscription_and_a_different_exact_executor() {
         String::from_utf8_lossy(&output.stderr)
     );
     let requests = mock.join().unwrap();
-    assert_eq!(requests.len(), 6);
-    assert_eq!(requests[5].body["requester"], json!(requester));
-    assert_eq!(requests[5].body["routing"], routing);
+    assert_eq!(requests.len(), 7);
+    assert_eq!(requests[6].body["requester"], json!(requester));
+    assert_eq!(requests[6].body["routing"], routing);
     assert!(
-        requests[5]
+        requests[6]
             .head
             .contains(&format!("x-agent-session-id: {}", actor.session_id))
     );
-    assert!(!requests[5].head.contains(&format!(
+    assert!(!requests[6].head.contains(&format!(
         "x-agent-session-id: {}",
         executor.origin.session_id
     )));
@@ -379,10 +383,11 @@ fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
         "windows"
     };
     let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
-    let queued = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["autoreview-finding",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null});
+    let queued = json!({"parent":{"id":PARENT,"project_ident":"demo"},"id":TASK,"project_ident":"demo","status":"todo","labels":["autoreview-finding",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null});
     let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","labels":["keep"],"owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
     let released = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["keep",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null,"routing":{"mode":"auto"}});
     let (url, server) = server(vec![
+        reply(200, &json!({"task_hierarchy":1})),
         reply(200, &projects),
         reply(200, &queued),
         reply(200, &projects),
@@ -417,6 +422,8 @@ fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
         vec![
             "create",
             "Cross platform",
+            "--parent",
+            PARENT,
             "--os",
             other,
             "--review-finding",
@@ -441,12 +448,12 @@ fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
     let requests = server.join().unwrap();
     assert_eq!(
         requests.len(),
-        6,
+        7,
         "wrong-OS claim and invalid flags never mutate or retry"
     );
-    assert_eq!(requests[1].body["labels"], queued["labels"]);
-    assert_eq!(requests[1].body["routing"], json!({"mode":"unassigned"}));
-    assert_eq!(requests[4].body["labels"], released["labels"]);
+    assert_eq!(requests[2].body["labels"], queued["labels"]);
+    assert_eq!(requests[2].body["routing"], json!({"mode":"unassigned"}));
+    assert_eq!(requests[5].body["labels"], released["labels"]);
 }
 
 #[test]

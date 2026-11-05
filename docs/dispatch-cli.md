@@ -42,10 +42,10 @@ before any secret is created or any request is sent.
 ```sh
 amux dispatch register                      # register or heartbeat (lease: 120 s)
 amux dispatch sessions                      # live eligible targets in this project
-amux dispatch delegate "Title" --target '<target JSON>' \
+amux dispatch delegate "Title" --parent <parent-task-id> --target '<target JSON>' \
     [--target-project other] [--specification text] \
     [--require-os linux] [--require-provider codex]
-amux dispatch delegate "Title" --machine-target <machine-uuid> \
+amux dispatch delegate "Title" --parent <parent-task-id> --machine-target <machine-uuid> \
     [--require-os windows] [--require-provider codex]
 amux dispatch act <task> receive
 amux dispatch act <task> claim
@@ -60,6 +60,8 @@ amux dispatch requests                      # requests with unknown outcomes
 amux dispatch replay <request-id>           # resend one, unchanged
 ```
 
+The parent is an existing task in the source project whose scope includes this work.
+If none fits, ask the user to create a top-level task and propose its title and description.
 Targets are the JSON objects printed by `sessions`. Registration must be
 heartbeated before the 120-second lease expires; amux does not run a background
 heartbeat. Claiming never reports a start: `start` is a separate, explicit
