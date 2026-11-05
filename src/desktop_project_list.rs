@@ -641,6 +641,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let fixture = tempfile::tempdir_in(root).unwrap();
         app.snapshot_path = Some(fixture.path().join("layout.json"));
+        for (index, workspace) in app.workspaces.iter_mut().enumerate() {
+            workspace.directory = fixture.path().join(format!("workspace-{index}"));
+        }
         app.design.projects = vec![project("X", 0)];
         let keys = app.project_keys(ProjectRow::Remote(&app.design.projects[0]));
         drop(app.design_message(Action::ProjectFavorite(keys)));
