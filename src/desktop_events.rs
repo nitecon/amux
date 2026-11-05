@@ -53,6 +53,45 @@ pub(super) struct Delivery {
     pub(super) token: Uuid,
     pub(super) event: Value,
     pub(super) candidate: Candidate,
+    pub(super) stage: DeliveryStage,
+}
+
+pub(super) const CLEAR_WAIT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum DeliveryStage {
+    Verifying,
+    Clearing {
+        started: Instant,
+        input_revision: u64,
+    },
+    ReadyAfterClear {
+        input_revision: u64,
+    },
+    VerifyingAfterClear {
+        input_revision: u64,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum DeliveryInput<'a> {
+    Clear,
+    Notification(&'a str),
+}
+
+fn new_task_context(event: &Value, idle: Option<Duration>, has_draft: bool) -> bool {
+    let payload = &event["payload"];
+    payload["new_task"] == true
+        && payload["event"]["kind"] == "task_created"
+        && payload["event"]["comment"].is_null()
+        && payload["event"]["task"]["id"]
+            .as_str()
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        && !payload["event"]["task"]["labels"]
+            .as_array()
+            .is_some_and(|labels| labels.iter().any(|label| label == "task-review"))
+        && idle.is_some_and(|elapsed| elapsed >= amux::session::IDLE_AFTER)
+        && !has_draft
 }
 
 impl Desktop {
@@ -116,16 +155,19 @@ impl Desktop {
         let old = std::mem::take(&mut self.delegation.events);
         // Reconnecting this logical client keeps notices already acknowledged
         // to the server. Bridge::stop clears them when its connection changes.
-        let pending = old
-            .delivering
-            .map(|delivery| delivery.event)
-            .into_iter()
-            .chain(old.pending)
-            .collect();
+        // A reconnect must not repeat /clear or lose its five-second wait.
+        let (delivering, interrupted) = match old.delivering {
+            Some(delivery) if matches!(delivery.stage, DeliveryStage::Verifying) => {
+                (None, Some(delivery.event))
+            }
+            delivering => (delivering, None),
+        };
+        let pending = interrupted.into_iter().chain(old.pending).collect();
         self.delegation.events = State {
             status: old.status,
             retry_at: Some(Instant::now()),
             pending,
+            delivering,
             delivered: old.delivered,
             ..State::default()
         };
@@ -506,10 +548,19 @@ impl Desktop {
     }
 
     pub(super) fn events_deliver(&mut self) -> Task<Message> {
-        if self.delegation.events.delivering.is_some()
-            || self.preferences.open
-            || self.workspace_dialog.open
-        {
+        if self.preferences.open || self.workspace_dialog.open {
+            return Task::none();
+        }
+        if let Some(delivery) = &mut self.delegation.events.delivering {
+            if let DeliveryStage::ReadyAfterClear { input_revision } = delivery.stage
+                && self.delegation.events.connected
+            {
+                delivery.stage = DeliveryStage::VerifyingAfterClear { input_revision };
+                delivery.token = Uuid::new_v4();
+                let token = delivery.token;
+                let candidate = delivery.candidate.clone();
+                return self.events_verify(token, candidate);
+            }
             return Task::none();
         }
         let Some(event) = self.delegation.events.pending.pop_front() else {
@@ -526,20 +577,25 @@ impl Desktop {
             self.events_result(&event, "skipped", "agent is not running here");
             return Task::none();
         };
-        if !self.events_ready(&event, &candidate) {
+        if !self.events_ready(&event, &candidate, false) {
             return Task::none();
         }
-        let epoch = self.delegation.epoch;
         let c = candidate.clone();
         let token = Uuid::new_v4();
         self.delegation.events.delivering = Some(Delivery {
             token,
             event,
             candidate,
+            stage: DeliveryStage::Verifying,
         });
+        self.events_verify(token, c)
+    }
+
+    fn events_verify(&self, token: Uuid, candidate: Candidate) -> Task<Message> {
+        let epoch = self.delegation.epoch;
         Task::perform(
             async move {
-                let verified = tokio::task::spawn_blocking(move || verify(&c))
+                let verified = tokio::task::spawn_blocking(move || verify(&candidate))
                     .await
                     .unwrap_or(false);
                 Event::Verified { token, verified }
@@ -550,7 +606,7 @@ impl Desktop {
 
     /// Check changing delivery conditions both before verification and just
     /// before writing to the terminal. Verification yields to other UI events.
-    fn events_ready(&mut self, event: &Value, candidate: &Candidate) -> bool {
+    fn events_ready(&mut self, event: &Value, candidate: &Candidate, after_clear: bool) -> bool {
         let payload = &event["payload"];
         let receiver = &event["receiver"];
         if receiver["session_id"].as_str() != Some(candidate.target.session.to_string().as_str())
@@ -582,13 +638,14 @@ impl Desktop {
             let elapsed = tab.terminal.as_ref().and_then(Terminal::activity_elapsed);
             let output_at = elapsed.map(|e| now - e.as_millis() as i64);
             !tab.delegation.input.is_empty()
-                || match (offer, output_at, reported) {
-                    // The server judged this agent idle from the output time we
-                    // reported; it is busy only if the terminal wrote since then.
-                    (true, Some(output_at), Some(reported)) => output_at > reported + 1_000,
-                    (true, None, _) => false,
-                    _ => amux::session::output_active(elapsed),
-                }
+                || (!after_clear
+                    && match (offer, output_at, reported) {
+                        // The server judged this agent idle from the output time we
+                        // reported; it is busy only if the terminal wrote since then.
+                        (true, Some(output_at), Some(reported)) => output_at > reported + 1_000,
+                        (true, None, _) => false,
+                        _ => amux::session::output_active(elapsed),
+                    })
         });
         if payload["require_idle"] == true && busy {
             // A work offer goes back so the server can offer it elsewhere;
@@ -614,8 +671,36 @@ impl Desktop {
         {
             return Task::none();
         }
+        if self
+            .delegation
+            .events
+            .delivering
+            .as_ref()
+            .is_some_and(|delivery| {
+                matches!(
+                    delivery.stage,
+                    DeliveryStage::Clearing { .. } | DeliveryStage::ReadyAfterClear { .. }
+                )
+            })
+        {
+            return Task::none();
+        }
+        if self.preferences.open || self.workspace_dialog.open || !self.delegation.events.connected
+        {
+            if let Some(delivery) = &mut self.delegation.events.delivering
+                && let DeliveryStage::VerifyingAfterClear { input_revision } = delivery.stage
+            {
+                delivery.stage = DeliveryStage::ReadyAfterClear { input_revision };
+            } else if let Some(delivery) = self.delegation.events.delivering.take() {
+                self.delegation.events.pending.push_front(delivery.event);
+            }
+            return Task::none();
+        }
         let Some(Delivery {
-            event, candidate, ..
+            event,
+            candidate,
+            stage,
+            ..
         }) = self.delegation.events.delivering.take()
         else {
             return Task::none();
@@ -636,27 +721,122 @@ impl Desktop {
         };
         // Native verification belongs to the captured attachment; logical
         // ownership/project may have changed while that verification yielded.
-        if !self.events_ready(&event, &current) {
+        let input_revision = match stage {
+            DeliveryStage::VerifyingAfterClear { input_revision } => Some(input_revision),
+            _ => None,
+        };
+        if input_revision.is_some_and(|revision| {
+            tab(self, current.target.terminal).is_none_or(|tab| {
+                tab.delegation.input_revision != revision || !tab.delegation.input.is_empty()
+            })
+        }) {
+            self.events_result(
+                &event,
+                "skipped",
+                "agent input changed while clearing context",
+            );
+            return Task::none();
+        }
+        // /clear itself produces terminal output; only user input and execution
+        // changes cancel the second stage, not that expected output.
+        if !self.events_ready(&event, &current, input_revision.is_some()) {
             return Task::none();
         }
         let Some(message) = notification_text(&event, &current) else {
             self.events_result(&event, "skipped", "notification cannot be rendered");
             return Task::none();
         };
-        let pasted = tab(self, candidate.target.terminal).is_some_and(|tab| {
-            tab.delegation.root.as_ref()
-                == Some(&(candidate.root.pid, candidate.root.generation.clone()))
-                && tab.terminal.as_ref().is_some_and(|terminal| {
-                    foreground(terminal) == candidate.root.foreground
-                        && amux::identity::process_generation(candidate.process.pid)
-                            .is_ok_and(|g| g == candidate.process.generation)
-                        && paste(terminal, &tab.delegation.input, &message)
-                })
-        });
+        if input_revision.is_none() && self.preferences.current.clear_on_task {
+            let clear_revision = tab(self, current.target.terminal).and_then(|tab| {
+                new_task_context(
+                    &event,
+                    tab.terminal.as_ref().and_then(Terminal::activity_elapsed),
+                    !tab.delegation.input.is_empty(),
+                )
+                .then_some(tab.delegation.input_revision)
+            });
+            if let Some(input_revision) = clear_revision {
+                if !self.events_paste(&current, DeliveryInput::Clear, Some(input_revision)) {
+                    self.events_result(&event, "failed", "terminal changed before context clear");
+                    return Task::none();
+                }
+                let token = Uuid::new_v4();
+                self.delegation.events.delivering = Some(Delivery {
+                    token,
+                    event,
+                    candidate: current,
+                    stage: DeliveryStage::Clearing {
+                        started: Instant::now(),
+                        input_revision,
+                    },
+                });
+                let epoch = self.delegation.epoch;
+                return Task::perform(
+                    async {
+                        tokio::time::sleep(CLEAR_WAIT).await;
+                    },
+                    move |_| Message::Delegation(epoch, Event::ClearReady { token }),
+                );
+            }
+        }
+        let pasted = self.events_paste(
+            &current,
+            DeliveryInput::Notification(&message),
+            input_revision,
+        );
         if pasted {
             self.events_result(&event, "delivered", "");
         } else {
             self.events_result(&event, "failed", "terminal changed before delivery");
+        }
+        Task::none()
+    }
+
+    fn events_paste(
+        &mut self,
+        candidate: &Candidate,
+        input: DeliveryInput<'_>,
+        input_revision: Option<u64>,
+    ) -> bool {
+        tab(self, candidate.target.terminal).is_some_and(|tab| {
+            tab.delegation.root.as_ref()
+                == Some(&(candidate.root.pid, candidate.root.generation.clone()))
+                && input_revision.is_none_or(|revision| {
+                    tab.delegation.input_revision == revision && tab.delegation.input.is_empty()
+                })
+                && tab.terminal.as_ref().is_some_and(|terminal| {
+                    foreground(terminal) == candidate.root.foreground
+                        && amux::identity::process_generation(candidate.process.pid)
+                            .is_ok_and(|g| g == candidate.process.generation)
+                        && match input {
+                            // Slash commands must be typed, not bracketed-pasted
+                            // as literal prompt text. End flushes provider paste bursts.
+                            DeliveryInput::Clear => terminal
+                                .try_enqueue_input(b"/clear\x1b[F\r".to_vec())
+                                .is_ok(),
+                            DeliveryInput::Notification(message) => {
+                                paste(terminal, &tab.delegation.input, message)
+                            }
+                        }
+                })
+        })
+    }
+
+    pub(super) fn events_clear_ready(&mut self, token: Uuid) -> Task<Message> {
+        let Some(delivery) = &mut self.delegation.events.delivering else {
+            return Task::none();
+        };
+        if delivery.token != token {
+            return Task::none();
+        }
+        if let DeliveryStage::Clearing {
+            started,
+            input_revision,
+        } = delivery.stage
+            && started.elapsed() >= CLEAR_WAIT
+        {
+            delivery.stage = DeliveryStage::ReadyAfterClear { input_revision };
+            return self.events_deliver();
         }
         Task::none()
     }
@@ -750,4 +930,39 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate) -> Option<
         Some(instructions) => format!("{text} {instructions}"),
         None => text,
     })
+}
+
+#[cfg(test)]
+mod clear_tests {
+    use super::*;
+
+    #[test]
+    fn clear_requires_explicit_new_work_and_an_idle_empty_composer() {
+        let event = json!({"payload":{"new_task":true,"event":{"kind":"task_created","comment":null,"task":{"id":Uuid::new_v4(),"labels":[]}}}});
+        let idle = Some(amux::session::IDLE_AFTER);
+        assert!(new_task_context(&event, idle, false));
+        assert!(!new_task_context(
+            &event,
+            Some(Duration::from_secs(29)),
+            false
+        ));
+        assert!(!new_task_context(&event, None, false));
+        assert!(!new_task_context(&event, idle, true));
+        for kind in ["task_commented", "task_completed"] {
+            let mut notice = event.clone();
+            notice["payload"]["event"]["kind"] = json!(kind);
+            assert!(!new_task_context(&notice, idle, false));
+        }
+        for value in [Value::Null, json!(false)] {
+            let mut notice = event.clone();
+            notice["payload"]["new_task"] = value;
+            assert!(!new_task_context(&notice, idle, false));
+        }
+        let mut review = event.clone();
+        review["payload"]["event"]["task"]["labels"] = json!(["task-review"]);
+        assert!(!new_task_context(&review, idle, false));
+        let mut comment = event;
+        comment["payload"]["event"]["comment"] = json!({"content":"continue"});
+        assert!(!new_task_context(&comment, idle, false));
+    }
 }

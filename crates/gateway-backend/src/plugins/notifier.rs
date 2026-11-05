@@ -102,6 +102,7 @@ fn announce(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
         let notification = json!({
             "target": agent["session_id"], "project": project, "mode": "recipient",
             "require_idle": requester_result(kind, payload, agent),
+            "new_task": *kind == "task_created" && !payload["task"]["labels"].as_array().is_some_and(|labels| labels.iter().any(|label| label == "task-review")),
             "heading": null, "instructions": null,
             "event": {"kind": kind, "project_ident": project, "created_at": event.emitted_at,
                       "task": payload["task"], "comment": payload["comment"], "origin": payload["actor"]},

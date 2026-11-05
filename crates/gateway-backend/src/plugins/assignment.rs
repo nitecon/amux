@@ -303,6 +303,7 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
 /// Claim as the agent, record why, and ask it to start. Returns false when the
 /// task store rejects the claim.
 fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> Result<bool> {
+    let new_task = notify::new_assignment(conn, task)?;
     let reporter_source = agent["source"].as_str().ok_or_else(|| {
         anyhow::anyhow!("assignment agent is missing its authenticated report source")
     })?;
@@ -360,6 +361,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         };
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,
+            "new_task": new_task,
             "heading": heading, "instructions": instructions,
             "event": {"kind": "task_created", "project_ident": project, "created_at": db::now_ms(),
                       "task": current, "comment": null, "origin": null},

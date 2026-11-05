@@ -96,6 +96,7 @@ enum Message {
     AutomaticNotifications(bool),
     AutoResume(bool),
     McpTools(bool),
+    ClearOnTask(bool),
     ExitNotifications(bool),
     AutoUpdate(bool),
     ProjectsDir(String),
@@ -1009,6 +1010,7 @@ impl Desktop {
             Message::WindowReady => {}
             Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
             Message::McpTools(value) => self.preferences.draft.mcp_tools = value,
+            Message::ClearOnTask(value) => self.preferences.draft.clear_on_task = value,
             Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
             Message::AutoUpdate(value) => self.preferences.draft.auto_update = value,
             Message::ProjectsDir(value) => self.preferences.draft.projects_dir = value,

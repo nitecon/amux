@@ -661,6 +661,103 @@ fn repeated_notifications_never_interrupt_the_provider_to_clear_a_draft() {
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
+fn new_tasks_clear_once_then_wait_and_reverify_without_overwriting_user_input() {
+    let mut app = desktop();
+    app.preferences.current.clear_on_task = true;
+    let codex = spawn(&mut app, 0, 0, Provider::Codex, "paste");
+    let claude = spawn(&mut app, 1, 1, Provider::Claude, "opaque");
+    let interrupted = spawn(&mut app, 0, 2, Provider::Codex, "opaque");
+    app.registry = Some(codex.directory.clone());
+    let mut frames = router(&mut app);
+    for agent in [&codex, &claude, &interrupted] {
+        project(&mut app, agent, "alpha");
+    }
+    scan(&mut app);
+    std::thread::sleep(amux::session::IDLE_AFTER + Duration::from_millis(100));
+
+    for (index, agent) in [&codex, &claude, &interrupted].into_iter().enumerate() {
+        let mut event = notify(&app, agent, index as i64 + 1, true);
+        event["payload"]["new_task"] = json!(true);
+        receive(&mut app, event.clone());
+        drop(app.events_deliver());
+        let old_token = app.delegation.events.delivering.as_ref().unwrap().token;
+        let verified =
+            events::verify(&app.delegation.events.delivering.as_ref().unwrap().candidate);
+        assert!(verified);
+        let epoch = app.delegation.epoch;
+        drop(app.delegation_message(
+            epoch,
+            Event::Verified {
+                token: old_token,
+                verified,
+            },
+        ));
+        assert_eq!(wait_lines(agent, 1), ["/clear"]);
+        let delivery = app.delegation.events.delivering.as_ref().unwrap();
+        let token = delivery.token;
+        let events::DeliveryStage::Clearing { started, .. } = delivery.stage else {
+            panic!("missing clear wait");
+        };
+        assert_ne!(old_token, token);
+        drop(app.events_clear_ready(token));
+        drop(app.events_verified(old_token, true));
+        assert!(matches!(
+            app.delegation.events.delivering.as_ref().unwrap().stage,
+            events::DeliveryStage::Clearing { .. }
+        ));
+        assert!(
+            results(&mut frames).is_empty(),
+            "clear alone is not delivery"
+        );
+        if index == 1 {
+            app.events_stop();
+            frames = router(&mut app);
+            assert_eq!(
+                app.delegation.events.delivering.as_ref().unwrap().token,
+                token,
+                "reconnect keeps the existing clear wait"
+            );
+        }
+        if index == 2 {
+            human(&mut app, agent.terminal, b"changed my mind");
+            human(&mut app, agent.terminal, b"\x15");
+            assert!(find(&app, agent.terminal).delegation.input.is_empty());
+        }
+        std::thread::sleep(events::CLEAR_WAIT + Duration::from_millis(25));
+        drop(app.events_clear_ready(token));
+        let delivery = app.delegation.events.delivering.as_ref().unwrap();
+        assert!(matches!(
+            delivery.stage,
+            events::DeliveryStage::VerifyingAfterClear { .. }
+        ));
+        let verified = events::verify(&delivery.candidate);
+        let token = delivery.token;
+        drop(app.events_verified(token, verified));
+        assert!(started.elapsed() >= Duration::from_secs(5));
+        if index == 2 {
+            assert_eq!(results(&mut frames), ["skipped"]);
+            assert_eq!(agent.lines(), ["/clear"]);
+        } else {
+            let notification = text(&app, agent, &event);
+            let notification = if index == 0 {
+                format!("\x1b[200~{notification}\x1b[201~")
+            } else {
+                notification
+            };
+            assert_eq!(wait_lines(agent, 2), ["/clear".into(), notification]);
+            assert_eq!(results(&mut frames), ["delivered"]);
+        }
+        receive(&mut app, event);
+        deliver(&mut app);
+        assert!(
+            results(&mut frames).is_empty(),
+            "replay cannot clear or deliver twice"
+        );
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
 fn work_offers_skip_a_busy_or_drafting_agent_and_report_it() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Codex, "opaque");
@@ -1143,6 +1240,15 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
             );
         }
         while let Ok(message) = incoming.try_recv() {
+            if let Incoming::Event(event) = &message
+                && event["id"] == "agent.notify"
+                && event["payload"]["heading"] == "Queued task review"
+            {
+                assert_eq!(
+                    event["payload"]["new_task"], true,
+                    "first assignment must be identified by the gateway"
+                );
+            }
             let epoch = app.delegation.epoch;
             drop(app.delegation_message(epoch, Event::Router(message)));
         }

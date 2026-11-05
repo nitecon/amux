@@ -25,6 +25,8 @@ pub(super) struct TabState {
     pub provider: Option<Provider>,
     pub directory: Option<PathBuf>,
     input: Vec<u8>,
+    /// Every user input command, including edits that leave an empty composer.
+    pub(super) input_revision: u64,
     status: &'static str,
     /// Busy/idle as derived by the server event router, when connected to one.
     pub server_busy: Option<bool>,
@@ -49,6 +51,7 @@ impl TabState {
         let BackendCommand::Write(bytes) = command else {
             return;
         };
+        self.input_revision = self.input_revision.wrapping_add(1);
         if matches!(bytes.as_slice(), b"\r" | b"\n" | b"\x03" | b"\x15") {
             self.input.clear();
         } else if contains_text(bytes) || !self.input.is_empty() {
@@ -118,6 +121,9 @@ pub(super) enum Event {
     Verified {
         token: Uuid,
         verified: bool,
+    },
+    ClearReady {
+        token: Uuid,
     },
 }
 
@@ -283,6 +289,7 @@ impl Desktop {
         match event {
             Event::Router(incoming) => return self.events_incoming(incoming),
             Event::Verified { token, verified } => return self.events_verified(token, verified),
+            Event::ClearReady { token } => return self.events_clear_ready(token),
             Event::Scanned { serial, found } => {
                 if self.delegation.scan_inflight == Some(serial) {
                     self.delegation.scan_inflight = None;

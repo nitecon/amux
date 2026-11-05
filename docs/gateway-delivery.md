@@ -60,6 +60,13 @@ notification asking the agent to check whether the task is still required,
 implement it, ask the user, or close it with a reason. One task is handed to an
 idle agent at a time.
 
+Settings → General → **Clear context before new tasks** is off by default.
+When enabled, an agent that has been idle for at least 30 seconds receives
+`/clear`, then waits five seconds before receiving a new task. Reviews, comments,
+reminders and previously started work keep their context. Typing or changing the
+agent process during that wait cancels delivery. Gateways that cannot identify
+new work leave context intact.
+
 If the desktop cannot deliver the offer (the agent became busy, started typing,
 or its process changed), it reports the outcome. The server releases an untouched
 offer only for its captured reporting source and target; a delayed result cannot

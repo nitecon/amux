@@ -23,6 +23,7 @@ fn native_connection_and_device_preferences_round_trip_without_secrets() {
         mode: GatewayMode::Client,
         enrolled: Some(connection(dir.path())),
         automatic_notifications: true,
+        clear_on_task: true,
         projects_dir: "my-projects".into(),
         work_submission: amux::work_submission::Preferences {
             mode: amux::work_submission::Mode::PullRequest,
@@ -37,6 +38,7 @@ fn native_connection_and_device_preferences_round_trip_without_secrets() {
     assert_eq!(restored.enrolled, settings.enrolled);
     assert_eq!(restored.projects_dir, "my-projects");
     assert!(restored.automatic_notifications);
+    assert!(restored.clear_on_task);
     assert!(restored.has_connection());
     let serialized = serde_json::to_value(restored).unwrap();
     for retired in ["url", "api_key", "project"] {
@@ -74,6 +76,10 @@ fn retired_connections_become_disconnected_without_switching_authority() {
         assert!(!restored.has_connection());
         assert!(!restored.automatic_notifications);
         assert!(!restored.auto_resume);
+        assert!(
+            !restored.clear_on_task,
+            "old settings must keep clearing opt-in"
+        );
         assert_eq!(restored.projects_dir, "existing-projects");
         assert_eq!(restored.work_submission, Default::default());
         assert!(restored.gateway().is_err());
