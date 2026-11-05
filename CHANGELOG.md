@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.65 - 2026-11-05
+
+### Added
+- Display task hierarchies in the desktop and CLI, retaining parent context
+  when filters hide it. Agent-created tasks and cross-project handoffs now
+  require a parent task; update clients and servers together for this feature.
+- Accept large exact file lists through `amux submit-work --paths-file`.
+  MCP transfers its existing paths array through a temporary file automatically.
+
+### Changed
+- Run server reconciliation every 30 seconds, with presence evaluated before
+  queued assignment so agents that remain idle can receive newly queued work.
+
+### Fixed
+- Leave delegated destination work available to agents in the target project,
+  and clear ownership when releasing a reserved queued task.
+- Avoid Windows command-line limits in work submission by using file-based
+  path lists for MCP handoff and Git staging and exact-file commits. Large
+  submissions retain one commit and preserve unrelated staged and local edits.
+
 ## v0.0.64 - 2026-11-05
 
 ### Added
