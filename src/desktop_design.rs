@@ -267,10 +267,15 @@ pub(super) fn primary_action(_: &Theme, status: button::Status) -> button::Style
         ..Default::default()
     }
 }
-/// Kanban order: in-progress work first; the gateway's ranking is kept otherwise.
-fn kanban_order(tasks: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+/// Most recently touched second first, then title, for every task-list view.
+fn task_order(tasks: &[serde_json::Value]) -> Vec<&serde_json::Value> {
     let mut ordered = tasks.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|task| task["status"] != "in_progress");
+    ordered.sort_by_cached_key(|task| {
+        (
+            std::cmp::Reverse(task["updated_at"].as_u64().unwrap_or_default() / 1000),
+            task["title"].as_str().unwrap_or_default().to_lowercase(),
+        )
+    });
     ordered
 }
 fn status_badge(status: &str) -> Element<'static, Message> {
@@ -1429,7 +1434,7 @@ impl Desktop {
         .spacing(10);
         let mut cards = column![text(&panel.status).size(11).color(MUTED),].spacing(8);
         let mut count = 0;
-        for task in kanban_order(&panel.tasks) {
+        for task in task_order(&panel.tasks) {
             let status = task["status"].as_str().unwrap_or("unknown");
             if !matches_task_filter(task, self.design.filter, &self.design.task_search) {
                 continue;
@@ -2382,17 +2387,23 @@ mod tests {
     }
 
     #[test]
-    fn in_progress_tasks_lead_the_list_and_keep_gateway_order_otherwise() {
-        let tasks = ["todo", "in_progress", "user_review", "in_progress", "todo"]
-            .iter()
-            .enumerate()
-            .map(|(i, status)| serde_json::json!({"id": i, "status": status}))
-            .collect::<Vec<_>>();
-        let order = kanban_order(&tasks)
+    fn task_lists_sort_by_recent_second_then_title_without_reordering_the_queue() {
+        let tasks = serde_json::json!([
+            {"id": 0, "title": "Alpha", "updated_at": 1999, "status": "in_progress"},
+            {"id": 1, "title": "Zulu", "updated_at": 3000, "status": "done"},
+            {"id": 2, "title": "beta 2", "updated_at": 2999, "status": "todo"},
+            {"id": 3, "title": "Alpha 1", "updated_at": 2000, "status": "user_review"},
+            {"id": 4, "title": "alpha 0", "updated_at": 2500, "status": "todo"},
+            {"id": 5, "title": "Unknown", "status": "todo"}
+        ]);
+        let tasks = tasks.as_array().unwrap().clone();
+        let before = tasks.clone();
+        let order = task_order(&tasks)
             .iter()
             .map(|task| task["id"].as_u64().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(order, [1, 3, 0, 2, 4]);
+        assert_eq!(order, [1, 4, 3, 2, 0, 5]);
+        assert_eq!(tasks, before);
     }
 
     #[test]
