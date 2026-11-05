@@ -900,6 +900,50 @@ mod tests {
     }
 
     #[test]
+    fn releasing_a_reserved_queued_task_clears_both_owner_fields() {
+        let database = database();
+        let conn = database.lock().unwrap();
+        let worker = actor();
+        let queued = mutation(&conn, Some(&worker), |conn| Ok(task(conn))).unwrap();
+        assert_eq!(queued.status, "todo");
+        assert_eq!(queued.owner_origin, Some(worker.clone()));
+        let mut other = worker.clone();
+        other.session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into();
+        assert!(mutation(&conn, Some(&other), |conn| db::update_task(
+            conn,
+            "example",
+            &queued.id,
+            &status_update("todo"),
+            Some(&other.session_id),
+        ))
+        .is_err());
+        let released = mutation(&conn, Some(&worker), |conn| {
+            db::update_task(
+                conn,
+                "example",
+                &queued.id,
+                &status_update("todo"),
+                Some(&worker.session_id),
+            )
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(released.status, "todo");
+        assert!(released.owner_agent_id.is_none());
+        assert!(released.owner_origin.is_none());
+        mutation(&conn, Some(&other), |conn| {
+            db::update_task(
+                conn,
+                "example",
+                &queued.id,
+                &status_update("in_progress"),
+                Some(&other.session_id),
+            )
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn exact_owner_session_and_instance_fence_shared_machine_and_legacy() {
         let database = database();
         let conn = database.lock().unwrap();

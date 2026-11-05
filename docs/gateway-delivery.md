@@ -65,6 +65,11 @@ notification asking the agent to check whether the task is still required,
 implement it, ask the user, or close it with a reason. One task is handed to an
 idle agent at a time.
 
+Cross-project delegation leaves the destination task unowned for that project's
+agents. The source tracking task and delegation record retain the requester;
+delegating does not reserve destination work for the source session. Releasing a
+reserved TODO task clears its ownership even when it was already queued.
+
 Settings → General → **Clear context before new tasks** is off by default.
 When enabled, an agent that has been idle for at least 30 seconds receives
 `/clear`, then waits five seconds before receiving a new task. Reviews, comments,

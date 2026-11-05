@@ -8453,7 +8453,7 @@ pub fn insert_task(
     )
 }
 
-/// Explicit dispatch destinations retain their separate receive/claim/start protocol.
+/// Dispatch and cross-project delegation targets enter the queue unassigned.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_unassigned_dispatch_task(
     conn: &Connection,
@@ -9330,6 +9330,8 @@ fn update_task_inner(
     }
     let owner_explicit = upd.owner_agent_id.is_some();
     let transitioning = upd.status.is_some() && new_status != current.status;
+    // `tasks release` sends status=todo, including for a reserved queued task.
+    let releasing_queued = upd.status.is_some() && current.status == "todo" && new_status == "todo";
     if transitioning && new_status == "in_progress" && os_mismatch(next_os, origin.as_ref()) {
         return Err(crate::task_dispatch::Conflict(
             "claiming agent OS does not match the task os: label",
@@ -9355,7 +9357,7 @@ fn update_task_inner(
     let mut owner: Option<Option<String>> =
         upd.owner_agent_id.map(|inner| inner.map(|s| s.to_string()));
 
-    if transitioning {
+    if transitioning || releasing_queued {
         match (current.status.as_str(), new_status.as_str()) {
             (_, "user_review") => {
                 started_at = Some(None);
@@ -9376,7 +9378,7 @@ fn update_task_inner(
                     }
                 }
             }
-            ("in_progress", "todo") => {
+            ("in_progress" | "todo", "todo") => {
                 started_at = Some(None);
                 if !owner_explicit {
                     owner = Some(None);
@@ -9450,7 +9452,9 @@ fn update_task_inner(
             "owner_origin_json",
             origin.as_ref().map(serde_json::to_string).transpose()?,
         ));
-    } else if transitioning && matches!(new_status.as_str(), "todo" | "user_review") {
+    } else if (transitioning || releasing_queued)
+        && matches!(new_status.as_str(), "todo" | "user_review")
+    {
         assignments.push(crud_col("owner_origin_json", DbValue::null()));
     }
     if release_owner {

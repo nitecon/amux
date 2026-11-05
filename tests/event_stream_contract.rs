@@ -16,8 +16,9 @@ use uuid::Uuid;
 
 const KEY: &str = "event-stream-fixture-key";
 const PROJECT: &str = "event-stream-fixture";
-/// Long enough for one 15 s clock tick, which is when Assignment runs.
-const WAIT: Duration = Duration::from_secs(20);
+/// Allow one shared clock tick plus routing slack for automatic assignment.
+const WAIT: Duration =
+    Duration::from_secs(amux_gateway_backend::plugins::clock::INTERVAL.as_secs() + 5);
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Server {
@@ -691,6 +692,74 @@ async fn the_desktop_event_client_reports_agents_and_receives_their_work() {
         next_incoming(&mut incoming).await,
         Incoming::Rejected(_)
     ));
+}
+
+#[tokio::test]
+async fn a_clock_tick_assigns_cross_project_delegation_to_the_destination_desktop() {
+    const SOURCE: &str = "delegating-project";
+    const DELEGATOR: &str = "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0021";
+    const DELEGATOR_INSTANCE: &str = "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0022";
+    let server = Server::start().await;
+    server
+        .send(
+            reqwest::Method::POST,
+            "/v1/projects",
+            json!({"ident": SOURCE, "channel": "discord"}),
+        )
+        .await;
+    let mut socket = desktop(&server).await;
+    activity(&mut socket, now_ms() - 60_000, false).await;
+    expect(&mut socket, "agent.idle").await;
+    // The requester is registered in the source project only, as in the
+    // reported failure. Destination work must not inherit its reservation.
+    emit(
+        &mut socket,
+        "client.heartbeat",
+        json!({"agents": [
+            {"session_id": SESSION, "instance_id": INSTANCE, "provider": "claude", "os": "linux", "project": PROJECT, "name": "Fixture"},
+            {"session_id": DELEGATOR, "instance_id": DELEGATOR_INSTANCE, "provider": "codex", "os": "windows", "project": SOURCE}
+        ]}),
+        None,
+    )
+    .await;
+    let response = server
+        .http
+        .post(format!(
+            "http://{}/v1/projects/{SOURCE}/tasks/delegate",
+            server.endpoint
+        ))
+        .bearer_auth(KEY)
+        .header("X-Agent-Session-Id", DELEGATOR)
+        .header("X-Agent-Id", DELEGATOR)
+        .header("X-Agent-Instance-Id", DELEGATOR_INSTANCE)
+        .header("X-Agent-Provider", "codex")
+        .header("X-Agent-OS", "windows")
+        .json(&json!({"target_project_ident": PROJECT, "title": "Fix destination code"}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let delegated: Value = response.json().await.unwrap();
+    assert!(status.is_success(), "{delegated}");
+    let target = &delegated["target_task"];
+    let id = target["id"].as_str().unwrap();
+    assert_eq!(target["status"], "todo");
+    assert_eq!(target["routing"]["mode"], "auto");
+    assert!(target["owner_agent_id"].is_null());
+    assert!(target["owner_origin"].is_null());
+    assert_eq!(delegated["source_task"]["owner_agent_id"], DELEGATOR);
+    assert_eq!(delegated["source_task"]["delegated_to_task_id"], id);
+    assert_eq!(delegated["delegation"]["requester_agent_id"], DELEGATOR);
+
+    // No new idle edge or manual tick injection: the runtime Clock must
+    // reconcile the queued target and deliver it over the desktop stream.
+    let notification = expect(&mut socket, "agent.notify").await;
+    assert_eq!(notification["payload"]["target"], SESSION);
+    assert_eq!(notification["payload"]["event"]["task"]["id"], id);
+    let assigned = task(&server, id).await;
+    assert_eq!(assigned["status"], "in_progress");
+    assert_eq!(assigned["owner_origin"]["session_id"], SESSION);
+    assert_eq!(assigned["owner_origin"]["instance_id"], INSTANCE);
 }
 
 #[tokio::test]

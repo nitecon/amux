@@ -6178,7 +6178,9 @@ pub async fn delegate_task_handler(
                 anyhow::bail!("project '{target_ident}' not found");
             }
 
-            let target_task = db::insert_task(
+            // The source session requests work from another project; it must
+            // not reserve that project's task for itself.
+            let target_task = db::insert_unassigned_dispatch_task(
                 conn,
                 &target_ident,
                 &title,
