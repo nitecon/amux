@@ -285,9 +285,12 @@ impl Repo {
             "--no-renames",
             "--untracked-files=all",
         ])?;
+        // Porcelain paths are repository-relative; the project root may be a
+        // subdirectory of the repository.
+        let prefix = self.git(&["rev-parse", "--show-prefix"])?;
         let changed: HashSet<_> = status
             .split('\0')
-            .filter_map(|record| record.get(3..))
+            .filter_map(|record| record.get(3..)?.strip_prefix(prefix.as_str()))
             .collect();
         let mut files = Vec::new();
         let mut seen = HashSet::new();
@@ -472,7 +475,15 @@ impl Repo {
         // Whole-file staging is safe only when upstream still has the same
         // selected files as our checkout base; otherwise it could revert edits.
         let selected: HashSet<_> = files.iter().map(String::as_str).collect();
-        let diff = self.git_raw(&["diff", "--name-only", "--no-renames", "-z", "HEAD", &base])?;
+        let diff = self.git_raw(&[
+            "diff",
+            "--name-only",
+            "--relative",
+            "--no-renames",
+            "-z",
+            "HEAD",
+            &base,
+        ])?;
         let changed = diff
             .split('\0')
             .filter(|path| selected.contains(path))

@@ -194,7 +194,7 @@ fn large_exact_moves_use_one_commit_and_preserve_unlisted_artist_edits_in_both_m
             std::fs::rename(fixture.work.join(&pair[0]), fixture.work.join(&pair[1])).unwrap();
         }
         // Literal, spaced and Unicode names must survive both path-list formats.
-        for name in ["-option.txt", "literal [1] ü.txt"] {
+        for name in ["-option.txt", "literal [1] ÃƒÂ¼.txt"] {
             fixture.write(name, "selected\n");
             paths.push(name.into());
         }
@@ -661,6 +661,44 @@ fn pull_request_mode_rejects_upstream_changes_to_selected_files_without_losing_w
         );
         assert!(git(&fixture.remote, &["for-each-ref", "refs/heads/amux/"]).is_empty());
     }
+}
+
+#[test]
+fn a_project_root_in_a_repository_subdirectory_submits_and_guards_upstream_edits() {
+    let fixture = Fixture::new();
+    let project = fixture.work.join("sub");
+    std::fs::create_dir(&project).unwrap();
+    fixture.write("sub/f.txt", "base\n");
+    git(&fixture.work, &["add", "sub/f.txt"]);
+    git(&fixture.work, &["commit", "-m", "add sub"]);
+    git(&fixture.work, &["push"]);
+    let run = |mode: Mode| {
+        let paths = [PathBuf::from("f.txt")];
+        let request = Request {
+            root: &project,
+            task_id: Uuid::parse_str(TASK).unwrap(),
+            message: MESSAGE,
+            paths: &paths,
+        };
+        let preferences = Preferences {
+            mode,
+            branch_prefix: "amux/".into(),
+        };
+        submit(&request, &preferences, |_| {
+            Ok("https://example.invalid/pull/1".into())
+        })
+    };
+
+    fixture.write("sub/f.txt", "committed\n");
+    let outcome = run(Mode::CommitAndPush).unwrap();
+    assert_eq!(outcome.files, ["f.txt"]);
+    assert_eq!(changed(&fixture.remote, "main"), "M\tsub/f.txt");
+
+    fixture.push_elsewhere("sub/f.txt", "upstream\n");
+    fixture.write("sub/f.txt", "local\n");
+    let error = format!("{:#}", run(Mode::PullRequest).unwrap_err());
+    assert!(error.contains("selected paths differ"), "{error}");
+    assert!(git(&fixture.remote, &["for-each-ref", "refs/heads/amux/"]).is_empty());
 }
 
 #[test]
