@@ -450,12 +450,35 @@ fn call(params: &Value) -> Value {
     let name = params["name"].as_str().unwrap_or_default();
     let (text, error) = match available().into_iter().find(|t| t.name == name) {
         None => (format!("unknown tool: {name}"), true),
-        Some(tool) => match argv(tool, &params["arguments"]) {
-            Ok(argv) => run(tool.bin, &argv, &directory()),
+        Some(tool) => match run_tool(tool, &params["arguments"], &directory()) {
+            Ok(output) => output,
             Err(message) => (message, true),
         },
     };
     json!({"content": [{"type": "text", "text": text}], "isError": error})
+}
+
+/// Large submit-work lists travel in a file, never in the child command line.
+fn run_tool(tool: &Tool, arguments: &Value, directory: &Path) -> Result<(String, bool), String> {
+    let mut argv = argv(tool, arguments)?;
+    let mut paths_file = None;
+    if tool.name == "submit_work" {
+        // argv is `submit-work -- task_id message paths...` for this tool.
+        let paths = argv.split_off(4);
+        let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+        serde_json::to_writer(&mut file, &paths).map_err(|e| e.to_string())?;
+        file.flush().map_err(|e| e.to_string())?;
+        let path = file
+            .path()
+            .to_str()
+            .ok_or("path-list filename is not UTF-8")?;
+        argv.insert(1, format!("--paths-file={path}"));
+        paths_file = Some(file);
+    }
+    let output = run(tool.bin, &argv, directory);
+    // Keep the path list available until the child has exited on every OS.
+    drop(paths_file);
+    Ok(output)
 }
 
 /// True when the provider already injects memory each turn through

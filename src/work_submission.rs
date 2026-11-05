@@ -9,6 +9,8 @@
 //! as `Co-Authored-By` are removed from the message.
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -224,6 +226,11 @@ impl Repo {
 
     /// Run git in the root with literal pathspecs; return trimmed stdout.
     fn git(&self, arguments: &[&str]) -> Result<String> {
+        Ok(self.git_raw(arguments)?.trim().to_owned())
+    }
+
+    /// Preserve NUL-delimited output, including leading spaces in status records.
+    fn git_raw(&self, arguments: &[&str]) -> Result<String> {
         let mut command = crate::git::command(TRANSPORT_VARIABLES);
         command
             .arg("-C")
@@ -243,14 +250,25 @@ impl Repo {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// `git <arguments> -- <files>`.
+    /// Keep exact add/commit path lists off the OS command line.
     fn git_paths(&self, arguments: &[&str], files: &[String]) -> Result<String> {
+        let mut paths =
+            tempfile::NamedTempFile::new().context("cannot create Git pathspec file")?;
+        for file in files {
+            paths.write_all(file.as_bytes())?;
+            paths.write_all(&[0])?;
+        }
+        paths.flush()?;
+        let file = paths
+            .path()
+            .to_str()
+            .context("Git pathspec file is not UTF-8")?;
+        let option = format!("--pathspec-from-file={file}");
         let mut all = arguments.to_vec();
-        all.push("--");
-        all.extend(files.iter().map(String::as_str));
+        all.extend([option.as_str(), "--pathspec-file-nul"]);
         self.git(&all)
     }
 
@@ -260,21 +278,25 @@ impl Repo {
         if paths.is_empty() {
             bail!("list at least one changed path to submit");
         }
+        let status = self.git_raw(&[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--no-renames",
+            "--untracked-files=all",
+        ])?;
+        let changed: HashSet<_> = status
+            .split('\0')
+            .filter_map(|record| record.get(3..))
+            .collect();
         let mut files = Vec::new();
+        let mut seen = HashSet::new();
         for path in paths {
             let file = self.pathspec(path)?;
-            let status = self.git(&[
-                "status",
-                "--porcelain",
-                "-z",
-                "--untracked-files=all",
-                "--",
-                &file,
-            ])?;
-            if status.is_empty() {
+            if !changed.contains(file.as_str()) {
                 bail!("{file} has no changes to submit");
             }
-            if !files.contains(&file) {
+            if seen.insert(file.clone()) {
                 files.push(file);
             }
         }
@@ -332,7 +354,11 @@ impl Repo {
         if parts[0].eq_ignore_ascii_case(".git") {
             bail!("{shown} is inside the Git directory");
         }
-        Ok(parts.join("/"))
+        let file = parts.join("/");
+        if file.contains('\0') {
+            bail!("file paths must not contain NUL characters");
+        }
+        Ok(file)
     }
 
     fn upstream(&self) -> Result<Upstream> {
@@ -445,7 +471,13 @@ impl Repo {
         let base = self.git(&["rev-parse", "--verify", "@{upstream}^{commit}"])?;
         // Whole-file staging is safe only when upstream still has the same
         // selected files as our checkout base; otherwise it could revert edits.
-        let changed = self.git_paths(&["diff", "--name-only", "HEAD", &base], files)?;
+        let selected: HashSet<_> = files.iter().map(String::as_str).collect();
+        let diff = self.git_raw(&["diff", "--name-only", "--no-renames", "-z", "HEAD", &base])?;
+        let changed = diff
+            .split('\0')
+            .filter(|path| selected.contains(path))
+            .collect::<Vec<_>>()
+            .join("\n");
         if !changed.is_empty() {
             bail!(
                 "selected paths differ between HEAD and {}: {changed}. Reconcile these paths with upstream before submitting; no task branch was pushed and your checkout was not changed",

@@ -107,10 +107,41 @@ fn run(
     let root = fixture.path();
     fs::write(
         root.join("codex"),
-        "#!/bin/sh\nread -r url\nif [ \"$OP\" = submit-work ]; then\n  amux submit-work --gateway-url \"$url\" \"$TASK\" \"Finish\" changed.txt\nelse\n  amux tasks --gateway-url \"$url\" \"$OP\" \"$TASK\"\nfi\nresult=$?\nexit $result\n",
+        "#!/bin/sh\nread -r url\nif [ \"$OP\" = submit-work ]; then\n  amux submit-work --gateway-url \"$url\" \"$TASK\" \"Finish\" changed.txt\nelif [ \"$OP\" = submit-work-file ]; then\n  amux submit-work --gateway-url \"$url\" --paths-file selected.json \"$TASK\" \"Finish\"\nelse\n  amux tasks --gateway-url \"$url\" \"$OP\" \"$TASK\"\nfi\nresult=$?\nexit $result\n",
     )
     .unwrap();
     fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
+    if op == "submit-work-file" {
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        for (key, value) in [
+            ("user.name", "Fixture"),
+            ("user.email", "fixture@example.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "no-hooks"),
+        ] {
+            git(&["config", key, value]);
+        }
+        fs::write(root.join("changed.txt"), "before\n").unwrap();
+        git(&["add", "changed.txt"]);
+        git(&["commit", "-m", "initial"]);
+        git(&["init", "--bare", "remote.git"]);
+        git(&["remote", "add", "origin", "./remote.git"]);
+        git(&["push", "-u", "origin", "main"]);
+        fs::write(root.join("changed.txt"), "after\n").unwrap();
+        fs::write(root.join("selected.json"), r#"["changed.txt"]"#).unwrap();
+    }
     let path = std::env::join_paths(std::iter::once(root.to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
@@ -204,6 +235,22 @@ fn done_and_release_refuse_without_exact_confirmed_ownership() {
             );
         }
     }
+}
+
+#[test]
+fn path_file_submission_confirms_ownership_publishes_and_posts_the_result() {
+    let (ok, stderr, requests) = run("submit-work-file", |a| {
+        vec![
+            task("in_progress", exact(a)),
+            json!({"id":uuid::Uuid::new_v4(), "task_id":TASK}),
+        ]
+    });
+    assert!(ok, "{stderr}");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK}?comments=0 ")));
+    assert!(requests[1].starts_with(&format!("POST /v1/projects/demo/tasks/{TASK}/comments ")));
+    assert!(requests[1].contains("Work submitted:"));
+    assert!(requests[1].contains("changed.txt"));
 }
 
 #[test]

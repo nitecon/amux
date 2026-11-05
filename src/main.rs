@@ -285,8 +285,11 @@ struct WorkArgs {
     /// Commit message; attribution lines such as Co-Authored-By are removed.
     message: String,
     /// Changed files to submit: modified, added or deleted, inside the project.
-    #[arg(required = true)]
+    #[arg(required_unless_present = "paths_file", conflicts_with = "paths_file")]
     paths: Vec<PathBuf>,
+    /// JSON array of exact changed paths, for lists too large for the command line.
+    #[arg(long)]
+    paths_file: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -640,7 +643,11 @@ fn run(cli: Cli) -> Result<u8> {
                     },
                     TaskOperation::SubmitWork(work) => {
                         gateway.confirm_owner(&project, work.task, &actor).await.context("work was not submitted")?;
-                        let paths = work.paths.iter().map(std::path::absolute).collect::<std::io::Result<Vec<_>>>()?;
+                        let selected = match work.paths_file {
+                            Some(file) => serde_json::from_reader(std::fs::File::open(&file).with_context(|| format!("cannot read path list {}", file.display()))?).context("path list must be a JSON array of file paths")?,
+                            None => work.paths,
+                        };
+                        let paths = selected.iter().map(std::path::absolute).collect::<std::io::Result<Vec<_>>>()?;
                         let request = amux::work_submission::Request { root: &actor.project_directory, task_id: work.task, message: &work.message, paths: &paths };
                         let outcome = amux::work_submission::submit(&request, &preferences.work_submission, amux::work_submission::open_pull_request)?;
                         let comment = gateway.request(Method::POST, &project, &[&work.task.to_string(), "comments"], Some(json!({"content": outcome.comment()})), Some(&actor)).await

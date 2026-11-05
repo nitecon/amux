@@ -173,6 +173,98 @@ fn assert_clean_message(checkout: &Path, commit: &str) {
 }
 
 #[test]
+fn large_exact_moves_use_one_commit_and_preserve_unlisted_artist_edits_in_both_modes() {
+    for mode in [Mode::CommitAndPush, Mode::PullRequest] {
+        let fixture = Fixture::new();
+        std::fs::create_dir(fixture.work.join("before")).unwrap();
+        std::fs::create_dir(fixture.work.join("after")).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..8174 {
+            let name = format!("actor_{i:05}_with_a_long_exact_asset_filename.scene");
+            let old = format!("before/{name}");
+            let new = format!("after/{name}");
+            fixture.write(&old, &format!("actor {i}\n"));
+            paths.extend([old, new]);
+        }
+        git(&fixture.work, &["add", "--all"]);
+        git(&fixture.work, &["commit", "-m", "seed assets"]);
+        git(&fixture.work, &["push"]);
+        let base = fixture.remote_main();
+        for pair in paths.chunks_exact(2) {
+            std::fs::rename(fixture.work.join(&pair[0]), fixture.work.join(&pair[1])).unwrap();
+        }
+        // Literal, spaced and Unicode names must survive both path-list formats.
+        for name in ["-option.txt", "literal [1] ü.txt"] {
+            fixture.write(name, "selected\n");
+            paths.push(name.into());
+        }
+        fixture.write("a.txt", "artist staged\n");
+        git(&fixture.work, &["add", "a.txt"]);
+        fixture.write("a.txt", "artist later unstaged\n");
+        fixture.write("b.txt", "second artist edit\n");
+        fixture.write("gone.txt", "third artist edit\n");
+        let index = git(&fixture.work, &["diff", "--cached"]);
+        let selected: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        let preferences = Preferences {
+            mode,
+            ..Preferences::default()
+        };
+        let outcome = submit(
+            &Request {
+                root: &fixture.work,
+                task_id: Uuid::parse_str(TASK).unwrap(),
+                message: MESSAGE,
+                paths: &selected,
+            },
+            &preferences,
+            |_| Ok("https://example.invalid/pull/1".into()),
+        )
+        .unwrap();
+        assert_eq!(outcome.files, paths);
+        let commit = if mode == Mode::CommitAndPush {
+            assert_eq!(outcome.reference, fixture.remote_main());
+            outcome.reference
+        } else {
+            assert_eq!(fixture.remote_main(), base);
+            assert_eq!(git(&fixture.work, &["rev-parse", "HEAD"]), base);
+            git(&fixture.remote, &["rev-parse", &format!("amux/{TASK}")])
+        };
+        assert_eq!(
+            git(&fixture.remote, &["rev-parse", &format!("{commit}^")]),
+            base
+        );
+        let names = git(
+            &fixture.remote,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--no-renames",
+                "--name-only",
+                "-r",
+                "-z",
+                &commit,
+            ],
+        );
+        let actual: std::collections::HashSet<_> =
+            names.split('\0').filter(|p| !p.is_empty()).collect();
+        assert_eq!(actual, paths.iter().map(String::as_str).collect());
+        assert_eq!(git(&fixture.work, &["diff", "--cached"]), index);
+        assert_eq!(git(&fixture.work, &["show", ":a.txt"]), "artist staged");
+        for (name, text) in [
+            ("a.txt", "artist later unstaged\n"),
+            ("b.txt", "second artist edit\n"),
+            ("gone.txt", "third artist edit\n"),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(fixture.work.join(name)).unwrap(),
+                text
+            );
+        }
+        assert_clean_message(&fixture.remote, &commit);
+    }
+}
+
+#[test]
 fn commit_and_push_commits_only_listed_paths_including_new_and_deleted_files() {
     let fixture = Fixture::new();
     fixture.write("a.txt", "a changed\n");
@@ -238,7 +330,7 @@ fn rejected_requests_leave_the_repository_untouched() {
     let before = fixture.snapshot();
     let remote = fixture.remote_main();
     let outside = fixture.work.with_file_name("outside.txt");
-    let cases: [(&str, &[&str], &str); 7] = [
+    let cases: [(&str, &[&str], &str); 8] = [
         (MESSAGE, &[], "at least one changed path"),
         (
             MESSAGE,
@@ -253,6 +345,7 @@ fn rejected_requests_leave_the_repository_untouched() {
         (MESSAGE, &["."], "not inside the project"),
         (MESSAGE, &["a.txt", "gone.txt"], "gone.txt has no changes"),
         (MESSAGE, &[".git/config"], "inside the Git directory"),
+        (MESSAGE, &["a.txt", "bad\0path"], "NUL characters"),
         (
             "Co-Authored-By: Claude <noreply@anthropic.com>",
             &["a.txt"],

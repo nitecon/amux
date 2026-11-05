@@ -252,6 +252,13 @@ publishes changes:
 amux submit-work <owned-task-id> 'Fix the parser' src/parser.rs 'docs/new file.md'
 ```
 
+For large exact lists, put a JSON array of paths in a file and use
+`amux submit-work --paths-file selected.json <owned-task-id> 'Move assets'`.
+Use either positional paths or `--paths-file`. MCP keeps the same `paths` array
+interface and transfers it to the CLI through a temporary file automatically.
+Git staging and exact-file commits use NUL-delimited pathspec files, avoiding
+Windows command-line limits while retaining one commit for the complete list.
+
 The MCP tool `submit_work` takes `task_id`, `message` and `paths` (a JSON array,
 so paths may contain spaces) and runs the same command. Before changing the
 repository it confirms the caller's exact ownership, requires at least one path,

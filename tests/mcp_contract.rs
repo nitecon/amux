@@ -31,6 +31,37 @@ fn executable(dir: &std::path::Path, bin: Bin) -> PathBuf {
 }
 
 #[test]
+fn large_submit_work_lists_reach_the_cli_without_os_argument_overflow() {
+    let root = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amux"))
+        .arg("mcp")
+        .env("AMUX_STATE_DIR", root.path().join("state"))
+        .env("AMUX_AGENT_PROJECT", root.path())
+        .env_remove("AMUX_AGENT_PROVIDER")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let paths: Vec<_> = (0..16673)
+        .map(|i| format!("assets/actor_{i:05}_{}.scene", "a".repeat(80)))
+        .collect();
+    let request = json!({"jsonrpc":"2.0", "id":1, "method":"tools/call",
+    "params":{"name":"submit_work", "arguments":{
+        "task_id":"not-a-uuid", "message":"Move assets", "paths":paths
+    }}});
+    writeln!(child.stdin.take().unwrap(), "{request}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    // Deliberately invalid task: the actual CLI must launch and validate it,
+    // before any ownership/network/Git action. Old argv expansion cannot launch.
+    assert!(text.contains("invalid value 'not-a-uuid'"), "{text}");
+    assert!(!text.contains("could not run"), "{text}");
+}
+
+#[test]
 fn every_tool_command_and_option_exists_in_the_bundled_version() {
     let Some(dir) = bundled() else { return };
     for tool in TOOLS {
