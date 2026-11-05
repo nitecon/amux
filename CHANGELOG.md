@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.0.64 - 2026-11-05
+
+### Added
+- Pin project favorites above the project list and retain them on this device.
+  Added local projects sort A-Z; remote projects with agents appear before
+  those without agents. Filter by exact name first, with a case-insensitive
+  substring fallback when no exact name matches.
+- Opt in to **Clear context before new tasks** in Settings. An idle agent
+  receives `/clear`, waits five seconds, then receives a first-time task
+  assignment after its execution is verified again. Reviews, comments and
+  continued work retain their context. This setting is disabled by default.
+
+### Changed
+- Show recently updated tasks first, sorting titles A-Z when updates fall
+  within the same second.
+
+### Fixed
+- Keep agents discoverable when an update renames their running amux wrapper,
+  preventing live agents from disappearing from presence and queued assignment.
+- Reject interrupted and in-progress clones during checkout reuse while
+  preserving partial files, completed empty clones and local edits. Unmarked
+  checkouts without a valid commit report an incomplete-checkout error.
+- Allow a fresh clone after the user removes a failed clone folder, even when
+  its hidden reservation remains.
+
 ## v0.0.63 - 2026-11-04
 
 ### Changed
