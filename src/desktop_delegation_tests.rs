@@ -1560,7 +1560,7 @@ fn project_inventory_rejects_old_gateway_replies_after_switch_and_disconnect() {
 }
 
 #[test]
-fn sidebar_lists_other_projects_by_where_they_are_checked_out() {
+fn sidebar_lists_other_projects_alphabetically_when_agent_availability_matches() {
     use amux::gateway::{ProjectMachine, ProjectOverview};
     let mut app = desktop();
     app.workspaces[0].gateway.project = "local".into();
@@ -1591,7 +1591,7 @@ fn sidebar_lists_other_projects_by_where_they_are_checked_out() {
         .collect();
     assert_eq!(
         order,
-        ["beta", "gamma", "alpha", "zeta"],
+        ["alpha", "beta", "gamma", "zeta"],
         "open workspaces are not repeated"
     );
     assert_eq!(

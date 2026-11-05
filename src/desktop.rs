@@ -439,6 +439,7 @@ impl Desktop {
         match app.snapshot_path.as_deref().map(Snapshot::load).transpose() {
             Ok(Some(Some(saved))) => {
                 app.active = saved.active;
+                app.design.project_favorites = saved.project_favorites;
                 app.workspace_dialog.last_directory = saved.workspace_browser_directory;
                 for workspace in saved.workspaces {
                     let config = app.restore_layout(workspace.layout, &workspace.directory);
@@ -615,6 +616,7 @@ impl Desktop {
         let snapshot = Snapshot {
             version: 1,
             active: self.active,
+            project_favorites: self.design.project_favorites.clone(),
             workspace_browser_directory: self.workspace_dialog.last_directory.clone(),
             workspaces: self
                 .workspaces
@@ -2350,6 +2352,7 @@ impl Desktop {
         panel.loaded_at = None;
         panel.tasks.clear();
         panel.status = "Repository project resolved; reminder consent remains off.".into();
+        self.reconcile_project_favorites();
     }
 
     fn scope_current(&self, scope: &QueryScope) -> bool {

@@ -19,8 +19,19 @@ The desktop remains a native Rust/Iced application with native terminal panes.
 
 The header exposes connection state, agent activity, Events, app updates and
 Settings. `Ctrl+,` opens Settings without forwarding the shortcut to the terminal
-or replacing its typed input. A 256-pixel workspace sidebar and 320-pixel task column surround the
-native panes. Narrow windows use compact, labeled-on-hover toolbar controls.
+or replacing its typed input. A 256-pixel project sidebar selects local workspaces
+or remote gateway projects. Local and remote projects share a full task queue and
+detail view; terminal and split controls remain at the bottom. Narrow windows use
+compact, labeled-on-hover toolbar controls.
+
+Project stars pin favorites above the rest of the list and persist on this device
+with the saved layout. Added local projects sort alphabetically without changing
+workspace or session identity; unadded local checkouts remain before remote
+projects. Remote projects with agents sort before those without agents, each
+alphabetically. The sidebar filter is case-insensitive and first matches exact
+project names (including the gateway name of a renamed local workspace). Only
+when no exact match exists does it match substrings across the list. Filtering
+and pinning do not select projects or start checkouts.
 The UI uses the fresh native-notification preference; legacy manual-reminder
 controls that enter screen-based readiness are not exposed.
 Single view maximizes a pane; Restore panes brings its peers back without
@@ -31,8 +42,8 @@ as the other filters and a pinned composer. Parked review tasks show their detai
 and comments, with human actions to return them to the queue or close them.
 Agents request review through `amux tasks user-review` using their assigned
 identity; parked tasks are excluded from agent reminders, pickup and injection.
-The task panel can collapse to a narrow arrow rail
-or detach into a larger window. Docking or closing that window restores the panel
+The full task view can detach into a larger window.
+Docking or closing that window restores the task view
 without closing sessions or losing drafts. Gateway
 acceptance and uncertain submission receipts remain visible, with no automatic
 POST retries or fabricated ownership. Lifecycle events refresh matching task

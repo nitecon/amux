@@ -24,6 +24,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
     let snapshot = Snapshot {
         version: 1,
         active: 0,
+        project_favorites: ["gateway:cluster:x".into(), "local:/project".into()].into(),
         workspace_browser_directory: Some(fixture.path().into()),
         workspaces: vec![SavedWorkspace {
             name: None,
@@ -44,8 +45,10 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
         .as_object_mut()
         .unwrap()
         .remove("workspace_browser_directory");
+    legacy.as_object_mut().unwrap().remove("project_favorites");
     let legacy: Snapshot = serde_json::from_value(legacy).unwrap();
     assert!(legacy.workspace_browser_directory.is_none());
+    assert!(legacy.project_favorites.is_empty());
     assert_eq!(
         serde_json::to_value(&restored).unwrap(),
         serde_json::to_value(&snapshot).unwrap()
@@ -56,6 +59,7 @@ fn atomic_layout_round_trip_retains_agent_metadata_without_execution_or_ownershi
     let bad = Snapshot {
         version: 1,
         active: 0,
+        project_favorites: Default::default(),
         workspace_browser_directory: None,
         workspaces: vec![SavedWorkspace {
             name: None,

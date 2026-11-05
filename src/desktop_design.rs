@@ -5,6 +5,8 @@ use iced::{Alignment, Border, Color};
 
 #[path = "desktop_browser.rs"]
 pub(super) mod browser;
+#[path = "desktop_project_list.rs"]
+mod project_list;
 
 const BG: Color = Color::from_rgb8(11, 15, 23);
 const PANEL: Color = Color::from_rgb8(14, 19, 29);
@@ -52,6 +54,8 @@ pub(super) enum Action {
     View(View),
     Filter(Filter),
     TaskSearch(String),
+    ProjectSearch(String),
+    ProjectFavorite(Vec<String>),
     Events,
     Bell,
     Search(String),
@@ -71,6 +75,8 @@ pub(super) struct State {
     compact: bool,
     filter: Filter,
     task_search: String,
+    project_search: String,
+    pub(super) project_favorites: std::collections::BTreeSet<String>,
     events: bool,
     bell: bool,
     search: String,
@@ -435,6 +441,10 @@ impl Desktop {
             return Task::none();
         }
         match message {
+            Action::ProjectSearch(value) => {
+                self.design.project_search = value.chars().take(256).collect()
+            }
+            Action::ProjectFavorite(keys) => self.toggle_project_favorite(keys),
             Action::CopyTemplate(content) => return iced::clipboard::write(content.to_owned()),
             Action::DetachTasks => {
                 if self.design.task_window.is_none() {
@@ -727,305 +737,7 @@ impl Desktop {
         .padding([7, 16])
         .height(48)
         .style(|_| surface(Color::from_rgb8(15, 21, 32), false));
-        let mut sidebar = column![
-            row![
-                text("LOCAL PROJECTS").size(11).color(MUTED),
-                Space::new().width(Length::Fill),
-                control("plus", "New", Message::NewWorkspace, true)
-            ]
-            .align_y(Alignment::Center)
-        ]
-        .spacing(8);
-        for (index, w) in self.workspaces.iter().enumerate() {
-            let sessions = tabs(w).count();
-            let agents = tabs(w)
-                .filter(|t| tab_provider(t).is_some() && t.terminal.is_some())
-                .count();
-            let busy = tabs(w)
-                .filter(|t| tab_provider(t).is_some() && active(t))
-                .count();
-            let badge = if busy > 0 {
-                format!("{busy}/{agents} active")
-            } else {
-                "idle".into()
-            };
-            let selected = self.remote_active.is_none() && index == self.active;
-            let mut diagnostic = column![
-                text(workspace_name(w)).size(14),
-                text(w.directory.display().to_string())
-                    .size(11)
-                    .color(MUTED)
-            ]
-            .spacing(8);
-            if !w.gateway.project.is_empty() {
-                // The directory is already shown above.
-                for line in self.project_lines(&w.gateway.project, None) {
-                    diagnostic = diagnostic.push(text(line).size(11).color(MUTED));
-                }
-            }
-            for tab in tabs(w) {
-                diagnostic = diagnostic.push(
-                    text(format!(
-                        "{} · {} · {}",
-                        tab.delegation.agent_name.as_deref().unwrap_or("Terminal"),
-                        tab_provider(tab).map(Provider::command).unwrap_or("shell"),
-                        if tab.terminal.is_none() {
-                            "stopped"
-                        } else if active(tab) {
-                            "recent I/O"
-                        } else {
-                            "idle"
-                        }
-                    ))
-                    .size(11),
-                );
-                for task in self.design_owned_tasks(tab.id, &w.gateway.tasks) {
-                    diagnostic =
-                        diagnostic.push(text(format!("Claimed: {task}")).size(11).color(CYAN));
-                }
-                if let Some(elapsed) = tab.terminal.as_ref().and_then(Terminal::activity_elapsed) {
-                    diagnostic = diagnostic.push(
-                        text(format!("Last terminal output: {}s ago", elapsed.as_secs()))
-                            .size(10)
-                            .color(MUTED),
-                    );
-                }
-            }
-            let card = container(
-                row![
-                    button(
-                        row![
-                            text("●")
-                                .color(if busy > 0 {
-                                    let mut pulse = CYAN;
-                                    pulse.a = if (unix_ms() / 400).is_multiple_of(2) {
-                                        1.0
-                                    } else {
-                                        0.5
-                                    };
-                                    pulse
-                                } else {
-                                    MUTED
-                                })
-                                .size(12),
-                            column![
-                                text(workspace_name(w)).size(13),
-                                text(format!(
-                                    "{sessions} session{} · {agents} agent{}",
-                                    if sessions == 1 { "" } else { "s" },
-                                    if agents == 1 { "" } else { "s" }
-                                ))
-                                .size(10)
-                                .color(MUTED)
-                            ]
-                            .spacing(2),
-                            Space::new().width(Length::Fill),
-                            text(badge)
-                                .size(10)
-                                .color(if busy > 0 { CYAN } else { MUTED })
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center)
-                    )
-                    .style(button::text)
-                    .on_press(Message::SelectWorkspace(index))
-                    .width(Length::Fill)
-                    .padding([10, 6]),
-                    button(icon("x"))
-                        .style(button::text)
-                        .padding(3)
-                        .on_press(Message::CloseWorkspace(w.id)),
-                ]
-                .align_y(Alignment::Center),
-            )
-            .style(move |_| {
-                let mut style = surface(
-                    if selected {
-                        Color::from_rgb8(13, 39, 51)
-                    } else {
-                        CARD
-                    },
-                    true,
-                );
-                if selected {
-                    style.border.color = Color::from_rgb8(8, 145, 178);
-                }
-                style
-            });
-            sidebar = sidebar.push(
-                tooltip(
-                    card,
-                    container(diagnostic)
-                        .padding(14)
-                        .width(300)
-                        .style(|_| surface(CARD, true)),
-                    tooltip::Position::Right,
-                )
-                .delay(Duration::from_millis(250)),
-            );
-            if self.closing_workspace == Some(w.id) {
-                sidebar = sidebar.push(
-                    container(
-                        column![
-                            text(
-                                "Close this workspace and stop its terminals? Files stay on disk."
-                            )
-                            .size(12),
-                            row![
-                                button("Close").on_press(Message::RemoveWorkspace(w.id)),
-                                button("Cancel").on_press(Message::CancelCloseWorkspace)
-                            ]
-                            .spacing(5)
-                        ]
-                        .spacing(8),
-                    )
-                    .padding(10)
-                    .style(|_| surface(CARD, true)),
-                );
-            }
-        }
-        for project in self.unadded_local_projects() {
-            let name = project
-                .directory
-                .file_name()
-                .unwrap_or(project.directory.as_os_str());
-            let task_project = project.canonical_remote.as_ref().and_then(|remote| {
-                self.design
-                    .projects
-                    .iter()
-                    .find(|item| item.canonical_remote.as_ref() == Some(remote))
-            });
-            let title: Element<'_, Message> = if let Some(task_project) = task_project {
-                button(
-                    text(name.to_string_lossy().into_owned())
-                        .size(13)
-                        .color(MUTED),
-                )
-                .on_press(action(Action::RemoteProject(task_project.ident.clone())))
-                .padding(0)
-                .style(button::text)
-                .into()
-            } else {
-                text(name.to_string_lossy().into_owned())
-                    .size(13)
-                    .color(MUTED)
-                    .into()
-            };
-            sidebar = sidebar.push(
-                tooltip(
-                    container(
-                        row![
-                            text("●").size(12).color(MUTED),
-                            column![title, text("Not added").size(10).color(MUTED)]
-                                .spacing(2)
-                                .width(Length::Fill),
-                            button(text("Add").size(11).color(CYAN))
-                                .on_press(action(Action::AddLocalProject(
-                                    project.directory.clone()
-                                )))
-                                .padding([5, 8])
-                                .style(button::text)
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                    )
-                    .padding([10, 6])
-                    .width(Length::Fill)
-                    .style(|_| surface(CARD, true)),
-                    text(format!(
-                        "{}\nAdd this existing checkout to amux",
-                        project.directory.display()
-                    )),
-                    tooltip::Position::Right,
-                )
-                .delay(Duration::from_millis(250)),
-            );
-        }
-        let projects = self.sidebar_projects();
-        if !projects.is_empty() {
-            sidebar = sidebar.push(text("REMOTE PROJECTS").size(11).color(MUTED));
-        }
-        for project in projects {
-            let selected = self.remote_active.is_some()
-                && self.task_panel(self.task_workspace()).project == project.ident;
-            let mut details = column![].spacing(6);
-            for line in self.project_lines(&project.ident, None) {
-                details = details.push(text(line).size(11));
-            }
-            let place = match project.machines.len() {
-                0 => "Not checked out".to_owned(),
-                1 => project.machines[0].hostname.clone(),
-                n => format!("{n} machines"),
-            };
-            let row = mouse_area(
-                container(
-                    row![
-                        text(&project.ident).size(13).color(MUTED),
-                        Space::new().width(Length::Fill),
-                        text(place).size(10).color(MUTED)
-                    ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                )
-                .padding([10, 12])
-                .width(Length::Fill)
-                .style(move |_| {
-                    surface(
-                        if selected {
-                            Color::from_rgb8(13, 39, 51)
-                        } else {
-                            CARD
-                        },
-                        true,
-                    )
-                }),
-            )
-            .on_press(action(Action::RemoteProject(project.ident.clone())))
-            .on_right_press(action(Action::ProjectMenu(project.ident.clone())));
-            sidebar = sidebar.push(
-                tooltip(
-                    row,
-                    container(details)
-                        .padding(14)
-                        .width(300)
-                        .style(|_| surface(CARD, true)),
-                    tooltip::Position::Right,
-                )
-                .delay(Duration::from_millis(250)),
-            );
-        }
-        let sidebar = container(
-            column![
-                // Right padding keeps the cards clear of the scrollbar.
-                scrollable(container(sidebar).padding(iced::Padding {
-                    right: 12.0,
-                    ..Default::default()
-                }))
-                .height(Length::Fill),
-                button(
-                    row![
-                        icon("settings"),
-                        text("Settings & Gateway").size(11),
-                        Space::new().width(Length::Fill),
-                        text("Ctrl+,")
-                            .font(iced::Font::MONOSPACE)
-                            .size(9)
-                            .color(MUTED)
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                )
-                .on_press(Message::Preferences(true))
-                .padding([7, 9])
-                .width(Length::Fill)
-                .style(|theme, status| button_style(false, theme, status))
-            ]
-            .spacing(12),
-        )
-        .padding(12)
-        .width(256)
-        .height(Length::Fill)
-        .style(|_| surface(PANEL, false));
+        let sidebar = self.project_sidebar();
         let toolbar = container(
             row![
                 control(
@@ -2387,8 +2099,7 @@ impl Desktop {
         self.design.project_menu = None;
     }
 
-    /// Gateway projects not open on this machine: those checked out on other
-    /// machines first, then the rest, each alphabetically.
+    /// Gateway projects not open locally: projects with agents first, then A–Z.
     pub(super) fn sidebar_projects(&self) -> Vec<&amux::gateway::ProjectOverview> {
         let local = self.unadded_local_projects();
         let mut projects: Vec<_> = self
@@ -2403,7 +2114,7 @@ impl Desktop {
             })
             .collect();
         projects.sort_by(|a, b| {
-            (a.machines.is_empty(), &a.ident).cmp(&(b.machines.is_empty(), &b.ident))
+            (a.agents == 0, a.ident.to_lowercase()).cmp(&(b.agents == 0, b.ident.to_lowercase()))
         });
         projects
     }

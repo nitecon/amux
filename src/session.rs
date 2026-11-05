@@ -99,6 +99,9 @@ pub struct Snapshot {
     pub active: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_browser_directory: Option<PathBuf>,
+    /// Device-local project pins; remote keys include the gateway cluster identity.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub project_favorites: std::collections::BTreeSet<String>,
     pub workspaces: Vec<SavedWorkspace>,
 }
 
