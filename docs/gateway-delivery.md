@@ -50,6 +50,11 @@ five-minute lifetime. See [CLI and native controls](gateway-cli.md#requesting-ta
 
 ## Queued work assignment
 
+The server emits the standard `clock.tick` event every 30 seconds, starting 30
+seconds after startup. On each tick, `presence` evaluates agents before the
+`assignment` plugin sweeps the queue. Agents that remain idle can receive later
+queued work without another activity or task event.
+
 The server's `assignment` plugin gives each idle agent (no terminal output for 30
 seconds, no draft, no owned in-progress task) the oldest eligible queued task in
 its project. Creation time defines FIFO. Eligibility respects the task's OS label,

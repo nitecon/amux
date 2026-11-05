@@ -1213,6 +1213,87 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn spawned_clock_sweeps_the_queue_every_thirty_seconds_without_idle_edges() {
+        let (database, bus, router) = setup();
+        seed_agent(
+            &database,
+            session(1, "p"),
+            db::now_ms(),
+            40_000,
+            false,
+            "busy",
+        );
+        let first = queue(&database, "p", 1, &[]);
+        let started = tokio::time::Instant::now();
+        let clock = clock::spawn(bus);
+        tokio::task::yield_now().await;
+
+        // Exercise the real clock source, not an explicitly emitted fixture tick.
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert_eq!(state(&database, &first).0, "todo");
+        let ticks =
+            || {
+                database.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM router_events WHERE id='clock.tick' AND source='clock'",
+            [], |row| row.get::<_, i64>(0),
+        ).unwrap()
+            };
+        assert_eq!(ticks(), 0, "startup must wait the full thirty seconds");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        // Let the router's blocking database work settle using real time, so the
+        // test runtime cannot auto-advance through additional clock deadlines.
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state(&database, &first).0 != "in_progress" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        settle(&database).await;
+        assert_eq!(ticks(), 1);
+        let idle_edges = || {
+            database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM router_events WHERE id='agent.idle'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(idle_edges(), 1);
+
+        // Complete work and enqueue another row without emitting a task or
+        // agent event. The next periodic reconciliation must find it anyway.
+        database
+            .lock()
+            .unwrap()
+            .execute("UPDATE tasks SET status='done' WHERE id=?1", params![first])
+            .unwrap();
+        let next = queue(&database, "p", 2, &[]);
+        tokio::time::pause();
+        tokio::time::advance(started + Duration::from_secs(59) - tokio::time::Instant::now()).await;
+        assert_eq!(state(&database, &next).0, "todo");
+        assert_eq!(ticks(), 1);
+        tokio::time::advance(started + Duration::from_secs(60) - tokio::time::Instant::now()).await;
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state(&database, &next).0 != "in_progress" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        settle(&database).await;
+        assert_eq!(ticks(), 2);
+        assert_eq!(idle_edges(), 1, "no second idle edge is needed");
+        clock.abort();
+        router.abort();
+    }
+
     #[tokio::test]
     async fn a_still_idle_session_picks_up_later_work_on_the_next_tick_without_another_idle_transition(
     ) {

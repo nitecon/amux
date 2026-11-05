@@ -253,7 +253,7 @@ All events are version 1. Payload schemas are validated by the registry.
 
 | Event | Emitted by | Payload |
 |---|---|---|
-| `clock.tick` | Clock source, every 15 s | `{at}`; the only source of time |
+| `clock.tick` | Clock source, every 30 s | `{at}`; the only source of time |
 | `retention.startup` | server runtime | `{}`; requests immediate startup cleanup |
 | `channel.message_received` | channel input adapter | `{channel_name, room_id, message: {id, content, author_kind}}`; internal only |
 | `task.created` / `task.updated` / `task.commented` / `task.assigned` / `task.started` / `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task event source (outbox) | `{project, task, comment, actor}`; `assigned` fires whenever the owner is set or changes (claim or assign) |
@@ -292,7 +292,7 @@ Rules carried over from the desktop:
   forward. Durable source-heartbeat and session-activity sequence checks
   reject reordered or replayed reports. Evaluation time never moves backward;
   a delayed heartbeat may restore a session only while that report is fresh.
-- **Assignment:** every 15-second tick runs Presence first, then sweeps all
+- **Assignment:** every 30-second tick runs Presence first, then sweeps all
   reported sessions across every workspace/project. Each currently idle agent
   that owns no in-progress task gets the oldest eligible queued task in its
   project (OS label, review exclusion, goal, delegation, owner and session
@@ -313,7 +313,7 @@ Rules carried over from the desktop:
   sweep fills every eligible free session while work remains; empty or blocked
   projects do not stop other workspaces. Fresh Presence state is authoritative,
   including sessions that stayed idle since the previous tick. Activity and task
-  events do not independently trigger assignment. The first clock tick is 15 s
+  events do not independently trigger assignment. The first clock tick is 30 s
   after startup; missed ticks are skipped rather than replayed in a burst.
   Claim conflicts skip an ineligible task; storage failures fail the delivery
   for retry. A rejected notification consumes its offer and releases the task

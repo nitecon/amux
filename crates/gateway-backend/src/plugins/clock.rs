@@ -8,7 +8,7 @@ use serde_json::json;
 use std::time::Duration;
 
 pub const TICK: &str = "clock.tick";
-pub const INTERVAL: Duration = Duration::from_secs(15);
+pub const INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn definition() -> EventDefinition {
     EventDefinition {
