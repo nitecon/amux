@@ -907,7 +907,7 @@ async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_of
         .await;
     let agents = json!({"agents": [
         {"session_id": SESSION, "instance_id": INSTANCE, "provider": "claude", "os": "linux", "project": PROJECT},
-        {"session_id": REVIEWER, "instance_id": INSTANCE, "provider": "claude", "os": "linux", "project": PROJECT},
+        {"session_id": REVIEWER, "instance_id": INSTANCE, "provider": "codex", "os": "linux", "project": PROJECT},
     ]});
     emit(&mut author, "client.heartbeat", agents, None).await;
     let quiet = json!({"session_id": REVIEWER, "instance_id": INSTANCE, "output_at": now_ms() - 60_000, "draft": false});

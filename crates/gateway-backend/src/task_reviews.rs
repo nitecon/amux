@@ -20,24 +20,6 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn ensure_reviewer(
-    labels: &[String],
-    origin: Option<&task_events::AgentOrigin>,
-    actor_agent_id: Option<&str>,
-) -> Result<()> {
-    if labels
-        .iter()
-        .filter_map(|label| label.strip_prefix("review-exclude:"))
-        .any(|excluded| {
-            origin.is_some_and(|origin| origin.session_id == excluded)
-                || actor_agent_id == Some(excluded)
-        })
-    {
-        return Err(Conflict("completion reviews require a different agent").into());
-    }
-    Ok(())
-}
-
 fn opposite(provider: &str) -> Option<&'static str> {
     match provider {
         "claude" => Some("codex"),
@@ -83,41 +65,88 @@ fn preferred_provider(conn: &Connection, labels: &[String]) -> Result<Option<Str
     preferred_for_source(conn, source)
 }
 
-/// Used by the controller and every claim/reassignment path. A busy or
-/// incompatible opposite-provider registration still requires waiting for it.
-pub fn ensure_provider(
+/// Independence and provider are preferences, never permanent queue barriers.
+/// A fallback (same provider or contributor) requires a fresh context on delivery.
+pub(crate) fn rank(
     conn: &Connection,
-    labels: &[String],
+    task: &serde_json::Value,
+    agent: &serde_json::Value,
+) -> Result<(bool, bool)> {
+    let labels: Vec<String> = serde_json::from_value(task["labels"].clone()).unwrap_or_default();
+    if !labels.iter().any(|label| label == "task-review") {
+        return Ok((false, false));
+    }
+    let provider = preferred_provider(conn, &labels)?;
+    let same_provider =
+        provider.is_some_and(|preferred| agent["provider"].as_str() != Some(preferred.as_str()));
+    let contributor = labels
+        .iter()
+        .filter_map(|label| label.strip_prefix("review-exclude:"))
+        .any(|excluded| {
+            agent["session_id"].as_str() == Some(excluded)
+                || agent["agent_id"].as_str() == Some(excluded)
+        });
+    Ok((same_provider, contributor))
+}
+
+pub(crate) fn available(
+    conn: &Connection,
+    task: &serde_json::Value,
+    now: i64,
+) -> Result<Vec<crate::plugins::presence::AgentPresence>> {
+    let agents = crate::plugins::presence::agents(conn, now)?;
+    let sessions = crate::plugins::assignment::available_sessions(conn, &agents, now)?;
+    let mut ready = Vec::new();
+    for report in agents {
+        if rank(conn, task, &report.agent)? != (false, false)
+            && report.agent["review_context_clear"] != true
+        {
+            continue;
+        }
+        if !sessions.contains(&report.session_id)
+            || report.agent["project"] != task["project_ident"]
+            || !crate::plugins::assignment::eligible(task, &report.agent)
+        {
+            continue;
+        }
+        ready.push(report);
+    }
+    Ok(ready)
+}
+
+/// Apply the same best-effort preference to claims and explicit handoffs.
+/// Existing claims are not invalidated when another reviewer becomes available.
+pub fn ensure_reviewer(
+    conn: &Connection,
+    task: &db::Task,
     origin: Option<&task_events::AgentOrigin>,
     actor_agent_id: Option<&str>,
 ) -> Result<()> {
-    // A human board status change nominates no reviewer. Explicit owner
-    // assignments still supply an actor ID or target origin and are checked.
-    if origin.is_none() && actor_agent_id.is_none() {
+    if !task.labels.iter().any(|label| label == "task-review")
+        || (origin.is_none() && actor_agent_id.is_none())
+    {
         return Ok(());
     }
-    let Some(preferred) = preferred_provider(conn, labels)? else {
-        return Ok(());
-    };
-    if !crate::plugins::presence::provider_registered(conn, &preferred, db::now_ms())? {
-        return Ok(());
-    }
-    let provider = if let Some(origin) = origin {
-        Some(origin.provider.clone())
-    } else if let Some(actor) = actor_agent_id {
-        conn.query_row(
-            "SELECT json_extract(origin_json,'$.provider') FROM task_target_presence
-             WHERE session_id=?1 OR json_extract(agent_json,'$.agent_id')=?1
-             ORDER BY COALESCE(report_seen_at,seen_at) DESC LIMIT 1",
-            params![actor],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
+    let agent = if let Some(origin) = origin {
+        serde_json::json!({"provider":origin.provider,"session_id":origin.session_id,"agent_id":actor_agent_id})
     } else {
-        None
+        let raw: Option<String> = conn.query_row(
+            "SELECT COALESCE(agent_json,origin_json) FROM task_target_presence WHERE session_id=?1 OR json_extract(agent_json,'$.agent_id')=?1 ORDER BY COALESCE(report_seen_at,seen_at) DESC LIMIT 1",
+            params![actor_agent_id], |row| row.get(0)).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw))
+            .transpose()?
+            .unwrap_or_else(|| serde_json::json!({"agent_id":actor_agent_id}))
     };
-    if provider.as_deref() != Some(preferred.as_str()) {
-        return Err(Conflict("completion reviews require the opposite provider while it is registered; use an eligible agent identity").into());
+    let mut value = serde_json::to_value(task)?;
+    value["status"] = serde_json::json!("todo");
+    let selected = rank(conn, &value, &agent)?;
+    for candidate in available(conn, &value, db::now_ms())? {
+        if rank(conn, &value, &candidate.agent)? < selected {
+            return Err(Conflict(
+                "an available project reviewer has a better provider/independence preference",
+            )
+            .into());
+        }
     }
     Ok(())
 }
@@ -324,7 +353,8 @@ mod tests {
         assert!(review.owner_origin.is_none() && review.owner_agent_id.is_none());
         assert!(review.labels.contains(&"os:linux".into()));
         assert!(review.labels.contains(&"review-provider:claude".into()));
-        assert!(update(&conn, &review.id, "in_progress", &author).is_err());
+        update(&conn, &review.id, "in_progress", &author).unwrap();
+        update(&conn, &review.id, "todo", &author).unwrap();
         assert_eq!(
             task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
                 .unwrap()
@@ -355,8 +385,8 @@ mod tests {
         );
     }
     #[test]
-    fn registered_opposite_provider_blocks_manual_claims_even_when_busy_elsewhere() {
-        let (database, source, _) = fixture();
+    fn reviewer_preference_uses_available_project_os_agents_and_allows_fallback() {
+        let (database, source, author) = fixture();
         let conn = database.lock().unwrap();
         let review =
             task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
@@ -365,58 +395,36 @@ mod tests {
         let peer = actor();
         let mut reviewer = actor();
         reviewer.provider = "claude".into();
-        // Register on another project/OS, busy with no idle evidence. This
-        // still prevents same-provider fallback, including direct REST claims.
         let now = db::now_ms();
-        crate::plugins::presence::seed_report(
-            &conn,
-            "fixture",
-            serde_json::json!({
-                "session_id":reviewer.session_id,"instance_id":reviewer.instance_id,
-                "provider":"claude","os":"windows","project":"another-project"
-            }),
-            now,
-            Some(now),
-            true,
-            "busy",
-        );
-        assert!(update(&conn, &review.id, "in_progress", &peer).is_err());
-        assert!(
-            ensure_provider(&conn, &review.labels, None, Some("unknown-legacy-agent")).is_err()
-        );
-        assert!(ensure_provider(&conn, &review.labels, None, Some(&reviewer.session_id)).is_ok());
-        // Existing reviews without the new marker follow the same policy.
-        let legacy: Vec<_> = review
-            .labels
-            .iter()
-            .filter(|label| !label.starts_with("review-provider:"))
-            .cloned()
-            .collect();
-        assert!(ensure_provider(&conn, &legacy, Some(&peer), None).is_err());
-        let stripped: Vec<_> = review
-            .labels
-            .iter()
-            .filter(|label| !label.starts_with("review-provider:"))
-            .cloned()
-            .collect();
-        assert!(preserve_metadata(&review.labels, &stripped).is_err());
-        assert!(ensure_provider(&conn, &review.labels, Some(&reviewer), None).is_ok());
-
-        conn.execute(
-            "UPDATE task_target_presence SET report_seen_at=?1",
-            params![now - 90_000],
-        )
-        .unwrap();
-        update(&conn, &review.id, "in_progress", &peer).unwrap();
-        // A later opposite-provider registration doesn't invalidate work that
-        // was already validly claimed under fallback.
-        conn.execute(
-            "UPDATE task_target_presence SET report_seen_at=?1",
-            params![db::now_ms()],
-        )
-        .unwrap();
-        update(&conn, &review.id, "in_progress", &peer).unwrap();
-        update(&conn, &review.id, "done", &peer).unwrap();
+        let report = |project: &str, os: &str, draft: bool, output: i64| {
+            crate::plugins::presence::seed_report(
+                &conn,
+                "fixture",
+                serde_json::json!({
+                    "session_id":reviewer.session_id, "instance_id":reviewer.instance_id,
+                    "provider":"claude", "os":os, "project":project, "review_context_clear":true
+                }),
+                now,
+                Some(output),
+                draft,
+                if draft { "busy" } else { "idle" },
+            );
+        };
+        // Another project/OS, or a busy preferred reviewer, cannot stall work.
+        report("another-project", "windows", true, now);
+        assert!(ensure_reviewer(&conn, &review, Some(&peer), None).is_ok());
+        report("example", "windows", false, now - 60_000);
+        assert!(ensure_reviewer(&conn, &review, Some(&peer), None).is_ok());
+        report("example", "linux", true, now);
+        assert!(ensure_reviewer(&conn, &review, Some(&peer), None).is_ok());
+        report("example", "linux", false, now - 60_000);
+        assert!(ensure_reviewer(&conn, &review, Some(&peer), None).is_err());
+        assert!(ensure_reviewer(&conn, &review, Some(&reviewer), None).is_ok());
+        conn.execute("DELETE FROM task_target_presence", [])
+            .unwrap();
+        // Even the author is valid when no other candidate can review.
+        update(&conn, &review.id, "in_progress", &author).unwrap();
+        update(&conn, &review.id, "done", &author).unwrap();
     }
 
     #[test]
@@ -448,31 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_policy_is_symmetric_and_counts_rest_only_registrations() {
-        let (database, _, _) = fixture();
-        let conn = database.lock().unwrap();
-        let codex = actor();
-        let mut claude = actor();
-        claude.provider = "claude".into();
-        let labels = vec!["task-review".into(), "review-provider:codex".into()];
-        assert!(ensure_provider(&conn, &labels, Some(&claude), None).is_ok());
-        conn.execute(
-            "INSERT INTO task_target_presence(project_ident,instance_id,session_id,origin_json,generation,seen_at,advertised)
-             VALUES('example',?1,?2,?3,'fixture',?4,1)",
-            params![codex.instance_id, codex.session_id, serde_json::to_string(&codex).unwrap(), db::now_ms()],
-        ).unwrap();
-        assert!(ensure_provider(&conn, &labels, Some(&claude), None).is_err());
-        assert!(ensure_provider(&conn, &labels, Some(&codex), None).is_ok());
-        conn.execute(
-            "UPDATE task_target_presence SET seen_at=?1",
-            params![db::now_ms() - crate::task_targets::TTL_MS - 1],
-        )
-        .unwrap();
-        assert!(ensure_provider(&conn, &labels, Some(&claude), None).is_ok());
-    }
-
-    #[test]
-    fn agents_that_commented_before_a_handoff_are_also_excluded() {
+    fn contributor_metadata_is_retained_without_permanently_blocking_fallback() {
         let database = db::open(":memory:").unwrap();
         let conn = database.lock().unwrap();
         conn.execute("INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES ('example','none','',0)", []).unwrap();
@@ -496,7 +480,8 @@ mod tests {
         for agent in [&worker, &finisher] {
             let label = format!("review-exclude:{}", agent.session_id);
             assert_eq!(review.labels.iter().filter(|l| **l == label).count(), 1);
-            assert!(update(&conn, &review.id, "in_progress", agent).is_err());
+            update(&conn, &review.id, "in_progress", agent).unwrap();
+            update(&conn, &review.id, "todo", agent).unwrap();
         }
     }
     #[test]

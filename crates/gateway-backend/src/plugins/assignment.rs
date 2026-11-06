@@ -155,6 +155,31 @@ fn release(conn: &Connection, event: &Event) -> Result<()> {
     })
 }
 
+/// One readiness contract for automatic assignment and explicit review claims.
+pub(crate) fn available_sessions(
+    conn: &Connection,
+    agents: &[presence::AgentPresence],
+    now: i64,
+) -> Result<HashSet<String>> {
+    let busy = conn.prepare("SELECT DISTINCT json_extract(owner_origin_json,'$.session_id') FROM tasks WHERE status='in_progress' AND owner_origin_json IS NOT NULL")?
+        .query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<_>>>()?;
+    let refusals = conn
+        .prepare("SELECT session_id,output_at FROM assignment_refusals")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    Ok(agents
+        .iter()
+        .filter(|report| {
+            report.idle(now)
+                && !busy.contains(&report.session_id)
+                && refusals.get(&report.session_id).copied() != report.output_at
+        })
+        .map(|report| report.session_id.clone())
+        .collect())
+}
+
 fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
     let mut agents = presence::agents(conn, now)?;
     // Codex gets first choice of ordinary work. Stable sorting preserves the
@@ -171,19 +196,17 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut refused = HashSet::new();
     for (session, output_at) in refusals {
-        if outputs.get(session.as_str()) == Some(&Some(output_at)) {
-            refused.insert(session);
-        } else {
+        if outputs.get(session.as_str()) != Some(&Some(output_at)) {
             conn.execute(
                 "DELETE FROM assignment_refusals WHERE session_id=?1",
                 params![session],
             )?;
         }
     }
+    let mut ready = available_sessions(conn, &agents, now)?;
     for report in &agents {
-        if !report.idle(now) || refused.contains(&report.session_id) {
+        if !ready.contains(&report.session_id) {
             continue;
         }
         let agent = &report.agent;
@@ -192,15 +215,6 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             continue; // Observed for status counts, not eligible for task routing.
         }
         let session = agent["session_id"].as_str().unwrap_or_default();
-        let busy: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tasks WHERE status='in_progress'
-             AND json_extract(owner_origin_json,'$.session_id')=?1)",
-            params![session],
-            |row| row.get(0),
-        )?;
-        if busy {
-            continue;
-        }
         // Every ordinary assignment is followed by a review when one is queued.
         let review_next: bool = conn
             .query_row(
@@ -215,6 +229,27 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             tasks.sort_by_key(|task| !is_review(task));
         }
         for task in tasks {
+            if is_review(&task) {
+                let selected = crate::task_reviews::rank(conn, &task, agent)?;
+                let mut preferred = false;
+                for candidate in agents.iter().filter(|candidate| {
+                    ready.contains(&candidate.session_id)
+                        && candidate.agent["project"].as_str() == Some(project)
+                        && eligible(&task, &candidate.agent)
+                }) {
+                    let rank = crate::task_reviews::rank(conn, &task, &candidate.agent)?;
+                    if rank != (false, false) && candidate.agent["review_context_clear"] != true {
+                        continue;
+                    }
+                    if rank < selected {
+                        preferred = true;
+                        break;
+                    }
+                }
+                if preferred {
+                    continue;
+                }
+            }
             // Busy Codex agents retain preference for ordinary work. Explicit
             // ownership/routing and OS/goal requirements still take precedence.
             let reserved_for_codex = !is_review(&task)
@@ -225,6 +260,7 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
                         && eligible(&task, &candidate.agent)
                 });
             if !reserved_for_codex && eligible(&task, agent) && claim(conn, ctx, agent, &task)? {
+                ready.remove(session);
                 conn.execute(
                     "INSERT OR REPLACE INTO assignment_turns(project, review_next) VALUES(?1, ?2)",
                     params![project, !is_review(&task)],
@@ -274,7 +310,6 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
         return false;
     };
     if os.is_some_and(|os| agent["os"].as_str() != Some(os))
-        || labels.contains(&format!("review-exclude:{session}"))
         || task["status"] != "todo"
         || (task["kind"] == "delegated" && task["delegated_to_task_id"].is_string())
         || (!task["goal"].is_null() && task["goal"] != agent["goal"])
@@ -303,6 +338,12 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
 /// Claim as the agent, record why, and ask it to start. Returns false when the
 /// task store rejects the claim.
 fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> Result<bool> {
+    if is_review(task)
+        && crate::task_reviews::rank(conn, task, agent)? != (false, false)
+        && agent["review_context_clear"] != true
+    {
+        return Ok(false);
+    }
     let new_task = notify::new_assignment(conn, task)?;
     let reporter_source = agent["source"].as_str().ok_or_else(|| {
         anyhow::anyhow!("assignment agent is missing its authenticated report source")
@@ -331,7 +372,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
             labels: None,
             hostname: None,
         };
-        // The task store enforces OS and reviewer exclusion;
+        // The task store enforces OS and best-effort reviewer preference;
         // a rejected claim rolls back and the task is simply not eligible.
         if db::update_task(tx, project, id, &update, Some(&actor))?.is_none() {
             return Ok(false);
@@ -347,10 +388,16 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         )?;
         let current: Value = serde_json::from_str(&current)?;
         let review = is_review(&current);
+        let clear_context =
+            review && crate::task_reviews::rank(tx, &current, agent)? != (false, false);
         let session = &origin.session_id;
         let (heading, instructions) = if review {
             (
-                "Queued independent review",
+                if clear_context {
+                    "Queued review"
+                } else {
+                    "Queued independent review"
+                },
                 templates::QUEUED_REVIEW.to_owned(),
             )
         } else {
@@ -362,6 +409,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,
             "new_task": new_task,
+            "clear_context": clear_context,
             "heading": heading, "instructions": instructions,
             "event": {"kind": "task_created", "project_ident": project, "created_at": db::now_ms(),
                       "task": current, "comment": null, "origin": null},
@@ -398,7 +446,7 @@ mod tests {
 
     fn agent(session: &str) -> Value {
         json!({"session_id": session, "instance_id": "9e1c7a54-2b7f-4f43-8f0e-1f6f6e1b0002",
-               "provider": "claude", "os": "linux", "project": "p","source":"client-fixture"})
+               "provider": "claude", "os": "linux", "project": "p","source":"client-fixture", "review_context_clear":true})
     }
 
     async fn settle(database: &db::Db) {
@@ -439,7 +487,7 @@ mod tests {
         assert!(eligible(&task(json!({})), &agent));
         assert!(eligible(&task(json!({"labels": ["os:linux"]})), &agent));
         assert!(!eligible(&task(json!({"labels": ["os:windows"]})), &agent));
-        assert!(!eligible(
+        assert!(eligible(
             &task(json!({"labels": [format!("review-exclude:{me}")]})),
             &agent
         ));
@@ -962,31 +1010,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reviews_wait_for_registered_codex_then_assign_automatically_when_it_is_idle() {
-        let (database, bus, _router) = setup();
-        let now = db::now_ms();
-        seed_agent(&database, session(1, "p"), now, 60_000, false, "busy");
-        let mut codex = session(2, "p");
-        codex["provider"] = json!("codex");
-        seed_agent(&database, codex.clone(), now, 0, false, "busy");
-        let review = queue(&database, "p", 1, &["task-review", "review-provider:codex"]);
-        // Claude can still handle work whose OS has no eligible Codex report.
-        let ordinary = queue(&database, "p", 2, &["os:windows"]);
-        let mut claude = session(1, "p");
-        claude["os"] = json!("windows");
-        seed_agent(&database, claude, now, 60_000, false, "busy");
-        tick(&bus, &database).await;
-        assert_eq!(state(&database, &review), ("todo".into(), None));
-        assert_eq!(
-            state(&database, &ordinary).1.as_deref(),
-            session(1, "p")["session_id"].as_str()
-        );
-        seed_agent(&database, codex, db::now_ms(), 50_000, false, "busy");
-        tick(&bus, &database).await;
-        assert_eq!(
-            state(&database, &review).1.as_deref(),
-            session(2, "p")["session_id"].as_str()
-        );
+    async fn reviews_prefer_available_peers_and_fallback_with_required_context_clear() {
+        for scenario in 0..6 {
+            let (database, bus, _router) = setup();
+            let now = db::now_ms();
+            let mut claude = session(1, "p");
+            if scenario == 5 {
+                claude["review_context_clear"] = json!(false);
+            }
+            seed_agent(&database, claude.clone(), now, 60_000, false, "busy");
+            let mut codex = session(2, if scenario == 2 { "q" } else { "p" });
+            codex["provider"] = json!("codex");
+            if scenario == 3 {
+                codex["os"] = json!("windows");
+            }
+            if scenario == 4 {
+                codex["provider"] = json!("claude");
+            }
+            seed_agent(
+                &database,
+                codex,
+                now,
+                if scenario == 1 || scenario == 5 {
+                    0
+                } else {
+                    50_000
+                },
+                false,
+                "busy",
+            );
+            let exclusion = format!("review-exclude:{}", claude["session_id"].as_str().unwrap());
+            let mut labels = vec!["task-review", "review-provider:codex", "os:linux"];
+            if scenario == 4 {
+                labels.push(&exclusion);
+            }
+            let review = queue(&database, "p", 1, &labels);
+            tick(&bus, &database).await;
+            if scenario == 5 {
+                assert_eq!(
+                    state(&database, &review),
+                    ("todo".into(), None),
+                    "old clients cannot silently skip required clear"
+                );
+                continue;
+            }
+            let expected = if scenario == 0 || scenario == 4 { 2 } else { 1 };
+            assert_eq!(
+                state(&database, &review).1.as_deref(),
+                session(expected, "p")["session_id"].as_str(),
+                "scenario {scenario}"
+            );
+            let clear: bool = database.lock().unwrap().query_row(
+                "SELECT json_extract(payload,'$.clear_context') FROM router_events WHERE id='agent.notify' AND json_extract(payload,'$.event.task.id')=?1 ORDER BY seq DESC LIMIT 1",
+                [&review], |row| row.get(0)).unwrap();
+            assert_eq!(clear, scenario != 0, "scenario {scenario}");
+        }
     }
 
     #[tokio::test]

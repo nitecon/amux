@@ -2859,9 +2859,9 @@ mod tests {
                 "fixture",
                 report,
                 db::now_ms(),
-                None,
+                Some(db::now_ms() - 60_000),
                 false,
-                "unknown",
+                "idle",
             );
             let queue = |labels: &[String]| {
                 db::insert_unassigned_dispatch_task(
@@ -2910,7 +2910,10 @@ mod tests {
         ] {
             let (status, result) = desktop_http(&state, headers, method, &endpoint, body).await;
             assert_eq!(status, StatusCode::CONFLICT, "{result}");
-            assert!(result.to_string().contains("opposite provider"), "{result}");
+            assert!(
+                result.to_string().contains("better provider/independence"),
+                "{result}"
+            );
             let conn = state.db.lock().unwrap();
             for id in [&first.id, &review.id] {
                 let task = db::get_task_detail(&conn, "example", id)
@@ -3009,6 +3012,18 @@ mod tests {
                 blocked.insert("x-agent-id", excluded.parse().unwrap());
                 eligible.insert("x-agent-id", peer_id.parse().unwrap());
             }
+            let mut report = serde_json::to_value(&peer.target.origin).unwrap();
+            report["project"] = json!("example");
+            report["agent_id"] = json!(peer_id);
+            crate::plugins::presence::seed_report(
+                &state.db.lock().unwrap(),
+                "fixture",
+                report,
+                db::now_ms(),
+                Some(db::now_ms() - 60_000),
+                false,
+                "idle",
+            );
             let labels = vec!["task-review".into(), format!("review-exclude:{excluded}")];
             let review = queue(&labels);
             let first = queue(&[]);
@@ -3032,7 +3047,10 @@ mod tests {
             ] {
                 let (status, result) = desktop_http(&state, headers, "PATCH", &path, body).await;
                 assert_eq!(status, StatusCode::CONFLICT, "native={native}: {result}");
-                assert!(result.to_string().contains("different agent"), "{result}");
+                assert!(
+                    result.to_string().contains("better provider/independence"),
+                    "{result}"
+                );
             }
             let (status, result) = desktop_http(
                 &state,
@@ -3043,7 +3061,10 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::CONFLICT, "native={native}: {result}");
-            assert!(result.to_string().contains("different agent"), "{result}");
+            assert!(
+                result.to_string().contains("better provider/independence"),
+                "{result}"
+            );
             {
                 let conn = state.db.lock().unwrap();
                 let after = [first.id.as_str(), review.id.as_str()].map(|id| {
@@ -3070,7 +3091,10 @@ mod tests {
                 )
                 .await;
                 assert_eq!(status, StatusCode::CONFLICT, "{result}");
-                assert!(result.to_string().contains("different agent"), "{result}");
+                assert!(
+                    result.to_string().contains("better provider/independence"),
+                    "{result}"
+                );
             }
             let (status, result) = desktop_http(
                 &state,

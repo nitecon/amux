@@ -121,9 +121,16 @@ result. When the user returns work to TODO, normal eligibility resumes.
 ## Completion reviews
 
 When a task completes, the server's `review` plugin queues one ordinary review
-task for a different agent (the completing agent and every agent that commented
-on the task are excluded, including by the task store's claim and assignment
-checks). Reviews use the same FIFO assignment
+task. Review assignment is best effort: prefer an available agent from the
+other provider in the same project with the required OS and goal, then prefer
+agents outside the contributor/commenter metadata. Busy, drafting, occupied,
+refusing, incompatible or disconnected agents do not hold the queue indefinitely.
+If only the same provider or a previous contributor can take the review, it is
+assigned with a required context reset. The desktop sends `/clear`, waits five
+seconds, re-verifies the process and input, then injects the review. This overrides
+the optional clear-on-new-task setting. Clients advertise `review_context_clear`;
+older clients cannot receive a fallback that they cannot safely clear.
+Reviews use the same FIFO assignment
 as other work, except that each ordinary assignment in a project is followed by
 the oldest eligible queued review, if there is one. The server creates at most one review per source completion, and
 completing a review does not create another review.

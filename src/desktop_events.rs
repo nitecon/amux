@@ -81,15 +81,16 @@ enum DeliveryInput<'a> {
 
 fn new_task_context(event: &Value, idle: Option<Duration>, has_draft: bool) -> bool {
     let payload = &event["payload"];
-    payload["new_task"] == true
+    (payload["new_task"] == true || payload["clear_context"] == true)
         && payload["event"]["kind"] == "task_created"
         && payload["event"]["comment"].is_null()
         && payload["event"]["task"]["id"]
             .as_str()
             .is_some_and(|id| Uuid::parse_str(id).is_ok())
-        && !payload["event"]["task"]["labels"]
-            .as_array()
-            .is_some_and(|labels| labels.iter().any(|label| label == "task-review"))
+        && (payload["clear_context"] == true
+            || !payload["event"]["task"]["labels"]
+                .as_array()
+                .is_some_and(|labels| labels.iter().any(|label| label == "task-review")))
         && idle.is_some_and(|elapsed| elapsed >= amux::session::IDLE_AFTER)
         && !has_draft
 }
@@ -323,6 +324,7 @@ impl Desktop {
                     "name": c.name,
                     "agent_id": c.target.agent_id,
                     "generation": c.target.executor_generation().to_string(),
+                    "review_context_clear": true,
                 });
                 // A returned live target confirms this execution's repository
                 // binding. Unconfirmed reports retain the v1 heartbeat shape.
@@ -746,7 +748,24 @@ impl Desktop {
             self.events_result(&event, "skipped", "notification cannot be rendered");
             return Task::none();
         };
-        if input_revision.is_none() && self.preferences.current.clear_on_task {
+        if input_revision.is_none() && event["payload"]["clear_context"] == true {
+            let ready = tab(self, current.target.terminal).is_some_and(|tab| {
+                new_task_context(
+                    &event,
+                    tab.terminal.as_ref().and_then(Terminal::activity_elapsed),
+                    !tab.delegation.input.is_empty(),
+                )
+            });
+            if !ready {
+                // The server and local idle clocks may differ slightly. Wait
+                // rather than deliver a fallback without its required clear.
+                self.delegation.events.pending.push_back(event);
+                return Task::none();
+            }
+        }
+        if input_revision.is_none()
+            && (self.preferences.current.clear_on_task || event["payload"]["clear_context"] == true)
+        {
             let clear_revision = tab(self, current.target.terminal).and_then(|tab| {
                 new_task_context(
                     &event,

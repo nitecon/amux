@@ -257,7 +257,7 @@ All events are version 1. Payload schemas are validated by the registry.
 | `retention.startup` | server runtime | `{}`; requests immediate startup cleanup |
 | `channel.message_received` | channel input adapter | `{channel_name, room_id, message: {id, content, author_kind}}`; internal only |
 | `task.created` / `task.updated` / `task.commented` / `task.assigned` / `task.started` / `task.user_review` / `task.completed` / `task.cancelled` / `task.unclaimed` | task event source (outbox) | `{project, task, comment, actor}`; `assigned` fires whenever the owner is set or changes (claim or assign) |
-| `client.heartbeat` | remote client (`remote_emit`) | `{client_run?: uuid, agents: [{session_id, instance_id, provider, os, project, name?, goal?, agent_id?, generation?, canonical_remote?}]}`, every agent the client runs; `client_run` identifies one desktop lifetime across reconnects |
+| `client.heartbeat` | remote client (`remote_emit`) | `{client_run?: uuid, agents: [{session_id, instance_id, provider, os, project, name?, goal?, agent_id?, generation?, canonical_remote?, review_context_clear?}]}`, every agent the client runs; `client_run` identifies one desktop lifetime across reconnects |
 | `terminal.activity` | remote client (`remote_emit`) | `{session_id, instance_id, output_at, draft}`; `output_at` is the last terminal output on the server's clock |
 | `agent.online` / `agent.idle` / `agent.busy` / `agent.gone` | Presence | `{agent}` as reported in the heartbeat, plus its `source` |
 | `agent.notify` | Assignment, Notifier, Reminder | `{target, project, mode, event, heading, instructions, require_idle}`; `event` is the task-event shape terminals already render, `mode` is `assigned` (already claimed for the agent) or `recipient` |
@@ -295,7 +295,7 @@ Rules carried over from the desktop:
 - **Assignment:** every 30-second tick runs Presence first, then sweeps all
   reported sessions across every workspace/project. Each currently idle agent
   that owns no in-progress task gets the oldest eligible queued task in its
-  project (OS label, review exclusion, goal, delegation, owner and session
+  project (OS label, goal, delegation, owner and session
   routing). After each ordinary assignment, the project's next assignment
   goes to the oldest eligible queued `task-review`, if any. Queued
   `autoreview-finding` tasks remain ordinary work; **User review**
@@ -329,19 +329,19 @@ Rules carried over from the desktop:
   separate independent review task. The original stays done; creating review
   work never returns it to TODO or User review. Replayed completion events do
   not create duplicate reviews.
-- **Review provider:** reviews of Claude work go to Codex, and reviews of Codex
-  work go to Claude. Same-provider fallback is allowed only when the opposite
-  provider has no live registration anywhere on this server. Busy agents,
-  other projects and incompatible OS requirements do not permit fallback;
-  the review waits for an eligible opposite-provider agent. Registrations use
-  the existing Presence report/advertisement leases, so expired identities do
-  not block fallback forever. The source provider is captured in immutable
-  review metadata; older queued reviews resolve it from the source task.
-  The normal task store enforces this policy for automatic assignments,
-  manual claims, reassignments and batch status changes. Already claimed
-  fallback reviews may finish if an opposite-provider agent later connects.
-  Human board status changes and column moves remain available without
-  nominating a reviewer; explicit owner assignments still enforce the policy.
+- **Review provider:** reviews prefer an available opposite-provider agent in
+  their project, OS and goal. Independence metadata is a secondary preference,
+  not a hard exclusion. Busy, drafting, occupied or refusing agents do not block
+  fallback. If no better reviewer is available, the same provider or contributor
+  may review with a required context reset. Automatic fallback notifications set
+  `clear_context`; only desktops advertising `review_context_clear` receive them.
+  The desktop sends `/clear`, waits five seconds and re-verifies process/input
+  before delivery, regardless of its optional clear-on-task setting. Existing
+  queued review metadata remains useful for ranking without rewriting tasks.
+  The task store applies the same best-effort preference to claims and handoffs;
+  an already claimed review may finish when another reviewer later connects.
+  Human status changes that nominate no reviewer remain available.
+
 - **Notifier:** owners hear about activity on their tasks, explicit requesters
   receive comment/completion results, actors never hear about their own
   changes, and queued or user-review work is left to Assignment and the user.

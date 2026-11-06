@@ -202,7 +202,7 @@ fn fixture_process() {
     }
     // Bound a leaked fixture even if its terminal never closes.
     std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_secs(120));
+        std::thread::sleep(Duration::from_secs(180));
         std::process::exit(0);
     });
     let exe = std::env::current_exe().unwrap();
@@ -662,8 +662,19 @@ fn repeated_notifications_never_interrupt_the_provider_to_clear_a_draft() {
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn new_tasks_clear_once_then_wait_and_reverify_without_overwriting_user_input() {
+    check_context_clear_delivery(false);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn fallback_reviews_force_clear_even_when_optional_setting_is_off() {
+    check_context_clear_delivery(true);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn check_context_clear_delivery(fallback_review: bool) {
     let mut app = desktop();
-    app.preferences.current.clear_on_task = true;
+    app.preferences.current.clear_on_task = !fallback_review;
     let codex = spawn(&mut app, 0, 0, Provider::Codex, "paste");
     let claude = spawn(&mut app, 1, 1, Provider::Claude, "opaque");
     let interrupted = spawn(&mut app, 0, 2, Provider::Codex, "opaque");
@@ -677,7 +688,11 @@ fn new_tasks_clear_once_then_wait_and_reverify_without_overwriting_user_input() 
 
     for (index, agent) in [&codex, &claude, &interrupted].into_iter().enumerate() {
         let mut event = notify(&app, agent, index as i64 + 1, true);
-        event["payload"]["new_task"] = json!(true);
+        event["payload"]["new_task"] = json!(!fallback_review);
+        if fallback_review {
+            event["payload"]["clear_context"] = json!(true);
+            event["payload"]["event"]["task"]["labels"] = json!(["task-review"]);
+        }
         receive(&mut app, event.clone());
         drop(app.events_deliver());
         let old_token = app.delegation.events.delivering.as_ref().unwrap().token;
@@ -1222,7 +1237,9 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
     ));
     app.delegation.events.outgoing = Some(outgoing);
     let mut task_id = None;
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut source_completed = false;
+    assert!(!app.preferences.current.clear_on_task);
+    let deadline = Instant::now() + Duration::from_secs(150);
     loop {
         if Instant::now() >= deadline {
             panic!(
@@ -1255,6 +1272,11 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
         if app.delegation.events.connected {
             app.events_report();
             drop(app.events_deliver());
+            if let Some(token) = app.delegation.events.delivering.as_ref().and_then(|d| {
+                matches!(d.stage, events::DeliveryStage::Clearing { .. }).then_some(d.token)
+            }) {
+                drop(app.events_clear_ready(token));
+            }
             let verified = app
                 .delegation
                 .events
@@ -1275,10 +1297,24 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
             );
             task_id = task["id"].as_str().map(str::to_owned);
         }
-        if agent
-            .lines()
-            .iter()
-            .any(|line| line.contains("Queued task review"))
+        if !source_completed
+            && agent
+                .lines()
+                .iter()
+                .any(|line| line.contains("Queued task review"))
+        {
+            call(
+                reqwest::Method::PATCH,
+                format!("/v1/projects/e2e/tasks/{}", task_id.as_ref().unwrap()),
+                json!({"status":"done"}),
+            );
+            source_completed = true;
+        }
+        if source_completed
+            && agent
+                .lines()
+                .iter()
+                .any(|line| line.contains("Queued review"))
         {
             break;
         }
@@ -1299,7 +1335,38 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
         format!("/v1/projects/e2e/tasks/{id}"),
         Value::Null,
     );
-    assert_eq!(task["status"], "in_progress");
+    assert_eq!(task["status"], "done");
+    let lines = agent.lines();
+    let clear = lines
+        .iter()
+        .position(|line| line == "/clear")
+        .expect("fallback must clear context");
+    let review_line = lines
+        .iter()
+        .position(|line| line.contains("Queued review"))
+        .unwrap();
+    assert!(clear < review_line, "{lines:?}");
+    let tasks = call(
+        reqwest::Method::GET,
+        "/v1/projects/e2e/tasks?status=in_progress".into(),
+        Value::Null,
+    );
+    let review = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| {
+            task["labels"]
+                .as_array()
+                .is_some_and(|labels| labels.contains(&json!("task-review")))
+        })
+        .expect("fallback review must be executing");
+    let review = call(
+        reqwest::Method::GET,
+        format!("/v1/projects/e2e/tasks/{}", review["id"].as_str().unwrap()),
+        Value::Null,
+    );
+    assert_eq!(review["owner_origin"]["session_id"], me);
     assert_eq!(
         task["owner_origin"]["session_id"], me,
         "claimed as the desktop's agent"

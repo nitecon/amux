@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.0.66 - 2026-11-06
+
+### Fixed
+- Keep review queues moving with best-effort provider and independence
+  preferences among available agents in the required project, OS and goal.
+  Busy or unavailable reviewers and past comment authors no longer create
+  permanent assignment barriers.
+- Reset context before a fallback review: send `/clear`, wait five seconds,
+  and recheck the process and user input before injecting the review. This
+  applies even when optional clearing for ordinary tasks is disabled.
+- Compare submit-work paths in project coordinates for repository subdirectories,
+  retaining leading whitespace in directory names and PR upstream-edit checks.
+
+### Added
+- Resume publication of a matching existing task commit with CLI
+  `--resume-commit` or MCP `resume_commit`, preserving unrelated drafts and
+  retained stashes without creating another commit.
+
+### Upgrade notes
+- Update and restart both the server and desktops. Older desktops cannot receive
+  fallback reviews that require the new context-clear delivery capability.
+
 ## v0.0.65 - 2026-11-05
 
 ### Added

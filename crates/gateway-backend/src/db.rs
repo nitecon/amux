@@ -9083,8 +9083,7 @@ fn assign_task_inner(
         )
         .into());
     }
-    crate::task_reviews::ensure_reviewer(&previous.labels, Some(&target.origin), None)?;
-    crate::task_reviews::ensure_provider(conn, &previous.labels, Some(&target.origin), None)?;
+    crate::task_reviews::ensure_reviewer(conn, &previous, Some(&target.origin), None)?;
     let caller = crate::task_events::current_origin(conn)?;
     if human {
         if caller.is_some() {
@@ -9345,20 +9344,11 @@ fn update_task_inner(
     }
     let now = now_ms();
     let new_status = upd.status.unwrap_or(&current.status).to_string();
-    if new_status == "in_progress" {
-        crate::task_reviews::ensure_reviewer(&current.labels, origin.as_ref(), actor_agent_id)?;
-        if current.status != "in_progress" {
-            crate::task_reviews::ensure_provider(
-                conn,
-                &current.labels,
-                origin.as_ref(),
-                actor_agent_id,
-            )?;
-        }
+    if new_status == "in_progress" && current.status != "in_progress" {
+        crate::task_reviews::ensure_reviewer(conn, &current, origin.as_ref(), actor_agent_id)?;
     }
     if let Some(Some(owner)) = upd.owner_agent_id {
-        crate::task_reviews::ensure_reviewer(&current.labels, None, Some(owner))?;
-        crate::task_reviews::ensure_provider(conn, &current.labels, None, Some(owner))?;
+        crate::task_reviews::ensure_reviewer(conn, &current, None, Some(owner))?;
     }
     let owner_explicit = upd.owner_agent_id.is_some();
     let transitioning = upd.status.is_some() && new_status != current.status;
@@ -9864,16 +9854,11 @@ pub fn reorder_tasks_in_column(
             return Err(crate::task_dispatch::Conflict("cancelled tasks are terminal").into());
         }
         let old_labels = parse_labels(old_labels);
-        if target_status == "in_progress" {
-            crate::task_reviews::ensure_reviewer(&old_labels, origin.as_ref(), actor_agent_id)?;
-            if old_status != "in_progress" {
-                crate::task_reviews::ensure_provider(
-                    conn,
-                    &old_labels,
-                    origin.as_ref(),
-                    actor_agent_id,
-                )?;
-            }
+        if target_status == "in_progress" && old_status != "in_progress" {
+            let task = get_task_detail(conn, &project_ident, task_id)?
+                .context("task disappeared")?
+                .task;
+            crate::task_reviews::ensure_reviewer(conn, &task, origin.as_ref(), actor_agent_id)?;
         }
 
         // Compute new timestamps + owner by mirroring the transition logic
