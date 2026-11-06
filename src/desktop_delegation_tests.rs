@@ -370,10 +370,22 @@ fn grid(app: &Desktop, id: u64) -> Option<TerminalGridObservation> {
 fn wait(app: &Desktop, done: impl Fn(&Desktop) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done(app) {
-        assert!(
-            Instant::now() < deadline,
-            "native terminal condition timed out"
-        );
+        let timed_out = Instant::now() >= deadline;
+        let grids: Vec<_> = if timed_out {
+            app.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.panes.iter().flat_map(|(_, pane)| &pane.tabs))
+                .filter_map(|tab| {
+                    tab.terminal
+                        .as_ref()?
+                        .grid_observation(8_192)
+                        .map(|grid| (tab.id, grid.observation.lines))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        assert!(!timed_out, "native terminal condition timed out: {grids:?}");
         std::thread::sleep(Duration::from_millis(10));
     }
 }

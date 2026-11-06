@@ -1,6 +1,6 @@
 //! Native desktop entry point, without a console window on Windows. Agent tabs
 //! run the sibling `amux` CLI, so agent tools keep their stdout and stderr.
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 #[path = "../desktop.rs"]
 mod desktop;
