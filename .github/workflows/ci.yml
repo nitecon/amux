@@ -67,10 +67,10 @@ jobs:
         run: cargo test --locked --test entry_contract
       - name: Desktop notification contracts
         run: cargo test --locked --test notifications_contract --test native_notification_contract
-      - name: Fallback review context and end-to-end delivery
-        run: |
-          cargo test --locked --bin amux-desktop fallback_reviews_force_clear_even_when_optional_setting_is_off
-          cargo test --locked --bin amux-desktop desktop_and_embedded_server_assign_an_idle_agent_end_to_end
+      - name: Fallback review context clearing
+        run: cargo test --locked --bin amux-desktop fallback_reviews_force_clear_even_when_optional_setting_is_off
+      - name: Queue-to-console end-to-end delivery
+        run: cargo test --locked --bin amux-desktop desktop_and_embedded_server_assign_an_idle_agent_end_to_end
       - name: Native release build
         run: cargo build --locked --release --target ${{ matrix.target }} --bin amux --bin amux-desktop
       - name: Verify portable Windows runtime
