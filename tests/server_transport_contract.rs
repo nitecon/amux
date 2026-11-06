@@ -272,7 +272,10 @@ fn transport_fixture_worker() {
         let review_id = review["id"].as_str().unwrap();
         assert_eq!(review["status"], "todo");
         assert!(review["owner_origin"].is_null() && review["owner_agent_id"].is_null());
-        assert!(gateway.claim("transport-fixture", review_id, &caller).await.is_err());
+        // With no available independent peer, best-effort review claims may
+        // fall back to the author. Return it so the second client can claim.
+        gateway.claim("transport-fixture", review_id, &caller).await.unwrap();
+        gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"todo"})), Some(&caller)).await.unwrap();
         assert!(gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"labels":[]})), Some(&caller)).await.is_err());
         let reviewer = actor(&root);
         second.claim("transport-fixture", review_id, &reviewer).await.unwrap();
