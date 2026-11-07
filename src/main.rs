@@ -33,6 +33,58 @@ struct Cli {
     command: Option<Operation>,
 }
 
+#[cfg(test)]
+mod task_creation_tests {
+    use super::*;
+
+    #[test]
+    fn roots_require_an_explicit_supported_reason_and_specification() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                ["amux", "tasks", "create", "Work"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+        };
+        for reason in ["user-directed", "principle"] {
+            assert!(
+                parse(&[
+                    "--root-reason",
+                    reason,
+                    "--specification",
+                    "Concrete request or finding"
+                ])
+                .is_ok()
+            );
+        }
+        let parent = "44444444-4444-4444-8444-444444444444";
+        assert!(parse(&["--parent", parent]).is_ok());
+        for args in [
+            vec![],
+            vec!["--specification", "No root reason"],
+            vec!["--root-reason", "user-directed"],
+            vec!["--root-reason", "feature", "--specification", "An idea"],
+            vec![
+                "--parent",
+                parent,
+                "--root-reason",
+                "principle",
+                "--specification",
+                "DRY",
+            ],
+            vec![
+                "--root-reason",
+                "principle",
+                "--specification",
+                "DRY",
+                "--review-finding",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Operation {
     /// Host the native server or administer its local database.
@@ -175,8 +227,16 @@ enum TaskOperation {
     Create {
         title: String,
         /// Existing task whose scope includes this work. Read it before creating a subtask.
-        #[arg(long)]
-        parent: Uuid,
+        #[arg(
+            long,
+            required_unless_present = "root_reason",
+            conflicts_with = "root_reason"
+        )]
+        parent: Option<Uuid>,
+        /// Create a root for an explicit user request or a core-principle finding.
+        /// Explain the request or concrete finding in --specification.
+        #[arg(long, value_parser = ["user-directed", "principle"], requires = "specification", conflicts_with = "review_finding")]
+        root_reason: Option<String>,
         #[arg(long, alias = "details")]
         specification: Option<String>,
         /// Record a review finding for human triage; do not auto-execute it.
@@ -574,9 +634,10 @@ fn run(cli: Cli) -> Result<u8> {
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 match operation {
-                    TaskOperation::Create { title, parent, specification, review_finding, os, notify_results, to_agent, details } => {
+                    TaskOperation::Create { title, parent, root_reason, specification, review_finding, os, notify_results, to_agent, details } => {
                         gateway.require_task_hierarchy().await?;
                         let mut body = json!({"title": title, "parent_task_id":parent, "specification": specification});
+                        if let Some(reason) = root_reason { body["root_reason"] = json!(reason); }
                         let mut labels = Vec::new();
                         if review_finding { labels.push("autoreview-finding".to_owned()); }
                         if review_finding && to_agent.is_none() {
@@ -603,8 +664,12 @@ fn run(cli: Cli) -> Result<u8> {
                         } else {
                             gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?
                         };
-                        anyhow::ensure!(task["parent"]["id"] == parent.to_string() && task["parent"]["project_ident"] == project,
-                            "Parent link unconfirmed; inspect the task before retrying. The gateway may need updating.");
+                        if let Some(parent) = parent {
+                            anyhow::ensure!(task["parent"]["id"] == parent.to_string() && task["parent"]["project_ident"] == project,
+                                "Parent link unconfirmed; inspect the task before retrying. The gateway may need updating.");
+                        } else {
+                            anyhow::ensure!(task["parent"].is_null(), "Root creation unconfirmed; inspect the task before retrying");
+                        }
                         if review_finding && to_agent.is_none() {
                             anyhow::ensure!(task["status"] == "todo" && task["owner_origin"].is_null() && task["owner_agent_id"].is_null(), "Finding was not left unowned in the queue; inspect task before retrying");
                         }

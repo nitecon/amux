@@ -5617,6 +5617,8 @@ pub struct ListTasksQuery {
 #[derive(Deserialize)]
 pub struct CreateTaskRequest {
     pub parent_task_id: Option<String>,
+    /// Agent-created root exception: user-directed or principle.
+    pub root_reason: Option<String>,
     pub requester: Option<crate::task_dispatch::Target>,
     pub canonical_remote: Option<String>,
     #[serde(default)]
@@ -6073,6 +6075,18 @@ pub async fn create_task_handler(
     let description = req.description;
     let specification = req.specification.or(req.details);
     let labels = req.labels.unwrap_or_default();
+    if let Some(reason) = req.root_reason.as_deref() {
+        if !matches!(reason, "user-directed" | "principle")
+            || req.parent_task_id.is_some()
+            || labels.iter().any(|label| label == "autoreview-finding")
+            || specification
+                .as_deref()
+                .is_none_or(|text| text.trim().is_empty())
+        {
+            return Err(AppError(StatusCode::BAD_REQUEST,
+                "root_reason must be user-directed or principle, requires a non-empty specification explaining the request or finding, and cannot accompany a parent or review finding".into()));
+        }
+    }
     let hostname = req.hostname;
     let goal = match decode_nullable_string("goal", req.goal)? {
         Some(goal) => goal,
@@ -6098,7 +6112,7 @@ pub async fn create_task_handler(
             &conn,
             &ident_clone,
             req.parent_task_id.as_deref(),
-            origin.is_some(),
+            origin.is_some() && req.root_reason.is_none(),
         )?;
         Ok(crate::task_events::mutation(
             &conn,
@@ -6119,6 +6133,18 @@ pub async fn create_task_handler(
                 )?;
                 if let Some(parent) = &parent {
                     crate::subtasks::attach(conn, parent, &mut task)?;
+                }
+                if let Some(reason) = &req.root_reason {
+                    db::insert_comment(
+                        conn,
+                        &task.id,
+                        &reporter,
+                        if origin.is_some() { "agent" } else { "user" },
+                        &format!(
+                            "Root task created ({reason}).\n\n{}",
+                            specification.as_deref().unwrap_or_default()
+                        ),
+                    )?;
                 }
                 if task.goal.is_none()
                     && task.owner_agent_id.is_none()
@@ -7498,6 +7524,55 @@ mod tests {
             crate::subtasks::list(&conn, &parent).unwrap()[0].id,
             child.task.id
         );
+    }
+
+    #[tokio::test]
+    async fn agent_root_exceptions_require_context_and_record_the_reason() {
+        let state = test_state();
+        let headers = native_task_headers();
+        let create = |body| Json(serde_json::from_value::<CreateTaskRequest>(body).unwrap());
+        let parent = task_parent_fixture(&state);
+        for body in [
+            serde_json::json!({"title":"Unexplained", "root_reason":"user-directed"}),
+            serde_json::json!({"title":"Blank", "root_reason":"principle", "specification":"  \n "}),
+            serde_json::json!({"title":"Unsupported", "root_reason":"feature", "specification":"New idea"}),
+            serde_json::json!({"title":"Both", "parent_task_id":parent, "root_reason":"principle", "specification":"DRY"}),
+            serde_json::json!({"title":"Review", "root_reason":"principle", "specification":"DRY", "labels":["autoreview-finding"]}),
+        ] {
+            let error = create_task_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path("demo".into()),
+                create(body),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        }
+        assert!(
+            db::list_tasks(&state.db.lock().unwrap(), "demo", &["todo".into()], true)
+                .unwrap()
+                .is_empty()
+        );
+        for (reason, explanation) in [
+            ("user-directed", "User requested a task to implement the discussed export; done when exports match the agreed format."),
+            ("principle", "DRY: duplicated parsers in the CLI and server disagree. Consolidate parsing and preserve accepted inputs."),
+        ] {
+            let Json(created) = create_task_handler(State(state.clone()), headers.clone(), Path("demo".into()),
+                create(serde_json::json!({"title":"Explicit root", "root_reason":reason, "specification":explanation})))
+                .await.unwrap();
+            assert!(created.task.parent.is_none());
+            let conn = state.db.lock().unwrap();
+            let detail = db::get_task_detail(&conn, "demo", &created.task.id).unwrap().unwrap();
+            assert!(detail.task.parent.is_none());
+            assert_eq!(detail.task.details.as_deref(), Some(explanation));
+            assert!(detail.comments.iter().any(|comment| comment.author_type == "agent"
+                && comment.content == format!("Root task created ({reason}).\n\n{explanation}")));
+            let event = crate::task_events::list(&conn, &Default::default()).unwrap().into_iter()
+                .find(|event| event.kind == "task_created" && event.task["id"] == created.task.id).unwrap();
+            assert!(event.task["parent"].is_null());
+        }
     }
 
     fn native_task_headers() -> HeaderMap {

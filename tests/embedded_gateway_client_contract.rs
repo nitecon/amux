@@ -1062,6 +1062,39 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
     assert!(db::task_comment_count(&conn, &id.to_string()).unwrap() >= before);
 }
 
+#[tokio::test]
+async fn native_agent_root_creation_preserves_identity_context_and_subscriptions() {
+    let fixture = Fixture::start().await;
+    let requester = fixture.project_and_requester().await;
+    for reason in ["user-directed", "principle"] {
+        let explanation =
+            "Concrete request or DRY finding; complete when the documented behavior is verified.";
+        let task = fixture
+            .client
+            .create_task_with_requester(
+                PROJECT,
+                json!({"title":"Explicit root", "root_reason":reason, "specification":explanation}),
+                &fixture.actor,
+                &requester,
+            )
+            .await
+            .unwrap();
+        let id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+        assert!(task["parent"].is_null());
+        assert_eq!(task["requester"], json!(requester));
+        assert_eq!(task["owner_origin"], origin(&fixture.actor));
+        let detail = fixture.client.task(PROJECT, id, 50).await.unwrap();
+        assert!(
+            detail["comments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|comment| comment["content"]
+                    == format!("Root task created ({reason}).\n\n{explanation}"))
+        );
+    }
+}
+
 async fn next_frame(socket: &mut Socket) -> Value {
     tokio::time::timeout(Duration::from_secs(10), gateway_stream::next_json(socket))
         .await

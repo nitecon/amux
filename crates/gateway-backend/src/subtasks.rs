@@ -7,17 +7,17 @@ use axum::{
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 
-/// Parent lookup is scoped to the submitting project; agents cannot create roots.
+/// Parent lookup is scoped to the submitting project. Callers validate any root exception.
 pub fn parent_for_creation(
     conn: &Connection,
     project: &str,
     parent_id: Option<&str>,
-    agent: bool,
+    require_parent: bool,
 ) -> Result<Option<db::Task>, AppError> {
     let Some(id) = parent_id else {
-        return if agent {
+        return if require_parent {
             Err(AppError(StatusCode::BAD_REQUEST,
-                "agent task creation requires parent_task_id; read a fitting parent first. If none fits, ask the user to create a top-level task and propose its title and description".into()))
+                "agent task creation requires parent_task_id, or root_reason=user-directed|principle with an explanatory specification; read a fitting parent first".into()))
         } else {
             Ok(None)
         };

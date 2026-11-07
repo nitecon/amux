@@ -80,6 +80,15 @@ the read and the update.
 
 ## Replacing `agent-tools tasks`
 
+To create a root on the user's explicit behalf, use
+`amux tasks create TITLE --root-reason user-directed --specification 'Request and acceptance criteria'`.
+For a concrete DRY/refactor or similar core-principle finding, use
+`--root-reason principle` and explain the principle, evidence and bounded scope in
+the specification. These are the only agent root exceptions. Omit `--parent`
+for roots; normal work, review findings and cross-project handoffs use fitting
+parents. The server rejects missing/unknown reasons and empty root specifications,
+and records accepted reasons and explanations as task comments.
+
 The published `agent-tools 1.22.0` task workflows map to the commands below, with
 explicit identity and retired-Eventic exceptions. Mutations always use
 the caller's amux identity (from the agent terminal's environment, or an explicit
@@ -115,11 +124,13 @@ newly released workflow without a replacement.
 
 ## Subtasks and parent scope
 
-Agents must supply `--parent <task-id>` when creating or delegating work. Read
-that task first and check its scope. Choose another fitting parent if needed;
-if none fits, ask the user to create a top-level task and propose its title and
-description. Users can still create top-level tasks in the desktop composer.
-The gateway rejects agent creation without a parent in the source project.
+Agents normally supply `--parent <task-id>` when creating work, and always when
+delegating work. Read that task first and check its scope. Choose another fitting
+parent if needed. If no parent fits, only the explicit `user-directed` and
+`principle` root exceptions described above permit agent creation. Otherwise,
+ask the user to create a top-level task and propose its title and description.
+Users can still create top-level tasks in the desktop composer. The gateway
+enforces the parent requirement and validates root exceptions.
 The CLI checks `task_hierarchy: 1` at `/v1/tasks/capabilities` before sending
 creation, so an older server cannot silently ignore the parent field. Update
 the server together with clients for this feature.

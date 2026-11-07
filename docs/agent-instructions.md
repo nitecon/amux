@@ -79,6 +79,16 @@ to task comments for more details. Agents must read amux's normal shortened
 text output directly, without `--json`, Python or scripts to parse the output,
 and avoid parallel local todo/plan boards.
 
+Agents normally create subtasks under a fitting parent. Two explicit root-task
+exceptions are available with `amux tasks create TITLE --root-reason REASON
+--specification TEXT`: `user-directed` records a user's direct request, and
+`principle` records a concrete DRY/refactor or similar core-principle finding.
+The specification must explain the request or finding and its bounded acceptance
+criteria. The server records the reason and explanation in a creation comment.
+An omitted reason, unknown reason, empty specification, or combining a reason
+with a parent is rejected. Review findings and cross-project handoffs still
+require parents. These rules and validation are shared across supported platforms.
+
 Claude installation adds `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and
 `TodoWrite` to `permissions.deny`, preserving existing permissions. It leaves
 `Agent`, background-process tools and other capabilities available. Bare-name
