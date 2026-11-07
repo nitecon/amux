@@ -8,6 +8,8 @@ use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub(super) enum Action {
+    Copy(String),
+    Select(DisplayText, text_editor::Action),
     Open(Uuid),
     AssignTask(Uuid),
     Back,
@@ -28,6 +30,20 @@ pub(super) enum Action {
     ClearWatcher,
     Close,
     Resume,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum DisplayText {
+    Title,
+    Id,
+    Description,
+    Specification,
+    Comment(usize),
+}
+
+struct SelectableText {
+    source: String,
+    content: text_editor::Content,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +68,7 @@ enum Mode {
 
 #[derive(Default)]
 pub(super) struct Panel {
+    selectable: std::collections::HashMap<DisplayText, SelectableText>,
     pub selected: Option<Uuid>,
     task: Option<Value>,
     loading: Option<Uuid>,
@@ -67,6 +84,69 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    fn set_task(&mut self, task: Value) {
+        let mut previous = std::mem::take(&mut self.selectable);
+        let mut insert = |key, source: String| {
+            let value = previous
+                .remove(&key)
+                .filter(|old| old.source == source)
+                .unwrap_or_else(|| SelectableText {
+                    content: text_editor::Content::with_text(&source),
+                    source,
+                });
+            self.selectable.insert(key, value);
+        };
+        insert(
+            DisplayText::Title,
+            task["title"].as_str().unwrap_or("Untitled").into(),
+        );
+        insert(
+            DisplayText::Id,
+            self.selected.map(|id| id.to_string()).unwrap_or_default(),
+        );
+        insert(
+            DisplayText::Description,
+            task["description"].as_str().unwrap_or_default().into(),
+        );
+        insert(
+            DisplayText::Specification,
+            task["specification"]
+                .as_str()
+                .or(task["details"].as_str())
+                .unwrap_or_default()
+                .into(),
+        );
+        if let Some(comments) = task["comments"].as_array() {
+            for (index, comment) in comments.iter().enumerate() {
+                insert(
+                    DisplayText::Comment(index),
+                    comment["content"].as_str().unwrap_or_default().into(),
+                );
+            }
+        }
+        self.task = Some(task);
+    }
+
+    fn selectable_text(&self, key: DisplayText, size: u32) -> Element<'_, Message> {
+        let Some(value) = self.selectable.get(&key) else {
+            return text("").into();
+        };
+        text_editor(&value.content)
+            .font(iced::Font::DEFAULT)
+            .size(size)
+            .padding(0)
+            .height(Length::Shrink)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .on_action(move |action| message(Action::Select(key, action)))
+            .style(|theme, status| {
+                let mut style = text_editor::default(theme, status);
+                style.background = iced::Color::TRANSPARENT.into();
+                style.border = iced::Border::default();
+                style
+            })
+            .into()
+    }
+
     pub fn refresh_with_list(&self) -> bool {
         self.selected.is_some()
             && self.mode == Mode::View
@@ -105,6 +185,16 @@ impl Desktop {
     pub(super) fn manage_task(&mut self, action: Action) -> Task<Message> {
         let panel = &mut self.task_panel_mut(self.task_workspace()).detail;
         match action {
+            Action::Copy(content) => return iced::clipboard::write(content),
+            Action::Select(key, action) => {
+                // Keep selection and native clipboard shortcuts, but never edit
+                // the displayed gateway data, even during a pending mutation.
+                if !action.is_edit()
+                    && let Some(value) = panel.selectable.get_mut(&key)
+                {
+                    value.content.perform(action);
+                }
+            }
             Action::Open(id) | Action::AssignTask(id) => {
                 if panel.unresolved() {
                     panel.status =
@@ -255,7 +345,7 @@ impl Desktop {
         panel.loading = None;
         match result {
             Ok(task) => {
-                panel.task = Some(task);
+                panel.set_task(task);
                 if panel.uncertain {
                     panel.status = "Task refreshed. Inspect its fields, owner and comments before repeating the operation.".into();
                 }
@@ -465,7 +555,7 @@ impl Desktop {
                     {
                         value["comments"] = comments.clone();
                     }
-                    panel.task = Some(value);
+                    panel.set_task(value);
                 }
                 // Posting a comment does not save or cancel metadata drafts.
                 if !matches!(change, Change::Comment) || panel.mode != Mode::Edit {
@@ -535,10 +625,13 @@ impl Desktop {
         let mut body = column![].spacing(14).width(Length::Fill);
         body = body
             .push(
-                text(task["title"].as_str().unwrap_or("Untitled"))
-                    .size(17)
-                    .width(Length::Fill)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                row![
+                    panel.selectable_text(DisplayText::Title, 17),
+                    button(text("Copy title").size(12)).on_press(message(Action::Copy(
+                        task["title"].as_str().unwrap_or("Untitled").into()
+                    )))
+                ]
+                .spacing(8),
             )
             .push(
                 text(format!(
@@ -555,10 +648,12 @@ impl Desktop {
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             )
             .push(
-                text(format!("#{}", panel.selected.unwrap()))
-                    .size(12)
-                    .width(Length::Fill)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                row![
+                    panel.selectable_text(DisplayText::Id, 12),
+                    button(text("Copy task ID").size(12))
+                        .on_press(message(Action::Copy(panel.selected.unwrap().to_string())))
+                ]
+                .spacing(8),
             );
         if let Some(parent) = task["parent"]["id"].as_str() {
             body = body.push(
@@ -769,12 +864,14 @@ impl Desktop {
                     })
                     .unwrap_or_default();
                 if !content.is_empty() {
-                    body = body.push(text(label).size(13)).push(
-                        text(content)
-                            .size(14)
-                            .width(Length::Fill)
-                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                    );
+                    let key = if field == "description" {
+                        DisplayText::Description
+                    } else {
+                        DisplayText::Specification
+                    };
+                    body = body
+                        .push(text(label).size(13))
+                        .push(panel.selectable_text(key, 14));
                 }
             }
         }
@@ -784,8 +881,11 @@ impl Desktop {
             body = body.push(text("No comments yet.").size(13));
         }
         if let Some(comments) = comments {
-            for comment in comments {
-                body = body.push(comment_bubble(comment));
+            for (index, comment) in comments.iter().enumerate() {
+                body = body.push(comment_bubble(
+                    comment,
+                    panel.selectable_text(DisplayText::Comment(index), 14),
+                ));
             }
         }
         let footer = column![
@@ -830,7 +930,7 @@ fn task_time(value: &Value) -> String {
         .unwrap_or_else(|| "Time unavailable".into())
 }
 
-fn comment_bubble(comment: &Value) -> Element<'_, Message> {
+fn comment_bubble<'a>(comment: &'a Value, content: Element<'a, Message>) -> Element<'a, Message> {
     use iced::{Border, Font, font};
     let wrap = iced::widget::text::Wrapping::WordOrGlyph;
     container(
@@ -860,10 +960,7 @@ fn comment_bubble(comment: &Value) -> Element<'_, Message> {
             .size(12)
             .width(Length::Fill)
             .wrapping(wrap),
-            text(comment["content"].as_str().unwrap_or_default())
-                .size(14)
-                .width(Length::Fill)
-                .wrapping(wrap),
+            content,
         ]
         .spacing(8)
         .width(Length::Fill),
@@ -999,9 +1096,10 @@ mod tests {
         .unwrap();
         let mut app = app();
         open(&mut app, Uuid::new_v4());
-        let task = app.workspaces[0].gateway.detail.task.as_mut().unwrap();
+        let mut task = app.workspaces[0].gateway.detail.task.clone().unwrap();
         task["specification"] = json!("long-unbroken-path/".repeat(500));
-        task["comments"] = json!([{"body":"Comment text ".repeat(500)}]);
+        task["comments"] = json!([{"content":"Comment text ".repeat(500)}]);
+        app.workspaces[0].gateway.detail.set_task(task);
         for width in [256.0, 800.0, 1200.0] {
             let mut view = app.task_detail_view();
             let mut tree = Tree::new(view.as_widget());
@@ -1015,6 +1113,80 @@ mod tests {
             assert!(content.size().height > scroll.size().height);
             assert!(scroll.size().width - content.size().width >= 18.0);
         }
+    }
+
+    #[test]
+    fn displayed_task_text_supports_selection_but_rejects_edits_during_refresh() {
+        let mut app = app();
+        let id = Uuid::new_v4();
+        open(&mut app, id);
+        let mut value = task(id, "test");
+        value["comments"] = json!([{"content": "First comment\n第二行"}]);
+        let panel = &mut app.workspaces[app.active].gateway.detail;
+        panel.set_task(value.clone());
+        panel.loading = Some(Uuid::new_v4());
+        panel.pending = Some(Uuid::new_v4());
+        for (key, expected) in [
+            (DisplayText::Title, "Original".to_owned()),
+            (DisplayText::Id, id.to_string()),
+            (DisplayText::Description, "Description".to_owned()),
+            (DisplayText::Specification, "Handoff".to_owned()),
+            (DisplayText::Comment(0), "First comment\n第二行".to_owned()),
+        ] {
+            let _ = app.manage_task(Action::Select(key, text_editor::Action::SelectAll));
+            let _ = app.manage_task(Action::Select(
+                key,
+                text_editor::Action::Edit(text_editor::Edit::Insert('x')),
+            ));
+            let panel = &app.workspaces[app.active].gateway.detail;
+            assert_eq!(
+                panel.selectable[&key].content.selection().as_deref(),
+                Some(expected.as_str())
+            );
+            assert_eq!(panel.task.as_ref(), Some(&value));
+        }
+    }
+
+    #[test]
+    fn task_refresh_preserves_unchanged_selections_and_replaces_changed_text() {
+        let mut panel = Panel {
+            selected: Some(Uuid::new_v4()),
+            ..Default::default()
+        };
+        let mut value = json!({"title":"Title", "details":"Legacy handoff", "comments":[{"content":"Old comment"}]});
+        panel.set_task(value.clone());
+        panel
+            .selectable
+            .get_mut(&DisplayText::Title)
+            .unwrap()
+            .content
+            .perform(text_editor::Action::SelectAll);
+        panel.set_task(value.clone());
+        assert_eq!(
+            panel.selectable[&DisplayText::Title]
+                .content
+                .selection()
+                .as_deref(),
+            Some("Title")
+        );
+        assert_eq!(
+            panel.selectable[&DisplayText::Specification].source,
+            "Legacy handoff"
+        );
+        value["title"] = json!("Changed title");
+        value["comments"] = json!([]);
+        panel.set_task(value);
+        assert_eq!(
+            panel.selectable[&DisplayText::Title].content.text(),
+            "Changed title"
+        );
+        assert!(
+            panel.selectable[&DisplayText::Title]
+                .content
+                .selection()
+                .is_none()
+        );
+        assert!(!panel.selectable.contains_key(&DisplayText::Comment(0)));
     }
 
     #[test]
