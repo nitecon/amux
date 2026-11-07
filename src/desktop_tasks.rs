@@ -3,7 +3,6 @@ use super::*;
 use amux::task_management::TaskEdits;
 use desktop_routing::Choice;
 use iced::widget::column;
-use reqwest::Method;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -331,7 +330,7 @@ impl Desktop {
         Task::perform(
             async move {
                 let result = gateway
-                    .request(Method::GET, &scope.project, &[&id.to_string()], None, None)
+                    .task(&scope.project, id, 10)
                     .await
                     .map_err(|e| e.to_string());
                 (scope, id, request, result)
@@ -906,6 +905,18 @@ impl Desktop {
             body = body.push(text("No comments yet.").size(13));
         }
         if let Some(comments) = comments {
+            if let Some(total) = task["comment_count"]
+                .as_u64()
+                .filter(|total| *total > comments.len() as u64)
+            {
+                body = body.push(
+                    text(format!(
+                        "Showing the newest {} of {total} comments.",
+                        comments.len()
+                    ))
+                    .size(13),
+                );
+            }
             for (index, comment) in comments.iter().enumerate() {
                 body = body.push(comment_bubble(
                     comment,

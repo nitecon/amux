@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.68 - 2026-11-07
+
+### Fixed
+- Load only the newest ten comments in the task viewer and show the total count,
+  so long threads exceeding 4 MiB remain available for assignment and closure.
+- Read task metadata without comments when claiming, reassigning, changing OS
+  requirements, or moving tasks into and out of User review.
+
 ## v0.0.66 - 2026-11-06
 
 ### Fixed

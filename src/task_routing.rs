@@ -181,9 +181,7 @@ impl Gateway {
         session: Uuid,
         actor: &AgentIdentity,
     ) -> Result<serde_json::Value> {
-        let current = self
-            .request(Method::GET, project, &[&task.to_string()], None, None)
-            .await?;
+        let current = self.task(project, task, 0).await?;
         ensure!(
             matches!(current["status"].as_str(), Some("todo" | "in_progress")),
             "Only active tasks can be reassigned"
@@ -249,9 +247,7 @@ impl Gateway {
                 == project,
             "Workspace project changed"
         );
-        let current = self
-            .request(Method::GET, project, &[&task.to_string()], None, None)
-            .await?;
+        let current = self.task(project, task, 0).await?;
         let origin = Origin {
             session_id: actor.session_id,
             instance_id: actor.instance_id,

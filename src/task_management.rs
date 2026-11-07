@@ -38,9 +38,7 @@ impl Gateway {
             !action.is_empty() && action.len() <= 4096,
             "State the specific user action required (1 to 4096 bytes)"
         );
-        let current = self
-            .request(Method::GET, project, &[&task.to_string()], None, None)
-            .await?;
+        let current = self.task(project, task, 0).await?;
         let expected = crate::delegation::Origin {
             session_id: actor.session_id,
             instance_id: actor.instance_id,
@@ -75,9 +73,7 @@ impl Gateway {
 
     /// The desktop user, without agent headers, returns parked work to the queue.
     pub async fn resume_desktop_task(&self, project: &str, task: Uuid) -> Result<Value> {
-        let current = self
-            .request(Method::GET, project, &[&task.to_string()], None, None)
-            .await?;
+        let current = self.task(project, task, 0).await?;
         ensure!(
             current["status"] == "user_review",
             "Only a task in User review can be returned to the queue"

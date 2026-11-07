@@ -982,7 +982,7 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
 #[tokio::test]
 async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() {
     let fixture = Fixture::start().await;
-    fixture.project_and_requester().await;
+    let target = fixture.project_and_requester().await;
     let task = fixture
         .client
         .request(
@@ -1058,6 +1058,37 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
         .unwrap();
     assert_eq!(released["status"], "todo");
     assert!(released["owner_agent_id"].is_null(), "{released}");
+    // Human assignment, review recovery and closure must work with the same
+    // oversized history, without impersonating the owning agent.
+    fixture
+        .client
+        .assign_desktop_task(PROJECT, id, &target)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request_user_review(PROJECT, id, &fixture.actor, "Choose the next step")
+        .await
+        .unwrap();
+    fixture
+        .client
+        .resume_desktop_task(PROJECT, id)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .assign_desktop_task(PROJECT, id, &target)
+        .await
+        .unwrap();
+    let closed = fixture
+        .client
+        .close_desktop_task(PROJECT, id)
+        .await
+        .unwrap();
+    assert_eq!(closed["status"], "done");
+    let refreshed = fixture.client.task(PROJECT, id, 10).await.unwrap();
+    assert_eq!(refreshed["status"], "done");
+    assert_eq!(refreshed["comments"].as_array().unwrap().len(), 10);
     let conn = fixture.database.lock().unwrap();
     assert!(db::task_comment_count(&conn, &id.to_string()).unwrap() >= before);
 }

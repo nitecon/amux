@@ -694,7 +694,7 @@ fn run(cli: Cli) -> Result<u8> {
                     },
                     TaskOperation::Rank { id, rank } => gateway.rank(&project, id, rank, &actor).await,
                     TaskOperation::Claim { id } => {
-                        let task = gateway.request(Method::GET, &project, &[&id.to_string()], None, None).await?;
+                        let task = gateway.task(&project, id, 0).await?;
                         anyhow::ensure!(amux::task_platform::matches(&task, Some(&actor.os)), "Task requires another operating system");
                         gateway.claim(&project, &id.to_string(), &actor).await
                     },
