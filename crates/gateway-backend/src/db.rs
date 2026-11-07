@@ -8857,7 +8857,8 @@ pub fn get_task_detail(
 }
 
 /// Like [`get_task_detail`], but keeps only the newest `limit` comments (still
-/// ascending) so a long thread cannot outgrow a client's response cap.
+/// ascending) and caps their content, including legacy oversized records.
+/// Unlimited reads retain the full persisted history.
 pub fn get_task_detail_recent(
     conn: &Connection,
     project_ident: &str,
@@ -8883,6 +8884,7 @@ pub fn get_task_detail_recent(
          ORDER BY created_at DESC, rowid DESC
          LIMIT ?2",
     )?;
+    let bounded = limit.is_some();
     // SQLite treats a negative LIMIT as unlimited.
     let limit = limit.map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX));
     let mut comments = stmt
@@ -8892,7 +8894,14 @@ pub fn get_task_detail_recent(
                 task_id: r.get(1)?,
                 author: r.get(2)?,
                 author_type: r.get(3)?,
-                content: r.get(4)?,
+                content: {
+                    let content: String = r.get(4)?;
+                    if bounded {
+                        cap_comment(&content).into_owned()
+                    } else {
+                        content
+                    }
+                },
                 created_at: r.get(5)?,
                 origin: crate::task_events::read_origin(r, 6)?,
                 hostname: r.get(7)?,
@@ -9589,8 +9598,8 @@ pub fn insert_comment(
     )
 }
 
-/// Largest stored task comment, matching the amux CLI limit. Keeps every task
-/// read well below the 4 MiB client reply cap.
+/// Largest newly stored task comment and bounded-read comment preview,
+/// matching the amux CLI limit.
 pub const MAX_COMMENT_BYTES: usize = 64 * 1024;
 
 /// Truncate `content` to at most [`MAX_COMMENT_BYTES`], ending with a marker.

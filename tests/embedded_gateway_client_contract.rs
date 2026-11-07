@@ -1094,6 +1094,98 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
 }
 
 #[tokio::test]
+async fn legacy_oversized_comments_stay_viewable_after_database_reopen() {
+    let fixture = Fixture::start().await;
+    let target = fixture.project_and_requester().await;
+    let task = fixture
+        .client
+        .request(
+            Method::POST,
+            PROJECT,
+            &[],
+            Some(json!({"title":"Legacy oversized comments", "parent_task_id":fixture.parent(), "specification":"Recover existing history"})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    let id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+    let legacy = "界".repeat(2 * 1024 * 1024);
+    let escaped = "\0".repeat(512 * 1024);
+    {
+        let conn = fixture.database.lock().unwrap();
+        for index in 0..10 {
+            let comment =
+                db::insert_comment(&conn, &id.to_string(), "old-agent", "agent", "old").unwrap();
+            // Model records written before the insertion cap existed, including
+            // JSON escaping overhead and a multibyte UTF-8 truncation boundary.
+            let content = if index == 0 { &legacy } else { &escaped };
+            conn.execute(
+                "UPDATE task_comments SET content = ?1 WHERE id = ?2",
+                rusqlite::params![content, comment.id],
+            )
+            .unwrap();
+        }
+    }
+
+    let reopened = fixture.reopen_database();
+    // Serve subsequent requests using the freshly opened/upgraded connection.
+    std::mem::swap(
+        &mut *fixture.database.lock().unwrap(),
+        &mut *reopened.lock().unwrap(),
+    );
+    {
+        let conn = reopened.lock().unwrap();
+        let full = db::get_task_detail(&conn, PROJECT, &id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(full.comments[0].content, legacy);
+        assert_eq!(full.comments[1].content, escaped);
+    }
+    let bounded = fixture.client.task(PROJECT, id, 10).await.unwrap();
+    assert_eq!(bounded["comment_count"], 10);
+    let comments = bounded["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 10);
+    for (index, comment) in comments.iter().enumerate() {
+        let content = comment["content"].as_str().unwrap();
+        assert!(content.len() <= db::MAX_COMMENT_BYTES);
+        let prefix = content.strip_suffix("\n…[truncated]").unwrap();
+        assert!(if index == 0 { &legacy } else { &escaped }.starts_with(prefix));
+    }
+    fixture
+        .client
+        .assign_desktop_task(PROJECT, id, &target)
+        .await
+        .unwrap();
+    let closed = fixture
+        .client
+        .close_desktop_task(PROJECT, id)
+        .await
+        .unwrap();
+    assert_eq!(closed["status"], "done");
+    assert_eq!(
+        fixture.client.task(PROJECT, id, 10).await.unwrap()["status"],
+        "done"
+    );
+    // Reading and closing the task must not rewrite its historical content.
+    let conn = reopened.lock().unwrap();
+    let full = db::get_task_detail(&conn, PROJECT, &id.to_string())
+        .unwrap()
+        .unwrap();
+    assert!(
+        full.comments
+            .iter()
+            .any(|comment| comment.content == legacy)
+    );
+    assert_eq!(
+        full.comments
+            .iter()
+            .filter(|comment| comment.content == escaped)
+            .count(),
+        9
+    );
+}
+
+#[tokio::test]
 async fn a_delegated_source_stays_readable_when_the_target_thread_exceeds_the_cap() {
     let fixture = Fixture::start().await;
     fixture.project_and_requester().await;
