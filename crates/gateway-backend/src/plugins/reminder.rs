@@ -211,7 +211,7 @@ fn remind(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             crate::templates::render(crate::templates::UPDATE_NUDGE, &[("task_id", &id)]);
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,
-            "heading": "Task update requested", "instructions": instructions,
+            "reminder": true, "heading": "Task update requested", "instructions": instructions,
             "event": {"kind": "task_created", "project_ident": project, "created_at": now,
                       "task": task, "comment": null, "origin": null},
         });
@@ -623,6 +623,7 @@ mod tests {
             .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["heading"], "Task update requested");
+        assert_eq!(payload["reminder"], true);
         assert_eq!(payload["target"], session);
     }
 

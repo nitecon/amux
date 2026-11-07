@@ -1209,7 +1209,9 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate, mcp: bool)
 
 fn assignment_task(event: &Value) -> Option<Uuid> {
     let payload = &event["payload"];
+    // Update-request reminders reuse the assigned shape but are not new work.
     ((payload["new_task"] == true || payload["mode"] == "assigned")
+        && payload["reminder"] != true
         && payload["event"]["kind"] == "task_created"
         && payload["event"]["comment"].is_null())
     .then(|| {
@@ -1252,5 +1254,18 @@ mod clear_tests {
         let mut comment = event;
         comment["payload"]["event"]["comment"] = json!({"content":"continue"});
         assert!(!new_task_context(&comment, idle, false));
+    }
+
+    #[test]
+    fn update_reminder_for_unseen_task_does_not_start_a_cycle() {
+        let task = Uuid::new_v4();
+        let mut event = json!({"payload":{"mode":"assigned","event":{"kind":"task_created","comment":null,"task":{"id":task}}}});
+        assert_eq!(assignment_task(&event), Some(task));
+        event["payload"]["reminder"] = json!(true);
+        assert_eq!(assignment_task(&event), None);
+        let mut state = amux::guidance::Session::default();
+        let cycle = state.cycle;
+        assert!(!assignment_task(&event).is_some_and(|task| state.assign(task)));
+        assert_eq!(state.cycle, cycle);
     }
 }
