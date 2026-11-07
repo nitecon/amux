@@ -1192,6 +1192,14 @@ fn apply_schema(conn: &Connection) -> Result<()> {
             "ALTER TABLE tasks ADD COLUMN routing_json TEXT NOT NULL DEFAULT '{\"mode\":\"auto\"}'",
         )?;
     }
+    let has_review_action: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tasks') WHERE name='review_action')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_review_action {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN review_action TEXT")?;
+    }
     crate::task_requester::initialize(conn)?;
     crate::task_reviews::initialize(conn)?;
     crate::checkouts::initialize(conn)?;
@@ -7737,6 +7745,7 @@ pub struct Task {
     pub title: String,
     pub goal: Option<String>,
     pub description: Option<String>,
+    pub review_action: Option<String>,
     pub details: Option<String>,
     /// One of `"todo"`, `"in_progress"`, `"user_review"`, `"done"`, `"cancelled"`.
     pub status: String,
@@ -7825,6 +7834,7 @@ fn os_mismatch(required: Option<&str>, origin: Option<&crate::task_events::Agent
 /// "do not touch"; for the `Option<Option<_>>` fields, `Some(None)` means
 /// "clear the column" and `Some(Some(x))` means "set to x".
 pub struct TaskUpdate<'a> {
+    pub review_action: Option<&'a str>,
     pub goal: Option<Option<&'a str>>,
     pub status: Option<&'a str>,
     pub owner_agent_id: Option<Option<&'a str>>,
@@ -8312,6 +8322,7 @@ pub fn insert_pattern_comment(
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     Ok(Task {
         parent: read_task_parent(row, 22)?,
+        review_action: row.get(23)?,
         id: row.get(0)?,
         project_ident: row.get(1)?,
         title: row.get(2)?,
@@ -8344,7 +8355,7 @@ const TASK_SELECT_COLS: &str =
      hostname, owner_agent_id, reporter, created_at, updated_at, started_at, done_at, \
      kind, delegated_to_project_ident, delegated_to_task_id, owner_origin_json, goal, routing_json, requester_json, \
      (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) \
-      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id)";
+      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action";
 
 fn read_task_parent(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<TaskParent>> {
     row.get::<_, Option<String>>(index)?
@@ -8683,6 +8694,7 @@ fn insert_task_record(
         project_ident,
         title: title.to_string(),
         goal: goal.map(str::to_string),
+        review_action: None,
         description: description.map(str::to_string),
         details: details.map(str::to_string),
         status: "todo".to_string(),
@@ -9010,6 +9022,7 @@ pub fn recover_task_claim(
             bail!("task claim changed; inspect it again before recovering");
         }
         let update = TaskUpdate {
+            review_action: None,
             goal: None,
             status: Some("todo"),
             owner_agent_id: Some(None),
@@ -9317,6 +9330,7 @@ fn update_task_inner(
         && (upd.status.is_some()
             || upd.owner_agent_id.is_some()
             || upd.goal.is_some()
+            || upd.review_action.is_some()
             || os_changed)
     {
         if current.owner_origin.is_none()
@@ -9336,7 +9350,8 @@ fn update_task_inner(
         && current.status == "user_review"
         && (origin.is_some() || actor_agent_id.is_some())
         && (upd.status.is_some_and(|status| status != "user_review")
-            || upd.owner_agent_id.is_some())
+            || upd.owner_agent_id.is_some()
+            || upd.review_action.is_some())
     {
         return Err(
             crate::task_dispatch::Conflict("tasks in user review require a user decision").into(),
@@ -9352,6 +9367,19 @@ fn update_task_inner(
     }
     let owner_explicit = upd.owner_agent_id.is_some();
     let transitioning = upd.status.is_some() && new_status != current.status;
+    // Each new review request must carry its own action, never a stale prior question.
+    if new_status == "user_review" && (upd.status.is_some() || upd.review_action.is_some()) {
+        let action = upd.review_action.unwrap_or("").trim();
+        if action.is_empty() || action.len() > 4096 {
+            return Err(crate::task_dispatch::Conflict(
+                "user review requires a specific review_action (1 to 4096 bytes); state exactly what the user must do",
+            ).into());
+        }
+    } else if upd.review_action.is_some() {
+        return Err(
+            crate::task_dispatch::Conflict("review_action requires status user_review").into(),
+        );
+    }
     // `tasks release` sends status=todo, including for a reserved queued task.
     let releasing_queued = upd.status.is_some() && current.status == "todo" && new_status == "todo";
     if transitioning && new_status == "in_progress" && os_mismatch(next_os, origin.as_ref()) {
@@ -9435,6 +9463,13 @@ fn update_task_inner(
     // Build dynamic UPDATE.
     let mut assignments: Vec<CrudColumn<'_>> = Vec::new();
 
+    if new_status == "user_review" {
+        if let Some(action) = upd.review_action {
+            assignments.push(crud_col("review_action", action.trim()));
+        }
+    } else if transitioning {
+        assignments.push(crud_col("review_action", DbValue::null()));
+    }
     if let Some(goal) = upd.goal {
         assignments.push(crud_col("goal", normalize_task_goal(goal)?));
     }
@@ -9869,6 +9904,11 @@ pub fn reorder_tasks_in_column(
         let mut new_owner = old_owner.clone();
         let mut new_origin = old_origin.clone();
 
+        if old_status != target_status && target_status == "user_review" {
+            return Err(crate::task_dispatch::Conflict(
+                "enter user review with PATCH status=user_review and a specific review_action before reordering",
+            ).into());
+        }
         if old_status != target_status {
             if old_status == "user_review" && (origin.is_some() || actor_agent_id.is_some()) {
                 return Err(crate::task_dispatch::Conflict(
@@ -9960,6 +10000,9 @@ pub fn reorder_tasks_in_column(
         ];
         if let Some(labels) = approved_labels {
             assignments.push(crud_col("labels", serialize_string_array(&labels)));
+        }
+        if old_status == "user_review" && target_status != "user_review" {
+            assignments.push(crud_col("review_action", DbValue::null()));
         }
         if old_status == "user_review"
             && target_status == "todo"
@@ -12036,6 +12079,7 @@ mod tests {
             insert_task(&conn, "charlie", "c1", None, None, &[], None, "tester").unwrap();
 
         let in_progress = TaskUpdate {
+            review_action: None,
             goal: None,
             status: Some("in_progress"),
             owner_agent_id: None,
@@ -12056,6 +12100,7 @@ mod tests {
         .unwrap();
 
         let done = TaskUpdate {
+            review_action: None,
             goal: None,
             status: Some("done"),
             ..in_progress

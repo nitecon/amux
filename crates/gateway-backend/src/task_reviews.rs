@@ -301,6 +301,7 @@ mod tests {
                 "example",
                 id,
                 &db::TaskUpdate {
+                    review_action: (status == "user_review").then_some("Choose the release date"),
                     status: Some(status),
                     goal: None,
                     owner_agent_id: None,

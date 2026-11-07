@@ -37,6 +37,7 @@ pub(super) enum DisplayText {
     Title,
     Id,
     Description,
+    ReviewAction,
     Specification,
     Comment(usize),
 }
@@ -109,6 +110,10 @@ impl Panel {
             task["description"].as_str().unwrap_or_default().into(),
         );
         insert(
+            DisplayText::ReviewAction,
+            task["review_action"].as_str().unwrap_or_default().into(),
+        );
+        insert(
             DisplayText::Specification,
             task["specification"]
                 .as_str()
@@ -132,7 +137,14 @@ impl Panel {
             return text("").into();
         };
         text_editor(&value.content)
-            .font(iced::Font::DEFAULT)
+            .font(if key == DisplayText::ReviewAction {
+                iced::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..iced::Font::DEFAULT
+                }
+            } else {
+                iced::Font::DEFAULT
+            })
             .size(size)
             .padding(0)
             .height(Length::Shrink)
@@ -873,6 +885,19 @@ impl Desktop {
                         .push(text(label).size(13))
                         .push(panel.selectable_text(key, 14));
                 }
+                let after_description = field == "description" && !content.trim().is_empty();
+                let after_specification = field == "specification"
+                    && task["description"]
+                        .as_str()
+                        .is_none_or(|s| s.trim().is_empty());
+                if (after_description || after_specification)
+                    && task["status"] == "user_review"
+                    && task["review_action"]
+                        .as_str()
+                        .is_some_and(|s| !s.trim().is_empty())
+                {
+                    body = body.push(panel.selectable_text(DisplayText::ReviewAction, 14));
+                }
             }
         }
         body = body.push(text("Comments").size(15));
@@ -1121,6 +1146,8 @@ mod tests {
         let id = Uuid::new_v4();
         open(&mut app, id);
         let mut value = task(id, "test");
+        value["status"] = json!("user_review");
+        value["review_action"] = json!("Choose the release date");
         value["comments"] = json!([{"content": "First comment\n第二行"}]);
         let panel = &mut app.workspaces[app.active].gateway.detail;
         panel.set_task(value.clone());
@@ -1130,6 +1157,10 @@ mod tests {
             (DisplayText::Title, "Original".to_owned()),
             (DisplayText::Id, id.to_string()),
             (DisplayText::Description, "Description".to_owned()),
+            (
+                DisplayText::ReviewAction,
+                "Choose the release date".to_owned(),
+            ),
             (DisplayText::Specification, "Handoff".to_owned()),
             (DisplayText::Comment(0), "First comment\n第二行".to_owned()),
         ] {

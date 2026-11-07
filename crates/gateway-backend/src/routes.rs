@@ -5654,6 +5654,7 @@ pub struct DelegateTaskRequest {
 
 #[derive(Deserialize)]
 pub struct UpdateTaskRequest {
+    pub review_action: Option<String>,
     #[serde(default, deserialize_with = "present_nullable_value")]
     pub goal: Option<Value>,
     pub status: Option<String>,
@@ -6370,6 +6371,7 @@ pub async fn update_task_handler(
     let db = state.db.clone();
     let ident_for_update = ident.clone();
     let task_id_clone = task_id;
+    let review_action = req.review_action;
     let status = req.status;
     let rank = req.rank;
     let title = req.title;
@@ -6397,6 +6399,7 @@ pub async fn update_task_handler(
                 }
             }
             let upd = db::TaskUpdate {
+                review_action: review_action.as_deref(),
                 goal: goal_opt.as_ref().map(|g| g.as_deref()),
                 status: status.as_deref(),
                 owner_agent_id: owner_opt.as_ref().map(|inner| inner.as_deref()),
@@ -6473,6 +6476,7 @@ pub async fn update_task_handler(
                             &summary,
                         )?;
                         let done_upd = db::TaskUpdate {
+                            review_action: None,
                             goal: None,
                             status: Some("done"),
                             owner_agent_id: None,
@@ -6544,6 +6548,7 @@ pub async fn update_delegation_handler(
             });
 
             let source_upd = db::TaskUpdate {
+                review_action: None,
                 goal: None,
                 status: None,
                 owner_agent_id: None,
@@ -6568,6 +6573,7 @@ pub async fn update_delegation_handler(
                 .as_deref()
                 .map(|t| t.trim_end_matches(" (DELEGATED)"));
             let target_upd = db::TaskUpdate {
+                review_action: None,
                 goal: None,
                 status: None,
                 owner_agent_id: None,
@@ -7718,7 +7724,7 @@ mod tests {
                     State(state.clone()),
                     agent.clone(),
                     path(),
-                    update(serde_json::json!({"status":"user_review"})),
+                    update(serde_json::json!({"status":"user_review", "review_action":"Choose the release date"})),
                 )
                 .await
                 .unwrap();
@@ -7926,7 +7932,7 @@ mod tests {
         let path = || Path(("demo".into(), id.clone()));
         let update = |status: &str| {
             Json(
-                serde_json::from_value::<UpdateTaskRequest>(serde_json::json!({"status": status}))
+                serde_json::from_value::<UpdateTaskRequest>(serde_json::json!({"status": status, "review_action": (status == "user_review").then_some("Choose the release date")}))
                     .unwrap(),
             )
         };
@@ -7945,6 +7951,33 @@ mod tests {
             )
             .await
             .unwrap();
+            for payload in [
+                serde_json::json!({"status":"user_review"}),
+                serde_json::json!({"status":"user_review", "review_action":null}),
+                serde_json::json!({"status":"user_review", "review_action":"  \n\t"}),
+                serde_json::json!({"status":"user_review", "review_action":"x".repeat(4097)}),
+            ] {
+                assert_eq!(
+                    update_task_handler(
+                        State(state.clone()),
+                        agent.clone(),
+                        path(),
+                        Json(serde_json::from_value(payload).unwrap()),
+                    )
+                    .await
+                    .unwrap_err()
+                    .0,
+                    StatusCode::CONFLICT
+                );
+                let conn = state.db.lock().unwrap();
+                let task = db::get_task_detail(&conn, "demo", &id)
+                    .unwrap()
+                    .unwrap()
+                    .task;
+                assert_eq!(task.status, "in_progress");
+                assert!(task.owner_origin.is_some());
+                assert!(task.review_action.is_none());
+            }
             // A peer cannot move another session's claimed task to user review.
             let mut peer = agent.clone();
             peer.insert(
@@ -7959,6 +7992,30 @@ mod tests {
                 StatusCode::CONFLICT
             );
             if via_reorder {
+                // Reordering cannot bypass the required action in a review transition.
+                assert_eq!(
+                    reorder_tasks_handler(
+                        State(state.clone()),
+                        agent.clone(),
+                        Path("demo".into()),
+                        reorder("user_review"),
+                        Json(ReorderTasksRequest {
+                            order: vec![id.clone()]
+                        }),
+                    )
+                    .await
+                    .unwrap_err()
+                    .0,
+                    StatusCode::CONFLICT
+                );
+                let _ = update_task_handler(
+                    State(state.clone()),
+                    agent.clone(),
+                    path(),
+                    update("user_review"),
+                )
+                .await
+                .unwrap();
                 let _ = reorder_tasks_handler(
                     State(state.clone()),
                     agent.clone(),
@@ -7985,6 +8042,35 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(detail.task.status, "user_review");
+            assert_eq!(
+                detail.task.review_action.as_deref(),
+                Some("Choose the release date")
+            );
+            assert_eq!(
+                update_task_handler(
+                    State(state.clone()),
+                    agent.clone(),
+                    path(),
+                    update("user_review"),
+                )
+                .await
+                .unwrap_err()
+                .0,
+                StatusCode::CONFLICT
+            );
+            let notified: bool = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM router_task_outbox WHERE kind='user_review'
+                 AND json_extract(task_json, '$.id')=?1
+                 AND json_extract(task_json, '$.review_action')='Choose the release date')",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(notified);
             assert!(detail.task.owner_agent_id.is_none());
             assert!(detail.task.owner_origin.is_none());
             assert!(detail.task.started_at.is_none());
@@ -8071,6 +8157,12 @@ mod tests {
                 .await
                 .unwrap();
             }
+            let conn = state.db.lock().unwrap();
+            let task = db::get_task_detail(&conn, "demo", &id)
+                .unwrap()
+                .unwrap()
+                .task;
+            assert!(task.review_action.is_none());
         }
         let _ = update_task_handler(
             State(state.clone()),
@@ -8192,6 +8284,7 @@ mod tests {
 
     fn sample_task() -> db::Task {
         db::Task {
+            review_action: None,
             parent: None,
             id: "task-1".to_string(),
             project_ident: "demo-project".to_string(),

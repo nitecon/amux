@@ -362,6 +362,7 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         .to_owned();
     let claimed = task_events::mutation(conn, Some(&origin), |tx| -> Result<bool> {
         let update = db::TaskUpdate {
+            review_action: None,
             goal: None,
             status: Some("in_progress"),
             owner_agent_id: None,

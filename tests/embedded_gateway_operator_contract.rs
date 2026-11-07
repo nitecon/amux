@@ -338,6 +338,7 @@ fn task_operator_inspects_and_recovers_exact_claim_with_a_durable_reason() {
                 PROJECT,
                 &task.id,
                 &db::TaskUpdate {
+                    review_action: None,
                     goal: None,
                     status: Some("in_progress"),
                     owner_agent_id: Some(Some("fixture-executor")),

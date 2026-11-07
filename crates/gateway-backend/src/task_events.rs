@@ -224,6 +224,7 @@ pub(crate) fn task_json(alias: &str) -> String {
         "title",
         "goal",
         "description",
+        "review_action",
         "details",
         "status",
         "rank",
@@ -806,6 +807,7 @@ mod tests {
 
     fn status_update(status: &str) -> db::TaskUpdate<'_> {
         db::TaskUpdate {
+            review_action: (status == "user_review").then_some("Choose the release date"),
             goal: None,
             status: Some(status),
             owner_agent_id: None,

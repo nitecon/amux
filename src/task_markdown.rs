@@ -121,6 +121,22 @@ fn task(task: &Value) -> String {
         if !body.trim().is_empty() {
             let _ = write!(out, "\n## {heading}\n\n{}\n", body.trim_end());
         }
+        if task["status"] == "user_review"
+            && (heading == "Description" && !body.trim().is_empty()
+                || heading == "Specification" && text(&task["description"]).trim().is_empty())
+        {
+            let action = text(&task["review_action"]);
+            if !action.trim().is_empty() {
+                // Keep every line bold, including multiline actions supplied via the CLI.
+                for line in action.lines().filter(|line| !line.trim().is_empty()) {
+                    let escaped = line
+                        .replace('\\', "\\\\")
+                        .replace('*', "\\*")
+                        .replace('_', "\\_");
+                    let _ = writeln!(out, "\n**Action required: {escaped}**");
+                }
+            }
+        }
     }
     if let Some(comments) = task["comments"].as_array() {
         // The gateway may send only the newest comments; number them within the full thread.
@@ -200,6 +216,29 @@ fn text(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn review_action_is_bold_below_description_or_specification() {
+        for description in [Some("Initial description"), None] {
+            let mut task = json!({"id":"task", "title":"Decide", "status":"user_review",
+                "description":description, "specification":"Implementation context",
+                "review_action":"Choose the release date", "comments":[{"content":"Later comment"}]});
+            let output = render(&task);
+            let initial = output
+                .find(description.unwrap_or("Implementation context"))
+                .unwrap();
+            let action = output
+                .find("**Action required: Choose the release date**")
+                .unwrap();
+            assert!(initial < action);
+            assert!(action < output.find("## Comments").unwrap());
+            if description.is_some() {
+                assert!(action < output.find("## Specification").unwrap());
+            }
+            task["status"] = json!("todo");
+            assert!(!render(&task).contains("Action required:"));
+        }
+    }
 
     #[test]
     fn task_detail_and_list_render_every_comment_and_skip_empty_fields() {

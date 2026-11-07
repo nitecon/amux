@@ -40,8 +40,9 @@ terminating their sessions. Tabs retain close controls and directory subtitles.
 Tasks default to Active (queued and in-progress), with User review and Completed
 as the other filters and a pinned composer. Parked review tasks show their details
 and comments, with human actions to return them to the queue or close them.
-Agents request review through `amux tasks user-review` using their assigned
-identity; parked tasks are excluded from agent reminders, pickup and injection.
+Agents request review through `amux tasks user-review <id> "<specific user action>"`
+using their assigned identity. The required action appears in bold directly below
+the description (or specification when there is no description); parked tasks are excluded from agent reminders, pickup and injection.
 The full task view can detach into a larger window.
 Docking or closing that window restores the task view
 without closing sessions or losing drafts. Gateway

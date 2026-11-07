@@ -104,7 +104,14 @@ commands in [gateway-cli.md](gateway-cli.md#project-agents-and-os-routing).
 
 Tasks awaiting a human decision use the gateway's `user_review` status (gateway
 v1.27.0 or newer). An agent can record its question in a task comment and run
-`amux tasks user-review <task-id>`; `review` is an alias.
+`amux tasks user-review <task-id> "Choose the release date: Monday or Friday"`;
+`review` is an alias. Each request must supply a concrete user action. The gateway
+requires `review_action` alongside `status: "user_review"` in PATCH requests;
+blank actions and actions over 4096 bytes are rejected. Reordering cannot enter
+review without that PATCH. The action is shown in bold directly below the task's
+description (or specification when there is no description), and is cleared when
+review ends. Existing parked tasks without an action remain readable.
+Human comments retain their existing return-to-queue behavior.
 Only the exact owning agent can request this transition. The acknowledgment must
 confirm that ownership and execution timestamps were cleared. An uncertain
 response requires inspection before any retry.

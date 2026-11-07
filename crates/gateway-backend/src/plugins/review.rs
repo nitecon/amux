@@ -66,6 +66,7 @@ mod tests {
 
     fn status(value: &str) -> db::TaskUpdate<'_> {
         db::TaskUpdate {
+            review_action: (value == "user_review").then_some("Choose the release date"),
             status: Some(value),
             goal: None,
             owner_agent_id: None,

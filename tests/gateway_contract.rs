@@ -672,13 +672,15 @@ fn user_review_requires_exact_owner_and_cleared_ack_then_only_a_human_requeues()
     let origin = json!({"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os});
     let owned =
         json!({"id":TASK,"project_ident":"demo","status":"in_progress","owner_origin":origin});
-    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","owner_origin":null,"owner_agent_id":null,"started_at":null,"done_at":null});
+    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","review_action":"Choose the release date","owner_origin":null,"owner_agent_id":null,"started_at":null,"done_at":null});
     let mut returned = parked.clone();
     returned["status"] = json!("todo");
     let mut wrong = owned.clone();
     wrong["owner_origin"]["instance_id"] = json!(uuid::Uuid::new_v4());
     let mut malformed = parked.clone();
     malformed.as_object_mut().unwrap().remove("owner_origin");
+    let mut old_server = parked.clone();
+    old_server.as_object_mut().unwrap().remove("review_action");
     let (url, server) = server(vec![
         reply(200, &wrong),
         reply(200, &owned),
@@ -687,19 +689,31 @@ fn user_review_requires_exact_owner_and_cleared_ack_then_only_a_human_requeues()
         reply(200, &returned),
         reply(200, &owned),
         reply(200, &malformed),
+        reply(200, &owned),
+        reply(200, &old_server),
     ]);
     let gateway = Gateway::new(&url, "fixture".into()).unwrap();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let id = uuid::Uuid::parse_str(TASK).unwrap();
+        for invalid in ["  ".to_owned(), "x".repeat(4097)] {
+            assert!(
+                gateway
+                    .request_user_review("demo", id, &actor, &invalid)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("specific user action")
+            );
+        }
         assert!(
             gateway
-                .request_user_review("demo", id, &actor)
+                .request_user_review("demo", id, &actor, "Choose the release date")
                 .await
                 .is_err()
         );
         assert_eq!(
             gateway
-                .request_user_review("demo", id, &actor)
+                .request_user_review("demo", id, &actor, "Choose the release date")
                 .await
                 .unwrap(),
             parked
@@ -710,15 +724,25 @@ fn user_review_requires_exact_owner_and_cleared_ack_then_only_a_human_requeues()
         );
         assert!(
             gateway
-                .request_user_review("demo", id, &actor)
+                .request_user_review("demo", id, &actor, "Choose the release date")
                 .await
                 .is_err(),
             "missing ownership fields cannot acknowledge release"
         );
+        assert!(
+            gateway
+                .request_user_review("demo", id, &actor, "Choose the release date")
+                .await
+                .is_err(),
+            "an older server ignoring the action cannot acknowledge review"
+        );
     });
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 7, "no blind retries");
-    assert_eq!(requests[2].body, json!({"status":"user_review"}));
+    assert_eq!(requests.len(), 9, "no blind retries");
+    assert_eq!(
+        requests[2].body,
+        json!({"status":"user_review", "review_action":"Choose the release date"})
+    );
     assert!(
         requests[2]
             .head
@@ -842,7 +866,7 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
     )
     .unwrap();
     let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
-    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null});
+    let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","review_action":"Choose the release date","owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null});
     let (url, server) = server(vec![reply(200, &owned), reply(200, &parked)]);
     let native = native_cli::NativeCli::new(state.path(), &url);
     let url = native.url.clone();
@@ -865,6 +889,7 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
             "--json",
             "user-review",
             TASK,
+            "Choose the release date",
         ])
         .output()
         .unwrap();
@@ -1842,7 +1867,7 @@ fn last_task_owner_is_the_newest_event_snapshot_that_still_had_one() {
         "instance_id":"44444444-4444-4444-8444-444444444444","provider":"codex","os":"windows"});
     // Newest first: the user review snapshot has no owner, the one before does.
     let events = json!([
-        {"id":3,"kind":"task_updated","task":{"id":TASK,"status":"user_review","owner_origin":null}},
+        {"id":3,"kind":"task_updated","task":{"id":TASK,"status":"user_review","review_action":"Choose the release date","owner_origin":null}},
         {"id":2,"kind":"task_commented","task":{"id":TASK,"status":"in_progress","owner_origin":owner}},
         {"id":1,"kind":"task_claimed","task":{"id":TASK,"status":"in_progress","owner_origin":older}}
     ]);

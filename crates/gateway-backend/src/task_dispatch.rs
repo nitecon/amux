@@ -1905,7 +1905,7 @@ mod tests {
             (human_headers(), "todo"),
         ] {
             let (code, body) =
-                desktop_http(&state, headers, "PATCH", &path, json!({"status":status})).await;
+                desktop_http(&state, headers, "PATCH", &path, json!({"status":status, "review_action": (status == "user_review").then_some("Choose the release date")})).await;
             assert_eq!(code, StatusCode::OK, "{body}");
             assert_eq!(body["requester"], json!(a.target));
         }
@@ -4422,7 +4422,7 @@ mod tests {
             &windows,
             "PATCH",
             &wrong_path,
-            json!({"status":"user_review"}),
+            json!({"status":"user_review", "review_action":"Choose the release date"}),
         )
         .await;
         assert_eq!(

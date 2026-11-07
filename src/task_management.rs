@@ -31,7 +31,13 @@ impl Gateway {
         project: &str,
         task: Uuid,
         actor: &crate::identity::AgentIdentity,
+        action: &str,
     ) -> Result<Value> {
+        let action = action.trim();
+        ensure!(
+            !action.is_empty() && action.len() <= 4096,
+            "State the specific user action required (1 to 4096 bytes)"
+        );
         let current = self
             .request(Method::GET, project, &[&task.to_string()], None, None)
             .await?;
@@ -54,12 +60,14 @@ impl Gateway {
                 Method::PATCH,
                 project,
                 &[&task.to_string()],
-                Some(json!({"status":"user_review"})),
+                Some(json!({"status":"user_review", "review_action":action})),
                 Some(actor),
             )
             .await?;
         ensure!(
-            ownership_cleared(&result),
+            result["status"] == "user_review"
+                && result["review_action"] == action
+                && ownership_cleared(&result),
             "User review is unconfirmed; inspect the task before retrying"
         );
         Ok(result)

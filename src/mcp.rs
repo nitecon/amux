@@ -198,10 +198,16 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "task_user_review",
-        description: "Park an owned task for a user decision. Comment with the question first.",
+        description: "Park an owned task for a user decision. Supply the specific action the user must take.",
         bin: Bin::Amux,
         command: &["tasks", "user-review"],
-        args: &[ID],
+        args: &[
+            ID,
+            pos(
+                "action",
+                "Specific decision or action required from the user",
+            ),
+        ],
     },
     Tool {
         name: "task_release",

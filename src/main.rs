@@ -303,6 +303,8 @@ enum TaskOperation {
     #[command(name = "user-review", alias = "review")]
     UserReview {
         id: Uuid,
+        /// Exact decision or action the user must take.
+        action: String,
     },
     Comment {
         id: Uuid,
@@ -702,7 +704,7 @@ fn run(cli: Cli) -> Result<u8> {
                         gateway.set_task_requester(&project, id, requester.as_ref(), Some(&actor)).await
                     },
                     TaskOperation::SetOs { id, os, .. } => gateway.set_task_os(&project, id, os, &actor).await,
-                    TaskOperation::UserReview { id } => gateway.request_user_review(&project, id, &actor).await,
+                    TaskOperation::UserReview { id, action } => gateway.request_user_review(&project, id, &actor, &action).await,
                     TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {
