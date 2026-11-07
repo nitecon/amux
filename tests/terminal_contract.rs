@@ -5,6 +5,83 @@ use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 #[test]
+fn native_pty_size_and_wrapping_follow_the_usable_pane_after_resize() {
+    let mut terminal = Terminal::new(
+        910_002,
+        settings::Settings {
+            backend: settings::BackendSettings {
+                program: "/bin/sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "while read count; do printf '\\033[2J\\033[HSIZE '; stty size; i=0; while [ \"$i\" -lt \"$count\" ]; do printf X; i=$((i+1)); done; printf '\\r\\nDONE\\r\\n'; done".into(),
+                ],
+                ..Default::default()
+            },
+            font: settings::FontSettings {
+                size: 13.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let _lifetime =
+        amux::terminal_lifetime::TerminalLifetime::capture(terminal.child_pid().unwrap()).unwrap();
+    for (width, height) in [(1624.0, 504.0), (824.0, 264.0), (1224.0, 384.0)] {
+        // The desktop measures inside the 12px padding on each side.
+        let usable = iced::Size::new(width - 24.0, height - 24.0);
+        terminal.handle(Command::ProxyToBackend(BackendCommand::Resize(
+            Some(usable),
+            None,
+        )));
+        let grid = terminal.observation(100_000).unwrap();
+        let rows = grid.lines.len();
+        let cols = grid.lines[0].chars().count();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: live borrowed PTY descriptor and initialized output storage.
+            let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe {
+                    libc::ioctl(
+                        terminal.native_terminal_fd().as_raw_fd(),
+                        libc::TIOCGWINSZ,
+                        &mut size,
+                    )
+                },
+                0
+            );
+            if (size.ws_row as usize, size.ws_col as usize) == (rows, cols) {
+                assert!(size.ws_xpixel as f32 <= usable.width);
+                assert!(size.ws_ypixel as f32 <= usable.height);
+                break;
+            }
+            assert!(Instant::now() < deadline, "native PTY did not resize");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        terminal.handle(Command::ProxyToBackend(BackendCommand::Write(
+            format!("{}\n", cols + 1).into_bytes(),
+        )));
+        loop {
+            let screen = terminal.observation(100_000).unwrap();
+            if screen.lines[0].trim() == format!("SIZE {rows} {cols}")
+                && screen.lines[3].starts_with("DONE")
+            {
+                assert_eq!(screen.lines[1], "X".repeat(cols));
+                assert_eq!(screen.lines[2].trim(), "X");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "resize/wrap mismatch: {:?}",
+                screen.lines
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[test]
 fn native_pty_observation_tracks_the_child_and_live_input_without_a_redraw() {
     let mut terminal = Terminal::new(
         910_001,

@@ -804,12 +804,10 @@ impl Desktop {
         .spacing(10);
         column![
             header,
-            scrollable(container(body).padding(iced::Padding {
-                right: 12.0,
-                ..Default::default()
-            }))
-            .width(Length::Fill)
-            .height(Length::Fill),
+            scrollable(body)
+                .spacing(8)
+                .width(Length::Fill)
+                .height(Length::Fill),
             footer
         ]
         .spacing(10)
@@ -988,6 +986,35 @@ mod tests {
         let scope = app.scope(app.active);
         let project = scope.project.clone();
         app.task_detail_loaded(scope, id, request, Ok(task(id, &project)));
+    }
+
+    #[test]
+    fn scrolling_task_details_reserve_a_scrollbar_gutter() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        let renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(14.0),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut app = app();
+        open(&mut app, Uuid::new_v4());
+        let task = app.workspaces[0].gateway.detail.task.as_mut().unwrap();
+        task["specification"] = json!("long-unbroken-path/".repeat(500));
+        task["comments"] = json!([{"body":"Comment text ".repeat(500)}]);
+        for width in [256.0, 800.0, 1200.0] {
+            let mut view = app.task_detail_view();
+            let mut tree = Tree::new(view.as_widget());
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 600.0)),
+            );
+            let scroll = &node.children()[1];
+            let content = &scroll.children()[0];
+            assert!(content.size().height > scroll.size().height);
+            assert!(scroll.size().width - content.size().width >= 18.0);
+        }
     }
 
     #[test]

@@ -1252,12 +1252,17 @@ impl Desktop {
                                 iced_term::BackendCommand::Resize(Some(size), None),
                             ))
                         };
-                        iced::widget::Sensor::new(
-                            TerminalView::show(terminal).map(Message::Terminal),
+                        // Measure the usable terminal area after padding so the
+                        // PTY column count agrees with the grid being drawn.
+                        container(
+                            iced::widget::Sensor::new(
+                                TerminalView::show(terminal).map(Message::Terminal),
+                            )
+                            .key(id)
+                            .on_show(resize)
+                            .on_resize(resize),
                         )
-                        .key(id)
-                        .on_show(resize)
-                        .on_resize(resize)
+                        .padding(12)
                         .into()
                     }
                     None => {
@@ -1598,7 +1603,7 @@ impl Desktop {
         container(
             column![
                 container(header).padding(12),
-                container(scrollable(cards).height(Length::Fill)).padding([0, 12]),
+                container(scrollable(cards).spacing(8).height(Length::Fill)).padding([0, 12]),
                 composer
             ]
             .spacing(4),
@@ -2248,6 +2253,49 @@ fn inert<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrolling_projects_and_tasks_reserve_a_scrollbar_gutter() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+
+        let renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(14.0),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut app = super::super::tests::desktop();
+        app.design.projects = (0..30)
+            .map(|i| amux::gateway::ProjectOverview {
+                ident: format!("project-{i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.workspaces[0].gateway.tasks = (0..30)
+            .map(|i| serde_json::json!({"id":Uuid::new_v4(), "title":format!("Task {i}"), "status":"todo"}))
+            .collect();
+        for width in [256.0, 360.0, 800.0] {
+            for (mut view, path) in [
+                (app.project_sidebar(), vec![0, 2]),
+                (app.task_queue(Length::Fill), vec![0, 1, 0]),
+            ] {
+                let mut tree = Tree::new(view.as_widget());
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 240.0)),
+                );
+                let scroll = path.iter().fold(&node, |node, &i| &node.children()[i]);
+                let content = &scroll.children()[0];
+                assert!(content.size().height > scroll.size().height);
+                assert!(
+                    scroll.size().width - content.bounds().x - content.size().width >= 18.0,
+                    "scrollbar must have its own 10px lane and 8px gap"
+                );
+            }
+        }
+    }
+
     #[test]
     fn task_search_finds_short_ids_titles_and_tags_across_states_without_changing_the_queue() {
         let mut app = super::super::tests::desktop();

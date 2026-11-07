@@ -52,5 +52,38 @@ fn font_measure(
         wrapping: iced_core::text::Wrapping::Glyph,
     });
 
-    paragraph.min_bounds()
+    // The backend and PTY use whole-pixel cells. Rounding down squeezes glyphs
+    // into narrower cells and reports more columns than the font can fit.
+    let bounds = paragraph.min_bounds();
+    Size::new(bounds.width.ceil().max(1.0), bounds.height.ceil().max(1.0))
+}
+
+#[cfg(test)]
+mod amux_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_font_sizes_use_whole_cells_without_squeezing_glyphs() {
+        for size in [11.0, 13.5, 14.0, 17.25] {
+            let font = TermFont::new(FontSettings {
+                size,
+                ..Default::default()
+            });
+            let glyph = paragraph::Paragraph::with_text(Text {
+                content: "m",
+                font: Font::MONOSPACE,
+                size: iced_core::Pixels(size),
+                bounds: Size::INFINITE,
+                align_y: Vertical::Center,
+                align_x: Alignment::Center,
+                shaping: TextShaping::Advanced,
+                line_height: LineHeight::Relative(1.3),
+                wrapping: iced_core::text::Wrapping::Glyph,
+            })
+            .min_bounds();
+            assert!(font.measure.width >= glyph.width);
+            assert_eq!(font.measure.width.fract(), 0.0);
+            assert_eq!(font.measure.height.fract(), 0.0);
+        }
+    }
 }

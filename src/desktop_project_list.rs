@@ -229,11 +229,7 @@ impl Desktop {
                 text_input("Filter projects…", &self.design.project_search)
                     .on_input(|value| action(Action::ProjectSearch(value)))
                     .size(13),
-                scrollable(container(sidebar).padding(iced::Padding {
-                    right: 12.0,
-                    ..Default::default()
-                }))
-                .height(Length::Fill),
+                scrollable(sidebar).spacing(8).height(Length::Fill),
                 button(
                     row![
                         icon("settings"),
