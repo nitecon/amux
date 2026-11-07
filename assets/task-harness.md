@@ -1,4 +1,4 @@
-## amux tasks — managed instructions v5
+## amux tasks — managed instructions v6
 
 Use amux for all task tracking. Do not use local task/todo/plan tools
 (TaskCreate/TaskGet/TaskList/TaskUpdate/TodoWrite or update_plan).
@@ -26,13 +26,16 @@ amux tasks create "Title" --parent PARENT_ID --specification "Context and accept
 amux tasks claim ID
 amux tasks started ID
 amux tasks comment ID "Progress, evidence, or question"
-amux tasks user-review ID
+amux tasks user-review ID "Specific user action required"
 amux tasks release ID
 amux tasks done ID
 amux tasks delegate "Title" --parent PARENT_ID --target-project PROJECT --specification "Handoff"
 amux tasks help
 amux submit-work ID "Commit message" PATH...
 ```
+
+Before moving a task to User review, comment with the question or decision needed
+and provide the specific user action as the required command argument.
 
 Finish code work with `amux submit-work` (MCP tool `submit_work`), listing
 every file you changed. It commits only those files, pushes them or opens a pull
