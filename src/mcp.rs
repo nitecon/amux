@@ -128,17 +128,21 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "task_create",
-        description: "Create a subtask under a fitting existing parent. Read the parent first and check scope. Choose another fitting parent if needed; if none fits, ask the user to create a top-level task and propose its title and description.",
+        description: "Create a subtask under a fitting existing parent; read the parent first and check scope. Create a root (root_reason instead of parent) only for an explicit user request (user-directed) or a core-principle finding (principle), with a specification recording the request or finding, evidence and acceptance criteria. Otherwise, if no parent fits, ask the user to create the top-level task and propose its title and description.",
         bin: Bin::Amux,
         command: &["tasks", "create"],
         args: &[
             pos("title", "Task title"),
-            Arg {
-                name: "parent",
-                description: "Existing parent task UUID whose scope includes this work",
-                kind: Kind::Option("--parent"),
-                required: true,
-            },
+            opt(
+                "parent",
+                "--parent",
+                "Existing parent task UUID whose scope includes this work",
+            ),
+            opt(
+                "root_reason",
+                "--root-reason",
+                "Create a root instead of a subtask: user-directed or principle. Requires specification; not with parent",
+            ),
             opt(
                 "specification",
                 "--specification",
@@ -728,7 +732,22 @@ mod tests {
                 "T"
             ]
         );
-        assert!(argv(tool, &json!({"title":"T"})).is_err());
+        assert_eq!(
+            argv(
+                tool,
+                &json!({"title": "T", "root_reason": "user-directed", "specification": "Asked"})
+            )
+            .unwrap(),
+            [
+                "tasks",
+                "create",
+                "--root-reason=user-directed",
+                "--specification=Asked",
+                "--",
+                "T"
+            ]
+        );
+        assert!(argv(tool, &json!({"parent": "P"})).is_err());
         let tool = TOOLS.iter().find(|t| t.name == "memory_get").unwrap();
         assert_eq!(
             argv(tool, &json!({"ids": "ab12 cd34"})).unwrap(),
