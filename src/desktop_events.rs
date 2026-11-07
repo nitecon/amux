@@ -7,6 +7,8 @@ use super::*;
 use amux::event_client::{self, Incoming, Subscription};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+#[path = "desktop_guidance.rs"]
+mod guidance;
 
 const EVENTS: [&str; 9] = [
     "agent.notify",
@@ -45,6 +47,9 @@ pub(super) struct State {
     delivered: VecDeque<String>,
     /// Recent notifications and their outcomes, for the Events panel.
     cards: VecDeque<(String, delegation::Event, String, String)>,
+    guidance_seen: HashMap<Uuid, (String, u64)>,
+    last_delivery: HashMap<Uuid, Instant>,
+    guidance_cards: VecDeque<super::super::desktop_design::EventCard>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +175,9 @@ impl Desktop {
             pending,
             delivering,
             delivered: old.delivered,
+            guidance_seen: old.guidance_seen,
+            last_delivery: old.last_delivery,
+            guidance_cards: old.guidance_cards,
             ..State::default()
         };
         for workspace in &mut self.workspaces {
@@ -265,6 +273,7 @@ impl Desktop {
 
     /// Called from the delegation tick when the server schedules.
     pub(super) fn events_tick(&mut self) -> Task<Message> {
+        self.guidance_tick();
         if !self.events_enabled() {
             if self.delegation.events.flight.is_some() {
                 self.events_stop();
@@ -274,7 +283,7 @@ impl Desktop {
             } else {
                 "Automatic task notifications are disabled in Settings".into()
             };
-            return Task::none();
+            return self.events_deliver();
         }
         if self.delegation.events.flight.is_some()
             && self.events_targets() != self.delegation.events.targets
@@ -290,12 +299,13 @@ impl Desktop {
                 .retry_at
                 .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
             {
-                return Task::none();
+                return self.events_deliver();
             }
-            return self.events_start();
+            let start = self.events_start();
+            return Task::batch([start, self.events_deliver()]);
         }
         if !self.delegation.events.connected {
-            return Task::none();
+            return self.events_deliver();
         }
         self.events_report();
         self.events_deliver()
@@ -439,6 +449,31 @@ impl Desktop {
     fn events_event(&mut self, mut event: Value) -> Task<Message> {
         let id = event["id"].as_str().unwrap_or_default();
         if id == "agent.notify" {
+            // New work takes priority over background guidance and recall.
+            if assignment_task(&event).is_some() {
+                if self
+                    .delegation
+                    .events
+                    .delivering
+                    .as_ref()
+                    .is_some_and(|d| d.event["amux_guidance"].is_string())
+                    && let Some(delivery) = self.delegation.events.delivering.take()
+                {
+                    self.events_result(&delivery.event, "skipped", "new task takes priority");
+                }
+                let mut skipped = Vec::new();
+                self.delegation.events.pending.retain(|e| {
+                    if e["amux_guidance"].is_string() {
+                        skipped.push(e.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                for skipped in skipped {
+                    self.events_result(&skipped, "skipped", "new task takes priority");
+                }
+            }
             // Acknowledge once queued here, so one agent's wait never holds up
             // the stream; like before the router, pending notices end with the app.
             self.events_send(event_client::ack(&event));
@@ -499,6 +534,45 @@ impl Desktop {
     }
 
     fn events_result(&mut self, event: &Value, status: &str, reason: &str) {
+        if event["amux_guidance"].is_string() {
+            let detail = format!(
+                "{} {status}: target={} {reason}",
+                event["amux_guidance"], event["payload"]["target"]
+            );
+            if event["amux_guidance"] == "review"
+                && let (Some(registry), Some(session), Some(cycle)) = (
+                    self.registry.as_deref(),
+                    event["payload"]["target"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok()),
+                    event["amux_cycle"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok()),
+                )
+                && let Err(error) = amux::guidance::with_session(registry, session, |state| {
+                    state.review_result(cycle, &detail)
+                })
+            {
+                self.queue_diagnostic(format!(
+                    "Memory review outcome could not be saved: {error:#}"
+                ));
+            }
+            let cards = &mut self.delegation.events.guidance_cards;
+            cards.push_back(super::super::desktop_design::EventCard {
+                key: event["uid"].as_str().unwrap_or_default().to_owned(),
+                title: "Session guidance".into(),
+                detail,
+                gateway: None,
+            });
+            if cards.len() > CARDS {
+                cards.pop_front();
+            }
+            self.queue_diagnostic(format!(
+                "Session guidance {} {status}: target={} {reason}",
+                event["amux_guidance"], event["payload"]["target"]
+            ));
+            return;
+        }
         let target = event["payload"]["target"].clone();
         let mut source = event["payload"]["event"].clone();
         source["id"] = event["seq"].clone();
@@ -595,12 +669,50 @@ impl Desktop {
 
     fn events_verify(&self, token: Uuid, candidate: Candidate) -> Task<Message> {
         let epoch = self.delegation.epoch;
+        let recall = self
+            .delegation
+            .events
+            .delivering
+            .as_ref()
+            .filter(|d| d.event["amux_recall_done"] != true)
+            .filter(|d| d.event["amux_guidance"].is_string() || assignment_task(&d.event).is_some())
+            .map(|d| {
+                let task = &d.event["payload"]["event"]["task"];
+                format!(
+                    "{} {} {} durable decisions and conventions",
+                    candidate.target.project,
+                    task["title"].as_str().unwrap_or_default(),
+                    task["description"].as_str().unwrap_or_default()
+                )
+                .chars()
+                .take(1000)
+                .collect::<String>()
+            });
         Task::perform(
             async move {
-                let verified = tokio::task::spawn_blocking(move || verify(&candidate))
-                    .await
-                    .unwrap_or(false);
-                Event::Verified { token, verified }
+                let should_recall = recall.is_some();
+                let (verified, memories) = tokio::task::spawn_blocking(move || {
+                    let verified = verify(&candidate);
+                    let memories = if verified {
+                        recall.and_then(|query| {
+                            amux::mcp::durable_memories(&candidate.target.directory, &query)
+                        })
+                    } else {
+                        None
+                    };
+                    (verified, memories)
+                })
+                .await
+                .unwrap_or_default();
+                if should_recall {
+                    Event::Recalled {
+                        token,
+                        verified,
+                        memories,
+                    }
+                } else {
+                    Event::Verified { token, verified }
+                }
             },
             move |e| Message::Delegation(epoch, e),
         )
@@ -609,6 +721,17 @@ impl Desktop {
     /// Check changing delivery conditions both before verification and just
     /// before writing to the terminal. Verification yields to other UI events.
     fn events_ready(&mut self, event: &Value, candidate: &Candidate, after_clear: bool) -> bool {
+        if let Some(revision) = event["amux_input_revision"].as_u64()
+            && tab(self, candidate.target.terminal)
+                .is_none_or(|t| t.delegation.input_revision != revision)
+        {
+            self.events_result(
+                event,
+                "skipped",
+                "user input changed before guidance delivery",
+            );
+            return false;
+        }
         let payload = &event["payload"];
         let receiver = &event["receiver"];
         if receiver["session_id"].as_str() != Some(candidate.target.session.to_string().as_str())
@@ -652,7 +775,7 @@ impl Desktop {
         if payload["require_idle"] == true && busy {
             // A work offer goes back so the server can offer it elsewhere;
             // an informational notice waits for the agent to go quiet.
-            if offer {
+            if offer || event["amux_guidance"] == "review" {
                 self.events_result(event, "skipped", "agent is busy");
             } else {
                 self.delegation.events.pending.push_back(event.clone());
@@ -687,7 +810,15 @@ impl Desktop {
         {
             return Task::none();
         }
-        if self.preferences.open || self.workspace_dialog.open || !self.delegation.events.connected
+        if self.preferences.open
+            || self.workspace_dialog.open
+            || (!self.delegation.events.connected
+                && self
+                    .delegation
+                    .events
+                    .delivering
+                    .as_ref()
+                    .is_none_or(|d| !d.event["amux_guidance"].is_string()))
         {
             if let Some(delivery) = &mut self.delegation.events.delivering
                 && let DeliveryStage::VerifyingAfterClear { input_revision } = delivery.stage
@@ -699,7 +830,7 @@ impl Desktop {
             return Task::none();
         }
         let Some(Delivery {
-            event,
+            mut event,
             candidate,
             stage,
             ..
@@ -744,11 +875,85 @@ impl Desktop {
         if !self.events_ready(&event, &current, input_revision.is_some()) {
             return Task::none();
         }
-        let Some(message) = notification_text(&event, &current) else {
+        let mcp = tab(self, current.target.terminal).is_some_and(|tab| tab.delegation.mcp_tools);
+        let Some(mut message) = notification_text(&event, &current, mcp) else {
             self.events_result(&event, "skipped", "notification cannot be rendered");
             return Task::none();
         };
-        if input_revision.is_none() && event["payload"]["clear_context"] == true {
+        // Persist cycle transitions and recall deduplication before any write.
+        let registry = self.registry.clone();
+        let restore = event["amux_guidance"] == "session"
+            || event["amux_guidance"] == "clear"
+            || input_revision.is_some();
+        let memories = registry
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("session guidance storage unavailable"))
+            .and_then(|registry| {
+                amux::guidance::with_session(registry, current.target.session, |state| {
+                    state.activate(current.actor.instance_id);
+                    if event["amux_guidance"] == "review"
+                        && event["amux_cycle"].as_str() != Some(state.cycle.to_string().as_str())
+                    {
+                        return Err("work cycle changed before review");
+                    }
+                    let new_assignment =
+                        assignment_task(&event).is_some_and(|task| state.assign(task));
+                    let needs_clear = assignment_task(&event).is_none_or(|task| {
+                        (new_assignment || event["amux_assignment_new"] == true)
+                            && state.needs_task_clear(task)
+                    });
+                    Ok((
+                        event["amux_memories"]
+                            .as_str()
+                            .and_then(|text| state.memories(text, restore)),
+                        needs_clear,
+                        new_assignment,
+                    ))
+                })
+            });
+        let mut needs_clear = true;
+        match memories {
+            Ok(Ok((memories, clear, new_assignment))) => {
+                needs_clear = clear;
+                if new_assignment {
+                    event["amux_assignment_new"] = true.into();
+                }
+                if let Some(memories) = memories {
+                    message.push('\n');
+                    message.push_str(&memories);
+                }
+            }
+            Ok(Err(reason)) => {
+                self.events_result(&event, "skipped", reason);
+                return Task::none();
+            }
+            Err(error) => {
+                if event["amux_guidance"].is_string() {
+                    self.events_result(
+                        &event,
+                        "failed",
+                        &format!("session guidance storage: {error:#}"),
+                    );
+                    return Task::none();
+                }
+                self.queue_diagnostic(format!(
+                    "Task delivery continues without guidance bookkeeping: {error:#}"
+                ));
+            }
+        }
+        if event["amux_guidance"].is_string() || input_revision.is_some() {
+            message.push('\n');
+            let hints = if event["amux_guidance"] == "session" || event["amux_guidance"] == "clear"
+            {
+                amux::guidance::session_hints(mcp)
+            } else if input_revision.is_some() {
+                amux_gateway_backend::templates::SESSION_GUIDANCE.to_owned()
+            } else {
+                amux::guidance::capability_hints(mcp)
+            };
+            message.push_str(&hints);
+        }
+        if needs_clear && input_revision.is_none() && event["payload"]["clear_context"] == true {
             let ready = tab(self, current.target.terminal).is_some_and(|tab| {
                 new_task_context(
                     &event,
@@ -764,6 +969,7 @@ impl Desktop {
             }
         }
         if input_revision.is_none()
+            && needs_clear
             && (self.preferences.current.clear_on_task || event["payload"]["clear_context"] == true)
         {
             let clear_revision = tab(self, current.target.terminal).and_then(|tab| {
@@ -775,6 +981,28 @@ impl Desktop {
                 .then_some(tab.delegation.input_revision)
             });
             if let Some(input_revision) = clear_revision {
+                let reservation = registry
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("session guidance storage unavailable"))
+                    .and_then(|registry| {
+                        amux::guidance::with_session(registry, current.target.session, |state| {
+                            if let Some(task) = assignment_task(&event) {
+                                state.reserve_task_clear(task)
+                            } else {
+                                state.clear();
+                                true
+                            }
+                        })
+                    });
+                if matches!(reservation, Ok(false)) {
+                    self.events_result(&event, "skipped", "task context clear already reserved");
+                    return Task::none();
+                }
+                if let Err(error) = reservation {
+                    self.queue_diagnostic(format!(
+                        "Task context clear continues without guidance bookkeeping: {error:#}"
+                    ));
+                }
                 if !self.events_paste(&current, DeliveryInput::Clear, Some(input_revision)) {
                     self.events_result(&event, "failed", "terminal changed before context clear");
                     return Task::none();
@@ -798,12 +1026,19 @@ impl Desktop {
                 );
             }
         }
+        // Providers without bracketed paste interpret literal line breaks as
+        // submissions. Contextual recall must remain one compact message.
+        let message = amux::guidance::terminal_text(&message);
         let pasted = self.events_paste(
             &current,
             DeliveryInput::Notification(&message),
             input_revision,
         );
         if pasted {
+            self.delegation
+                .events
+                .last_delivery
+                .insert(current.target.session, Instant::now());
             self.events_result(&event, "delivered", "");
         } else {
             self.events_result(&event, "failed", "terminal changed before delivery");
@@ -876,6 +1111,7 @@ impl Desktop {
                     gateway: Some(Box::new(event.clone())),
                 },
             )
+            .chain(self.delegation.events.guidance_cards.iter().rev().cloned())
             .collect()
     }
 }
@@ -932,7 +1168,14 @@ fn notification_receiver(event: &Value, candidate: Option<&Candidate>) -> Value 
 }
 
 /// The terminal text, rendered by the same formatter as stream notifications.
-pub(super) fn notification_text(event: &Value, candidate: &Candidate) -> Option<String> {
+pub(super) fn notification_text(event: &Value, candidate: &Candidate, mcp: bool) -> Option<String> {
+    if let Some(kind) = event["amux_guidance"].as_str() {
+        return Some(if kind == "review" {
+            amux_gateway_backend::templates::MEMORY_REVIEW.to_owned()
+        } else {
+            "[Amux context restored] Current session guidance and durable recall follow.".to_owned()
+        });
+    }
     let payload = &event["payload"];
     let mut source = payload["event"].clone();
     source["id"] = event["seq"].clone();
@@ -945,10 +1188,36 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate) -> Option<
     } else {
         parsed.recipient_terminal_text(&candidate.target, &candidate.name)
     };
-    Some(match payload["instructions"].as_str() {
+    let text = match payload["instructions"].as_str() {
         Some(instructions) => format!("{text} {instructions}"),
         None => text,
+    };
+    Some(format!(
+        "{text} {}{}",
+        if assignment_task(event).is_some() {
+            amux_gateway_backend::templates::TASK_GUIDANCE
+        } else {
+            amux_gateway_backend::templates::TASK_UPDATE_GUIDANCE
+        },
+        if assignment_task(event).is_some() {
+            amux::guidance::capability_hints(mcp)
+        } else {
+            String::new()
+        }
+    ))
+}
+
+fn assignment_task(event: &Value) -> Option<Uuid> {
+    let payload = &event["payload"];
+    ((payload["new_task"] == true || payload["mode"] == "assigned")
+        && payload["event"]["kind"] == "task_created"
+        && payload["event"]["comment"].is_null())
+    .then(|| {
+        payload["event"]["task"]["id"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok())
     })
+    .flatten()
 }
 
 #[cfg(test)]

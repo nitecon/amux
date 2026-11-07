@@ -221,7 +221,7 @@ fn fixture_process() {
         last_text: None,
         pending: String::new(),
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         // SAFETY: initialized termios for this process's own terminal stdin.
         unsafe {
@@ -340,7 +340,7 @@ pub(super) fn spawn(
     }
     let tab = pane.tabs.iter_mut().find(|t| t.id == id).unwrap();
     tab.provider = Some(provider);
-    tab.delegation = TabState::capture(&terminal, id + 1, &directory);
+    tab.delegation = TabState::capture(&terminal, id + 1, &directory, false);
     tab.terminal = Some(terminal);
     let agent = Agent {
         terminal: id,
@@ -485,7 +485,7 @@ fn text(app: &Desktop, agent: &Agent, event: &Value) -> String {
         .iter()
         .find(|c| c.target.terminal == agent.terminal)
         .unwrap();
-    events::notification_text(event, candidate).unwrap()
+    events::notification_text(event, candidate, false).unwrap()
 }
 
 fn verification(app: &Desktop, verified: bool) -> Event {
@@ -803,6 +803,10 @@ fn check_context_clear_delivery(fallback_review: bool) {
             assert_eq!(agent.lines(), ["/clear"]);
         } else {
             let notification = text(&app, agent, &event);
+            let notification = format!(
+                "{notification} {}",
+                amux_gateway_backend::templates::SESSION_GUIDANCE
+            );
             let notification = if index == 0 {
                 format!("\x1b[200~{notification}\x1b[201~")
             } else {

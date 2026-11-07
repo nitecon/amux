@@ -1,5 +1,6 @@
 //! Codex startup memory never replaces the user's own developer instructions
-//! or duplicates the memory hook. One test per binary: it sets CODEX_HOME.
+//! One test per binary: it sets CODEX_HOME. Existing hooks do not replace
+//! amux's own durable-only recall and capability hints.
 
 #[test]
 fn codex_context_respects_user_instructions_and_the_memory_hook() {
@@ -37,5 +38,5 @@ fn codex_context_respects_user_instructions_and_the_memory_hook() {
     )
     .unwrap();
     assert!(amux::mcp::memory_hook_installed("codex"));
-    assert!(amux::mcp::codex_context_arguments(project).is_empty());
+    assert!(!amux::mcp::codex_context_arguments(project).is_empty());
 }

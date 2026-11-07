@@ -24,7 +24,7 @@ fn discovery_is_read_only_and_detects_profiles_or_path_executables() {
     assert!(
         env.reports()
             .iter()
-            .all(|r| !r.detected && r.rules == State::Missing)
+            .all(|r| !r.detected && r.rules == State::Current)
     );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     fs::create_dir(&env.claude_home).unwrap();
@@ -57,10 +57,7 @@ fn managed_block_updates_are_idempotent_and_preserve_surrounding_user_text() {
     assert_eq!(merge_rules(&installed).unwrap(), installed);
     let old = format!("manual before\n{START}\nold instructions\n{END}\nmanual after\n");
     let updated = merge_rules(&old).unwrap();
-    assert_eq!(
-        updated,
-        format!("manual before\n{START}\n{RULES}{END}\nmanual after\n")
-    );
+    assert_eq!(updated, "manual before\n\nmanual after\n");
     for broken in [
         format!("{START}\nmanual"),
         format!("{END}\n{START}"),
@@ -72,12 +69,75 @@ fn managed_block_updates_are_idempotent_and_preserve_surrounding_user_text() {
 }
 
 #[test]
+fn startup_removes_all_legacy_blocks_even_in_manual_profiles_and_shadowed_codex_base() {
+    let (_temp, env) = fixture();
+    let old = format!(
+        "Strict user rules\r\n<agent-tools-rules>\r\nlegacy tools\r\n</agent-tools-rules>\r\n<memory-rules>\r\nlegacy memory\r\n</memory-rules>\r\n{START}\r\nlegacy tasks\r\n{END}\r\nUser suffix\r\n"
+    );
+    for (root, name) in [
+        (&env.claude_home, "CLAUDE.md"),
+        (&env.codex_home, "AGENTS.md"),
+        (&env.codex_home, "AGENTS.override.md"),
+        (&env.copilot_home, "copilot-instructions.md"),
+    ] {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join(name), &old).unwrap();
+    }
+    let mut choices = Choices::default();
+    for provider in Provider::ALL {
+        choices.set(provider, Choice::Manual);
+    }
+    assert!(env.maintain(&choices).iter().all(|r| r.error.is_none()));
+    for (root, name) in [
+        (&env.claude_home, "CLAUDE.md"),
+        (&env.codex_home, "AGENTS.md"),
+        (&env.codex_home, "AGENTS.override.md"),
+        (&env.copilot_home, "copilot-instructions.md"),
+    ] {
+        let clean = fs::read_to_string(root.join(name)).unwrap();
+        assert_eq!(clean, "Strict user rules\r\n\r\n\r\n\r\nUser suffix\r\n");
+        let backup = root.join(format!("{name}.amux.bak"));
+        assert_eq!(fs::read_to_string(&backup).unwrap(), old);
+        env.maintain(&choices);
+        assert_eq!(fs::read_to_string(&backup).unwrap(), old);
+        env.install(match name {
+            "CLAUDE.md" => Provider::Claude,
+            "copilot-instructions.md" => Provider::Copilot,
+            _ => Provider::Codex,
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(root.join(name)).unwrap(), clean);
+    }
+}
+
+#[test]
+fn malformed_legacy_and_overlapping_blocks_leave_entire_file_untouched() {
+    let (_temp, env) = fixture();
+    fs::create_dir_all(&env.codex_home).unwrap();
+    let path = env.codex_home.join("AGENTS.md");
+    fs::write(env.codex_home.join("AGENTS.override.md"), "User override\n").unwrap();
+    for bad in [
+        "Before\n<memory-rules>\nUnmatched\n",
+        "<memory-rules>\n<agent-tools-rules>\n</memory-rules>\n</agent-tools-rules>\n",
+        "<memory-rules>\n</memory-rules>\n<memory-rules>\n</memory-rules>\n",
+        "Mention <agent-tools-rules>\n</agent-tools-rules>\n",
+    ] {
+        fs::write(&path, bad).unwrap();
+        assert!(env.report(Provider::Codex).error.is_some());
+        assert!(env.maintain(&Choices::default())[1].error.is_some());
+        assert_eq!(fs::read_to_string(&path).unwrap(), bad);
+        assert!(!env.codex_home.join("AGENTS.md.amux.bak").exists());
+    }
+}
+
+#[test]
 fn claude_install_preserves_settings_and_blocks_only_local_task_tools() {
     let (_temp, env) = fixture();
     fs::create_dir(&env.claude_home).unwrap();
     let rules = env.claude_home.join("CLAUDE.md");
     let settings = env.claude_home.join("settings.json");
-    fs::write(&rules, "# My rules\nKeep this.\n").unwrap();
+    let legacy = format!("# My rules\nKeep this.\n{START}\nold operational rules\n{END}\n");
+    fs::write(&rules, &legacy).unwrap();
     let original = json!({"model":"user-model", "hooks":{"SessionStart":[]}, "permissions":{"allow":["Bash(git status)"],"deny":["Read(secret)","TaskCreate"]}, "env":{"USER_VALUE":"kept"}});
     fs::write(&settings, serde_json::to_string(&original).unwrap()).unwrap();
     assert_eq!(env.report(Provider::Claude).local_tasks, State::Missing);
@@ -101,7 +161,7 @@ fn claude_install_preserves_settings_and_blocks_only_local_task_tools() {
     }
     assert_eq!(
         fs::read_to_string(env.claude_home.join("CLAUDE.md.amux.bak")).unwrap(),
-        "# My rules\nKeep this.\n"
+        legacy
     );
     let snapshot = fs::read_to_string(&settings).unwrap();
     env.install(Provider::Claude).unwrap();
@@ -286,7 +346,7 @@ fn opted_in_startup_repairs_rules_and_task_settings_but_preserves_broken_files()
     let rules = fs::read_to_string(env.claude_home.join("CLAUDE.md")).unwrap();
     assert!(rules.starts_with("My instructions\n"));
     assert!(rules.ends_with("User suffix\n"));
-    assert!(rules.contains("Do not use `--json`, Python"));
+    assert!(!rules.contains(START));
     assert!(!env.codex_home.join("AGENTS.md").exists());
     let backup = fs::read(env.claude_home.join("CLAUDE.md.amux.bak")).unwrap();
     assert!(startup()[0].current());
@@ -329,7 +389,7 @@ fn print_provides_concise_manual_rules_without_setting_up_any_files() {
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(&env.claude_home.join("CLAUDE.md").display().to_string()));
-    assert!(text.contains("Do not use `--json`, Python, or scripts"));
+    assert!(text.contains("do not reinstall root operational blocks"));
     assert!(text.contains("permissions"));
     assert!(text.contains("TodoWrite"));
     assert_eq!(RULES.matches("\namux tasks ").count(), 11);

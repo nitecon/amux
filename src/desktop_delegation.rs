@@ -30,13 +30,22 @@ pub(super) struct TabState {
     status: &'static str,
     /// Busy/idle as derived by the server event router, when connected to one.
     pub server_busy: Option<bool>,
+    pub(super) mcp_tools: bool,
+    pub(super) context_clears: u64,
+    pub(super) recorded_context_clears: u64,
 }
 impl TabState {
     pub fn status(&self) -> &str {
         self.status
     }
-    pub fn capture(terminal: &Terminal, terminal_number: u64, directory: &std::path::Path) -> Self {
+    pub fn capture(
+        terminal: &Terminal,
+        terminal_number: u64,
+        directory: &std::path::Path,
+        mcp_tools: bool,
+    ) -> Self {
         Self {
+            mcp_tools,
             terminal_number,
             directory: Some(amux::workspace_launch::external_path(
                 directory.to_path_buf(),
@@ -52,6 +61,14 @@ impl TabState {
             return;
         };
         self.input_revision = self.input_revision.wrapping_add(1);
+        // Only an explicitly submitted clear command begins a new cycle.
+        let mut submitted = self.input.clone();
+        submitted.extend_from_slice(bytes);
+        if submitted == b"/clear\r" || submitted == b"/clear\n" {
+            self.context_clears = self.context_clears.wrapping_add(1);
+            self.input.clear();
+            return;
+        }
         if matches!(bytes.as_slice(), b"\r" | b"\n" | b"\x03" | b"\x15") {
             self.input.clear();
         } else if contains_text(bytes) || !self.input.is_empty() {
@@ -121,6 +138,11 @@ pub(super) enum Event {
     Verified {
         token: Uuid,
         verified: bool,
+    },
+    Recalled {
+        token: Uuid,
+        verified: bool,
+        memories: Option<String>,
     },
     ClearReady {
         token: Uuid,
@@ -228,6 +250,32 @@ fn discover_root(root: Root, registry: &std::path::Path) -> Option<Found> {
 }
 
 impl Desktop {
+    pub(super) fn context_cleared(&mut self, terminal: u64) {
+        let Some(candidate) = self
+            .delegation
+            .candidates
+            .iter()
+            .find(|c| c.target.terminal == terminal)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(registry) = self.registry.clone() else {
+            return;
+        };
+        match amux::guidance::with_session(&registry, candidate.target.session, |state| {
+            state.activate(candidate.actor.instance_id);
+            state.clear();
+        }) {
+            Ok(()) => {
+                if let Some(tab) = tab(self, terminal) {
+                    tab.delegation.recorded_context_clears = tab.delegation.context_clears;
+                }
+            }
+            Err(error) => self.queue_diagnostic(format!("Context clear guidance state: {error:#}")),
+        }
+    }
+
     fn delegation_roots(&mut self) -> Vec<Root> {
         let mut roots = Vec::new();
         for workspace in &mut self.workspaces {
@@ -297,6 +345,19 @@ impl Desktop {
         match event {
             Event::Router(incoming) => return self.events_incoming(incoming),
             Event::Verified { token, verified } => return self.events_verified(token, verified),
+            Event::Recalled {
+                token,
+                verified,
+                memories,
+            } => {
+                if let Some(delivery) = &mut self.delegation.events.delivering
+                    && delivery.token == token
+                {
+                    delivery.event["amux_recall_done"] = true.into();
+                    delivery.event["amux_memories"] = memories.into();
+                }
+                return self.events_verified(token, verified);
+            }
             Event::ClearReady { token } => return self.events_clear_ready(token),
             Event::Scanned { serial, found } => {
                 if self.delegation.scan_inflight == Some(serial) {

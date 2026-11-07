@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::time::Duration;
 
 /// Keep the bundled versions pinned to the amux release that shipped them.
@@ -158,6 +157,32 @@ pub const TOOLS: &[Tool] = &[
         args: &[ID],
     },
     Tool {
+        name: "task_delegate",
+        description: "Delegate cross-project implementation under a fitting source parent you have read. Keep changes in the owning repository; inspect both projects before retrying an uncertain delegation.",
+        bin: Bin::Amux,
+        command: &["tasks", "delegate"],
+        args: &[
+            pos("title", "Handoff title"),
+            Arg {
+                name: "parent",
+                description: "Source parent whose scope includes this work",
+                kind: Kind::Option("--parent"),
+                required: true,
+            },
+            Arg {
+                name: "target_project",
+                description: "Owning project",
+                kind: Kind::Option("--target-project"),
+                required: true,
+            },
+            opt(
+                "specification",
+                "--specification",
+                "Context and acceptance criteria",
+            ),
+        ],
+    },
+    Tool {
         name: "task_started",
         description: "Report that work on a claimed task has started.",
         bin: Bin::Amux,
@@ -253,6 +278,26 @@ pub const TOOLS: &[Tool] = &[
             kind: Kind::Words,
             required: true,
         }],
+    },
+    Tool {
+        name: "memory_update",
+        description: "Update an existing durable memory by ID after inspecting it; preserve unrelated guidance.",
+        bin: Bin::Memory,
+        command: &["update"],
+        args: &[
+            pos("id", "Existing memory ID or ID prefix"),
+            Arg {
+                name: "content",
+                description: "Replacement memory content",
+                kind: Kind::Option("--content"),
+                required: true,
+            },
+            opt(
+                "tags",
+                "--tags",
+                "Optional replacement comma-separated tags",
+            ),
+        ],
     },
     Tool {
         name: "code_read",
@@ -511,35 +556,51 @@ pub fn memory_hook_installed(provider: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Project memory for the start of a session, or None when memory is not
-/// bundled, the provider's own memory hook already supplies it, or it is slow.
-pub fn startup_context(provider: &str, project: &Path) -> Option<String> {
-    Bin::Memory.path()?;
-    if memory_hook_installed(provider) {
-        return None;
+/// Durable search deliberately bypasses `context`, which reads the shared
+/// WorkingContext. Bound execution and output; slow recall never blocks work.
+pub fn durable_memories(project: &Path, query: &str) -> Option<String> {
+    use std::io::{Read, Seek};
+    let path = Bin::Memory.path()?;
+    let mut output = tempfile::tempfile().ok()?;
+    let mut child = Command::new(path)
+        .args(["search", "--limit=5", "--", query])
+        .current_dir(project)
+        .envs(NO_UPDATE)
+        .stdin(Stdio::null())
+        .stdout(output.try_clone().ok()?)
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if started.elapsed() < CONTEXT_WAIT => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
-    let name = project.file_name()?.to_string_lossy().into_owned();
-    let project = project.to_path_buf();
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(run(
-            Bin::Memory,
-            &[
-                "context".into(),
-                "-k".into(),
-                "5".into(),
-                "--".into(),
-                format!("{name} project: current work, decisions and conventions"),
-            ],
-            &project,
-        ));
-    });
-    match receiver.recv_timeout(CONTEXT_WAIT) {
-        Ok((text, false)) if !text.trim().is_empty() => Some(format!(
-            "Relevant project memory from amux (the amux memory_search and memory_get tools fetch more):\n{text}"
-        )),
-        _ => None,
-    }
+    output.rewind().ok()?;
+    let mut bytes = Vec::new();
+    output.take(10_000).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+pub fn startup_context(_provider: &str, project: &Path) -> Option<String> {
+    let hints = crate::guidance::session_hints(true);
+    let query = format!(
+        "{} project decisions and conventions",
+        project.file_name()?.to_string_lossy()
+    );
+    let memories = durable_memories(project, &query).unwrap_or_default();
+    Some(format!("{hints}\n{memories}"))
 }
 
 /// True when any Codex config that may apply sets developer instructions,
@@ -584,6 +645,7 @@ fn handle(message: &Value) -> Option<Value> {
             // Codex ignores server instructions; it gets this context at launch.
             let provider = std::env::var("AMUX_AGENT_PROVIDER").unwrap_or_default();
             if provider != "codex"
+                && std::env::var_os("AMUX_DESKTOP_GUIDANCE").is_none()
                 && let Some(context) = startup_context(&provider, &directory())
             {
                 result["instructions"] = context.into();
@@ -649,6 +711,10 @@ pub fn launch_arguments(
         env.insert("AMUX_STATE_DIR", &state);
     }
     let command = amux.to_string_lossy();
+    let desktop_guidance = std::env::var("AMUX_DESKTOP_GUIDANCE").unwrap_or_default();
+    if !desktop_guidance.is_empty() {
+        env.insert("AMUX_DESKTOP_GUIDANCE", &desktop_guidance);
+    }
     match provider {
         // Work is committed by `amux submit-work`, which never adds attribution;
         // these settings stop Claude Code adding its own to commits and PRs

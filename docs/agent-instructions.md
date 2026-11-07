@@ -1,38 +1,95 @@
 # Agent instructions
 
-amux can detect Claude Code, Codex and GitHub Copilot CLI through their executable
-on PATH or their user configuration directory. On startup, a detected agent with
-missing or outdated rules gets a prompt naming its control file. Choose
-**Update rules automatically** or **Show rules; don’t ask again**. Choices are
-saved per provider on this machine. Providers not detected can also be configured
-in Settings, for example before their first launch.
+amux delivers operational guidance inside each agent session. It does not
+install operational command manuals in user-level root harnesses or introduce
+provider hooks. Repository instruction files remain untouched.
 
-## Install and verify
+## Root harness cleanup
 
-Startup suggestions appear as dismissible cards in the bottom-right corner,
-without resizing the terminal. Dismissing a card only hides it for this launch;
-use **Show rules; don’t ask again** to remember a manual choice. Check and install
-results use temporary corner notifications and remain available in Settings.
+Every desktop startup removes recognized legacy managed blocks before restoring
+saved terminals, including providers previously set to manual maintenance.
+Unrelated user-authored text, including strict rules outside those blocks,
+is preserved byte for byte. Recognized boundaries are:
 
-**Update rules automatically** installs the managed instructions and task settings,
-then enables verification and repair on every startup, including after amux
-updates. Startup maintenance finishes before saved provider sessions are restored,
-so those sessions read the updated files. Only opted-in providers are edited.
+- `<!-- amux:tasks:start -->` / `<!-- amux:tasks:end -->`
+- `<agent-tools-rules>` / `</agent-tools-rules>`
+- `<memory-rules>` / `</memory-rules>`
 
-**Show rules; don’t ask again** displays the rules and settings snippets with a
-copy button, without editing provider files. amux remembers manual mode and never
-prompts or auto-edits that provider again, even if the rules later become outdated.
-To change that choice, use **Update rules** in **Settings → Agent Instructions**;
-this installs the latest block and enables automatic startup maintenance.
+Changed existing files receive the existing sibling `.amux.bak` backup. Repeated
+cleanup is a no-op. Duplicate, overlapping, inline or unmatched boundaries are
+reported without changing that provider's instruction files.
 
-These actions apply immediately; **Save & Close** is for other preferences.
-**Check installation and updates** is a read-only check against the rules bundled
-with the running amux version. Checks do not contact an update service or upgrade
-provider software. Start a new provider session after editing rules; already
-running agents retain their loaded instructions. Choices live in
-`harness-preferences.json` in the amux state directory (`AMUX_STATE_DIR` when set).
+| Provider | Root files | Home override |
+| --- | --- | --- |
+| Claude | `~/.claude/CLAUDE.md` | `CLAUDE_CONFIG_DIR` |
+| Codex | `~/.codex/AGENTS.md` and `AGENTS.override.md` | `CODEX_HOME` |
+| Copilot | `~/.copilot/copilot-instructions.md` | `COPILOT_HOME` |
 
-The same operations are available without the desktop:
+Both Codex files are cleaned, including a base file shadowed by an override.
+The existing **Settings → Agent Instructions** checks show resolved paths and
+file errors. Neither automatic maintenance nor manual setup instructions can
+reinstall the retired blocks.
+
+## Contextual guidance
+
+Session start/resume and explicit `/clear` receive current task-policy and tool
+hints plus relevant durable memories. Desktop guidance waits for an idle agent
+with an empty composer and uses the same native process verification and fenced
+terminal queue as task notifications. A changed draft cancels background guidance.
+Standalone MCP launches retain their existing startup instruction mechanism;
+Codex's configured developer instructions are preserved.
+
+Task assignments receive task identity, concise workflow hints and durable recall
+based on the task. Updates and results retain their existing ownership and
+informational boundaries. Hints cover reading and claiming work, fitting parent
+scope, cross-project delegation and submission through `amux submit-work`.
+Substantive untracked work should be associated with a fitting task. Task output
+is read as normal text, without `--json` or parsing scripts.
+
+Agents normally create subtasks under a fitting parent. Root-task exceptions use
+`amux tasks create TITLE --root-reason REASON --specification TEXT`:
+`user-directed` records an explicit user request, and `principle` records a
+concrete DRY/refactor or similar core-principle finding. The specification must
+record the request or finding, evidence and bounded acceptance criteria. Reasons
+cannot accompany a parent. Otherwise, ask the user to create the root. Review
+findings and cross-project handoffs still require fitting parents.
+
+Available MCP tools determine tool hints. Memory supports `memory_search`,
+`memory_get`, `memory_store` and `memory_update`; code exploration uses
+`code_search`, `code_symbols`, `code_symbol`, `code_read`, `doc_outline` and
+`doc_section`. Sessions without amux MCP receive CLI hints only for present bundled
+executables. Templates are visible in Settings.
+
+Recall calls durable `memory search`, never `memory context` or WorkingContext.
+It has a five-second timeout and a bounded output. Unchanged recall is suppressed
+within the same context. Explicit context restoration permits recall again.
+
+## Idle memory review
+
+Each session work cycle allows one idle memory-review injection. A fresh session,
+a new task assignment or explicit context clear begins a cycle. Resume, restart,
+comments, ordinary messages and busy/idle changes do not re-arm it. Repeated
+assignments for the same task do not re-arm it or clear context again.
+
+The allowance is persisted before dispatch in the amux state directory under
+`guidance/<session-id>.json`. It belongs to the session rather than the project
+directory. An uncertain or failed dispatch consumes the allowance; it is not
+retried automatically. New task delivery preempts background guidance. Storage
+failures suppress memory review and are reported in `queue.log`; task delivery
+can continue without guidance bookkeeping.
+
+The review asks the agent to consider durable decisions, corrections, conventions
+and discoveries; search and inspect existing memories; update a matching memory
+where appropriate; and store a new memory only when useful. No write is required.
+Routine progress, transient logs and source-recoverable facts do not qualify.
+No shared project handoff buffer is used for recall or session state.
+
+## Optional local task settings
+
+The existing settings choice still controls provider task-tool settings. Claude
+setup adds local task tools to `permissions.deny`; Codex setup disables
+`tools.update_plan`. Subagent and background tools remain available. Copilot has
+instructional guidance only. Settings changes preserve other JSON/TOML values.
 
 ```sh
 amux harness check
@@ -42,74 +99,7 @@ amux harness install codex
 amux harness install copilot
 ```
 
-`print PROVIDER` only prints manual instructions and task-settings snippets;
-`install PROVIDER` performs a one-time install. These CLI commands do not change
-the desktop startup choice. Automatic maintenance is an explicit desktop choice.
-
-Each check reports detection, target paths, missing/current/outdated instructions,
-local-task settings and file errors. A current check confirms file contents,
-not that an already running model has reloaded them or that every profile applies
-the same configuration. Task commands still require a configured gateway and an
-assigned amux identity. The managed block never contains credentials or a fixed
-agent identity; agents resolve their own assigned identity.
-
-## Files and preservation
-
-| Provider | User instructions | Task settings |
-| --- | --- | --- |
-| Claude Code | `~/.claude/CLAUDE.md` | `~/.claude/settings.json` |
-| Codex | `~/.codex/AGENTS.md`, or a nonempty `AGENTS.override.md` if present | `~/.codex/config.toml` |
-| Copilot CLI | `~/.copilot/copilot-instructions.md` | Instructional guidance only |
-
-`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `COPILOT_HOME` override the respective
-directories. Settings shows the resolved paths. Project instructions are not
-rewritten. Each installed block is bounded by `<!-- amux:tasks:start -->` and
-`<!-- amux:tasks:end -->`; updates replace only that block. Other text, Claude
-settings keys and Codex TOML comments/settings remain intact. Changed existing
-files get a sibling `.amux.bak` backup. Repeated installation is a no-op when
-current. Invalid JSON/TOML, malformed settings shapes, duplicate blocks and
-unmatched markers are reported for repair rather than discarded. Installation
-validates both files first; if a write fails, the UI reports an incomplete install
-and rechecks actual files. It does not claim an all-or-nothing multi-file update.
-
-## Local task systems
-
-The concise block lists basic task lifecycle and delegation commands and points
-to task comments for more details. Agents must read amux's normal shortened
-text output directly, without `--json`, Python or scripts to parse the output,
-and avoid parallel local todo/plan boards.
-
-Agents normally create subtasks under a fitting parent. Two explicit root-task
-exceptions are available with `amux tasks create TITLE --root-reason REASON
---specification TEXT`: `user-directed` records a user's direct request, and
-`principle` records a concrete DRY/refactor or similar core-principle finding.
-The specification must explain the request or finding and its bounded acceptance
-criteria. The server records the reason and explanation in a creation comment.
-An omitted reason, unknown reason, empty specification, or combining a reason
-with a parent is rejected. Review findings and cross-project handoffs still
-require parents. These rules and validation are shared across supported platforms.
-
-Claude installation adds `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` and
-`TodoWrite` to `permissions.deny`, preserving existing permissions. It leaves
-`Agent`, background-process tools and other capabilities available. Bare-name
-deny rules remove matching tools from Claude's context. See
-[Claude permissions](https://code.claude.com/docs/en/permissions).
-
-Codex installation sets `tools.update_plan.enabled = false` in its user TOML
-configuration. This key was verified against installed Codex CLI 0.164.0 using
-strict startup validation in an isolated profile; an unknown tool key was rejected
-as a control. Older provider versions may require an update. Profile or command
-overrides can change the effective value. Global instruction discovery and the
-override-file precedence follow [OpenAI's AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
-
-Copilot receives user instructions through its
-[documented global instruction file](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions).
-No supported local task-list disable setting was verified. Its documented `task`
-tool runs subagents, so amux does not disable it or claim enforced task-tool parity;
-the UI explicitly reports **Instructions only**. See
-[Copilot's tool reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#tool-availability-values).
-
-Agent-tools has retired its task rules/hooks in favor of amux migration stubs.
-Existing agent-tools rules and skills still need regeneration/reloading on each
-host. amux installs its own block without removing unrelated agent-tools, memory
-or user-authored instructions.
+`check` is read-only. `print` describes removal and optional task settings without
+editing files. `install` cleans recognized blocks and configures task settings;
+it never adds operational blocks. CLI installation does not change the desktop's
+saved automatic/manual task-settings choice.

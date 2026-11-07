@@ -33,11 +33,10 @@ impl State {
         !self.notice_dismissed
             && !self.busy
             && ((self.reports.is_empty() && !self.status.is_empty())
-                || self.reports.iter().any(|report| {
-                    self.choices.needs_prompt(report)
-                        || (report.error.is_some()
-                            && self.choices.get(report.provider) == Choice::Automatic)
-                }))
+                || self
+                    .reports
+                    .iter()
+                    .any(|report| self.choices.needs_prompt(report) || report.error.is_some()))
     }
     // Complete opted-in file maintenance before restoring provider processes, so
     // restored sessions load the updated instructions rather than yesterday's block.
@@ -68,6 +67,13 @@ fn run_with(
     path: &std::path::Path,
     action: Action,
 ) -> anyhow::Result<Checked> {
+    // Cleanup runs even if obsolete choice settings are corrupt.
+    if matches!(action, Action::Startup) {
+        for provider in Provider::ALL {
+            // maintain below reports per-provider failures without hiding others.
+            let _ = environment.cleanup(provider);
+        }
+    }
     let mut choices = Choices::load(path)?;
     let mut manual = None;
     let status = match action {
@@ -75,18 +81,18 @@ fn run_with(
             choices.set(provider, Choice::Automatic);
             choices.save(path)?;
             match environment.install(provider) {
-                Ok(_) => format!("{} rules updated. Automatic startup maintenance enabled. Start a new provider session to load changes.", provider.name()),
-                Err(e) => format!("Rule update incomplete: {e:#}. Automatic maintenance is enabled; review the file error."),
+                Ok(_) => format!("{} legacy blocks removed and task settings updated. Automatic task-settings maintenance enabled.", provider.name()),
+                Err(e) => format!("Task settings update incomplete: {e:#}. Automatic maintenance is enabled; review the file error."),
             }
         },
         Action::Manual(provider) => {
             choices.set(provider, Choice::Manual);
             choices.save(path)?;
             manual = Some(environment.manual_instructions(provider)?);
-            format!("{} manual setup selected. amux will not edit these files or ask again. Use Update rules in Settings to enable automatic maintenance later.", provider.name())
+            format!("{} manual task settings selected. Legacy operational blocks are still cleaned on startup; amux will not auto-edit task settings or ask again.", provider.name())
         },
-        Action::Startup => "Startup rules checked. Automatically maintained agents are verified; any file errors are shown below.".into(),
-        Action::Check => "Check complete. Update rules or view manual instructions for the agents you use.".into(),
+        Action::Startup => "Legacy root blocks cleaned. Optional task settings checked; file errors are shown below.".into(),
+        Action::Check => "Check complete. Review root cleanup and optional task settings below.".into(),
     };
     let reports = if matches!(action, Action::Startup) {
         environment.maintain(&choices)
@@ -135,20 +141,18 @@ impl Desktop {
         for report in &self.harness.reports {
             if self.harness.choices.needs_prompt(report) {
                 prompts = prompts.push(container(column![
-                    text(format!("{}: amux task rules need updating in {}. May amux maintain them automatically?", report.provider.name(), report.instructions.display())).size(12),
+                    text(format!("{}: optional task settings need setup. Choose automatic maintenance or view manual settings.", report.provider.name())).size(12),
                     column![
-                        button("Update rules automatically").on_press_maybe((!self.harness.busy).then_some(Message::InstallHarness(report.provider))),
-                        button("Show rules; don’t ask again").on_press_maybe((!self.harness.busy).then_some(Message::ManualHarness(report.provider))),
+                        button("Maintain task settings").on_press_maybe((!self.harness.busy).then_some(Message::InstallHarness(report.provider))),
+                        button("Show settings; don’t ask again").on_press_maybe((!self.harness.busy).then_some(Message::ManualHarness(report.provider))),
                     ].spacing(8)
                 ].spacing(4)).padding([6, 12]));
-            } else if report.error.is_some()
-                && self.harness.choices.get(report.provider) == Choice::Automatic
-            {
+            } else if report.error.is_some() {
                 prompts = prompts.push(
                     container(
                         row![
                             text(format!(
-                                "{} rules could not be updated. Review the file error in Settings.",
+                                "{} root cleanup or task settings need attention. Review the file error in Settings.",
                                 report.provider.name()
                             ))
                             .size(12),
@@ -167,8 +171,8 @@ impl Desktop {
     pub(super) fn harness_view(&self) -> Element<'_, Message> {
         let mut content = column![
             text("Agent Instructions").size(20),
-            text("Teach your coding agents to use amux for shared tasks. Choose automatic rule updates at each startup, or view the instructions for manual editing without future prompts. Your other instructions are preserved."),
-            text("Update rules enables automatic startup maintenance immediately, independently of Save & Close. Restart provider sessions to load changes. Claude local tasks and Codex update_plan are disabled through their user settings; Copilot receives instructions only.").size(12),
+            text("amux supplies contextual guidance inside agent sessions. At startup it removes recognized legacy operational blocks from user-level harnesses, preserving unrelated instructions and backing up changes."),
+            text("Update task settings optionally disables Claude local tasks and Codex update_plan. It never reinstalls root operational blocks. Repository instruction files are not modified.").size(12),
             button(if self.harness.busy { "Checking…" } else { "Check installation and updates" })
                 .on_press_maybe((!self.harness.busy).then_some(Message::CheckHarness)),
             text(&self.harness.status).size(12),
@@ -213,15 +217,15 @@ impl Desktop {
             entry = entry.push(
                 text(match self.harness.choices.get(report.provider) {
                     Choice::Ask => "Startup choice: not selected",
-                    Choice::Automatic => "Startup choice: maintain rules automatically",
-                    Choice::Manual => "Startup choice: manual editing; prompts disabled",
+                    Choice::Automatic => "Startup choice: maintain task settings automatically",
+                    Choice::Manual => "Startup choice: manual task settings; prompts disabled",
                 })
                 .size(12),
             );
-            entry = entry.push(button("Update rules").on_press_maybe(
+            entry = entry.push(button("Update task settings").on_press_maybe(
                 (!self.harness.busy).then_some(Message::InstallHarness(report.provider)),
             ));
-            entry = entry.push(button("Show rules; don’t ask again").on_press_maybe(
+            entry = entry.push(button("Show settings; don’t ask again").on_press_maybe(
                 (!self.harness.busy).then_some(Message::ManualHarness(report.provider)),
             ));
             content = content.push(container(entry).padding(12));
@@ -307,7 +311,7 @@ mod tests {
         let automatic = run_with(&env, &path, Action::Automatic(Provider::Claude)).unwrap();
         assert_eq!(automatic.choices.get(Provider::Claude), Choice::Automatic);
         assert!(automatic.reports[0].current());
-        std::fs::remove_file(env.claude_home.join("CLAUDE.md")).unwrap();
+        std::fs::remove_file(env.claude_home.join("settings.json")).unwrap();
         let checked = run_with(&env, &path, Action::Check).unwrap();
         assert!(
             !checked.reports[0].current(),

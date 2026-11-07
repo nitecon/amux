@@ -738,6 +738,9 @@ impl Desktop {
         backend.env.insert("TERM".into(), "xterm-256color".into());
         backend.env.insert("COLORTERM".into(), "truecolor".into());
         backend.env.insert("TERM_PROGRAM".into(), "amux".into());
+        backend
+            .env
+            .insert("AMUX_DESKTOP_GUIDANCE".into(), "1".into());
         // A shell is not registered as an agent. Explicit launches go through the
         // same wrapper as the CLI, which allocates a distinct execution identity.
         if let Some(provider) = provider {
@@ -858,6 +861,7 @@ impl Desktop {
                         &terminal,
                         terminal_number,
                         directory,
+                        provider.is_some() && self.preferences.current.mcp_tools,
                     ),
                     terminal: Some(terminal),
                     stopped_output: None,
@@ -1458,10 +1462,13 @@ impl Desktop {
             Message::Terminal(iced_term::Event::BackendCall(id, command)) => {
                 // Backend events carry exact terminal IDs, including hidden workspaces.
                 // Never close the focused pane in response to a different process exiting.
-                for workspace in &mut self.workspaces {
+                let mut context_cleared = false;
+                'terminals: for workspace in &mut self.workspaces {
                     for (_, pane) in workspace.panes.iter_mut() {
                         if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.id == id) {
+                            let clears = tab.delegation.context_clears;
                             tab.delegation.note_command(&command);
+                            context_cleared = clears != tab.delegation.context_clears;
                             if let Some(terminal) = &mut tab.terminal {
                                 match terminal.handle(iced_term::Command::ProxyToBackend(command)) {
                                     iced_term::actions::Action::ChangeTitle(title) => {
@@ -1507,10 +1514,14 @@ impl Desktop {
                                     _ => {}
                                 }
                             }
-                            return Task::none();
+                            break 'terminals;
                         }
                     }
                 }
+                if context_cleared {
+                    self.context_cleared(id);
+                }
+                return Task::none();
             }
             #[cfg(test)]
             Message::GatewayProject(project) => self.bind_project(self.active, project),

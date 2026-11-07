@@ -194,11 +194,25 @@ impl Environment {
     pub fn reports(&self) -> Vec<Report> {
         Provider::ALL.into_iter().map(|p| self.report(p)).collect()
     }
-    /// Startup maintenance applies only to providers the user opted into.
+    /// Operational blocks are retired on every startup. Settings enforcement
+    /// remains opt-in; it must never reinstall operational instructions.
     pub fn maintain(&self, choices: &Choices) -> Vec<Report> {
+        let mut cleanup_errors = std::collections::HashMap::new();
+        for provider in Provider::ALL {
+            if let Err(error) = self.cleanup(provider) {
+                cleanup_errors.insert(
+                    provider.name(),
+                    format!("Root harness cleanup incomplete: {error:#}"),
+                );
+            }
+        }
         self.reports()
             .into_iter()
-            .map(|report| {
+            .map(|mut report| {
+                if let Some(error) = cleanup_errors.remove(report.provider.name()) {
+                    report.error = Some(error);
+                    return report;
+                }
                 if !report.detected
                     || report.current()
                     || choices.get(report.provider) != Choice::Automatic
@@ -219,7 +233,7 @@ impl Environment {
     }
     pub fn manual_instructions(&self, provider: Provider) -> Result<String> {
         let mut output = format!(
-            "Add or update this managed block in {}. Preserve your other instructions.\n\n{START}\n{RULES}{END}\n",
+            "Remove recognized amux, agent-tools and agent-memory managed operational blocks from {}. Preserve all other instructions. amux supplies contextual guidance inside each session; do not reinstall root operational blocks.\n",
             self.rules_path(provider)?.display()
         );
         match provider {
@@ -244,13 +258,15 @@ impl Environment {
         };
         let check = (|| -> Result<()> {
             report.instructions = self.rules_path(provider)?;
-            let existing = read(&report.instructions)?;
-            report.rules = if existing == merge_rules(&existing)? {
+            let mut clean = true;
+            for path in self.rule_paths(provider) {
+                let text = read(&path)?;
+                clean &= text == merge_rules(&text)?;
+            }
+            report.rules = if clean {
                 State::Current
-            } else if existing.contains(START) {
-                State::Outdated
             } else {
-                State::Missing
+                State::Outdated
             };
             report.local_tasks = if let Some(settings) = self.settings_path(provider) {
                 let text = read(&settings)?;
@@ -274,6 +290,10 @@ impl Environment {
         let instructions = self.rules_path(provider)?;
         let existing = read(&instructions)?;
         let updated = merge_rules(&existing)?;
+        // Validate every root file, including a shadowed Codex base file.
+        for path in self.rule_paths(provider) {
+            merge_rules(&read(&path)?)?;
+        }
         let settings = self
             .settings_path(provider)
             .map(|path| -> Result<_> {
@@ -288,6 +308,7 @@ impl Environment {
             save(&path, &old, &new)?;
         }
         save(&instructions, &existing, &updated)?;
+        self.cleanup(provider)?;
         let report = self.report(provider);
         ensure!(
             report.current(),
@@ -295,6 +316,31 @@ impl Environment {
             report
         );
         Ok(report)
+    }
+
+    fn rule_paths(&self, provider: Provider) -> Vec<PathBuf> {
+        let root = self.provider_home(provider);
+        match provider {
+            Provider::Claude => vec![root.join("CLAUDE.md")],
+            Provider::Codex => vec![root.join("AGENTS.md"), root.join("AGENTS.override.md")],
+            Provider::Copilot => vec![root.join("copilot-instructions.md")],
+        }
+    }
+
+    pub fn cleanup(&self, provider: Provider) -> Result<()> {
+        let updates = self
+            .rule_paths(provider)
+            .into_iter()
+            .map(|path| {
+                let old = read(&path)?;
+                let new = merge_rules(&old)?;
+                Ok((path, old, new))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (path, old, new) in updates {
+            save(&path, &old, &new)?;
+        }
+        Ok(())
     }
 }
 
@@ -334,44 +380,52 @@ impl Report {
     }
 }
 
-/// Update only our one delimited block; refuse ambiguous or damaged boundaries.
+/// Retire recognized managed blocks, preserving every byte outside them.
+/// Validate the entire document before deleting anything.
 pub fn merge_rules(existing: &str) -> Result<String> {
-    let block = format!("{START}\n{}{END}", RULES);
-    let starts: Vec<_> = existing.match_indices(START).map(|(i, _)| i).collect();
-    let ends: Vec<_> = existing.match_indices(END).map(|(i, _)| i).collect();
-    match (starts.as_slice(), ends.as_slice()) {
-        ([], []) => Ok(format!(
-            "{existing}{}{block}\n",
-            if existing.is_empty() || existing.ends_with("\n\n") {
-                ""
-            } else if existing.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
+    let mut ranges = Vec::new();
+    for (start_marker, end_marker) in [
+        (START, END),
+        ("<agent-tools-rules>", "</agent-tools-rules>"),
+        ("<memory-rules>", "</memory-rules>"),
+    ] {
+        let starts: Vec<_> = existing
+            .match_indices(start_marker)
+            .map(|(i, _)| i)
+            .collect();
+        let ends: Vec<_> = existing.match_indices(end_marker).map(|(i, _)| i).collect();
+        match (starts.as_slice(), ends.as_slice()) {
+            ([], []) => continue,
+            ([start], [end]) if start < end => {
+                for (index, marker) in [(*start, start_marker), (*end, end_marker)] {
+                    let prefix = &existing[..index];
+                    let suffix = &existing[index + marker.len()..];
+                    ensure!(
+                        (prefix.is_empty() || prefix.ends_with('\n'))
+                            && (suffix.is_empty()
+                                || suffix.starts_with('\n')
+                                || suffix.starts_with("\r\n")),
+                        "Managed harness markers must occupy their own lines: {start_marker}"
+                    );
+                }
+                ranges.push((*start, *end + end_marker.len()));
             }
-        )),
-        ([start], [end]) if start < end => {
-            for (index, marker) in [(*start, START), (*end, END)] {
-                let prefix = &existing[..index];
-                let suffix = &existing[index + marker.len()..];
-                ensure!(
-                    (prefix.is_empty() || prefix.ends_with('\n'))
-                        && (suffix.is_empty()
-                            || suffix.starts_with('\n')
-                            || suffix.starts_with("\r\n")),
-                    "Amux task markers must occupy their own lines"
-                );
-            }
-            Ok(format!(
-                "{}{block}{}",
-                &existing[..*start],
-                &existing[*end + END.len()..]
-            ))
+            _ => bail!("Malformed or duplicate managed block: {start_marker}; original preserved"),
         }
-        _ => bail!(
-            "Malformed or duplicate amux task block; repair its start/end markers before updating"
-        ),
     }
+    ranges.sort_unstable();
+    ensure!(
+        ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0),
+        "Overlapping managed harness blocks; original preserved"
+    );
+    let mut output = String::new();
+    let mut offset = 0;
+    for (start, end) in ranges {
+        output.push_str(&existing[offset..start]);
+        offset = end;
+    }
+    output.push_str(&existing[offset..]);
+    Ok(output)
 }
 
 fn read(path: &Path) -> Result<String> {

@@ -56,6 +56,18 @@ pub fn resume_arguments(provider: Provider) -> &'static [&'static str] {
     }
 }
 
+/// Recognize native resume invocations, including explicit conversation IDs.
+/// Retry policy is intentionally stricter and uses only resume_arguments.
+pub fn is_resume(provider: Provider, args: &[String]) -> bool {
+    match provider {
+        Provider::Codex => args.first().is_some_and(|arg| arg == "resume"),
+        Provider::Claude => args.iter().any(|arg| {
+            matches!(arg.as_str(), "--continue" | "--resume" | "-c" | "-r")
+                || arg.starts_with("--resume=")
+        }),
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Layout {
