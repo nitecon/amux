@@ -116,6 +116,16 @@ impl Session {
     }
 }
 
+struct SessionLock(File);
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the open file description until exec.
+        // Explicitly unlock so that closing our descriptor releases ownership now.
+        let _ = self.0.unlock();
+    }
+}
+
 /// Short-lived per-session lock: independent terminals sharing a repository
 /// never share allowances. Corrupt or unwritable state fails closed.
 pub fn with_session<T>(
@@ -135,6 +145,7 @@ pub fn with_session<T>(
         .open(path.with_extension("lock"))?;
     lock.try_lock()
         .context("session guidance is being updated")?;
+    let _lock = SessionLock(lock);
     let mut state = match File::open(&path) {
         Ok(file) => {
             let mut bytes = Vec::new();
@@ -214,6 +225,35 @@ pub fn terminal_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_lock_releases_inherited_descriptors_on_success_and_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.lock");
+        for fail in [false, true] {
+            let file = File::options()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            file.try_lock().unwrap();
+            // Duplicates share lock ownership just like a child before exec.
+            let duplicate = file.try_clone().unwrap();
+            let contender = File::options().read(true).write(true).open(&path).unwrap();
+            assert!(contender.try_lock().is_err());
+            let result = (|| -> Result<()> {
+                let _lock = SessionLock(file);
+                ensure!(!fail, "injected session failure");
+                Ok(())
+            })();
+            assert_eq!(result.is_err(), fail);
+            contender.try_lock().expect("session lock must be released");
+            contender.unlock().unwrap();
+            drop(duplicate);
+        }
+    }
 
     #[test]
     fn one_review_per_cycle_survives_restart_duplicates_and_shared_directory() {
