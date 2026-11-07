@@ -566,6 +566,43 @@ fn non_text_end_key_flushes_a_paste_burst_before_enter_without_waiting() {
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
+fn native_scan_recovers_missing_root_capture_without_replacing_an_existing_fence() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Claude, "ready");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    let root = tab(&mut app, 0).unwrap().delegation.root.take().unwrap();
+
+    scan(&mut app);
+    assert_eq!(find(&app, 0).delegation.root.as_ref(), Some(&root));
+    assert_eq!(find(&app, 0).delegation.provider, Some(Provider::Claude));
+    assert!(find(&app, 0).delegation.agent_name.is_some());
+    let actor = app.delegation.candidates[0].actor.clone();
+    app.events_report();
+    let heartbeat = frames.try_recv().unwrap();
+    assert_eq!(heartbeat["id"], "client.heartbeat");
+    assert_eq!(
+        heartbeat["payload"]["agents"][0]["session_id"],
+        actor.session_id.to_string()
+    );
+
+    // A desktop/router restart rediscovers the same live execution identity.
+    app.delegation.stop();
+    scan(&mut app);
+    assert_eq!(app.delegation.candidates[0].actor, actor);
+
+    // A captured fence is authoritative even when native discovery disagrees.
+    let stale = (root.0, "different-generation".to_owned());
+    tab(&mut app, 0).unwrap().delegation.root = Some(stale.clone());
+    scan(&mut app);
+    assert_eq!(find(&app, 0).delegation.root.as_ref(), Some(&stale));
+    assert!(app.delegation.candidates.is_empty());
+    assert!(find(&app, 0).delegation.agent_name.is_none());
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
 fn native_delivery_submits_the_exact_notification_once_and_reports_it() {
     let mut app = desktop();
     let agent = spawn(&mut app, 0, 0, Provider::Claude, "ready");

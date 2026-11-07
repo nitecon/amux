@@ -228,14 +228,22 @@ fn discover_root(root: Root, registry: &std::path::Path) -> Option<Found> {
 }
 
 impl Desktop {
-    fn delegation_roots(&self) -> Vec<Root> {
+    fn delegation_roots(&mut self) -> Vec<Root> {
         let mut roots = Vec::new();
-        for workspace in &self.workspaces {
-            for (_, pane) in workspace.panes.iter() {
-                for tab in &pane.tabs {
+        for workspace in &mut self.workspaces {
+            for (_, pane) in workspace.panes.iter_mut() {
+                for tab in &mut pane.tabs {
                     let Some(terminal) = &tab.terminal else {
                         continue;
                     };
+                    // Launch-time native inspection can fail transiently. Retry
+                    // missing captures on the regular scan, but never replace an
+                    // existing fence with a different process generation.
+                    if tab.delegation.root.is_none() {
+                        tab.delegation.root = terminal.child_pid().and_then(|pid| {
+                            Some((pid, amux::identity::process_generation(pid).ok()?))
+                        });
+                    }
                     let Some((pid, generation)) = &tab.delegation.root else {
                         continue;
                     };
@@ -294,15 +302,15 @@ impl Desktop {
                 if self.delegation.scan_inflight == Some(serial) {
                     self.delegation.scan_inflight = None;
                 }
+                let roots = self.delegation_roots();
                 self.queue_diagnostic(format!(
                     "Agent scan: roots={} found={} elapsed_ms={}",
-                    self.delegation_roots().len(),
+                    roots.len(),
                     found.len(),
                     self.delegation
                         .scan_at
                         .map_or(0, |at| at.elapsed().as_millis())
                 ));
-                let roots = self.delegation_roots();
                 let candidates: Vec<Candidate> = found
                     .into_iter()
                     .filter(|f| {
