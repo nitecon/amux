@@ -9589,6 +9589,23 @@ pub fn insert_comment(
     )
 }
 
+/// Largest stored task comment, matching the amux CLI limit. Keeps every task
+/// read well below the 4 MiB client reply cap.
+pub const MAX_COMMENT_BYTES: usize = 64 * 1024;
+
+/// Truncate `content` to at most [`MAX_COMMENT_BYTES`], ending with a marker.
+pub fn cap_comment(content: &str) -> std::borrow::Cow<'_, str> {
+    if content.len() <= MAX_COMMENT_BYTES {
+        return content.into();
+    }
+    const MARKER: &str = "\n…[truncated]";
+    let mut end = MAX_COMMENT_BYTES - MARKER.len();
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{MARKER}", &content[..end]).into()
+}
+
 pub fn insert_comment_with_hostname(
     conn: &Connection,
     task_id: &str,
@@ -9597,6 +9614,7 @@ pub fn insert_comment_with_hostname(
     content: &str,
     hostname: Option<&str>,
 ) -> Result<TaskComment> {
+    let content = &*cap_comment(content);
     let hostname = hostname.map(str::trim).filter(|host| !host.is_empty());
     if hostname.is_some_and(|host| host.len() > 255 || host.chars().any(char::is_control)) {
         anyhow::bail!(

@@ -6445,7 +6445,7 @@ pub async fn update_task_handler(
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let summary = crate::templates::render(
+                        let summary = db::cap_comment(&crate::templates::render(
                             crate::templates::DELEGATED_COMPLETED,
                             &[
                                 ("target_project", &delegation.target_project_ident),
@@ -6467,7 +6467,8 @@ pub async fn update_task_handler(
                                     },
                                 ),
                             ],
-                        );
+                        ))
+                        .into_owned();
                         db::insert_comment(
                             conn,
                             &delegation.source_task_id,
@@ -6646,6 +6647,12 @@ pub async fn add_comment_handler(
         return Err(AppError(
             StatusCode::BAD_REQUEST,
             "'content' must be non-empty".into(),
+        ));
+    }
+    if content.len() > db::MAX_COMMENT_BYTES {
+        return Err(AppError(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("'content' must be at most {} bytes", db::MAX_COMMENT_BYTES),
         ));
     }
 

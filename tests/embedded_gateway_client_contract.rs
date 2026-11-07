@@ -1094,6 +1094,78 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
 }
 
 #[tokio::test]
+async fn a_delegated_source_stays_readable_when_the_target_thread_exceeds_the_cap() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    let (source, target) = {
+        let conn = fixture.database.lock().unwrap();
+        let target = db::insert_task(&conn, PROJECT, "Target", None, None, &[], None, "user")
+            .unwrap()
+            .id;
+        let source = db::insert_delegated_task(
+            &conn,
+            &db::DelegatedTaskInsert {
+                project_ident: PROJECT,
+                title: "Source",
+                description: None,
+                details: None,
+                labels: &[],
+                hostname: None,
+                reporter: "user",
+                target_project_ident: PROJECT,
+                target_task_id: &target,
+            },
+        )
+        .unwrap()
+        .id;
+        db::insert_task_delegation(&conn, PROJECT, &source, PROJECT, &target, None, None).unwrap();
+        let note = "x".repeat(db::MAX_COMMENT_BYTES);
+        for _ in 0..80 {
+            db::insert_comment(&conn, &target, "sre-agent", "agent", &note).unwrap();
+        }
+        (source, target)
+    };
+
+    // An oversized comment is rejected at the API.
+    let oversized = fixture
+        .client
+        .request(
+            Method::POST,
+            PROJECT,
+            &[&source, "comments"],
+            Some(json!({"content": "x".repeat(db::MAX_COMMENT_BYTES + 1)})),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(oversized.to_string().contains("413"), "{oversized:#}");
+
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            PROJECT,
+            &[&target],
+            Some(json!({"status":"done"})),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let id: Uuid = source.parse().unwrap();
+    let detail = fixture.client.task(PROJECT, id, 10).await.unwrap();
+    assert_eq!(detail["status"], "done", "{detail}");
+    let comments = detail["comments"].as_array().unwrap();
+    let summary = comments
+        .iter()
+        .find(|c| c["author"] == "agent-gateway")
+        .expect("delegated completion summary");
+    let content = summary["content"].as_str().unwrap();
+    assert!(content.len() <= db::MAX_COMMENT_BYTES);
+    assert!(content.ends_with("[truncated]"));
+}
+
+#[tokio::test]
 async fn native_agent_root_creation_preserves_identity_context_and_subscriptions() {
     let fixture = Fixture::start().await;
     let requester = fixture.project_and_requester().await;
