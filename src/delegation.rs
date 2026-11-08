@@ -313,26 +313,11 @@ impl Event {
     }
     fn notice(&self, heading: &str) -> String {
         let summary = self.summary.as_deref();
-        let sender = summary
-            .map(|s| s.sender.as_str())
-            .unwrap_or("Unknown sender");
-        let host = summary
-            .map(|s| s.task_host.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unavailable");
         let title = summary
             .map(|s| s.title.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("Title unavailable");
         let body = summary.map(|s| s.preview.as_str()).unwrap_or("");
-        let sender_host = summary
-            .map(|s| s.sender_host.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unavailable");
-        let source_project = summary
-            .map(|s| s.source_project.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&self.project);
         let state_note = if self.state() == "user_review" {
             templates::GATEWAY_USER_REVIEW_NOTE
         } else if matches!(self.state(), "done" | "cancelled") {
@@ -344,28 +329,12 @@ impl Event {
             .required_os
             .map(|os| render(templates::GATEWAY_OS_NOTE, &[("os", os.as_str())]))
             .unwrap_or_default();
-        let owner_host_note = summary
-            .map(|s| s.owner_host.as_str())
-            .filter(|host| !host.is_empty())
-            .map(|host| {
-                render(
-                    templates::GATEWAY_OWNER_HOST_NOTE,
-                    &[("owner_host", &xml(host))],
-                )
-            })
-            .unwrap_or_default();
         render(
             templates::GATEWAY_NOTICE,
             &[
                 ("heading", &xml(heading)),
                 ("state", &xml(self.state())),
                 ("os_note", &os_note),
-                ("sender", &xml(sender)),
-                ("sender_host", &xml(sender_host)),
-                ("source_project", &xml(source_project)),
-                ("project", &xml(&self.project)),
-                ("task_host", &xml(host)),
-                ("owner_host_note", &owner_host_note),
                 ("task_id", &self.task.to_string()),
                 ("title", &xml(title)),
                 ("preview", &xml(body)),

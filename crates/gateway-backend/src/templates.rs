@@ -16,13 +16,8 @@ pub const VARIABLES: &[Variable] = &[
     Variable { name: "state", description: "Task status: todo, in_progress, user_review, done, cancelled" },
     Variable { name: "os", description: "Required task OS: linux, windows or macos" },
     Variable { name: "os_note", description: "The gateway_os_note template when the task requires an OS, otherwise empty" },
-    Variable { name: "sender", description: "Display name of the agent or user that caused the event" },
-    Variable { name: "sender_host", description: "Hostname of the sender" },
     Variable { name: "source_project", description: "Project the event or delegation came from" },
     Variable { name: "project", description: "Project the task belongs to" },
-    Variable { name: "task_host", description: "Host recorded on the task" },
-    Variable { name: "owner_host", description: "Host of the task's current owner" },
-    Variable { name: "owner_host_note", description: "The gateway_owner_host_note template when an owner host is known, otherwise empty" },
     Variable { name: "task_id", description: "Task ID" },
     Variable { name: "title", description: "Task title" },
     Variable { name: "preview", description: "Shortened comment or task description" },
@@ -49,7 +44,6 @@ pub const TASK_UPDATE_GUIDANCE: &str = "[Amux update hints] Read current task de
 pub const MEMORY_REVIEW: &str = "[Amux idle memory review] Review the completed work for durable decisions, corrections, conventions or discoveries. Search existing memories first; inspect and update a matching memory where appropriate. Store a new memory only when it adds durable information. Make no changes if nothing qualifies. Do not store routine progress, transient logs or facts readily recoverable from source. This review is issued once per work cycle; do not request another idle wake-up.";
 pub const GATEWAY_NOTICE: &str = "<gateway>{heading} | State: {state}{os_note} | TaskID: {task_id} | Title: {title} | Preview: {preview}{state_note}</gateway>";
 pub const GATEWAY_OS_NOTE: &str = " | OS: {os}";
-pub const GATEWAY_OWNER_HOST_NOTE: &str = " | Owner host: {owner_host}";
 pub const GATEWAY_USER_REVIEW_NOTE: &str = " | Awaiting user decision; do not claim or execute";
 pub const GATEWAY_CLOSED_NOTE: &str = " | Closed task; informational update";
 pub const RETURN_HEADING: &str = "Requested task result | {heading}";
@@ -189,10 +183,6 @@ pub const TEMPLATES: &[Template] = &[
     Template {
         name: "gateway_os_note",
         text: GATEWAY_OS_NOTE,
-    },
-    Template {
-        name: "gateway_owner_host_note",
-        text: GATEWAY_OWNER_HOST_NOTE,
     },
     Template {
         name: "gateway_user_review_note",
