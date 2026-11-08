@@ -845,6 +845,7 @@ mod tests {
         })
         .unwrap();
         while tasks::drain(&bus, &database.lock().unwrap()).unwrap() > 0 {}
+        bus.wake();
         settle(&database).await;
         assert_eq!(database.lock().unwrap().query_row(
             "SELECT COUNT(*) FROM router_events WHERE id='agent.notify' AND json_extract(payload,'$.target')=?1 AND json_extract(payload,'$.event.task.id')=?2 AND json_extract(payload,'$.event.kind')='task_commented'",
