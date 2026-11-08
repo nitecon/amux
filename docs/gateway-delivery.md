@@ -158,8 +158,13 @@ the optional clear-on-new-task setting. Clients advertise `review_context_clear`
 older clients cannot receive a fallback that they cannot safely clear.
 Reviews use the same FIFO assignment
 as other work, except that each ordinary assignment in a project is followed by
-the oldest eligible queued review, if there is one. The server creates at most one review per source completion, and
-completing a review does not create another review.
+the oldest eligible queued review, if there is one. The server creates at most one
+review per source completion. Completing a code review queues one documentation
+review of the original change, which checks affected user and agent docs against
+the implementation; completing a documentation review creates no further review.
+On the host in Server mode, Settings > Gateway > Task automation switches
+automatic reviews off or on for every project on that server (the
+`plugin.review.enabled` setting); queued reviews remain available.
 
 Reviews inspect the source task, its comments and actual changes. They follow
 KISS/YAGNI, create tasks only for concrete actionable defects, and avoid edits,
