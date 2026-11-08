@@ -1192,19 +1192,21 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate, mcp: bool)
         Some(instructions) => format!("{text} {instructions}"),
         None => text,
     };
-    Some(format!(
-        "{text} {}{}",
-        if assignment_task(event).is_some() {
+    let assigned = assignment_task(event).is_some();
+    let guidance = amux_gateway_backend::templates::render(
+        if assigned {
             amux_gateway_backend::templates::TASK_GUIDANCE
         } else {
             amux_gateway_backend::templates::TASK_UPDATE_GUIDANCE
         },
-        if assignment_task(event).is_some() {
-            amux::guidance::capability_hints(mcp)
-        } else {
-            String::new()
-        }
-    ))
+        &[("task_id", &parsed.task.to_string())],
+    );
+    let hints = if assigned {
+        amux::guidance::capability_hints(mcp)
+    } else {
+        String::new()
+    };
+    Some(format!("{text} {guidance}{hints}"))
 }
 
 fn assignment_task(event: &Value) -> Option<Uuid> {
