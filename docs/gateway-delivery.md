@@ -70,6 +70,25 @@ agents. The source tracking task and delegation record retain the requester;
 delegating does not reserve destination work for the source session. Releasing a
 reserved TODO task clears its ownership even when it was already queued.
 
+An explicit agent release also records that execution's session and instance for
+the task. Automatic assignment skips the unchanged task for that execution,
+including after terminal output or a server restart. Other eligible executions
+can take it; an explicit `amux tasks claim ID` can always reclaim it under normal
+ownership rules. Task edits (title, description, specification, labels, goal,
+routing or rank), moving to Done, Cancelled or User review, or a new comment from
+another execution or the user clear the guard. The releasing execution's own
+comments and automatic assignment comments do not clear it. A fresh execution
+instance is eligible.
+
+For an execution dependency, keep the existing result subscription on the
+handoff (`--notify-results` or an authorized `tasks watch`), record what remains,
+then `amux tasks release ID`. Read the dependency result when it arrives and
+explicitly claim the waiting task when ready. A readiness comment from the
+dependency owner on the waiting task also restores automatic pickup.
+A result on a different task remains informational;
+it does not establish readiness for every waiting task. User review remains for
+a specific human decision.
+
 Settings → General → **Clear context before new tasks** is off by default.
 When enabled, an agent that has been idle for at least 30 seconds receives
 `/clear`, then waits five seconds before receiving a new task. Reviews, comments,

@@ -105,7 +105,7 @@ pub(crate) fn available(
         }
         if !sessions.contains(&report.session_id)
             || report.agent["project"] != task["project_ident"]
-            || !crate::plugins::assignment::eligible(task, &report.agent)
+            || !crate::plugins::assignment::automatically_eligible(conn, task, &report.agent)?
         {
             continue;
         }

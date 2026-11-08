@@ -305,6 +305,13 @@ Rules carried over from the desktop:
   the claim; the next tick revalidates idle sessions and offers queued work.
   The refusing session is skipped until its terminal reports new output, so
   other idle sessions receive the task instead of the same refusal repeating.
+  An explicit agent release instead skips that unchanged task for the releasing
+  session and instance, durably across server restarts and terminal output.
+  Other executions and explicit claims remain eligible. Task content/routing/
+  rank edits, Done/Cancelled/User review or another execution's/user's comment reset this guard;
+  own comments and automatic assignment comments do not. Existing dependency
+  result subscriptions remain active, and callers reclaim released work once
+  readiness is established (see [caller workflow](gateway-delivery.md#queued-work-assignment)).
   Ordinary queued work waits for Codex whenever a live Codex report matches
   the project, OS, goal and routing requirements, even while that agent is busy.
   Claude takes ordinary work when no eligible Codex is registered. Explicit

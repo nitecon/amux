@@ -35,6 +35,39 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             session_id TEXT PRIMARY KEY,
             output_at  INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS assignment_releases (
+            task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL,
+            instance_id TEXT NOT NULL,
+            PRIMARY KEY(task_id,session_id,instance_id)
+        );
+        CREATE TRIGGER IF NOT EXISTS assignment_explicit_release AFTER UPDATE ON tasks
+        WHEN NEW.status='todo' AND OLD.status IN ('todo','in_progress')
+          AND NEW.owner_origin_json IS NULL AND NEW.owner_agent_id IS NULL
+          AND json_extract(OLD.owner_origin_json,'$.session_id') =
+              (SELECT json_extract(origin_json,'$.session_id') FROM task_mutation_context WHERE id=1)
+          AND json_extract(OLD.owner_origin_json,'$.instance_id') =
+              (SELECT json_extract(origin_json,'$.instance_id') FROM task_mutation_context WHERE id=1)
+        BEGIN
+            INSERT OR IGNORE INTO assignment_releases(task_id,session_id,instance_id)
+            VALUES(NEW.id,json_extract(OLD.owner_origin_json,'$.session_id'),
+                   json_extract(OLD.owner_origin_json,'$.instance_id'));
+        END;
+        CREATE TRIGGER IF NOT EXISTS assignment_release_task_changed AFTER UPDATE ON tasks
+        WHEN NEW.title IS NOT OLD.title OR NEW.description IS NOT OLD.description
+          OR NEW.details IS NOT OLD.details OR NEW.labels IS NOT OLD.labels
+          OR NEW.goal IS NOT OLD.goal OR NEW.routing_json IS NOT OLD.routing_json
+          OR NEW.rank IS NOT OLD.rank OR NEW.status IN ('done','cancelled','user_review')
+        BEGIN
+            DELETE FROM assignment_releases WHERE task_id=NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS assignment_release_commented AFTER INSERT ON task_comments
+        WHEN NOT (NEW.author='amux' AND NEW.author_type='system')
+        BEGIN
+            DELETE FROM assignment_releases WHERE task_id=NEW.task_id
+              AND (session_id IS NOT json_extract(NEW.origin_json,'$.session_id')
+                   OR instance_id IS NOT json_extract(NEW.origin_json,'$.instance_id'));
+        END;
         CREATE TRIGGER IF NOT EXISTS assignment_offer_task_updated AFTER UPDATE ON tasks BEGIN
             DELETE FROM assignment_offers WHERE task_id=NEW.id;
         END;
@@ -229,14 +262,19 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             tasks.sort_by_key(|task| !is_review(task));
         }
         for task in tasks {
+            if !automatically_eligible(conn, &task, agent)? {
+                continue;
+            }
             if is_review(&task) {
                 let selected = crate::task_reviews::rank(conn, &task, agent)?;
                 let mut preferred = false;
                 for candidate in agents.iter().filter(|candidate| {
                     ready.contains(&candidate.session_id)
                         && candidate.agent["project"].as_str() == Some(project)
-                        && eligible(&task, &candidate.agent)
                 }) {
+                    if !automatically_eligible(conn, &task, &candidate.agent)? {
+                        continue;
+                    }
                     let rank = crate::task_reviews::rank(conn, &task, &candidate.agent)?;
                     if rank != (false, false) && candidate.agent["review_context_clear"] != true {
                         continue;
@@ -252,14 +290,19 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             }
             // Busy Codex agents retain preference for ordinary work. Explicit
             // ownership/routing and OS/goal requirements still take precedence.
-            let reserved_for_codex = !is_review(&task)
-                && agent["provider"] != "codex"
-                && agents.iter().any(|candidate| {
-                    candidate.agent["provider"] == "codex"
+            let mut reserved_for_codex = false;
+            if !is_review(&task) && agent["provider"] != "codex" {
+                for candidate in &agents {
+                    if candidate.agent["provider"] == "codex"
                         && candidate.agent["project"].as_str() == Some(project)
-                        && eligible(&task, &candidate.agent)
-                });
-            if !reserved_for_codex && eligible(&task, agent) && claim(conn, ctx, agent, &task)? {
+                        && automatically_eligible(conn, &task, &candidate.agent)?
+                    {
+                        reserved_for_codex = true;
+                        break;
+                    }
+                }
+            }
+            if !reserved_for_codex && claim(conn, ctx, agent, &task)? {
                 ready.remove(session);
                 conn.execute(
                     "INSERT OR REPLACE INTO assignment_turns(project, review_next) VALUES(?1, ?2)",
@@ -293,6 +336,24 @@ fn is_review(task: &Value) -> bool {
     task["labels"]
         .as_array()
         .is_some_and(|labels| labels.iter().any(|label| label == "task-review"))
+}
+
+/// An explicit release declines unchanged work for this execution only.
+/// Manual claims bypass this automatic assignment guard.
+pub(crate) fn automatically_eligible(
+    conn: &Connection,
+    task: &Value,
+    agent: &Value,
+) -> Result<bool> {
+    if !eligible(task, agent) {
+        return Ok(false);
+    }
+    let released: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM assignment_releases WHERE task_id=?1 AND session_id=?2 AND instance_id=?3)",
+        params![task["id"].as_str(), agent["session_id"].as_str(), agent["instance_id"].as_str()],
+        |row| row.get(0),
+    )?;
+    Ok(!released)
 }
 
 /// Port of the desktop backlog eligibility rules.
@@ -679,6 +740,219 @@ mod tests {
             emitted_at: db::now_ms(),
             correlation: Some(notify.parse().unwrap()),
         }
+    }
+
+    fn change_status(database: &db::Db, task: &str, agent: &Value, status: &str) {
+        let origin: AgentOrigin = serde_json::from_value(agent.clone()).unwrap();
+        task_events::mutation(&database.lock().unwrap(), Some(&origin), |conn| {
+            db::update_task(
+                conn,
+                "p",
+                task,
+                &db::TaskUpdate {
+                    status: Some(status),
+                    review_action: None,
+                    goal: None,
+                    owner_agent_id: None,
+                    rank: None,
+                    title: None,
+                    description: None,
+                    details: None,
+                    labels: None,
+                    hostname: None,
+                },
+                Some(&origin.session_id),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn released_work_stays_queued_for_its_execution_until_new_information() {
+        let (database, bus, worker) = setup();
+        let mut agent = session(1, "p");
+        agent["generation"] = json!(uuid::Uuid::now_v7().to_string());
+        seed_agent(
+            &database,
+            agent.clone(),
+            db::now_ms(),
+            40_000,
+            false,
+            "idle",
+        );
+        let task = queue(&database, "p", 1, &[]);
+        tick(&bus, &database).await;
+        for _ in 0..3 {
+            change_status(&database, &task, &agent, "todo");
+            seed_agent(
+                &database,
+                agent.clone(),
+                db::now_ms(),
+                31_000,
+                false,
+                "idle",
+            );
+            for _ in 0..3 {
+                tick(&bus, &database).await;
+                assert_eq!(state(&database, &task), ("todo".into(), None));
+            }
+            // A dependency result can be acted on by explicitly reclaiming work.
+            change_status(&database, &task, &agent, "in_progress");
+        }
+        change_status(&database, &task, &agent, "todo");
+        let other = queue(&database, "p", 2, &[]);
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &other).0, "in_progress");
+        change_status(&database, &other, &agent, "todo");
+        let origin: AgentOrigin = serde_json::from_value(agent.clone()).unwrap();
+        task_events::mutation(&database.lock().unwrap(), Some(&origin), |conn| {
+            db::insert_comment(
+                conn,
+                &task,
+                &origin.session_id,
+                "agent",
+                "Still awaiting the dependency",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &task).0, "todo");
+        // Result subscriptions remain live while the waiting task is released.
+        let dependency = queue(&database, "p", 3, &[]);
+        let peer = session(2, "p");
+        change_status(&database, &dependency, &peer, "in_progress");
+        let requester = json!({"origin":origin,"generation":agent["generation"]});
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET requester_json=?1 WHERE id=?2",
+                params![requester.to_string(), dependency],
+            )
+            .unwrap();
+        let peer_origin: AgentOrigin = serde_json::from_value(peer).unwrap();
+        task_events::mutation(&database.lock().unwrap(), Some(&peer_origin), |conn| {
+            db::insert_comment(
+                conn,
+                &dependency,
+                &peer_origin.session_id,
+                "agent",
+                "Ready for the coordinated window",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        while tasks::drain(&bus, &database.lock().unwrap()).unwrap() > 0 {}
+        settle(&database).await;
+        assert_eq!(database.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM router_events WHERE id='agent.notify' AND json_extract(payload,'$.target')=?1 AND json_extract(payload,'$.event.task.id')=?2 AND json_extract(payload,'$.event.kind')='task_commented'",
+            params![origin.session_id, dependency], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &task).0, "todo");
+        change_status(&database, &task, &agent, "in_progress");
+        assert_eq!(state(&database, &task).0, "in_progress");
+        change_status(&database, &task, &agent, "todo");
+        db::insert_comment(
+            &database.lock().unwrap(),
+            &task,
+            "dependency-owner",
+            "agent",
+            "Ready to execute now",
+        )
+        .unwrap();
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &task).0, "in_progress");
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn releasing_preferred_work_allows_peers_without_bouncing_between_executions() {
+        for labels in [vec![], vec!["task-review", "review-provider:codex"]] {
+            let (database, bus, worker) = setup();
+            let mut first = session(1, "p");
+            first["provider"] = json!("codex");
+            let second = session(2, "p");
+            for agent in [&first, &second] {
+                seed_agent(
+                    &database,
+                    agent.clone(),
+                    db::now_ms(),
+                    40_000,
+                    false,
+                    "idle",
+                );
+            }
+            let task = queue(&database, "p", 1, &labels);
+            tick(&bus, &database).await;
+            assert_eq!(
+                state(&database, &task).1.as_deref(),
+                first["session_id"].as_str()
+            );
+            change_status(&database, &task, &first, "todo");
+            tick(&bus, &database).await;
+            assert_eq!(
+                state(&database, &task).1.as_deref(),
+                second["session_id"].as_str()
+            );
+            change_status(&database, &task, &second, "todo");
+            // Reinitialization must retain release history, as on server restart.
+            initialize(&database.lock().unwrap()).unwrap();
+            for _ in 0..3 {
+                tick(&bus, &database).await;
+                assert_eq!(state(&database, &task), ("todo".into(), None));
+            }
+            let mut restarted = first.clone();
+            restarted["instance_id"] = json!(uuid::Uuid::now_v7().to_string());
+            seed_agent(&database, restarted, db::now_ms(), 40_000, false, "idle");
+            tick(&bus, &database).await;
+            assert_eq!(state(&database, &task).0, "in_progress");
+            worker.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn task_edits_resume_released_work_but_failed_releases_leave_no_guard() {
+        let (database, bus, worker) = setup();
+        let agent = session(1, "p");
+        seed_agent(
+            &database,
+            agent.clone(),
+            db::now_ms(),
+            40_000,
+            false,
+            "idle",
+        );
+        let task = queue(&database, "p", 1, &[]);
+        tick(&bus, &database).await;
+        change_status(&database, &task, &agent, "todo");
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET details='Dependency is ready' WHERE id=?1",
+                [&task],
+            )
+            .unwrap();
+        tick(&bus, &database).await;
+        assert_eq!(state(&database, &task).0, "in_progress");
+        let origin: AgentOrigin = serde_json::from_value(agent.clone()).unwrap();
+        let conn = database.lock().unwrap();
+        let failed: Result<()> = task_events::mutation(&conn, Some(&origin), |tx| {
+            tx.execute("UPDATE tasks SET status='todo',owner_agent_id=NULL,owner_origin_json=NULL WHERE id=?1", [&task])?;
+            anyhow::bail!("rollback fixture")
+        });
+        assert!(failed.is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM assignment_releases", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(conn);
+        assert_eq!(state(&database, &task).0, "in_progress");
+        worker.abort();
     }
 
     #[tokio::test]
