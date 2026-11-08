@@ -164,7 +164,7 @@ fn restart(conn: &Connection, ctx: &StepContext, event: &Event) -> Result<()> {
                 json!({
                     "target": session, "project": project, "mode": "recipient", "require_idle": true,
                     "receiver": {"session_id": session, "instance_id": instance, "project": project},
-                    "heading": "In-progress task reminder", "instructions": instructions,
+                    "heading": crate::templates::HEADING_IN_PROGRESS_REMINDER, "instructions": instructions,
                     "event": {"kind": "task_created", "project_ident": project, "created_at": now,
                               "sender_name": "amux", "task": task, "comment": null, "origin": null},
                 }),
@@ -211,7 +211,7 @@ fn remind(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
             crate::templates::render(crate::templates::UPDATE_NUDGE, &[("task_id", &id)]);
         let payload = json!({
             "target": session, "project": project, "mode": "assigned", "require_idle": true,
-            "reminder": true, "heading": "Task update requested", "instructions": instructions,
+            "reminder": true, "heading": crate::templates::HEADING_TASK_UPDATE_REQUESTED, "instructions": instructions,
             "event": {"kind": "task_created", "project_ident": project, "created_at": now,
                       "task": task, "comment": null, "origin": null},
         });

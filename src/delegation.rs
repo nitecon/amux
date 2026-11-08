@@ -53,16 +53,11 @@ mod host_tests {
                 "comment":{"author":"Remote agent","content":"Progress"},
                 "task":{"id":Uuid::new_v4(),"title":"Work","status":"in_progress","hostname":"CreationMachine"}});
             let event = Event::parse(&wire).unwrap().unwrap();
-            let text = event.terminal_text();
-            assert!(
-                text.contains("From: Remote agent / Defcon1 / amux"),
-                "{text}"
-            );
-            assert!(text.contains("Owner host: Defcon2"), "{text}");
-            assert!(
-                text.contains("Recorded task host: CreationMachine"),
-                "{text}"
-            );
+            let summary = event.summary.as_ref().unwrap();
+            assert_eq!(summary.sender, "Remote agent");
+            assert_eq!(summary.sender_host, "Defcon1");
+            assert_eq!(summary.owner_host, "Defcon2");
+            assert_eq!(summary.task_host, "CreationMachine");
             // Legacy events still render, without inventing a sender machine
             // from the task's creation host for a later comment/completion.
             wire.as_object_mut().unwrap().remove("sender_hostname");
@@ -274,9 +269,9 @@ impl Event {
             .as_ref()
             .map(|s| s.heading.as_str())
             .unwrap_or(match self.kind {
-                Kind::Created => "New task",
-                Kind::Commented => "Task comment",
-                Kind::Completed => "Task completed",
+                Kind::Created => amux_gateway_backend::templates::HEADING_NEW_TASK,
+                Kind::Commented => amux_gateway_backend::templates::HEADING_TASK_COMMENT,
+                Kind::Completed => amux_gateway_backend::templates::HEADING_TASK_COMPLETED,
             })
     }
     pub fn state(&self) -> &str {
@@ -387,13 +382,15 @@ impl EventSummary {
         let delegated =
             value["delegation"].is_object() && value["delegation"]["target_task_id"] == task["id"];
         let heading = if value["kind"] == "task_unclaimed" {
-            "Task unassigned"
+            amux_gateway_backend::templates::HEADING_TASK_UNASSIGNED
         } else {
             match kind {
-                Kind::Created if delegated || task["kind"] == "delegated" => "New delegated task",
-                Kind::Created => "New task",
-                Kind::Commented => "Task comment",
-                Kind::Completed => "Task completed",
+                Kind::Created if delegated || task["kind"] == "delegated" => {
+                    amux_gateway_backend::templates::HEADING_NEW_DELEGATED_TASK
+                }
+                Kind::Created => amux_gateway_backend::templates::HEADING_NEW_TASK,
+                Kind::Commented => amux_gateway_backend::templates::HEADING_TASK_COMMENT,
+                Kind::Completed => amux_gateway_backend::templates::HEADING_TASK_COMPLETED,
             }
         };
         let state = task["status"]

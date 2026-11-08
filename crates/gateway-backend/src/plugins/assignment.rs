@@ -456,15 +456,15 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
         let (heading, instructions) = if review {
             (
                 if clear_context {
-                    "Queued review"
+                    templates::HEADING_QUEUED_REVIEW
                 } else {
-                    "Queued independent review"
+                    templates::HEADING_QUEUED_INDEPENDENT_REVIEW
                 },
                 templates::QUEUED_REVIEW.to_owned(),
             )
         } else {
             (
-                "Queued task review",
+                templates::HEADING_QUEUED_TASK_REVIEW,
                 templates::render(templates::QUEUED_TASK, &[("task_id", id)]),
             )
         };

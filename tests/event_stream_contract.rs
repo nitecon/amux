@@ -647,16 +647,14 @@ async fn owners_are_told_about_comments_on_their_tasks_but_not_their_own() {
     assert_eq!(told["payload"]["event"]["kind"], "task_commented");
     let mut wire = told["payload"]["event"].clone();
     wire["id"] = told["seq"].clone();
-    let rendered = amux::delegation::Event::parse(&wire)
+    let summary = amux::delegation::Event::parse(&wire)
         .unwrap()
         .unwrap()
-        .terminal_text();
-    assert!(rendered.contains("/ SenderMachine /"), "{rendered}");
-    assert!(rendered.contains("Owner host: OwnerMachine"), "{rendered}");
-    assert!(
-        rendered.contains("Recorded task host: CreationMachine"),
-        "{rendered}"
-    );
+        .summary
+        .unwrap();
+    assert_eq!(summary.sender_host, "SenderMachine");
+    assert_eq!(summary.owner_host, "OwnerMachine");
+    assert_eq!(summary.task_host, "CreationMachine");
     assert_eq!(
         told["payload"]["event"]["comment"]["content"],
         "please also check docs"

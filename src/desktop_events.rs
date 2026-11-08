@@ -1173,7 +1173,7 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate, mcp: bool)
         return Some(if kind == "review" {
             amux_gateway_backend::templates::MEMORY_REVIEW.to_owned()
         } else {
-            "[Amux context restored] Current session guidance and durable recall follow.".to_owned()
+            amux_gateway_backend::templates::CONTEXT_RESTORED.to_owned()
         });
     }
     let payload = &event["payload"];

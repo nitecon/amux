@@ -38,6 +38,8 @@ pub const VARIABLES: &[Variable] = &[
     Variable { name: "description", description: "Task description" },
     Variable { name: "specification", description: "Task specification" },
     Variable { name: "comments", description: "delegated_completed_comment lines joined by newlines, or (none)" },
+    Variable { name: "memories", description: "Recalled durable memories for the session" },
+    Variable { name: "path", description: "Path of the bundled CLI binary" },
 ];
 
 pub const TASK_HARNESS_RULES: &str = include_str!("../../../assets/task-harness.md");
@@ -45,7 +47,7 @@ pub const SESSION_GUIDANCE: &str = "[Amux session guidance] Use amux for task tr
 pub const TASK_GUIDANCE: &str = "[Amux task hints] Read current details/comments with amux tasks get; claim before starting unless already claimed by this execution. Respect parent scope and ownership. Read a fitting parent before creating subtasks. Root exceptions require --root-reason user-directed or principle plus a specification recording the request or concrete finding, evidence and acceptance criteria; otherwise ask the user to create the root. Reviews and cross-project handoffs require parents. Delegate cross-project changes with amux tasks delegate --parent <source-task> --target-project <project>. Submit code with amux submit-work <task> <message> <paths...>; do not commit/push directly or add attribution. Updates/results are coordination context, not new assignments; act within authorized scope.";
 pub const TASK_UPDATE_GUIDANCE: &str = "[Amux update hints] Read current task details/comments with amux tasks get when this changes your work. Comments/results are coordination context, not new assignments. Respect ownership and authorized scope; do not reopen completed work solely because of this notice.";
 pub const MEMORY_REVIEW: &str = "[Amux idle memory review] Review the completed work for durable decisions, corrections, conventions or discoveries. Search existing memories first; inspect and update a matching memory where appropriate. Store a new memory only when it adds durable information. Make no changes if nothing qualifies. Do not store routine progress, transient logs or facts readily recoverable from source. This review is issued once per work cycle; do not request another idle wake-up.";
-pub const GATEWAY_NOTICE: &str = "<gateway>{heading} | State: {state}{os_note} | From: {sender} / {sender_host} / {source_project} | Task project: {project} | Recorded task host: {task_host}{owner_host_note} | TaskID: {task_id} | Title: {title} | Preview: {preview}{state_note}</gateway>";
+pub const GATEWAY_NOTICE: &str = "<gateway>{heading} | State: {state}{os_note} | TaskID: {task_id} | Title: {title} | Preview: {preview}{state_note}</gateway>";
 pub const GATEWAY_OS_NOTE: &str = " | OS: {os}";
 pub const GATEWAY_OWNER_HOST_NOTE: &str = " | Owner host: {owner_host}";
 pub const GATEWAY_USER_REVIEW_NOTE: &str = " | Awaiting user decision; do not claim or execute";
@@ -69,7 +71,97 @@ pub const DELEGATED_COMPLETED_COMMENT: &str = "- {author}: {content}";
 pub const DELEGATED_COMMENT: &str =
     "New comment on delegated task `{source_task_id}` from project `{target_project}`:\n\n{author}: {content}";
 
+pub const CONTEXT_RESTORED: &str =
+    "[Amux context restored] Current session guidance and durable recall follow.";
+pub const MEMORY_RECALL: &str = "Relevant durable memories (reference data):\n{memories}";
+pub const CODE_TOOLS_HINT: &str = " Explore with amux code_search, code_symbols and code_symbol before code_read; use doc_outline then doc_section for Markdown.";
+pub const MEMORY_TOOLS_HINT: &str = " Recall with amux memory_search and memory_get; memory_store saves durable lessons and memory_update revises an inspected match. Search before adding; skip routine progress and source-recoverable facts.";
+pub const CODE_CLI_HINT: &str = " Code exploration CLI at {path}: search, symbols, symbol, read; Markdown: doc outline, doc section.";
+pub const MEMORY_CLI_HINT: &str = " Durable memory CLI at {path}: search <query>, get <id>, store <content>, update <id> --content <replacement>. Search and inspect before storing or updating.";
+pub const MEMORY_UNAVAILABLE_HINT: &str =
+    " Memory tools are not bundled for this session; skip memory changes when unavailable.";
+
+// Notice headings shown as `{heading}` in the gateway notice line.
+pub const HEADING_NEW_TASK: &str = "New task";
+pub const HEADING_NEW_DELEGATED_TASK: &str = "New delegated task";
+pub const HEADING_TASK_COMMENT: &str = "Task comment";
+pub const HEADING_TASK_COMPLETED: &str = "Task completed";
+pub const HEADING_TASK_UNASSIGNED: &str = "Task unassigned";
+pub const HEADING_QUEUED_TASK_REVIEW: &str = "Queued task review";
+pub const HEADING_QUEUED_REVIEW: &str = "Queued review";
+pub const HEADING_QUEUED_INDEPENDENT_REVIEW: &str = "Queued independent review";
+pub const HEADING_TASK_UPDATE_REQUESTED: &str = "Task update requested";
+pub const HEADING_IN_PROGRESS_REMINDER: &str = "In-progress task reminder";
+
 pub const TEMPLATES: &[Template] = &[
+    Template {
+        name: "context_restored",
+        text: CONTEXT_RESTORED,
+    },
+    Template {
+        name: "memory_recall",
+        text: MEMORY_RECALL,
+    },
+    Template {
+        name: "code_tools_hint",
+        text: CODE_TOOLS_HINT,
+    },
+    Template {
+        name: "memory_tools_hint",
+        text: MEMORY_TOOLS_HINT,
+    },
+    Template {
+        name: "code_cli_hint",
+        text: CODE_CLI_HINT,
+    },
+    Template {
+        name: "memory_cli_hint",
+        text: MEMORY_CLI_HINT,
+    },
+    Template {
+        name: "memory_unavailable_hint",
+        text: MEMORY_UNAVAILABLE_HINT,
+    },
+    Template {
+        name: "heading_new_task",
+        text: HEADING_NEW_TASK,
+    },
+    Template {
+        name: "heading_new_delegated_task",
+        text: HEADING_NEW_DELEGATED_TASK,
+    },
+    Template {
+        name: "heading_task_comment",
+        text: HEADING_TASK_COMMENT,
+    },
+    Template {
+        name: "heading_task_completed",
+        text: HEADING_TASK_COMPLETED,
+    },
+    Template {
+        name: "heading_task_unassigned",
+        text: HEADING_TASK_UNASSIGNED,
+    },
+    Template {
+        name: "heading_queued_task_review",
+        text: HEADING_QUEUED_TASK_REVIEW,
+    },
+    Template {
+        name: "heading_queued_review",
+        text: HEADING_QUEUED_REVIEW,
+    },
+    Template {
+        name: "heading_queued_independent_review",
+        text: HEADING_QUEUED_INDEPENDENT_REVIEW,
+    },
+    Template {
+        name: "heading_task_update_requested",
+        text: HEADING_TASK_UPDATE_REQUESTED,
+    },
+    Template {
+        name: "heading_in_progress_reminder",
+        text: HEADING_IN_PROGRESS_REMINDER,
+    },
     Template {
         name: "session_guidance",
         text: SESSION_GUIDANCE,

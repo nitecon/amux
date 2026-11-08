@@ -112,7 +112,12 @@ impl Session {
         let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
         let changed = self.memory_digest.as_ref() != Some(&digest);
         self.memory_digest = Some(digest);
-        (restore || changed).then(|| format!("Relevant durable memories (reference data):\n{text}"))
+        (restore || changed).then(|| {
+            amux_gateway_backend::templates::render(
+                amux_gateway_backend::templates::MEMORY_RECALL,
+                &[("memories", text)],
+            )
+        })
     }
 }
 
@@ -195,19 +200,25 @@ pub fn capability_hints(mcp: bool) -> String {
     let names: BTreeSet<_> = tools.iter().map(|t| t.name).collect();
     let mut hints = String::new();
     if names.contains("code_symbols") {
-        hints.push_str(" Explore with amux code_search, code_symbols and code_symbol before code_read; use doc_outline then doc_section for Markdown.");
+        hints.push_str(amux_gateway_backend::templates::CODE_TOOLS_HINT);
     }
     if names.contains("memory_search") {
-        hints.push_str(" Recall with amux memory_search and memory_get; memory_store saves durable lessons and memory_update revises an inspected match. Search before adding; skip routine progress and source-recoverable facts.");
+        hints.push_str(amux_gateway_backend::templates::MEMORY_TOOLS_HINT);
     }
     if !mcp {
         if let Some(path) = crate::mcp::Bin::AgentTools.path() {
-            hints.push_str(&format!(" Code exploration CLI at {}: search, symbols, symbol, read; Markdown: doc outline, doc section.", path.display()));
+            hints.push_str(&amux_gateway_backend::templates::render(
+                amux_gateway_backend::templates::CODE_CLI_HINT,
+                &[("path", &path.display().to_string())],
+            ));
         }
         if let Some(path) = crate::mcp::Bin::Memory.path() {
-            hints.push_str(&format!(" Durable memory CLI at {}: search <query>, get <id>, store <content>, update <id> --content <replacement>. Search and inspect before storing or updating.", path.display()));
+            hints.push_str(&amux_gateway_backend::templates::render(
+                amux_gateway_backend::templates::MEMORY_CLI_HINT,
+                &[("path", &path.display().to_string())],
+            ));
         } else {
-            hints.push_str(" Memory tools are not bundled for this session; skip memory changes when unavailable.");
+            hints.push_str(amux_gateway_backend::templates::MEMORY_UNAVAILABLE_HINT);
         }
     }
     hints
