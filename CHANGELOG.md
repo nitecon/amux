@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.0.69 - 2026-11-08
+
+### Added
+- Opt-in desktop startup at sign-in on Linux, Windows, and macOS, configurable
+  in Settings > Workspaces & Terminals.
+- A server-wide automatic review switch in Gateway settings and one documentation
+  review after each completed code review.
+
+### Changed
+- Preapprove amux MCP tools for newly launched agent sessions when MCP is enabled,
+  while preserving provider deny rules and managed restrictions.
+- Shorten injected gateway notices, centralize their templates, and include the
+  notified task ID in task and update commands.
+
+### Fixed
+- Prevent unchanged explicitly released tasks from being automatically reassigned
+  to the same execution, while allowing explicit claims and pickup after relevant
+  task changes.
+- Bound individual task comments and legacy comment previews so task reads stay
+  within the client response limit.
+- Keep successfully posted comments acknowledged when returning a task to the
+  queue fails, avoiding duplicate posts on retry.
+- Fetch bundled runtime tools after Rust cache restoration so native CI tests
+  and release bundles retain their required executables.
+
 ## v0.0.68 - 2026-11-07
 
 ### Fixed
