@@ -60,6 +60,16 @@ Available MCP tools determine tool hints. Memory supports `memory_search`,
 `doc_section`. Sessions without amux MCP receive CLI hints only for present bundled
 executables. Templates are visible in Settings.
 
+When the host enables automatic reviews in Settings > Gateway > Task automation,
+completion queues a code review followed by a separate documentation review.
+The documentation reviewer reads the original task, review results and actual
+implementation, then validates affected user and agent documentation, examples,
+commands, settings and platform requirements. Reviewers report evidence and
+create correction tasks under the source task; they do not edit implementation
+or documentation during review. A documentation review ends the sequence.
+The server switch applies immediately across projects; disabling it leaves
+existing queued reviews available but prevents new review stages.
+
 Recall calls durable `memory search`, never `memory context` or WorkingContext.
 It has a five-second timeout and a bounded output. Unchanged recall is suppressed
 within the same context. Explicit context restoration permits recall again.

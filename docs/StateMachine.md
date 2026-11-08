@@ -335,7 +335,12 @@ Rules carried over from the desktop:
 - **Review generation:** completing a task, including a manual Close, queues a
   separate independent review task. The original stays done; creating review
   work never returns it to TODO or User review. Replayed completion events do
-  not create duplicate reviews.
+  not create duplicate reviews. Completing the code review queues one separate
+  documentation review linked to the original change. It checks affected user
+  and agent documentation against the implementation and records concrete
+  correction tasks under the source task. Documentation reviews do not generate
+  further reviews. Both stages preserve platform requirements and use the same
+  queue, provider preferences and completion deduplication.
 - **Review provider:** reviews prefer an available opposite-provider agent in
   their project, OS and goal. Independence metadata is a secondary preference,
   not a hard exclusion. Busy, drafting, occupied or refusing agents do not block
@@ -423,6 +428,14 @@ Plugins whose behaviour a user may want off (`assignment`, `notifier`,
 setting `plugin.<id>.enabled`. They are enabled by default. For Reminder this
 switch gates periodic nudges only; startup continuity remains available, as
 in the original desktop restart behavior.
+
+In desktop Settings > Gateway > Task automation, the host in Server mode can
+toggle automatic code and documentation reviews. This changes the existing
+`plugin.review.enabled` server setting immediately, for every project on that
+server. Client mode directs users to the host. Disabling it stops future review
+generation, including documentation follow-ups; queued reviews remain available.
+The administrator API is `GET /v1/plugins` and
+`PUT /v1/plugins/review` with `{"enabled": false}` (or `true`).
 
 ## Client after the change
 

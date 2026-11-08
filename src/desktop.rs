@@ -94,6 +94,8 @@ enum Message {
     ServerStopped(ServerExit, Result<(), String>),
     ServerReconfigured(u64, Result<(), String>),
     AutomaticNotifications(bool),
+    AutomaticReviews(bool),
+    AutomaticReviewsReady(u64, Result<bool, String>),
     AutoResume(bool),
     McpTools(bool),
     ClearOnTask(bool),
@@ -170,6 +172,9 @@ struct EmbeddedServer {
     pair_invitation: String,
     status: String,
     stopping: bool,
+    automatic_reviews: Option<bool>,
+    reviews_busy: bool,
+    reviews_status: String,
 }
 
 // A new install may start a local server. Failed settings must stay
@@ -1245,6 +1250,26 @@ impl Desktop {
             Message::DismissToast(id) => self.toasts.dismiss(id),
             Message::DismissHarnessNotice => self.harness.notice_dismissed = true,
             Message::SavePreferences => return self.save_preferences(),
+            Message::AutomaticReviews(enabled) => return self.automatic_reviews(Some(enabled)),
+            Message::AutomaticReviewsReady(epoch, result) => {
+                if epoch != self.embedded.epoch {
+                    return Task::none();
+                }
+                self.embedded.reviews_busy = false;
+                match result {
+                    Ok(enabled) => {
+                        self.embedded.automatic_reviews = Some(enabled);
+                        self.embedded.reviews_status =
+                            "Server setting loaded and saved automatically.".into();
+                    }
+                    Err(error) => {
+                        self.embedded.automatic_reviews = None;
+                        self.embedded.reviews_status = format!(
+                            "Review setting unavailable: {error}. Reopen Settings to retry."
+                        );
+                    }
+                }
+            }
             Message::GatewayMode(mode) => {
                 if !self.embedded.busy && !self.embedded.stopping {
                     if mode == GatewayMode::Client
@@ -1917,7 +1942,35 @@ impl Desktop {
             self.embedded.pair_address = connection.url.clone();
         }
         self.close_design_popovers();
-        iced::widget::operation::focus("server-address")
+        Task::batch([
+            iced::widget::operation::focus("server-address"),
+            self.automatic_reviews(None),
+        ])
+    }
+
+    fn automatic_reviews(&mut self, enabled: Option<bool>) -> Task<Message> {
+        if self.embedded.reviews_busy
+            || self.embedded.busy
+            || self.embedded.stopping
+            || self.preferences.current.mode != GatewayMode::Server
+            || self.embedded.local.is_none()
+        {
+            return Task::none();
+        }
+        let Some(connection) = self.preferences.current.enrolled.clone() else {
+            return Task::none();
+        };
+        self.embedded.reviews_busy = true;
+        self.embedded.reviews_status = "Checking server review setting...".into();
+        let epoch = self.embedded.epoch;
+        Task::perform(
+            async move {
+                server_controller::automatic_reviews(connection, enabled)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            move |result| Message::AutomaticReviewsReady(epoch, result),
+        )
     }
 
     fn close_preferences(&mut self) -> Task<Message> {
@@ -1997,6 +2050,9 @@ impl Desktop {
             return Task::none();
         };
         self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
+        self.embedded.reviews_busy = false;
+        self.embedded.automatic_reviews = None;
+        self.embedded.reviews_status.clear();
         let epoch = self.embedded.epoch;
         self.embedded.busy = true;
         self.embedded.invitation = None;
@@ -2089,6 +2145,9 @@ impl Desktop {
         self.reset_delegation();
         self.embedded.busy = true;
         self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
+        self.embedded.reviews_busy = false;
+        self.embedded.automatic_reviews = None;
+        self.embedded.reviews_status.clear();
         let epoch = self.embedded.epoch;
         let invitation = std::mem::take(&mut self.embedded.pair_invitation);
         self.embedded.status = "Connecting to server…".into();
@@ -2153,6 +2212,9 @@ impl Desktop {
             self.embedded.busy = true;
             self.embedded.invitation = None;
             self.embedded.epoch = self.embedded.epoch.wrapping_add(1);
+            self.embedded.reviews_busy = false;
+            self.embedded.automatic_reviews = None;
+            self.embedded.reviews_status.clear();
             let epoch = self.embedded.epoch;
             self.reset_delegation();
             return Task::perform(
@@ -2335,8 +2397,18 @@ impl Desktop {
         content = content
             .push(text(&self.embedded.status))
             .push(desktop_design::settings_label("TASK AUTOMATION"))
+            .push(if draft.mode == GatewayMode::Server {
+                let control = checkbox(self.embedded.automatic_reviews.unwrap_or(true))
+                    .label("Automatically review completed work and then its documentation (server-wide)");
+                let control = if available && self.embedded.automatic_reviews.is_some() && !self.embedded.reviews_busy {
+                    control.on_toggle(Message::AutomaticReviews)
+                } else { control };
+                column![control, text("Applies immediately to future completions for every project on this server. Existing queued reviews remain available. Enabled by default." ).size(12), text(&self.embedded.reviews_status).size(12)].spacing(8)
+            } else {
+                column![text("Automatic code and documentation reviews are controlled in Settings on the host server.").size(12)]
+            })
             .push(checkbox(draft.automatic_notifications).label("Let the amux server assign queued work and send task notifications to agents in this app").on_toggle(Message::AutomaticNotifications))
-            .push(text("On amux servers (Server or Client mode) the server decides: idle agents receive eligible tasks oldest first, completed tasks get one review by a different agent, and owners and requesters hear about their tasks. Explicit User review still waits for your decision.").size(12))
+            .push(text("The server assigns eligible queued work to idle agents and notifies owners and requesters. When automatic reviews are enabled, completed work receives a code review followed by a documentation review. Explicit User review still waits for your decision.").size(12))
             .push(text("Notifications use assigned agent identities and required repository matching. Typed input is preserved during delivery.").size(12))
             .push(text("Repository matching is required. Settings are saved on this device.").size(12))
             .push(text(&self.task_panel(self.task_workspace()).status).size(13));
@@ -3707,6 +3779,22 @@ mod tests {
         let mut wrong_directory = app.scope(0);
         wrong_directory.directory = Some(PathBuf::from("/different-project"));
         assert!(!app.scope_current(&wrong_directory));
+    }
+
+    #[test]
+    fn review_settings_accept_only_current_server_responses() {
+        let mut app = desktop();
+        app.embedded.epoch = 4;
+        app.embedded.reviews_busy = true;
+        let _ = app.update(Message::AutomaticReviewsReady(3, Ok(false)));
+        assert!(app.embedded.reviews_busy);
+        assert_eq!(app.embedded.automatic_reviews, None);
+        let _ = app.update(Message::AutomaticReviewsReady(4, Ok(false)));
+        assert!(!app.embedded.reviews_busy);
+        assert_eq!(app.embedded.automatic_reviews, Some(false));
+        let _ = app.update(Message::AutomaticReviewsReady(4, Err("offline".into())));
+        assert_eq!(app.embedded.automatic_reviews, None);
+        assert!(app.embedded.reviews_status.contains("offline"));
     }
 
     #[test]

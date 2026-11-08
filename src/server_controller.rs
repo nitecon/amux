@@ -435,6 +435,33 @@ pub async fn status(connection: EnrolledConnection) -> Result<Value> {
     exchange(&connection, Method::GET, "/v1/server/status", None).await
 }
 
+/// Read or change the server's existing automatic review switch.
+pub async fn automatic_reviews(
+    connection: EnrolledConnection,
+    enabled: Option<bool>,
+) -> Result<bool> {
+    if let Some(enabled) = enabled {
+        let value: Value = exchange(
+            &connection,
+            Method::PUT,
+            "/v1/plugins/review",
+            Some(serde_json::json!({"enabled": enabled})),
+        )
+        .await?;
+        ensure!(
+            value["id"] == "review" && value["enabled"] == enabled,
+            "automatic review setting is unconfirmed"
+        );
+        return Ok(enabled);
+    }
+    let values: Vec<Value> = exchange(&connection, Method::GET, "/v1/plugins", None).await?;
+    values
+        .iter()
+        .find(|value| value["id"] == "review")
+        .and_then(|value| value["enabled"].as_bool())
+        .context("server did not report its automatic review setting")
+}
+
 fn root_fingerprint(pem: &str) -> Result<String> {
     let certs =
         rustls_pemfile::certs(&mut Cursor::new(pem)).collect::<std::io::Result<Vec<_>>>()?;

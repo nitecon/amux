@@ -283,6 +283,16 @@ fn transport_fixture_worker() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let titles: Vec<Value> = gateway.list("transport-fixture").await.unwrap().as_array().unwrap().iter().map(|t| t["title"].clone()).collect();
         assert!(!titles.iter().any(|t| t == "Review: Review: Real mTLS task"), "a completed review is not reviewed");
+        let docs = gateway.list("transport-fixture").await.unwrap().as_array().unwrap().iter()
+            .find(|task| task["title"] == "Documentation review: Real mTLS task").cloned().expect("documentation follow-up");
+        assert!(docs["labels"].as_array().unwrap().contains(&json!(format!("review-of:{source}"))));
+        let docs_id = docs["id"].as_str().unwrap();
+        gateway.claim("transport-fixture", docs_id, &caller).await.unwrap();
+        gateway.request(Method::PATCH, "transport-fixture", &[docs_id], Some(json!({"status":"done"})), Some(&caller)).await.unwrap();
+        assert!(server_controller::automatic_reviews(admin.clone(), None).await.unwrap());
+        assert!(!server_controller::automatic_reviews(admin.clone(), Some(false)).await.unwrap());
+        assert!(!server_controller::automatic_reviews(admin.clone(), None).await.unwrap());
+        assert!(server_controller::automatic_reviews(admin.clone(), Some(true)).await.unwrap());
         let replacement = server_controller::invitation(admin.clone(), true).await.unwrap();
         assert!(replacement.invitation != invitation.invitation);
         assert!(server_controller::pair(root.join("old-invite"), admin.url.clone(), invitation.invitation.clone()).await.is_err());

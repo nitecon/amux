@@ -158,6 +158,7 @@ pub fn preserve_metadata(current: &[String], next: &[String]) -> Result<()> {
                 .iter()
                 .filter(|label| {
                     label.as_str() == "task-review"
+                        || label.as_str() == "documentation-review"
                         || label.starts_with("review-of:")
                         || label.starts_with("review-exclude:")
                         || label.starts_with("review-provider:")
@@ -180,7 +181,11 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     let source = db::get_task_detail(conn, project, source_id)?
         .ok_or(Conflict("source task not found"))?
         .task;
-    if source.labels.iter().any(|label| label == "task-review")
+    let documentation = source.labels.iter().any(|label| label == "task-review");
+    if source
+        .labels
+        .iter()
+        .any(|label| label == "documentation-review")
         || (source.kind == "delegated" && source.delegated_to_task_id.is_some())
     {
         return Ok(None);
@@ -201,7 +206,28 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     if let Some(id) = existing {
         return Ok(db::get_task_detail(conn, project, &id)?.map(|detail| detail.task));
     }
-    let mut labels = vec!["task-review".to_owned(), format!("review-of:{}", source.id)];
+    let original = if documentation {
+        let Some(id) = source
+            .labels
+            .iter()
+            .find_map(|label| label.strip_prefix("review-of:"))
+        else {
+            return Ok(None);
+        };
+        let Some(detail) = db::get_task_detail(conn, project, id)? else {
+            return Ok(None);
+        };
+        detail.task
+    } else {
+        source.clone()
+    };
+    let mut labels = vec![
+        "task-review".to_owned(),
+        format!("review-of:{}", original.id),
+    ];
+    if documentation {
+        labels.push("documentation-review".to_owned());
+    }
     if let Some(provider) = preferred_for_source(conn, &source.id)? {
         labels.push(format!("review-provider:{provider}"));
     }
@@ -209,7 +235,9 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         source
             .labels
             .iter()
-            .filter(|label| label.starts_with("os:"))
+            .filter(|label| {
+                label.starts_with("os:") || (documentation && label.starts_with("review-exclude:"))
+            })
             .cloned(),
     );
     if let Some(owner) = source
@@ -218,7 +246,10 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         .map(|owner| owner.session_id.as_str())
         .or(source.owner_agent_id.as_deref())
     {
-        labels.push(format!("review-exclude:{owner}"));
+        let label = format!("review-exclude:{owner}");
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
     }
     // Agents that commented may have done the work before ownership changed.
     let contributors = conn
@@ -237,10 +268,14 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         }
     }
     let specification = crate::templates::render(
-        crate::templates::REVIEW_SPECIFICATION,
+        if documentation {
+            crate::templates::DOCUMENTATION_REVIEW_SPECIFICATION
+        } else {
+            crate::templates::REVIEW_SPECIFICATION
+        },
         &[
-            ("source_task_id", &source.id),
-            ("source_title", &source.title),
+            ("source_task_id", &original.id),
+            ("source_title", &original.title),
         ],
     );
     // This helper only inserts an unowned ordinary task; no dispatch protocol
@@ -248,7 +283,15 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     let mut task = db::insert_unassigned_dispatch_task(
         conn,
         project,
-        &format!("Review: {}", source.title),
+        &format!(
+            "{}: {}",
+            if documentation {
+                "Documentation review"
+            } else {
+                "Review"
+            },
+            original.title
+        ),
         None,
         Some(&specification),
         &labels,
@@ -341,7 +384,7 @@ mod tests {
         (database, source, author)
     }
     #[test]
-    fn review_is_unowned_deduplicated_independent_and_non_recursive() {
+    fn reviews_queue_one_documentation_followup_and_then_stop() {
         let (database, source, author) = fixture();
         let conn = database.lock().unwrap();
         let review =
@@ -366,11 +409,45 @@ mod tests {
         let peer = actor();
         update(&conn, &review.id, "in_progress", &peer).unwrap();
         update(&conn, &review.id, "done", &peer).unwrap();
-        assert!(
+        let docs = task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &review.id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            docs.title,
+            format!("Documentation review: {}", source.title)
+        );
+        assert_eq!(docs.parent.as_ref().unwrap().id, review.id);
+        assert_eq!(docs.status, "todo");
+        assert!(docs.owner_agent_id.is_none() && docs.owner_origin.is_none());
+        assert!(docs.labels.contains(&"documentation-review".into()));
+        assert!(docs.labels.contains(&format!("review-of:{}", source.id)));
+        assert!(docs.labels.contains(&"os:linux".into()));
+        assert!(docs
+            .labels
+            .contains(&format!("review-exclude:{}", author.session_id)));
+        assert!(docs.details.as_ref().unwrap().contains(&source.id));
+        assert!(docs
+            .details
+            .as_ref()
+            .unwrap()
+            .contains("matches the implementation"));
+        assert_eq!(
             task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &review.id))
+                .unwrap()
+                .unwrap()
+                .id,
+            docs.id
+        );
+        update(&conn, &docs.id, "in_progress", &author).unwrap();
+        update(&conn, &docs.id, "done", &author).unwrap();
+        assert!(
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &docs.id))
                 .unwrap()
                 .is_none()
         );
+        let mut changed = docs.labels.clone();
+        changed.retain(|label| label != "documentation-review");
+        assert!(preserve_metadata(&docs.labels, &changed).is_err());
         assert_eq!(
             task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
                 .unwrap()
@@ -382,7 +459,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM task_reviews", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
     }
     #[test]
