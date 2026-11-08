@@ -50,6 +50,7 @@ struct SelectableText {
 pub(super) enum Change {
     Edit,
     Comment,
+    CommentReturnFailed,
     Assign,
     Close,
     Resume,
@@ -476,6 +477,7 @@ impl Desktop {
         panel.status = "Saving…".into();
         Task::perform(
             async move {
+                let mut change = change;
                 // Resolve the workspace repository again before applying a user mutation.
                 let result = async {
                     if let Some(directory) = scope.directory.clone() {
@@ -495,19 +497,29 @@ impl Desktop {
                             gateway
                                 .comment_on_task(&scope.project, id, &content)
                                 .await?;
-                            let task = gateway.resume_desktop_task(&scope.project, id).await?;
-                            let last = gateway.last_task_owner(&scope.project, id).await?;
-                            match live.into_iter().find(|target| {
-                                Some(&target.origin) == last.as_ref()
-                                    && amux::task_platform::matches(&task, Some(&target.origin.os))
-                            }) {
-                                Some(target) => {
-                                    gateway
-                                        .assign_desktop_task(&scope.project, id, &target)
-                                        .await
+                            let result = async {
+                                let task = gateway.resume_desktop_task(&scope.project, id).await?;
+                                let last = gateway.last_task_owner(&scope.project, id).await?;
+                                match live.into_iter().find(|target| {
+                                    Some(&target.origin) == last.as_ref()
+                                        && amux::task_platform::matches(
+                                            &task,
+                                            Some(&target.origin.os),
+                                        )
+                                }) {
+                                    Some(target) => {
+                                        gateway
+                                            .assign_desktop_task(&scope.project, id, &target)
+                                            .await
+                                    }
+                                    None => Ok(task),
                                 }
-                                None => Ok(task),
                             }
+                            .await;
+                            if result.is_err() {
+                                change = Change::CommentReturnFailed;
+                            }
+                            result
                         }
                         Mutation::Assign(target) => {
                             gateway
@@ -580,7 +592,7 @@ impl Desktop {
                     Change::Comment if returned == Some(false) => {
                         "Comment posted; task returned to its last agent"
                     }
-                    Change::Comment => "Comment posted",
+                    Change::Comment | Change::CommentReturnFailed => "Comment posted",
                     Change::Assign => "Task assigned",
                     Change::Close => "Task closed",
                     Change::Resume => "Task returned to queue",
@@ -588,6 +600,18 @@ impl Desktop {
                     Change::ClearWatcher => "Result recipient cleared",
                 }
                 .into();
+                Task::batch([
+                    self.load_task_detail_for(scope.workspace),
+                    self.query_tasks(scope.workspace),
+                ])
+            }
+            Err(error) if matches!(change, Change::CommentReturnFailed) => {
+                // The comment POST was acknowledged even if resuming or assigning
+                // the task failed. Do not retain a posted draft or freeze navigation.
+                panel.comment = text_editor::Content::default();
+                panel.status = format!(
+                    "Comment posted; task return not confirmed: {error}. Refresh and inspect the task before returning it again."
+                );
                 Task::batch([
                     self.load_task_detail_for(scope.workspace),
                     self.query_tasks(scope.workspace),
@@ -1796,6 +1820,68 @@ mod tests {
         assert_eq!(stored["requester"], json!(requester));
         assert_eq!(stored["owner_agent_id"], json!(owner));
         assert!(app.workspaces[0].gateway.detail.pending.is_none());
+    }
+
+    #[test]
+    fn posted_comments_clear_and_allow_task_selection_when_returning_work_fails() {
+        for remote in [false, true] {
+            let mut app = app();
+            if remote {
+                app.remote_workspaces
+                    .push(desktop_task_context::RemoteWorkspace {
+                        id: Uuid::new_v4(),
+                        canonical_remote: None,
+                        gateway: TaskPanel {
+                            project: "remote".into(),
+                            ..Default::default()
+                        },
+                    });
+                app.remote_active = Some(0);
+            }
+            let context = app.task_workspace();
+            let id = Uuid::new_v4();
+            let scope = app.task_scope(context);
+            let detail = &mut app.task_panel_mut(context).detail;
+            detail.selected = Some(id);
+            let mut parked = task(id, &scope.project);
+            parked["status"] = json!("user_review");
+            detail.set_task(parked);
+            detail.mode = Mode::Edit;
+            detail.title = "Unsaved title".into();
+            detail.comment = text_editor::Content::with_text("Go ahead");
+            let pending = Uuid::new_v4();
+            detail.pending = Some(pending);
+            let next = Uuid::new_v4();
+            drop(app.manage_task(Action::Open(next)));
+            assert_eq!(app.task_panel(context).detail.selected, Some(id));
+
+            drop(app.update(Message::TaskChanged(
+                scope.clone(),
+                id,
+                pending,
+                Change::CommentReturnFailed,
+                Err("assignment no longer available".into()),
+            )));
+            let detail = &app.task_panel(context).detail;
+            assert!(detail.comment.text().trim().is_empty());
+            assert!(!detail.unresolved());
+            assert!(detail.mode == Mode::Edit);
+            assert_eq!(detail.title, "Unsaved title");
+            assert!(
+                detail
+                    .status
+                    .starts_with("Comment posted; task return not confirmed:")
+            );
+
+            // A late refresh of the original task must not replace a newly
+            // selected task or subtask, even when the return operation failed.
+            let refresh = detail.loading.unwrap();
+            drop(app.manage_task(Action::Open(next)));
+            app.task_detail_loaded(scope, id, refresh, Ok(task(id, "old")));
+            assert_eq!(app.task_panel(context).detail.selected, Some(next));
+            drop(app.manage_task(Action::Back));
+            assert!(app.task_panel(context).detail.selected.is_none());
+        }
     }
 
     #[test]
