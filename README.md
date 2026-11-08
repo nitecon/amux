@@ -60,6 +60,10 @@ desktop starts gets an `amux mcp` stdio server: amux task actions and work
 submission ([submitting work](docs/gateway-cli.md#submitting-work)), memory
 search/store/get and agent-tools read, symbol, search, Markdown and knowledge-graph
 lookups. Each tool runs the bundled command and returns its output unchanged.
+Launch-time settings preapprove tools from the amux server for that session.
+Provider deny rules, per-tool overrides and managed restrictions still apply.
+The MCP toggle controls this registration and approval together; provider config
+files are not changed.
 New sessions also start with relevant project memory (Claude through MCP instructions,
 Codex through launch-time `developer_instructions` unless you set your own) unless
 that provider already runs the `memory setup hooks` hook. Outside the desktop, use `amux agent <provider> --mcp`.

@@ -1828,7 +1828,7 @@ impl Desktop {
                 checkbox(self.preferences.draft.auto_resume).label("Resume agent sessions on startup").on_toggle(Message::AutoResume),
                 text("Saved running terminals reopen on startup. This option also reopens agent tabs with their native conversation resume.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.mcp_tools).label("Give agents amux tools (MCP)").on_toggle(Message::McpTools),
-                text("New Claude and Codex sessions get amux tasks plus the bundled agent-tools and memory commands as MCP tools, and start with relevant project memory. Applies to agents started after saving.").size(12).color(MUTED),
+                text("New Claude and Codex sessions get preapproved amux MCP tools and relevant project memory. Provider restrictions still apply. Applies to agents started after saving.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.clear_on_task).label("Clear context before new tasks").on_toggle(Message::ClearOnTask),
                 text("For an agent idle for at least 30 seconds, send /clear and wait 5 seconds before a new task assignment. Reviews, comments, reminders and continued work keep their context.").size(12).color(MUTED),
                 ].spacing(14)),

@@ -19,9 +19,8 @@ pub const NO_UPDATE: [(&str, &str); 2] = [
     ("AGENT_MEMORY_NO_UPDATE", "1"),
     ("AGENT_TOOLS_NO_UPDATE", "1"),
 ];
-/// Claude Code settings that disable its commit and pull request attribution.
-pub const CLAUDE_NO_ATTRIBUTION: &str =
-    r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}"#;
+/// Session settings authorize only amux MCP tools and disable attribution.
+pub const CLAUDE_SESSION_SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false,"permissions":{"allow":["mcp__amux__*"]}}"#;
 /// Startup memory context is skipped rather than delay the agent's start.
 const CONTEXT_WAIT: Duration = Duration::from_secs(5);
 
@@ -694,7 +693,8 @@ pub fn serve() -> Result<()> {
 
 /// Provider arguments that register `amux mcp` for one launched session,
 /// passing that session's identity explicitly (Codex does not forward the
-/// parent environment to MCP servers).
+/// parent environment to MCP servers). Approval is scoped to amux tools;
+/// provider deny rules and managed restrictions still apply.
 pub fn launch_arguments(
     provider: crate::identity::Provider,
     amux: &Path,
@@ -728,7 +728,7 @@ pub fn launch_arguments(
         // --mcp-config takes several values, so it stays last.
         crate::identity::Provider::Claude => vec![
             "--settings".into(),
-            CLAUDE_NO_ATTRIBUTION.into(),
+            CLAUDE_SESSION_SETTINGS.into(),
             "--mcp-config".into(),
             json!({"mcpServers": {"amux": {"command": command, "args": ["mcp"], "env": env}}})
                 .to_string(),
@@ -746,6 +746,8 @@ pub fn launch_arguments(
                 ),
                 "-c".into(),
                 "mcp_servers.amux.args=[\"mcp\"]".into(),
+                "-c".into(),
+                "mcp_servers.amux.default_tools_approval_mode=\"approve\"".into(),
                 "-c".into(),
                 format!("mcp_servers.amux.env={table}"),
             ]
@@ -886,6 +888,7 @@ mod tests {
         let settings: Value = serde_json::from_str(&claude[1]).unwrap();
         assert_eq!(settings["attribution"], json!({"commit": "", "pr": ""}));
         assert_eq!(settings["includeCoAuthoredBy"], false);
+        assert_eq!(settings["permissions"], json!({"allow": ["mcp__amux__*"]}));
         assert_eq!(claude[2], "--mcp-config");
         let config: Value = serde_json::from_str(&claude[3]).unwrap();
         assert_eq!(config["mcpServers"]["amux"]["command"], "/opt/amux/amux");
@@ -904,6 +907,9 @@ mod tests {
             crate::identity::Provider::Codex,
             Path::new("C:\\amux\\amux.exe"),
             &env,
+        );
+        assert!(
+            codex.contains(&"mcp_servers.amux.default_tools_approval_mode=\"approve\"".to_owned())
         );
         for value in codex.iter().filter(|a| *a != "-c") {
             let (key, value) = value.split_once('=').unwrap();
