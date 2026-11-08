@@ -9,6 +9,7 @@ mod git;
 pub mod guidance;
 pub mod harness;
 pub mod identity;
+pub mod login_startup;
 pub mod mcp;
 pub mod notifications;
 #[cfg(feature = "desktop")]

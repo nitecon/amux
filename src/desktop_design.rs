@@ -1818,6 +1818,8 @@ impl Desktop {
             PreferencesTab::General=>column![
                 text("Workspaces & Terminals").size(22),
                 settings_card(column![
+                checkbox(self.preferences.draft.start_on_login).label("Start amux when I sign in").on_toggle(Message::StartOnLogin),
+                text("Opens amux after you sign in on this machine. Server mode starts the gateway; saved running sessions resume using the option below. Requires a desktop login after reboot.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.notify_exits).label("Notify on process exit").on_toggle(Message::ExitNotifications),
                 text("Notifications report terminal process exits.").size(12).color(MUTED),
                 checkbox(self.preferences.draft.auto_update).label("Install updates automatically").on_toggle(Message::AutoUpdate),

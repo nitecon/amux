@@ -24,6 +24,7 @@ fn native_connection_and_device_preferences_round_trip_without_secrets() {
         enrolled: Some(connection(dir.path())),
         automatic_notifications: true,
         clear_on_task: true,
+        start_on_login: true,
         projects_dir: "my-projects".into(),
         work_submission: amux::work_submission::Preferences {
             mode: amux::work_submission::Mode::PullRequest,
@@ -39,6 +40,7 @@ fn native_connection_and_device_preferences_round_trip_without_secrets() {
     assert_eq!(restored.projects_dir, "my-projects");
     assert!(restored.automatic_notifications);
     assert!(restored.clear_on_task);
+    assert!(restored.start_on_login);
     assert!(restored.has_connection());
     let serialized = serde_json::to_value(restored).unwrap();
     for retired in ["url", "api_key", "project"] {
@@ -76,6 +78,10 @@ fn retired_connections_become_disconnected_without_switching_authority() {
         assert!(!restored.has_connection());
         assert!(!restored.automatic_notifications);
         assert!(!restored.auto_resume);
+        assert!(
+            !restored.start_on_login,
+            "login startup stays opt-in for existing installations"
+        );
         assert!(
             !restored.clear_on_task,
             "old settings must keep clearing opt-in"

@@ -78,6 +78,8 @@ pub struct GatewayPreferences {
     pub auto_resume: bool,
     /// Download updates in the background so a restart can apply them.
     pub auto_update: bool,
+    /// Launch the desktop (and its saved gateway mode) at user sign-in.
+    pub start_on_login: bool,
     /// Parent folder for projects checked out from the sidebar.
     pub projects_dir: String,
     /// Give launched agents the `amux mcp` tools (tasks, agent-tools, memory).
@@ -100,6 +102,7 @@ impl Default for GatewayPreferences {
             notify_exits: false,
             auto_resume: true,
             auto_update: false,
+            start_on_login: false,
             projects_dir: String::new(),
             mcp_tools: true,
             clear_on_task: false,

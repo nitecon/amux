@@ -101,6 +101,7 @@ enum Message {
     ClearOnTask(bool),
     ExitNotifications(bool),
     AutoUpdate(bool),
+    StartOnLogin(bool),
     ProjectsDir(String),
     SubmissionMode(amux::work_submission::Mode),
     SubmissionBranchPrefix(String),
@@ -1018,6 +1019,7 @@ impl Desktop {
             Message::Design(value) => return self.design_message(value),
             Message::WindowReady => {}
             Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
+            Message::StartOnLogin(value) => self.preferences.draft.start_on_login = value,
             Message::McpTools(value) => self.preferences.draft.mcp_tools = value,
             Message::ClearOnTask(value) => self.preferences.draft.clear_on_task = value,
             Message::ExitNotifications(value) => self.preferences.draft.notify_exits = value,
@@ -2227,7 +2229,10 @@ impl Desktop {
             .path
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Application settings directory unavailable"))
-            .and_then(|path| draft.save(path));
+            .and_then(|path| {
+                amux::login_startup::save_preferences(&self.preferences.current, &draft, path)
+                    .map_err(|error| anyhow::anyhow!("{error:#}"))
+            });
         if let Err(error) = result {
             self.preferences.status = format!("Not saved: {error}");
             if self.preferences.current.mode == GatewayMode::Server && self.embedded.local.is_none()
@@ -3188,6 +3193,19 @@ mod tests {
         assert!(app.updates.restart.required);
         assert!(app.updates.attention());
         assert!(app.updates.error.contains("offline"));
+    }
+
+    #[test]
+    fn cancel_discards_login_startup_without_saving_preferences() {
+        let (_dir, mut app) = preferences_fixture();
+        drop(app.open_preferences(PreferencesTab::General));
+        assert!(!app.preferences.current.start_on_login);
+        drop(app.update(Message::StartOnLogin(true)));
+        assert!(app.preferences.draft.start_on_login);
+        drop(app.close_preferences());
+        assert!(!app.preferences.draft.start_on_login);
+        assert!(!app.preferences.current.start_on_login);
+        assert!(!app.preferences.path.as_ref().unwrap().exists());
     }
 
     pub(super) fn preferences_fixture() -> (tempfile::TempDir, Desktop) {

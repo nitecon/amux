@@ -90,6 +90,7 @@ Closing the last workspace opens a fresh **Default** terminal in your home direc
 
 ## Documentation
 
+- [Login startup](docs/login-startup.md): opt-in startup on Linux, macOS, and Windows.
 - [StateMachine](docs/StateMachine.md): durable events, controller plugins,
   reconciliation outcomes, and the client observation/delivery boundary.
 - [Server architecture](docs/ServerArchitecture.md): native hosting, client/server
