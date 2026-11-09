@@ -1,8 +1,10 @@
 # Changelog
 
-## v0.0.71 - 2026-11-09
+## v0.0.72 - 2026-11-09
 
 ### Fixed
+- Retry GitHub release download server errors once through the public asset API,
+  retaining TLS and checksum verification when the normal redirect path fails.
 - Bundle agent-memory v1.13.10 to reject edits to known tombstoned gateway
   memories before changing local content, tags, or history, with explicit
   instructions for recovering retained lessons under a new memory identity.

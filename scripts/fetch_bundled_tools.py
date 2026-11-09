@@ -4,14 +4,15 @@ packaging/bundled-tools.json, verify their checksums and extract the
 
     python scripts/fetch_bundled_tools.py --target <rust-target> --output <dir>
 
-agent-tools is checked against its release SHA256SUMS.txt; memory publishes no
-checksum file, so its archives are checked against hashes pinned here.
+agent-tools is checked against its release SHA256SUMS.txt; memory archives are
+checked against hashes pinned in the manifest.
 """
 import argparse
 import hashlib
 import io
 import json
 import tarfile
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -22,7 +23,29 @@ PINS = ROOT / "packaging" / "bundled-tools.json"
 
 def download(repo, version, name):
     url = f"https://github.com/{repo}/releases/download/{version}/{name}"
-    with urllib.request.urlopen(url, timeout=120) as response:
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        if not 500 <= error.code < 600:
+            raise
+        print(f"{repo}/{version}/{name}: HTTP {error.code}; retrying via GitHub asset API")
+
+    # GitHub can fail before redirecting an otherwise healthy release asset.
+    # Keep the same release/name and the caller's checksum verification.
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/releases/tags/{version}",
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        release = json.load(response)
+    asset = next((asset for asset in release["assets"] if asset["name"] == name), None)
+    if asset is None:
+        raise ValueError(f"{repo}/{version}: release asset {name} not found")
+    request = urllib.request.Request(
+        asset["url"], headers={"Accept": "application/octet-stream"}
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
 
