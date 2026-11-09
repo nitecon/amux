@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.70 - 2026-11-08
+
+### Fixed
+- Exclude code and documentation review tasks from the work report’s
+  “Completed, not released” section.
+- Support older GitHub CLI versions when checking work report CI status.
+
+### Changed
+- Ignore local agent configuration added by users.
+- Update documentation to match current task review reporting, embedded server
+  ownership, connection settings, and terminal restore behavior.
+
 ## v0.0.69 - 2026-11-08
 
 ### Added
