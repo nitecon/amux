@@ -1,6 +1,16 @@
 # Changelog
 
-## v0.0.72 - 2026-11-09
+## v0.0.73 - 2026-11-09
+
+### Fixed
+- Bundle agent-memory v1.13.11 so retained gateway deletions are informational
+  counts: `memory push` succeeds and `memory push --all` continues across projects.
+- Keep actionable recovery errors on the edit path, preserving original content
+  and history without prompting recovery for intentional deletions during push.
+- Check the packaged memory binary against a two-project retained-deletion
+  regression, alongside the existing atomic edit error contract.
+
+## v0.0.72 - 2026-11-09 (prerelease)
 
 ### Fixed
 - Retry GitHub release download server errors once through the public asset API,

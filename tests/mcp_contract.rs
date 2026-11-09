@@ -137,12 +137,10 @@ fn the_server_lists_and_runs_bundled_tools_over_stdio() {
     assert!(child.wait().unwrap().success());
 }
 
-#[test]
-fn memory_update_reports_tombstone_recovery_without_changing_retained_content() {
-    let Some(dir) = bundled() else { return };
+fn isolated_memory(dir: &std::path::Path) -> (tempfile::TempDir, rusqlite::Connection) {
     let root = tempfile::tempdir().unwrap();
     let memory_dir = root.path().join("memory");
-    let initialized = Command::new(executable(&dir, Bin::Memory))
+    let initialized = Command::new(executable(dir, Bin::Memory))
         .args(["list", "--limit", "1"])
         .env("AGENT_MEMORY_DIR", &memory_dir)
         .env("AGENT_MEMORY_GATEWAY_AUTO_SYNC", "false")
@@ -155,24 +153,36 @@ fn memory_update_reports_tombstone_recovery_without_changing_retained_content() 
         String::from_utf8_lossy(&initialized.stderr)
     );
     let conn = rusqlite::Connection::open(memory_dir.join("memory.db")).unwrap();
-    let id = "aaaaaaaa-0000-1111-2222-000000000901";
+    (root, conn)
+}
+
+fn retained_tombstone(conn: &rusqlite::Connection, id: &str, project: &str) {
     conn.execute(
         "INSERT INTO memories (id, content, content_raw, tags, project,
              created_at, updated_at, memory_type)
          VALUES (?1, 'retained lesson', 'original lesson', '[\"undo\"]',
-             'amux', '2026-01-01', '2026-01-01', 'project')",
-        [id],
+             ?2, '2026-01-01', '2026-01-01', 'project')",
+        [id, project],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO memory_gateway_sync (local_memory_id, project,
              gateway_memory_id, last_seen_server_revision, sync_state,
              tombstone_deleted, created_at, updated_at)
-         VALUES (?1, 'amux', 'deleted-remote-id', 10, 'tombstone', 1,
+         VALUES (?1, ?2, ?1, 10, 'tombstone', 1,
              '2026-01-01', '2026-01-01')",
-        [id],
+        [id, project],
     )
     .unwrap();
+}
+
+#[test]
+fn memory_update_reports_tombstone_recovery_without_changing_retained_content() {
+    let Some(dir) = bundled() else { return };
+    let (root, conn) = isolated_memory(&dir);
+    let memory_dir = root.path().join("memory");
+    let id = "aaaaaaaa-0000-1111-2222-000000000901";
+    retained_tombstone(&conn, id, "amux");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_amux"))
         .arg("mcp")
@@ -225,4 +235,41 @@ fn memory_update_reports_tombstone_recovery_without_changing_retained_content() 
             true
         )
     );
+}
+
+#[test]
+fn memory_push_all_continues_past_retained_gateway_deletions() {
+    let Some(dir) = bundled() else { return };
+    let (root, conn) = isolated_memory(&dir);
+    retained_tombstone(&conn, "aaaaaaaa-0000-1111-2222-000000000901", "a-project");
+    retained_tombstone(&conn, "aaaaaaaa-0000-1111-2222-000000000902", "z-project");
+    let output = Command::new(executable(&dir, Bin::Memory))
+        .args(["push", "--all"])
+        .current_dir(root.path())
+        .env("AGENT_MEMORY_DIR", root.path().join("memory"))
+        .env("AGENT_MEMORY_GATEWAY_URL", "http://127.0.0.1:9")
+        .env("AGENT_MEMORY_GATEWAY_API_KEY", "isolated-test-key")
+        .env("AGENT_MEMORY_GATEWAY_AUTO_SYNC", "false")
+        .envs(amux::mcp::NO_UPDATE)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("push_all_complete"), "{text}");
+    assert!(text.contains("projects=\"2\""), "{text}");
+    assert!(text.contains("blocked=\"2\""), "{text}");
+    assert!(text.contains("rejected=\"0\""), "{text}");
+    assert!(!text.contains("memory copy --id"), "{text}");
+    let retained: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_gateway_sync WHERE tombstone_deleted = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 2);
 }
