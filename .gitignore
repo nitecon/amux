@@ -2,4 +2,6 @@
 /artifacts/
 *.log
 /docs/goals/
-
+.codex/
+.claude/
+.copilot/
