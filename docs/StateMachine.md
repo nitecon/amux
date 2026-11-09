@@ -202,8 +202,9 @@ enum RetryPolicy { Forever, MaxAttempts(NonZeroU32) }
     `remote_emit` event; the reply is `{"type":"emitted","uid"}` or an error.
   - `{"type":"heartbeat"}`.
 - A successful `subscribed` frame includes `server_restart_reminders`, based
-  on whether Reminder subscribes to heartbeat v1. Absence means an older router
-  and selects the client compatibility journal; it does not enable assignment.
+  on whether Reminder subscribes to heartbeat v1. The client parses but does not
+  act on the flag; there is no client compatibility journal, and the flag does
+  not enable assignment.
 - Server to client: `subscribed`, `event` (`seq`, `id`, `version`, `uid`,
   `payload`, `source`, `emitted_at`, `correlation`), `acked`, `emitted`,
   `heartbeat`, `error`.

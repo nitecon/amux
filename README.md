@@ -33,7 +33,6 @@ always run the `amux` CLI next to it, so keep both binaries together;
 
 Open **Preferences** for a separate window with **Gateway** and **Updates** tabs.
 Fresh installs use Server mode; Client mode connects to a designated amux server.
-Legacy gateway connections retain manual task APIs without automatic task work.
 Each workspace resolves its project
 automatically from its Git remote and the gateway’s canonical repository mapping.
 Preferences persist on this device; no project identifier or environment setup

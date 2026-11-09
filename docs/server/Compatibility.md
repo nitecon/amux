@@ -1,10 +1,9 @@
 # Native backend hosting
 
-The first embedded release adds `amux server`. It runs the existing gateway
-backend inside the amux executable, using the original API-key configuration,
-SQLite schema and channel plugins. Desktop and CLI clients continue using their
-configured gateway URL and key. Automatic server/client mode and mTLS belong to
-the separate second release described in [ServerArchitecture.md](../ServerArchitecture.md).
+`amux server` hosts the backend natively inside the amux executable, with its
+SQLite schema and optional channel plugins. Desktop and CLI clients connect in
+Server or Client mode over native secure (mTLS) hosting, described below and in
+[ServerArchitecture.md](../ServerArchitecture.md).
 
 ## Supported hosting
 
