@@ -77,7 +77,7 @@ fn date(value: &str) -> Result<i64> {
 }
 
 async fn output(mut command: std::process::Command, input: Option<Vec<u8>>) -> Result<Vec<u8>> {
-    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut command = tokio::process::Command::from(command);
     command.kill_on_drop(true);
     command.stdin(if input.is_some() {
@@ -104,8 +104,9 @@ async fn output(mut command: std::process::Command, input: Option<Vec<u8>>) -> R
     .context("read-only report command timed out")??;
     ensure!(
         result.status.success(),
-        "read-only report command failed ({})",
-        result.status
+        "read-only report command failed ({}): {}",
+        result.status,
+        String::from_utf8_lossy(&result.stderr).trim()
     );
     Ok(result.stdout)
 }
@@ -462,18 +463,18 @@ impl Report {
         command.current_dir(root).args([
             "api",
             "--paginate",
-            "--slurp",
             &format!(
                 "repos/{name}/actions/runs?head_sha={}&per_page=100",
                 self.to_sha
             ),
         ]);
-        let pages: Vec<Value> = serde_json::from_slice(&output(command, None).await?)?;
-        self.apply_ci(&pages)
+        self.apply_ci(&output(command, None).await?)
     }
 
-    pub fn apply_ci(&mut self, pages: &[Value]) -> Result<()> {
-        for page in pages {
+    pub fn apply_ci(&mut self, pages: &[u8]) -> Result<()> {
+        // Older gh versions emit consecutive JSON documents with --paginate.
+        for page in serde_json::Deserializer::from_slice(pages).into_iter::<Value>() {
+            let page = page?;
             for run in page["workflow_runs"]
                 .as_array()
                 .context("invalid GitHub CI response")?

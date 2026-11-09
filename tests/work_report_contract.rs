@@ -206,11 +206,13 @@ async fn date_window_and_offline_cli_need_no_actor_or_gateway_and_write_no_state
         ..selected
     };
     assert!(local(temp.path(), &invalid).await.is_err());
-    assert!(
+    let error = format!(
+        "{:#}",
         local(temp.path(), &args("--not-a-ref..HEAD"))
             .await
-            .is_err()
+            .unwrap_err()
     );
+    assert!(error.contains("fatal:"), "{error}");
     let state = temp.path().join("absent-state");
     let before = git(temp.path(), &["status", "--porcelain=v1"]);
     let output = Command::new(env!("CARGO_BIN_EXE_amux"))
@@ -264,21 +266,29 @@ async fn exact_sha_ci_uses_all_pages_and_preserves_attempt_and_conclusion() {
     let temp = fixture();
     let mut report = local(temp.path(), &args("v0.0.58..HEAD")).await.unwrap();
     let run = |id, attempt, conclusion| json!({"id":id,"run_attempt":attempt,"head_sha":report.to_sha,"name":"Native","event":"push","status":"completed","conclusion":conclusion,"html_url":"https://example.invalid/run"});
-    let pages = vec![
-        json!({"workflow_runs":[run(1,2,"failure")]}),
-        json!({"workflow_runs":[run(2,1,"success")]}),
-    ];
-    report.apply_ci(&pages).unwrap();
-    assert_eq!(report.ci_runs.len(), 2);
+    let pages = format!(
+        "{}\n{}\n",
+        serde_json::to_string_pretty(
+            &json!({"workflow_runs": (1..=100).map(|id| run(id,2,"failure")).collect::<Vec<_>>()})
+        )
+        .unwrap(),
+        serde_json::to_string_pretty(&json!({"workflow_runs":[run(101,1,"success")]})).unwrap(),
+    );
+    report.apply_ci(pages.as_bytes()).unwrap();
+    assert_eq!(report.ci_runs.len(), 101);
     assert_eq!(report.ci_runs[0]["attempt"], 2);
     assert_eq!(report.ci_runs[0]["conclusion"], "failure");
+    assert_eq!(report.ci_runs[100]["id"], 101);
+    assert_eq!(report.ci_runs[100]["attempt"], 1);
+    assert_eq!(report.ci_runs[100]["conclusion"], "success");
     assert!(
         report
-            .apply_ci(&[json!({"workflow_runs":[{"head_sha":"different"}]})])
+            .apply_ci(br#"{"workflow_runs":[{"head_sha":"different"}]}"#)
             .is_err()
     );
     let mut empty = local(temp.path(), &args("v0.0.58..HEAD")).await.unwrap();
-    assert!(empty.apply_ci(&[json!({"workflow_runs":[]})]).is_err());
+    assert!(empty.apply_ci(br#"{"workflow_runs":[]}"#).is_err());
+    assert!(empty.apply_ci(b"invalid JSON").is_err());
 }
 
 #[tokio::test]
