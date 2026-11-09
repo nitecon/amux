@@ -391,7 +391,11 @@ impl Report {
     /// Apply current gateway facts, never infer historic task status from a commit.
     pub fn apply_tasks(&mut self, details: &BTreeMap<Uuid, Value>) {
         for (id, task) in details {
-            if task["status"] == "done" {
+            // Review tasks never produce commits; they only supply latest_review.
+            let review = task["labels"]
+                .as_array()
+                .is_some_and(|labels| labels.iter().any(|l| l == "task-review"));
+            if task["status"] == "done" && !review {
                 match task["done_at"].as_i64() {
                     Some(done)
                         if (if self.from_sha.is_some() {

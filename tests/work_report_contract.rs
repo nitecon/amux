@@ -165,7 +165,7 @@ async fn completed_work_and_review_comments_are_observations_not_release_approva
         !report
             .completed_not_released
             .iter()
-            .any(|work| work.id == task)
+            .any(|work| work.id == task || work.id == review)
     );
     assert!(
         report
