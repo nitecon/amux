@@ -333,7 +333,9 @@ visible. With a saved, reachable gateway connection, the report adds current tas
 titles/statuses and each task's latest linked review task and non-system comment
 verbatim. It also lists tasks completed within the endpoint commit-time window
 (or supplied date window) without a matching trailer in the selected commits as
-**completed, not released**. This is a correlation signal: untrailered commits may
+**completed, not released**; review tasks (label `task-review`) are excluded
+because they never produce commits and appear only as a task's latest linked
+review. This is a correlation signal: untrailered commits may
 still contain that work. For ref ranges the completion-time window excludes the
 first endpoint timestamp and includes the last.
 
