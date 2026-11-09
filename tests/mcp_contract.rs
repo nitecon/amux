@@ -136,3 +136,93 @@ fn the_server_lists_and_runs_bundled_tools_over_stdio() {
     drop(input);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn memory_update_reports_tombstone_recovery_without_changing_retained_content() {
+    let Some(dir) = bundled() else { return };
+    let root = tempfile::tempdir().unwrap();
+    let memory_dir = root.path().join("memory");
+    let initialized = Command::new(executable(&dir, Bin::Memory))
+        .args(["list", "--limit", "1"])
+        .env("AGENT_MEMORY_DIR", &memory_dir)
+        .env("AGENT_MEMORY_GATEWAY_AUTO_SYNC", "false")
+        .envs(amux::mcp::NO_UPDATE)
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let conn = rusqlite::Connection::open(memory_dir.join("memory.db")).unwrap();
+    let id = "aaaaaaaa-0000-1111-2222-000000000901";
+    conn.execute(
+        "INSERT INTO memories (id, content, content_raw, tags, project,
+             created_at, updated_at, memory_type)
+         VALUES (?1, 'retained lesson', 'original lesson', '[\"undo\"]',
+             'amux', '2026-01-01', '2026-01-01', 'project')",
+        [id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_gateway_sync (local_memory_id, project,
+             gateway_memory_id, last_seen_server_revision, sync_state,
+             tombstone_deleted, created_at, updated_at)
+         VALUES (?1, 'amux', 'deleted-remote-id', 10, 'tombstone', 1,
+             '2026-01-01', '2026-01-01')",
+        [id],
+    )
+    .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amux"))
+        .arg("mcp")
+        .env("AMUX_BUNDLED_DIR", &dir)
+        .env("AMUX_AGENT_PROJECT", root.path())
+        .env("AGENT_MEMORY_DIR", &memory_dir)
+        .env("AGENT_MEMORY_GATEWAY_AUTO_SYNC", "false")
+        .env_remove("AMUX_AGENT_PROVIDER")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let request = json!({"jsonrpc":"2.0", "id":1, "method":"tools/call",
+    "params":{"name":"memory_update", "arguments":{
+        "id":id, "content":"replacement lesson", "tags":"transactions"
+    }}});
+    writeln!(child.stdin.take().unwrap(), "{request}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("tombstoned gateway identity"), "{text}");
+    assert!(text.contains("memory copy --id"), "{text}");
+    assert!(!text.contains("status=\"updated\""), "{text}");
+    let retained: (String, String, String, String, bool) = conn
+        .query_row(
+            "SELECT m.content, m.content_raw, m.tags, m.updated_at,
+                 s.tombstone_deleted FROM memories m
+             JOIN memory_gateway_sync s ON s.local_memory_id = m.id WHERE m.id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        retained,
+        (
+            "retained lesson".into(),
+            "original lesson".into(),
+            "[\"undo\"]".into(),
+            "2026-01-01".into(),
+            true
+        )
+    );
+}

@@ -11,11 +11,11 @@
   },
   "memory": {
     "repo": "nitecon/agent-memory",
-    "version": "v1.13.9",
+    "version": "v1.13.10",
     "sha256": {
-      "agent-memory-linux-x86_64.tar.gz": "8c1a44234d2ef37c1fa0bd0da5dce60987bdf191ece4a610ffb89e97281cba4d",
-      "agent-memory-windows-x86_64.zip": "4cf2b45cacb445273009e80bf7f89713f230a1588cfa29cd286ac6897a666c87",
-      "agent-memory-macos-aarch64.tar.gz": "f6840248b4e6df6fbf9ead1361d21d4dec00b39a7d4f071408b59a807b746a55"
+      "agent-memory-linux-x86_64.tar.gz": "71198df385ce99913279cc93aba4dec52fc716bb4586923f47b7d70135976c56",
+      "agent-memory-windows-x86_64.zip": "c426450e162c0244941178657b8bc06d700b70f12597c833a50fb7279e42e9f5",
+      "agent-memory-macos-aarch64.tar.gz": "d0e8f39377901c4088c1c0dd934d4bd5486902336b76ac4bb573e25b0a92ea42"
     },
     "assets": {
       "x86_64-unknown-linux-gnu": "agent-memory-linux-x86_64.tar.gz",

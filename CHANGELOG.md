@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.71 - 2026-11-09
+
+### Fixed
+- Bundle agent-memory v1.13.10 to reject edits to known tombstoned gateway
+  memories before changing local content, tags, or history, with explicit
+  instructions for recovering retained lessons under a new memory identity.
+- Report tombstone-blocked memories during push instead of silently skipping
+  them, and protect newer live mappings from stale pulled tombstones.
+- Verify the bundled memory update error and retained content through amux MCP.
+
+### Upgrade notes
+- Previously saved local-only edits remain retained. Follow the reported
+  `memory copy --id <id> --to <project>` recovery instructions to create an
+  editable copy; retrying push on the deleted identity cannot restore it.
+
 ## v0.0.70 - 2026-11-08
 
 ### Fixed
