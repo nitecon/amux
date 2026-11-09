@@ -9,7 +9,10 @@ event-driven controller runtime. A desktop can host its local server or connect
 to another server as a client. Agents can hand work to agents on other
 machines, and that work survives the destination being offline or rebooting.
 
-Portable Linux and Windows builds are available in [tagged releases](https://github.com/nitecon/amux/releases/latest).
+Portable Linux and Windows x86_64 builds and an unsigned macOS Apple Silicon
+app preview are available in [tagged releases](https://github.com/nitecon/amux/releases/latest).
+See the [macOS installation instructions](docs/macos-app-store.md#unsigned-builds-current)
+for first-launch requirements and the [changelog](CHANGELOG.md) for release changes.
 Status: early release; the MVP is not complete.
 The provisional Rust/Iced terminal has local workspaces, tabs/splits, explicit
 Codex/Claude launches with separate session identities, layout recovery with automatic terminal reopening and native agent continuation, gateway task and message CLIs, and fresh gateway task notifications delivered
@@ -31,23 +34,36 @@ cargo test --no-default-features --tests
 always run the `amux` CLI next to it, so keep both binaries together;
 `amux --project-dir ... desktop` opens the same desktop from a console.
 
-Open **Preferences** for a separate window with **Gateway** and **Updates** tabs.
+Open **Settings & Gateway** for **Gateway Server**, **Workspaces & Terminals**,
+**Agent Instructions**, **Instruction Templates**, and **Updates**.
 Fresh installs use Server mode; Client mode connects to a designated amux server.
 Each workspace resolves its project
 automatically from its Git remote and the gateway’s canonical repository mapping.
 Preferences persist on this device; no project identifier or environment setup
-is required for the desktop. Enable **Send fresh gateway task notifications to agents
-in this app** to allow terminal delivery; machine and session identity are created
+is required for the desktop. Enable **Let the amux server assign queued work and
+send task notifications to agents in this app** to allow assignment and terminal
+delivery; machine and session identity are created
 automatically. The task panel shows connection status, agents, pending notifications
 and recent delivery receipts. Offline history is never replayed into terminals.
+Select a local or remote project to manage its task queue, even without opening
+a checkout. Tasks and subtasks retain their parent context in the desktop and CLI.
 Use the Gateway Tasks filter to find full or shortened task IDs, title words,
 or tags. Searches ignore case and include every task state; **Clear** restores
 the selected Active, User review, or Completed tab.
+Completed work receives a code review followed by a documentation review when
+automatic reviews are enabled. The server host controls this for all its projects
+under **Gateway Server → Task automation**; **User review** waits for a human decision.
 Each Terminal, Codex and Claude tab has its own **×** close button and a directory
 subtitle; hover the subtitle for the full path and terminal title.
 
+Pin favorite projects at the top of the sidebar; favorites persist on this device.
+The project filter ignores case, showing exact matches first and substring matches
+when there is no exact match. Unadded local checkouts have an explicit **Add**
+action; remote projects can be cloned from their context menu.
+
 The top-right bell shows app updates. Direct-download installs use
-**Update now** in the Updates tab to download and replace both executables;
+**Update now** in the Updates tab to download and replace the portable bundle
+executables or the whole macOS app;
 package-managed installs show their own upgrade instructions.
 Restart is explicit and reopens previously running tabs in place. See [app updates](docs/updates.md).
 
@@ -57,8 +73,9 @@ and [agent-memory](https://github.com/nitecon/agent-memory)
 (Settings → Workspaces & Terminals, the default), each Codex and Claude session the
 desktop starts gets an `amux mcp` stdio server: amux task actions and work
 submission ([submitting work](docs/gateway-cli.md#submitting-work)), memory
-search/store/get and agent-tools read, symbol, search, Markdown and knowledge-graph
-lookups. Each tool runs the bundled command and returns its output unchanged.
+search/store/get/update and agent-tools read, symbol, search, Markdown and knowledge-graph
+lookups. Task operations use amux directly; memory and code exploration use the
+bundled helpers.
 Launch-time settings preapprove tools from the amux server for that session.
 Provider deny rules, per-tool overrides and managed restrictions still apply.
 The MCP toggle controls this registration and approval together; provider config
@@ -66,6 +83,15 @@ files are not changed.
 New sessions also start with relevant project memory (Claude through MCP instructions,
 Codex through launch-time `developer_instructions` unless you set your own) unless
 that provider already runs the `memory setup hooks` hook. Outside the desktop, use `amux agent <provider> --mcp`.
+Sessions also receive contextual task guidance and durable recall on startup,
+resume and context restoration; inspect the templates in **Instruction Templates**.
+See [agent instructions](docs/agent-instructions.md) for delivery rules and controls.
+
+Submit changed files with `amux submit-work` or MCP `submit_work`. **Workspaces &
+Terminals → Work submission** selects commit-and-push or pull-request mode.
+Use `amux tasks report <from-ref>..<to-ref>` for a read-only report of commits,
+linked tasks and reviews, and exact-commit CI status. See
+[work reports](docs/gateway-cli.md#work-reports) for date ranges and partial-data behavior.
 
 `whoami` prints the calling agent’s project UUID, terminal agent name and execution
 identity. The desktop registers agents started from shell tabs as well as its
@@ -86,6 +112,11 @@ repository access; failed clones keep their partial folder for inspection.
 Use the **×** beside a workspace to close it. Running terminals require confirmation;
 project folders and files stay on disk. Closed workspaces stay removed after restart.
 Closing the last workspace opens a fresh **Default** terminal in your home directory.
+
+In **Workspaces & Terminals**, opt in to **Start amux when I sign in** and choose
+whether to **Resume agent sessions on startup**. **Clear context before new tasks**
+is a separate, optional setting. See [login startup](docs/login-startup.md) and
+[task delivery](docs/gateway-delivery.md) for platform requirements and behavior.
 
 ## Documentation
 
