@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.75 - 2026-11-12
+
+### Fixed
+
+- Recover open terminals after process exit or failed startup, retrying after
+  five seconds while retaining the terminal number, working directory and native
+  provider resume rules. Recovery includes hidden workspaces and preserves focus.
+- Preserve terminal session identity when native working-directory inspection
+  temporarily fails.
+- Allow available Claude agents to take ordinary queued work while Codex agents
+  are busy, occupied, drafting or refusing delivery.
+
+### Upgrade notes
+
+- Open terminals now relaunch after exit. Close their tab or workspace to stop
+  them. Update the desktop for recovery and the server for queue assignment.
+
 ## v0.0.74 - 2026-11-12
 
 ### Added
