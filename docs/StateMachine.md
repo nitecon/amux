@@ -313,9 +313,9 @@ Rules carried over from the desktop:
   own comments and automatic assignment comments do not. Existing dependency
   result subscriptions remain active, and callers reclaim released work once
   readiness is established (see [caller workflow](gateway-delivery.md#queued-work-assignment)).
-  Ordinary queued work waits for Codex whenever a live Codex report matches
-  the project, OS, goal and routing requirements, even while that agent is busy.
-  Claude takes ordinary work when no eligible Codex is registered. Explicit
+  Ordinary queued work prefers Codex when an available Codex report matches
+  the project, OS, goal and routing requirements. Busy, occupied, drafting and
+  refusing Codex agents do not block an available Claude agent. Explicit
   ownership and session routing retain precedence. Within each provider,
   sessions are considered oldest terminal output first, then session ID. The
   sweep fills every eligible free session while work remains; empty or blocked

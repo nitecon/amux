@@ -573,6 +573,11 @@ fn native_scan_recovers_missing_root_capture_without_replacing_an_existing_fence
     let mut frames = router(&mut app);
     project(&mut app, &agent, "alpha");
     let root = tab(&mut app, 0).unwrap().delegation.root.take().unwrap();
+    assert_eq!(
+        app.delegation_roots()[0].directory,
+        agent.directory,
+        "cwd fallback must use the terminal's last known directory"
+    );
 
     scan(&mut app);
     assert_eq!(find(&app, 0).delegation.root.as_ref(), Some(&root));

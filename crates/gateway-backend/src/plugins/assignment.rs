@@ -288,12 +288,12 @@ fn assign(conn: &Connection, ctx: &StepContext, now: i64) -> Result<()> {
                     continue;
                 }
             }
-            // Busy Codex agents retain preference for ordinary work. Explicit
-            // ownership/routing and OS/goal requirements still take precedence.
+            // Prefer Codex only when it can actually take the work this tick.
             let mut reserved_for_codex = false;
             if !is_review(&task) && agent["provider"] != "codex" {
                 for candidate in &agents {
                     if candidate.agent["provider"] == "codex"
+                        && ready.contains(&candidate.session_id)
                         && candidate.agent["project"].as_str() == Some(project)
                         && automatically_eligible(conn, &task, &candidate.agent)?
                     {
@@ -1275,15 +1275,9 @@ mod tests {
         let overflow = queue(&database, "p", 3, &[]);
         tick(&bus, &database).await;
         assert_eq!(
-            state(&database, &overflow),
-            ("todo".into(), None),
-            "busy Codex agents retain preference"
-        );
-        database.lock().unwrap().execute("DELETE FROM task_target_presence WHERE json_extract(origin_json,'$.provider')='codex'", []).unwrap();
-        tick(&bus, &database).await;
-        assert_eq!(
             state(&database, &overflow).1.as_deref(),
-            session(1, "p")["session_id"].as_str()
+            session(1, "p")["session_id"].as_str(),
+            "busy Codex agents must not block idle Claude"
         );
     }
 

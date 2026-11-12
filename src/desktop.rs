@@ -1,4 +1,4 @@
-//! Provisional native terminal/UI candidate. Agent work is never restarted implicitly.
+//! Native terminal/UI with recovery of exited and failed terminal sessions.
 use amux::gateway_preferences::{EnrolledConnection, GatewayMode, GatewayPreferences};
 use amux::identity::Provider;
 use amux::notifications::{Notifier, Outcome};
@@ -33,6 +33,8 @@ use iced_term::{Terminal, TerminalView};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+const TERMINAL_RESTART_DELAY: Duration = Duration::from_secs(5);
 
 const RELEASE_TASK_CONTEXT: &str = "Prepare and publish a new release for this project using its documented release process.\n\n\
 Honor the additional notes below, including any changes or tickets that must land before releasing.\n\n\
@@ -597,7 +599,7 @@ impl Desktop {
                                     .filter(|n| *n > 0),
                                 title: t.title.clone(),
                                 provider: t.provider.or(t.delegation.provider),
-                                running: t.terminal.is_some(),
+                                running: t.terminal.is_some() || t.delegation.restart_at.is_some(),
                                 directory: t
                                     .terminal
                                     .as_ref()
@@ -723,6 +725,10 @@ impl Desktop {
                 }
             }
         };
+        let mut failed_state = desktop_delegation::TabState::default();
+        failed_state.terminal_number = terminal_number;
+        failed_state.directory = Some(directory.to_path_buf());
+        failed_state.restart_at = Some(Instant::now() + TERMINAL_RESTART_DELAY);
         backend
             .env
             .insert("AMUX_TERMINAL_NUMBER".into(), terminal_number.to_string());
@@ -771,7 +777,7 @@ impl Desktop {
                         terminal: None,
                         stopped_output: None,
                         provider: Some(provider),
-                        delegation: desktop_delegation::TabState::default(),
+                        delegation: failed_state,
                     };
                 }
             }
@@ -805,7 +811,7 @@ impl Desktop {
                         terminal: None,
                         stopped_output: None,
                         provider: None,
-                        delegation: desktop_delegation::TabState::default(),
+                        delegation: failed_state,
                     };
                 }
             }
@@ -886,9 +892,102 @@ impl Desktop {
                     terminal: None,
                     stopped_output: None,
                     provider,
-                    delegation: desktop_delegation::TabState::default(),
+                    delegation: failed_state,
                 }
             }
+        }
+    }
+
+    // Both manual and automatic recovery use fresh runtime IDs and the same resume rules.
+    fn restart_tab(
+        &mut self,
+        workspace_index: usize,
+        pane_id: pane_grid::Pane,
+        terminal_id: u64,
+        select: bool,
+    ) -> bool {
+        let workspace = &self.workspaces[workspace_index];
+        let Some((index, tab)) = workspace.panes.get(pane_id).and_then(|pane| {
+            pane.tabs
+                .iter()
+                .enumerate()
+                .find(|(_, t)| t.id == terminal_id)
+        }) else {
+            return false;
+        };
+        let provider = tab.delegation.provider.or(tab.provider);
+        if select && provider.is_none() {
+            self.status = "Only Codex or Claude sessions can be restarted".into();
+            return false;
+        };
+        let number = Some(tab.delegation.terminal_number).filter(|n| *n > 0);
+        let directory = tab
+            .terminal
+            .as_ref()
+            .and_then(|terminal| amux::session::working_directory(terminal.child_pid()?))
+            .or_else(|| tab.delegation.directory.clone())
+            .unwrap_or_else(|| workspace.directory.clone());
+        let title = tab.title.clone();
+        let script = workspace.init_script.clone();
+        let resume = provider
+            .is_some_and(|provider| self.resume_restarted_tab(terminal_id, provider, &directory));
+        // Keep the assigned agent number, but retire the runtime event ID.
+        // Iced retains a subscription by that ID across one update; reusing
+        // it keeps the old receiver and lets delayed old Exit events stop
+        // the replacement. A fresh ID fences both subscription and callbacks.
+        let replacement_id = self.next_id;
+        self.next_id += 1;
+        let pane = self.workspaces[workspace_index]
+            .panes
+            .get_mut(pane_id)
+            .expect("pane exists");
+        drop(pane.tabs.remove(index));
+        let mut tab = self.open_terminal(
+            replacement_id,
+            &directory,
+            provider,
+            script.as_deref(),
+            resume,
+            number,
+        );
+        if tab.terminal.is_some() {
+            if select {
+                tab.title = title;
+            }
+        } else {
+            // A failed relaunch stays on the same session for a later retry.
+            tab.delegation.terminal_number = number.unwrap_or_default();
+        }
+        let pane = self.workspaces[workspace_index]
+            .panes
+            .get_mut(pane_id)
+            .expect("pane exists");
+        pane.tabs.insert(index, tab);
+        if select {
+            pane.active = index;
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn recover_terminals(&mut self, now: Instant) {
+        let mut due = Vec::new();
+        for (workspace, entry) in self.workspaces.iter().enumerate() {
+            for (pane, entry) in entry.panes.iter() {
+                for tab in &entry.tabs {
+                    if tab.terminal.is_none()
+                        && tab.delegation.restart_at.is_some_and(|at| now >= at)
+                    {
+                        due.push((workspace, *pane, tab.id));
+                    }
+                }
+            }
+        }
+        // Resume the newest conversation before older duplicate tabs acquire
+        // fresh runtime IDs and would otherwise change the resume ordering.
+        due.sort_unstable_by_key(|(_, _, id)| std::cmp::Reverse(*id));
+        for (workspace, pane, id) in due {
+            self.restart_tab(workspace, pane, id, false);
         }
     }
 
@@ -1140,60 +1239,10 @@ impl Desktop {
                 return self.focus();
             }
             Message::RestartTab(pane_id, terminal_id) => {
-                let workspace = &self.workspaces[self.active];
-                let Some((index, tab)) = workspace.panes.get(pane_id).and_then(|pane| {
-                    pane.tabs
-                        .iter()
-                        .enumerate()
-                        .find(|(_, t)| t.id == terminal_id)
-                }) else {
-                    return Task::none();
-                };
-                let Some(provider) = tab.delegation.provider.or(tab.provider) else {
-                    self.status = "Only Codex or Claude sessions can be restarted".into();
-                    return Task::none();
-                };
-                let number = Some(tab.delegation.terminal_number).filter(|n| *n > 0);
-                let directory = tab
-                    .terminal
-                    .as_ref()
-                    .and_then(|terminal| amux::session::working_directory(terminal.child_pid()?))
-                    .or_else(|| tab.delegation.directory.clone())
-                    .unwrap_or_else(|| workspace.directory.clone());
-                let title = tab.title.clone();
-                let resume = self.resume_restarted_tab(terminal_id, provider, &directory);
-                // Keep the assigned agent number, but retire the runtime event ID.
-                // Iced retains a subscription by that ID across one update; reusing
-                // it keeps the old receiver and lets delayed old Exit events stop
-                // the replacement. A fresh ID fences both subscription and callbacks.
-                let replacement_id = self.next_id;
-                self.next_id += 1;
-                let pane = self.workspaces[self.active]
-                    .panes
-                    .get_mut(pane_id)
-                    .expect("pane exists");
-                drop(pane.tabs.remove(index));
-                let mut tab = self.open_terminal(
-                    replacement_id,
-                    &directory,
-                    Some(provider),
-                    None,
-                    resume,
-                    number,
-                );
-                if tab.terminal.is_some() {
-                    tab.title = title;
-                } else {
-                    // A failed relaunch stays on the same session for a later retry.
-                    tab.delegation.terminal_number = number.unwrap_or_default();
+                if self.restart_tab(self.active, pane_id, terminal_id, true) {
+                    return self.focus();
                 }
-                let pane = self.workspaces[self.active]
-                    .panes
-                    .get_mut(pane_id)
-                    .expect("pane exists");
-                pane.tabs.insert(index, tab);
-                pane.active = index;
-                return self.focus();
+                return Task::none();
             }
             Message::Preferences(open) => {
                 return if open {
@@ -1505,6 +1554,9 @@ impl Desktop {
                                     }
                                     iced_term::actions::Action::Shutdown => {
                                         self.dirty = true;
+                                        // Discovery stops seeing a provider after exit. Keep
+                                        // it for recovery even if it was launched in a shell.
+                                        tab.provider = tab.delegation.provider.or(tab.provider);
                                         // Preserve only the bounded visible text, then release
                                         // the PTY and its subscription. This is never input-ready.
                                         tab.stopped_output = Some(terminal.screen_text());
@@ -1535,6 +1587,8 @@ impl Desktop {
                                             tab.lifetime.take();
                                         }
                                         tab.terminal = None;
+                                        tab.delegation.restart_at =
+                                            Some(Instant::now() + TERMINAL_RESTART_DELAY);
                                         tab.title.push_str(" · exited");
                                         if let Some(code) = exit_code {
                                             tab.title.push_str(&format!(" (code {code})"));
@@ -1688,6 +1742,7 @@ impl Desktop {
                 }
             }
             Message::DeliveryTick => {
+                self.recover_terminals(Instant::now());
                 self.toasts.expire();
                 if self.embedded.invitation.is_some() && self.active_invitation().is_none() {
                     self.embedded.invitation = None;
@@ -3484,6 +3539,162 @@ mod tests {
             "delayed old Exit stopped the new PTY"
         );
         assert_eq!(replacement.delegation.terminal_number, 42);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn exited_hidden_terminal_recovers_without_changing_selection() {
+        use iced::futures::StreamExt;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = desktop();
+        let hidden = 1;
+        let pane = app.workspaces[hidden].focused;
+        let id = app.workspaces[hidden].panes.get(pane).unwrap().tabs[0].id;
+        let terminal = Terminal::new(
+            id,
+            iced_term::settings::Settings {
+                backend: iced_term::settings::BackendSettings {
+                    #[cfg(windows)]
+                    program: "cmd.exe".into(),
+                    #[cfg(windows)]
+                    args: vec!["/d".into(), "/c".into(), "exit 17".into()],
+                    #[cfg(target_os = "linux")]
+                    program: "/bin/sh".into(),
+                    #[cfg(target_os = "linux")]
+                    args: vec!["-c".into(), "exit 17".into()],
+                    working_directory: Some(directory.path().into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut events = iced::advanced::subscription::into_recipes(terminal.subscription())
+            .pop()
+            .unwrap()
+            .stream(iced::futures::stream::empty().boxed());
+        let tab = &mut app.workspaces[hidden].panes.get_mut(pane).unwrap().tabs[0];
+        tab.provider = None;
+        tab.delegation =
+            desktop_delegation::TabState::capture(&terminal, 42, directory.path(), false);
+        tab.terminal = Some(terminal);
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(8), async {
+                while app.workspaces[hidden].panes.get(pane).unwrap().tabs[0]
+                    .terminal
+                    .is_some()
+                {
+                    drop(app.update(Message::Terminal(events.next().await.expect("exit event"))));
+                }
+            })
+            .await
+            .expect("PTY did not exit");
+        });
+        let tab = &app.workspaces[hidden].panes.get(pane).unwrap().tabs[0];
+        let retry = tab
+            .delegation
+            .restart_at
+            .expect("exit must schedule recovery");
+        app.recover_terminals(retry - Duration::from_millis(1));
+        assert_eq!(
+            app.workspaces[hidden].panes.get(pane).unwrap().tabs[0].id,
+            id
+        );
+        app.recover_terminals(retry);
+        let tab = &app.workspaces[hidden].panes.get(pane).unwrap().tabs[0];
+        let replacement = tab.id;
+        assert_ne!(replacement, id);
+        assert!(tab.terminal.is_some(), "recovery must launch a PTY");
+        assert!(tab.delegation.restart_at.is_none());
+        assert_eq!(tab.delegation.terminal_number, 42);
+        assert_eq!(
+            tab.delegation.directory.as_deref(),
+            Some(amux::workspace_launch::external_path(directory.path().into()).as_path())
+        );
+        assert_eq!(
+            app.active, 0,
+            "hidden recovery must not select its workspace"
+        );
+        assert!(
+            app.workspaces[0]
+                .panes
+                .iter()
+                .all(|(_, p)| p.tabs[0].terminal.is_none()),
+            "saved stopped tabs stay stopped"
+        );
+        drop(app.update(Message::Terminal(iced_term::Event::BackendCall(
+            id,
+            iced_term::BackendCommand::ProcessAlacrittyEvent(iced_term::AlacrittyEvent::Exit),
+        ))));
+        app.recover_terminals(retry + TERMINAL_RESTART_DELAY);
+        assert_eq!(
+            app.workspaces[hidden].panes.get(pane).unwrap().tabs[0].id,
+            replacement
+        );
+        assert!(
+            app.workspaces[hidden].panes.get(pane).unwrap().tabs[0]
+                .terminal
+                .is_some()
+        );
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn failed_terminal_launch_retries_until_running_and_close_cancels_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let mut app = desktop();
+        let pane = app.workspaces[0].focused;
+        let id = app.next_id;
+        app.next_id += 1;
+        let failed = app.open_terminal(id, &missing, None, None, false, Some(42));
+        assert!(
+            failed.terminal.is_none(),
+            "missing working directory must fail launch"
+        );
+        let retry = failed
+            .delegation
+            .restart_at
+            .expect("failed launch must retry");
+        app.workspaces[0]
+            .panes
+            .get_mut(pane)
+            .unwrap()
+            .tabs
+            .push(failed);
+        let snapshot_path = directory.path().join("layout.json");
+        app.snapshot_path = Some(snapshot_path.clone());
+        for workspace in &mut app.workspaces {
+            workspace.directory = directory.path().into();
+        }
+        app.dirty = true;
+        assert!(app.save());
+        let snapshot = Snapshot::load(&snapshot_path).unwrap().unwrap();
+        let Layout::Pane { tabs, .. } = &snapshot.workspaces[0].layout else {
+            panic!("expected pane")
+        };
+        assert!(
+            tabs[1].running,
+            "pending recovery must retain desired running"
+        );
+        assert_eq!(tabs[1].terminal_number, Some(42));
+        app.recover_terminals(retry);
+        let failed = &app.workspaces[0].panes.get(pane).unwrap().tabs[1];
+        assert_ne!(failed.id, id);
+        assert!(failed.terminal.is_none());
+        let retry = failed.delegation.restart_at.unwrap();
+        assert_eq!(failed.delegation.terminal_number, 42);
+        std::fs::create_dir(&missing).unwrap();
+        app.recover_terminals(retry);
+        let recovered = &app.workspaces[0].panes.get(pane).unwrap().tabs[1];
+        assert!(recovered.terminal.is_some());
+        assert!(recovered.delegation.restart_at.is_none());
+        assert_eq!(app.workspaces[0].panes.get(pane).unwrap().active, 0);
+        let id = recovered.id;
+        drop(app.update(Message::CloseTab(pane, id)));
+        app.recover_terminals(Instant::now() + TERMINAL_RESTART_DELAY);
+        assert_eq!(app.workspaces[0].panes.get(pane).unwrap().tabs.len(), 1);
     }
 
     #[cfg(target_os = "linux")]

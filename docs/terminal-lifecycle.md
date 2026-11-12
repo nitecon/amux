@@ -21,7 +21,20 @@ in separate process groups. The guard runs before the PTY is dropped.
 After a process exits, its tab retains up to 32,768 characters from the final
 visible viewport as plain text, including failure diagnostics. The PTY and input
 binding are released. This temporary text excludes scrollback and is not saved
-in the layout; restoring a layout never restarts the process.
+in the layout.
+
+An open terminal has a desired running state. A confirmed process exit or failed
+launch schedules another launch after five seconds; failed retries keep retrying.
+Recovery also runs in hidden workspaces without changing the selected tab or
+workspace. It retains the terminal number, working directory and provider,
+reuses the native resume rules, and assigns a fresh runtime ID to fence delayed
+events from the retired PTY. Shells reuse the workspace initialization script.
+Discovery uses the terminal's last known directory if a native cwd read fails,
+so a transient inspection failure cannot change its session identity.
+Closing the tab or workspace removes its recovery state. Saved stopped tabs stay
+stopped; pending retries save as running so startup restoration can recover them
+under the existing auto-resume preference. Unknown remote activity alone never
+authorizes killing or replacing a local process.
 
 Cleanup checks the original leader before and after enumeration, captures each
 member's native handle with generation checks, then rechecks session membership

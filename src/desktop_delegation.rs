@@ -19,6 +19,8 @@ mod events;
 
 #[derive(Default)]
 pub(super) struct TabState {
+    /// A failed/exited terminal still has a desired running state.
+    pub(super) restart_at: Option<Instant>,
     root: Option<(u32, String)>,
     pub terminal_number: u64,
     pub agent_name: Option<String>,
@@ -302,7 +304,13 @@ impl Desktop {
                         pid: *pid,
                         generation: generation.clone(),
                         foreground: foreground(terminal),
-                        directory: workspace.directory.clone(),
+                        // A transient native cwd read failure must not rebind
+                        // this terminal's identity to the workspace directory.
+                        directory: tab
+                            .delegation
+                            .directory
+                            .clone()
+                            .unwrap_or_else(|| workspace.directory.clone()),
                     });
                     if roots.len() > delegation::MAX_PENDING {
                         return Vec::new();
