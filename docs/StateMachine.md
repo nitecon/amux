@@ -333,8 +333,12 @@ Rules carried over from the desktop:
   Any subsequent task or comment mutation invalidates the old offer in that
   mutation's transaction, so a delayed rejection cannot undo progress or a
   newer claim, even when timestamps match.
-- **Review generation:** completing a task, including a manual Close, queues a
-  separate independent review task. The original stays done; creating review
+- **Review generation:** completing a Software task, including a manual Close, queues a
+  separate independent review task. New tasks default to General and do not
+  generate code or documentation reviews. Existing tasks migrate as Software.
+  Type is distinct from normal/delegated linkage; agents convert owned tasks to
+  Software before changing code or configuration. Review tasks remain Software.
+  The original stays done; creating review
   work never returns it to TODO or User review. Replayed completion events do
   not create duplicate reviews. Completing the code review queues one separate
   documentation review linked to the original change. It checks affected user

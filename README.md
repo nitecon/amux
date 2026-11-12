@@ -70,13 +70,15 @@ projects. amux bundles pinned builds of
    Keep **Give agents amux tools (MCP)** enabled under **Workspaces & Terminals**
    before launching agents.
 4. **Build the queue.** Create tasks in the project's **Tasks** view, or discuss
-   the work with an agent and have it create scoped tasks. Idle agents pick up
+   the work with an agent and have it create scoped tasks. New tasks are General;
+   select Software for code or configuration changes. Agents must convert General
+   tasks before making those changes. Idle agents pick up
    eligible tasks automatically, one per agent. Tasks requiring a human decision
    move to **User review**. You can watch progress in Tasks or open the agent's
    terminal and talk directly.
 5. **Review the result.** On the server, **Gateway Server → Task automation**
    controls automatic code and documentation reviews for all projects. When
-   enabled, completion starts that review sequence, with correction tasks joining
+   enabled, Software completion starts that review sequence, with correction tasks joining
    the same workflow.
 
 For example, launch Codex and Claude for a repository on your Linux workstation,
@@ -115,7 +117,8 @@ Agents can retrieve a symbol or a document section without loading entire files.
 Launch-time settings preapprove amux tools for that session; provider restrictions
 and configured developer instructions still apply.
 
-Relevant project memories accompany session guidance and task assignments. Idle
+Relevant project memories accompany session guidance and task assignments. General
+tasks keep memory saves optional and skip idle review prompts. Software idle
 memory review prompts agents to search existing memories and update or store
 durable decisions, corrections and discoveries. This helps later sessions reuse
 what the team learned. Sessions receive guidance on startup, resume and context

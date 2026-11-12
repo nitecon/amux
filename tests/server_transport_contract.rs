@@ -224,7 +224,7 @@ fn transport_fixture_worker() {
         let stream = tokio::spawn(delegation_connection::run_profile(profile.clone(), consumer, Some(1), incoming, outgoing));
         let initial_connection = loop { if let ConnectionEvent::Subscribed { connection, .. } = event(&mut events, "initial subscription").await { break connection; } };
         let caller = actor(&root);
-        let task = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"Real mTLS task", "parent_task_id":parent["id"]})), Some(&caller)).await.unwrap();
+        let task = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"Real mTLS task", "task_type":"software", "parent_task_id":parent["id"]})), Some(&caller)).await.unwrap();
         let received_id = loop { if let ConnectionEvent::Event(item) = event(&mut events, "task event").await { break item.id; } };
         commands.send(StreamCommand { connection: initial_connection, frame: json!({"type":"ack","event_id":received_id,"status":"skipped","message":"isolated transport fixture"}) }).await.unwrap();
         let cursor = loop { if let ConnectionEvent::Recorded { cursor, .. } = event(&mut events, "receipt").await { break cursor; } };

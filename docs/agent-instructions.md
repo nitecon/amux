@@ -61,7 +61,13 @@ Available MCP tools determine tool hints. Memory supports `memory_search`,
 executables. Templates are visible in Settings.
 
 When the host enables automatic reviews in Settings > Gateway > Task automation,
-completion queues a code review followed by a separate documentation review.
+Software task completion queues a code review followed by a separate documentation review.
+New tasks default to General; agents must convert them with
+`amux tasks set-type ID software` before modifying any code or configuration.
+The CLI and MCP creation tools accept `--task-type software` / `task_type`, and
+the desktop has type selectors for creation and editing. Existing tasks retain
+Software behavior on upgrade. General tasks skip both automatic review stages;
+their memory saves and updates are optional.
 The documentation reviewer reads the original task, review results and actual
 implementation, then validates affected user and agent documentation, examples,
 commands, settings and platform requirements. Reviewers report evidence and
@@ -76,7 +82,10 @@ within the same context. Explicit context restoration permits recall again.
 
 ## Idle memory review
 
-Each session work cycle allows one idle memory-review injection. A fresh session,
+Each Software session work cycle allows one idle memory-review injection.
+A General task assignment suppresses this prompt, including after context clear
+and restart. Converting it to Software restores the unconsumed review allowance.
+Sessions without a typed assignment retain their existing idle-review behavior. A fresh session,
 a new task assignment or explicit context clear begins a cycle. Resume, restart,
 comments, ordinary messages and busy/idle changes do not re-arm it. Repeated
 assignments for the same task do not re-arm it or clear context again.

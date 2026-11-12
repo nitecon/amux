@@ -181,6 +181,9 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     let source = db::get_task_detail(conn, project, source_id)?
         .ok_or(Conflict("source task not found"))?
         .task;
+    if source.task_type != crate::task_types::SOFTWARE {
+        return Ok(None);
+    }
     let documentation = source.labels.iter().any(|label| label == "task-review");
     if source
         .labels
@@ -297,6 +300,7 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         &labels,
         sysinfo::System::host_name().as_deref(),
         "amux-autoreview",
+        crate::task_types::SOFTWARE,
     )?;
     crate::subtasks::attach(conn, &source, &mut task)?;
     conn.execute(
@@ -344,6 +348,7 @@ mod tests {
                 "example",
                 id,
                 &db::TaskUpdate {
+                    task_type: None,
                     review_action: (status == "user_review").then_some("Choose the release date"),
                     status: Some(status),
                     goal: None,
@@ -379,6 +384,19 @@ mod tests {
         })
         .unwrap();
         update(&conn, &source.id, "in_progress", &author).unwrap();
+        task_events::mutation(&conn, Some(&author), |conn| {
+            db::update_task(
+                conn,
+                "example",
+                &source.id,
+                &db::TaskUpdate {
+                    task_type: Some("software"),
+                    ..Default::default()
+                },
+                Some(&author.session_id),
+            )
+        })
+        .unwrap();
         let source = update(&conn, &source.id, "done", &author).unwrap();
         drop(conn);
         (database, source, author)
@@ -544,6 +562,19 @@ mod tests {
         })
         .unwrap();
         update(&conn, &source.id, "in_progress", &worker).unwrap();
+        task_events::mutation(&conn, Some(&worker), |conn| {
+            db::update_task(
+                conn,
+                "example",
+                &source.id,
+                &db::TaskUpdate {
+                    task_type: Some("software"),
+                    ..Default::default()
+                },
+                Some(&worker.session_id),
+            )
+        })
+        .unwrap();
         task_events::mutation(&conn, Some(&worker), |conn| {
             db::insert_comment(conn, &source.id, "worker", "agent", "pushed the fix")
         })

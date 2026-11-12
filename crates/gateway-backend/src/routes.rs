@@ -5616,6 +5616,7 @@ pub struct ListTasksQuery {
 
 #[derive(Deserialize)]
 pub struct CreateTaskRequest {
+    pub task_type: Option<String>,
     pub parent_task_id: Option<String>,
     /// Agent-created root exception: user-directed or principle.
     pub root_reason: Option<String>,
@@ -5638,6 +5639,7 @@ pub struct CreateTaskRequest {
 
 #[derive(Deserialize)]
 pub struct DelegateTaskRequest {
+    pub task_type: Option<String>,
     pub parent_task_id: Option<String>,
     pub requester: Option<crate::task_dispatch::Target>,
     pub target_project_ident: String,
@@ -5654,6 +5656,7 @@ pub struct DelegateTaskRequest {
 
 #[derive(Deserialize)]
 pub struct UpdateTaskRequest {
+    pub task_type: Option<String>,
     pub review_action: Option<String>,
     #[serde(default, deserialize_with = "present_nullable_value")]
     pub goal: Option<Value>,
@@ -6052,6 +6055,12 @@ pub async fn create_task_handler(
     Path(ident): Path<String>,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskCreateResponse>> {
+    let task_type = req
+        .task_type
+        .as_deref()
+        .unwrap_or(crate::task_types::GENERAL)
+        .to_owned();
+    crate::task_types::validate(&task_type)?;
     let origin = task_creation_origin(&headers)?;
     // Verify project exists.
     {
@@ -6131,6 +6140,7 @@ pub async fn create_task_handler(
                     goal.as_deref(),
                     &req.routing,
                     req.requester.as_ref(),
+                    &task_type,
                 )?;
                 if let Some(parent) = &parent {
                     crate::subtasks::attach(conn, parent, &mut task)?;
@@ -6181,6 +6191,12 @@ pub async fn delegate_task_handler(
     Path(source_ident): Path<String>,
     Json(req): Json<DelegateTaskRequest>,
 ) -> Result<Json<DelegationResponse>> {
+    let task_type = req
+        .task_type
+        .as_deref()
+        .unwrap_or(crate::task_types::GENERAL)
+        .to_owned();
+    crate::task_types::validate(&task_type)?;
     let origin = task_creation_origin(&headers)?;
     let source_ident = normalize_project_ident(&source_ident);
     let target_ident = normalize_project_ident(&req.target_project_ident);
@@ -6235,11 +6251,13 @@ pub async fn delegate_task_handler(
                     &labels,
                     hostname.as_deref(),
                     &reporter,
+                    &task_type,
                 )?;
                 let source_title = format!("{title} (DELEGATED)");
                 let mut source_task = db::insert_delegated_task_with_requester(
                     conn,
                     &db::DelegatedTaskInsert {
+                        task_type: &task_type,
                         project_ident: &source_ident,
                         title: &source_title,
                         description: description.as_deref(),
@@ -6371,6 +6389,7 @@ pub async fn update_task_handler(
     let db = state.db.clone();
     let ident_for_update = ident.clone();
     let task_id_clone = task_id;
+    let task_type = req.task_type;
     let review_action = req.review_action;
     let status = req.status;
     let rank = req.rank;
@@ -6399,6 +6418,7 @@ pub async fn update_task_handler(
                 }
             }
             let upd = db::TaskUpdate {
+                task_type: task_type.as_deref(),
                 review_action: review_action.as_deref(),
                 goal: goal_opt.as_ref().map(|g| g.as_deref()),
                 status: status.as_deref(),
@@ -6477,6 +6497,7 @@ pub async fn update_task_handler(
                             &summary,
                         )?;
                         let done_upd = db::TaskUpdate {
+                            task_type: None,
                             review_action: None,
                             goal: None,
                             status: Some("done"),
@@ -6549,6 +6570,7 @@ pub async fn update_delegation_handler(
             });
 
             let source_upd = db::TaskUpdate {
+                task_type: None,
                 review_action: None,
                 goal: None,
                 status: None,
@@ -6574,6 +6596,7 @@ pub async fn update_delegation_handler(
                 .as_deref()
                 .map(|t| t.trim_end_matches(" (DELEGATED)"));
             let target_upd = db::TaskUpdate {
+                task_type: None,
                 review_action: None,
                 goal: None,
                 status: None,
@@ -8291,6 +8314,7 @@ mod tests {
 
     fn sample_task() -> db::Task {
         db::Task {
+            task_type: "software".into(),
             review_action: None,
             parent: None,
             id: "task-1".to_string(),

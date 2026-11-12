@@ -132,6 +132,11 @@ pub const TOOLS: &[Tool] = &[
         args: &[
             pos("title", "Task title"),
             opt(
+                "task_type",
+                "--task-type",
+                "general (default) or software; software for code/configuration changes",
+            ),
+            opt(
                 "parent",
                 "--parent",
                 "Existing parent task UUID whose scope includes this work",
@@ -149,6 +154,13 @@ pub const TOOLS: &[Tool] = &[
         ],
     },
     Tool {
+        name: "task_set_type",
+        description: "Convert owned work to software before modifying any code or configuration; general tasks skip automatic code/documentation reviews and mandatory memory prompts.",
+        bin: Bin::Amux,
+        command: &["tasks", "set-type"],
+        args: &[ID, pos("task_type", "general or software")],
+    },
+    Tool {
         name: "task_claim",
         description: "Claim a task before working on it.",
         bin: Bin::Amux,
@@ -162,6 +174,11 @@ pub const TOOLS: &[Tool] = &[
         command: &["tasks", "delegate"],
         args: &[
             pos("title", "Handoff title"),
+            opt(
+                "task_type",
+                "--task-type",
+                "general (default) or software; software for code/configuration changes",
+            ),
             Arg {
                 name: "parent",
                 description: "Source parent whose scope includes this work",

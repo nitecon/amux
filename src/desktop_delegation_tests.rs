@@ -1346,7 +1346,7 @@ fn desktop_and_embedded_server_assign_an_idle_agent_end_to_end() {
             let task = call(
                 reqwest::Method::POST,
                 "/v1/projects/e2e/tasks".into(),
-                json!({"title": "Desktop end-to-end"}),
+                json!({"title": "Desktop end-to-end", "task_type":"software"}),
             );
             task_id = task["id"].as_str().map(str::to_owned);
         }

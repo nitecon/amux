@@ -83,6 +83,7 @@ pub struct Gateway {
 /// Optional creation metadata shared by task creation and delegation.
 #[derive(Default)]
 pub struct TaskDetails {
+    pub task_type: Option<String>,
     pub description: Option<String>,
     pub labels: Vec<String>,
     pub hostname: Option<String>,
@@ -92,6 +93,10 @@ impl TaskDetails {
     /// Merge into a creation body. Routing labels have dedicated flags, so a
     /// free-form label cannot bypass their acknowledgment checks.
     pub fn apply(&self, body: &mut Value) -> Result<()> {
+        if let Some(task_type) = &self.task_type {
+            amux_gateway_backend::task_types::validate(task_type)?;
+            body["task_type"] = json!(task_type);
+        }
         if self
             .description
             .as_ref()
@@ -245,7 +250,7 @@ impl Gateway {
         project: &str,
         id: uuid::Uuid,
         actor: &AgentIdentity,
-    ) -> Result<()> {
+    ) -> Result<Value> {
         let task = self.task(project, id, 0).await?;
         if task["status"] != "in_progress"
             || task["owner_origin"]["session_id"] != actor.session_id.to_string()
@@ -255,7 +260,7 @@ impl Gateway {
                 "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
             );
         }
-        Ok(())
+        Ok(task)
     }
 
     pub(crate) async fn project_request(
@@ -791,6 +796,13 @@ impl Gateway {
             .await
             .context("delegation not confirmed; inspect tasks in both projects before retrying")?;
         let source = &result["source_task"];
+        if let Some(task_type) = &details.task_type {
+            ensure!(
+                source["task_type"] == task_type.as_str()
+                    && result["target_task"]["task_type"] == task_type.as_str(),
+                "Delegation type unconfirmed; inspect both projects and update the server before retrying"
+            );
+        }
         ensure!(
             source["parent"]["id"] == parent.to_string()
                 && source["parent"]["project_ident"] == project,

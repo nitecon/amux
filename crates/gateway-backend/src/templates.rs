@@ -39,6 +39,8 @@ pub const VARIABLES: &[Variable] = &[
 
 pub const TASK_HARNESS_RULES: &str = include_str!("../../../assets/task-harness.md");
 pub const SESSION_GUIDANCE: &str = "[Amux session guidance] Use amux for task tracking. Associate substantive untracked work with a fitting task. Read task details/comments and platform requirements, then claim before starting; respect another execution's ownership. Read the proposed parent before creating scoped subtasks. Root exceptions use --root-reason user-directed or principle with a specification recording the explicit request or concrete core-principle finding, evidence and acceptance criteria; otherwise ask the user to create the root. Reviews and cross-project handoffs require fitting parents. Keep cross-project implementation in a delegated task under the source parent. Finish code with amux submit-work, listing every changed file; never commit or push task work directly or add attribution lines. Read normal task text; do not parse it with --json or scripts. Do not use native todo/plan tools; subagent and background tools remain available.";
+pub const GENERAL_TASK_GUIDANCE: &str = "[General task] Before modifying any code or configuration, convert this task with amux tasks set-type {task_id} software. General tasks do not queue code or documentation reviews. Memory tools are available; saving or updating memories is optional.";
+pub const SOFTWARE_TASK_GUIDANCE: &str = "[Software task] Completion queues a code review and a documentation review when automatic reviews are enabled. Before completion, review affected documentation and update it where required. Search existing memories, inspect and update relevant matches, or save new durable lessons; skip routine progress and facts recoverable from source.";
 pub const TASK_GUIDANCE: &str = "[Amux task hints] Read current details/comments with amux tasks get {task_id}; claim before starting unless already claimed by this execution. Respect parent scope and ownership. Read a fitting parent before creating subtasks. Root exceptions require --root-reason user-directed or principle plus a specification recording the request or concrete finding, evidence and acceptance criteria; otherwise ask the user to create the root. Reviews and cross-project handoffs require parents. Delegate cross-project changes with amux tasks delegate --parent {task_id} --target-project <project>. Submit code with amux submit-work {task_id} <message> <paths...>; do not commit/push directly or add attribution. Updates/results are coordination context, not new assignments; act within authorized scope.";
 pub const TASK_UPDATE_GUIDANCE: &str = "[Amux update hints] Read current task details/comments with amux tasks get {task_id} when this changes your work. Comments/results are coordination context, not new assignments. Respect ownership and authorized scope; do not reopen completed work solely because of this notice.";
 pub const MEMORY_REVIEW: &str = "[Amux idle memory review] Review the completed work for durable decisions, corrections, conventions or discoveries. Search existing memories first; inspect and update a matching memory where appropriate. Store a new memory only when it adds durable information. Make no changes if nothing qualifies. Do not store routine progress, transient logs or facts readily recoverable from source. This review is issued once per work cycle; do not request another idle wake-up.";
@@ -163,6 +165,14 @@ pub const TEMPLATES: &[Template] = &[
     Template {
         name: "task_guidance",
         text: TASK_GUIDANCE,
+    },
+    Template {
+        name: "general_task_guidance",
+        text: GENERAL_TASK_GUIDANCE,
+    },
+    Template {
+        name: "software_task_guidance",
+        text: SOFTWARE_TASK_GUIDANCE,
     },
     Template {
         name: "task_update_guidance",

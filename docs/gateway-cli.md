@@ -122,6 +122,37 @@ the audit is not part of this released baseline. The deprecation handoff must
 reconcile any such work before switching generated rules; it must not remove a
 newly released workflow without a replacement.
 
+## Task types
+
+New ordinary tasks default to `general`. Use `--task-type software` on `tasks create` or
+`tasks delegate` for work that modifies any code or configuration. Both linked
+delegation records receive the selected type. Before making such changes on an
+existing General task, claim it and run:
+
+```sh
+amux tasks set-type ID software
+```
+
+MCP exposes `task_set_type` and the optional `task_type` creation argument.
+The desktop offers a type selector when creating or editing a task. Type edits
+are confirmed by the server; agents need exact ownership, and completed,
+cancelled and generated review tasks cannot change type. `submit-work` rejects
+General tasks with conversion instructions before touching Git.
+
+Software tasks queue code and documentation reviews when automatic reviews are
+enabled, and remind agents to review documentation and save/update useful durable
+memories. General tasks skip these review stages and idle memory prompts; memory
+tools are still available and saves/updates are optional. Existing tasks become
+Software on upgrade to preserve review behavior. Upgrade both server and clients
+for type acknowledgment and guidance.
+
+Credential-bound `amux dispatch` work retains Software classification and its
+separate lifecycle API.
+
+The API field is `task_type` (`general` or `software`) on task creation,
+delegation, updates, details, lists and lifecycle events. Omitted creation values
+default to General; a PATCH without this field preserves the existing type.
+
 ## Subtasks and parent scope
 
 Agents normally supply `--parent <task-id>` when creating work, and always when

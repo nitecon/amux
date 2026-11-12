@@ -297,7 +297,7 @@ fn cli_handoff_uses_callers_subscription_and_a_different_exact_executor() {
     ]});
     let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
     let routing = json!({"mode":"session","target":executor});
-    let accepted = json!({"parent":{"id":PARENT,"project_ident":"demo"},"id":TASK,"title":"Review","project_ident":"demo","status":"todo","requester":requester,"routing":routing,"owner_origin":executor.origin});
+    let accepted = json!({"parent":{"id":PARENT,"project_ident":"demo"},"task_type":"general","id":TASK,"title":"Review","project_ident":"demo","status":"todo","requester":requester,"routing":routing,"owner_origin":executor.origin});
     let (url, mock) = server(vec![
         reply(200, &json!({"task_hierarchy":1})),
         reply(200, &projects),
@@ -383,7 +383,7 @@ fn cli_os_creation_retag_and_wrong_os_claim_use_authoritative_replies() {
         "windows"
     };
     let projects = json!([{"ident":"demo","canonical_remote":"github.com/nitecon/amux"}]);
-    let queued = json!({"parent":{"id":PARENT,"project_ident":"demo"},"id":TASK,"project_ident":"demo","status":"todo","labels":["autoreview-finding",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null});
+    let queued = json!({"parent":{"id":PARENT,"project_ident":"demo"},"task_type":"general","id":TASK,"project_ident":"demo","status":"todo","labels":["autoreview-finding",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null});
     let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","labels":["keep"],"owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
     let released = json!({"id":TASK,"project_ident":"demo","status":"todo","labels":["keep",format!("os:{other}")],"owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null,"routing":{"mode":"auto"}});
     let (url, server) = server(vec![
@@ -941,7 +941,7 @@ fn sidebar_actions_are_human_requests_and_confirm_the_requested_result() {
         },
         generation: uuid::Uuid::new_v4(),
     };
-    let task = json!({"id":TASK,"project_ident":"demo","status":"todo", "title":"Updated title","description":"Two\nlines", "specification":"Exact handoff\nwith newlines"});
+    let task = json!({"id":TASK,"project_ident":"demo","status":"todo", "title":"Updated title","task_type":"software","description":"Two\nlines", "specification":"Exact handoff\nwith newlines"});
     let (url, server) = server(vec![
         reply(200, &task),
         reply(
@@ -965,6 +965,7 @@ fn sidebar_actions_are_human_requests_and_confirm_the_requested_result() {
                 "demo",
                 id,
                 &TaskEdits {
+                    task_type: "software".into(),
                     title: "Updated title".into(),
                     description: "Two\nlines".into(),
                     specification: "Exact handoff\nwith newlines".into(),
@@ -1125,7 +1126,7 @@ fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recip
         target: target.clone(),
     };
     let available = json!({"target":target,"seen_at":1000000,"expires_at":1120000,"canonical_remote":"github.com/nitecon/amux"});
-    let accepted = json!({"id": TASK,"project_ident":"demo","status":"todo","routing":routing,"owner_origin":target.origin});
+    let accepted = json!({"id": TASK,"task_type":"general","project_ident":"demo","status":"todo","routing":routing,"owner_origin":target.origin});
     let (url, server) = server(vec![
         reply(200, &available),
         reply(
@@ -1162,7 +1163,8 @@ fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recip
                     "Human task",
                     "exact\ncontext",
                     Some("github.com/nitecon/amux"),
-                    &routing
+                    &routing,
+                    "general",
                 )
                 .await
                 .unwrap()
@@ -1235,7 +1237,8 @@ fn routed_task_errors_never_retry_or_silently_fall_back_to_auto() {
                 "Queued",
                 "",
                 Some("github.com/nitecon/amux"),
-                &Routing::Unassigned
+                &Routing::Unassigned,
+                "general",
             ))
             .is_err()
     );
@@ -1246,7 +1249,8 @@ fn routed_task_errors_never_retry_or_silently_fall_back_to_auto() {
                 "Broadcast",
                 "",
                 Some("github.com/nitecon/amux"),
-                &Routing::Broadcast
+                &Routing::Broadcast,
+                "general",
             ))
             .is_err()
     );
@@ -1294,7 +1298,7 @@ fn local_only_project_routes_with_a_null_remote_and_never_matches_a_repository()
     };
     let available =
         json!({"target":target,"seen_at":1000000,"expires_at":1120000,"canonical_remote":null});
-    let accepted = json!({"id": TASK,"project_ident":"games","status":"todo","routing":routing,"owner_origin":target.origin});
+    let accepted = json!({"id": TASK,"task_type":"general","project_ident":"games","status":"todo","routing":routing,"owner_origin":target.origin});
     let adhoc =
         json!([{"ident":"games","kind":"adhoc","canonical_remote":null,"archived_at":null}]);
     let (url, server) = server(vec![
@@ -1326,7 +1330,7 @@ fn local_only_project_routes_with_a_null_remote_and_never_matches_a_repository()
         let directory = gateway.task_targets("games", None).await.unwrap();
         assert_eq!(directory.canonical_remote, None);
         gateway
-            .create_routed_task("games", "Local", "context", None, &routing)
+            .create_routed_task("games", "Local", "context", None, &routing, "general")
             .await
             .unwrap();
         assert!(gateway.task_targets("games", None).await.is_err());
@@ -1338,7 +1342,7 @@ fn local_only_project_routes_with_a_null_remote_and_never_matches_a_repository()
         );
         assert!(
             gateway
-                .create_routed_task("games", "Local", "context", None, &routing)
+                .create_routed_task("games", "Local", "context", None, &routing, "general",)
                 .await
                 .is_err()
         );
@@ -1365,7 +1369,8 @@ fn changed_repository_project_prevents_even_an_automatic_task_post() {
                 "Do not misroute",
                 "",
                 Some("github.com/nitecon/amux"),
-                &amux::task_routing::Routing::Auto
+                &amux::task_routing::Routing::Auto,
+                "general",
             ))
             .is_err()
     );
@@ -1749,6 +1754,7 @@ fn list_filters_and_rank_use_the_agent_tools_wire_contract() {
 #[test]
 fn task_details_merge_metadata_but_never_routing_labels() {
     let details = TaskDetails {
+        task_type: None,
         description: Some("Why this matters.".into()),
         labels: vec!["enhancement".into()],
         hostname: Some("Defcon2".into()),

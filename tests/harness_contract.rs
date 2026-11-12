@@ -392,7 +392,7 @@ fn print_provides_concise_manual_rules_without_setting_up_any_files() {
     assert!(text.contains("do not reinstall root operational blocks"));
     assert!(text.contains("permissions"));
     assert!(text.contains("TodoWrite"));
-    assert_eq!(RULES.matches("\namux tasks ").count(), 11);
+    assert_eq!(RULES.matches("\namux tasks ").count(), 12);
     assert!(
         !RULES
             .split("```sh")

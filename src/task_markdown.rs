@@ -40,6 +40,9 @@ fn list(tasks: &[Value]) -> String {
             text(&task["id"]),
             text(&task["title"])
         );
+        if let Some(task_type) = task["task_type"].as_str() {
+            let _ = write!(out, " · {task_type}");
+        }
         if let Some(owner) = owner(task) {
             let _ = write!(out, " · owner {owner}");
         }
@@ -63,6 +66,7 @@ fn task(task: &Value) -> String {
     };
     field("ID", Some(text(&task["id"])));
     field("Status", Some(text(&task["status"])));
+    field("Type", Some(text(&task["task_type"])));
     if let Some(id) = task["parent"]["id"].as_str() {
         field(
             "Parent",
@@ -106,6 +110,10 @@ fn task(task: &Value) -> String {
             )
         }),
     );
+    if let Some(task_type) = task["task_type"].as_str() {
+        let hint = amux_gateway_backend::task_types::guidance(task_type, &text(&task["id"]));
+        let _ = write!(out, "\n{hint}\n");
+    }
     let specification = text(&task["specification"]);
     for (heading, body) in [
         ("Description", text(&task["description"])),

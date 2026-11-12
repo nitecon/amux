@@ -91,8 +91,8 @@ const PARENT: &str = "44444444-4444-4444-8444-444444444444";
 
 fn receipt() -> Value {
     json!({
-        "source_task":{"parent":{"id":PARENT,"project_ident":"demo"},"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo","status":"todo","kind":"delegated","delegated_to_project_ident":"other","delegated_to_task_id":"22222222-2222-4222-8222-222222222222"},
-        "target_task":{"parent":{"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo"},"id":"22222222-2222-4222-8222-222222222222","project_ident":"other","status":"todo"},
+        "source_task":{"task_type":"general","parent":{"id":PARENT,"project_ident":"demo"},"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo","status":"todo","kind":"delegated","delegated_to_project_ident":"other","delegated_to_task_id":"22222222-2222-4222-8222-222222222222"},
+        "target_task":{"task_type":"general","parent":{"id":"11111111-1111-4111-8111-111111111111","project_ident":"demo"},"id":"22222222-2222-4222-8222-222222222222","project_ident":"other","status":"todo"},
         "delegation":{"id":"33333333-3333-4333-8333-333333333333","source_project_ident":"demo","target_project_ident":"other","source_task_id":"11111111-1111-4111-8111-111111111111","target_task_id":"22222222-2222-4222-8222-222222222222"},
         "message_id":42
     })

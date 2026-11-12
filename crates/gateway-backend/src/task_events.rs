@@ -225,6 +225,7 @@ pub(crate) fn task_json(alias: &str) -> String {
         "goal",
         "description",
         "review_action",
+        "task_type",
         "details",
         "status",
         "rank",
@@ -807,6 +808,7 @@ mod tests {
 
     fn status_update(status: &str) -> db::TaskUpdate<'_> {
         db::TaskUpdate {
+            task_type: None,
             review_action: (status == "user_review").then_some("Choose the release date"),
             goal: None,
             status: Some(status),
@@ -1354,6 +1356,7 @@ mod tests {
         let source = db::insert_delegated_task(
             &conn,
             &db::DelegatedTaskInsert {
+                task_type: crate::task_types::GENERAL,
                 project_ident: "example",
                 title: "Outgoing",
                 description: None,

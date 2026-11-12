@@ -238,6 +238,21 @@ fn done_and_release_refuse_without_exact_confirmed_ownership() {
 }
 
 #[test]
+fn general_task_submission_refuses_before_touching_git() {
+    let (ok, stderr, requests) = run("submit-work", |actor| {
+        let mut reply = task("in_progress", exact(actor));
+        reply["task_type"] = json!("general");
+        vec![reply]
+    });
+    assert!(!ok);
+    assert!(
+        stderr.contains("set-type") && stderr.contains("software"),
+        "{stderr}"
+    );
+    assert_eq!(requests.len(), 1);
+}
+
+#[test]
 fn path_file_submission_confirms_ownership_publishes_and_posts_the_result() {
     let (ok, stderr, requests) = run("submit-work-file", |a| {
         vec![

@@ -980,6 +980,78 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
 }
 
 #[tokio::test]
+async fn task_type_creation_conversion_and_lifecycle_snapshots_use_the_real_backend() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    for task_type in ["general", "software"] {
+        let mut body = json!({"title":"Typed work", "parent_task_id":fixture.parent()});
+        if task_type == "software" {
+            body["task_type"] = json!(task_type);
+        }
+        let task = fixture
+            .client
+            .request(Method::POST, PROJECT, &[], Some(body), Some(&fixture.actor))
+            .await
+            .unwrap();
+        assert_eq!(task["task_type"], task_type);
+        let id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
+        let snapshot: String = fixture.database.lock().unwrap().query_row(
+            "SELECT json_extract(task_json,'$.task_type') FROM task_events WHERE kind='task_created' AND json_extract(task_json,'$.id')=?1",
+            [id.to_string()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(snapshot, task_type);
+        fixture
+            .client
+            .claim(PROJECT, &id.to_string(), &fixture.actor)
+            .await
+            .unwrap();
+        let converted = fixture
+            .client
+            .set_task_type(PROJECT, id, &fixture.actor, "software")
+            .await
+            .unwrap();
+        assert_eq!(converted["task_type"], "software");
+        assert!(
+            fixture
+                .client
+                .set_task_type(PROJECT, id, &fixture.actor, "invalid")
+                .await
+                .is_err()
+        );
+        let mut peer = fixture.actor.clone();
+        peer.instance_id = Uuid::new_v4();
+        assert!(
+            fixture
+                .client
+                .set_task_type(PROJECT, id, &peer, "general")
+                .await
+                .is_err()
+        );
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&id.to_string()],
+                Some(json!({"status":"done"})),
+                Some(&fixture.actor),
+            )
+            .await
+            .unwrap();
+        let after = fixture.client.task(PROJECT, id, 0).await.unwrap();
+        assert_eq!(after["task_type"], "software");
+        assert!(
+            fixture
+                .client
+                .set_task_type(PROJECT, id, &fixture.actor, "general")
+                .await
+                .is_err()
+        );
+    }
+    assert!(fixture.client.request(Method::POST, PROJECT, &[], Some(json!({"title":"Bad type", "parent_task_id":fixture.parent(), "task_type":"invalid"})), Some(&fixture.actor)).await.is_err());
+}
+
+#[tokio::test]
 async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() {
     let fixture = Fixture::start().await;
     let target = fixture.project_and_requester().await;
@@ -1197,6 +1269,7 @@ async fn a_delegated_source_stays_readable_when_the_target_thread_exceeds_the_ca
         let source = db::insert_delegated_task(
             &conn,
             &db::DelegatedTaskInsert {
+                task_type: "general",
                 project_ident: PROJECT,
                 title: "Source",
                 description: None,

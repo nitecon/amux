@@ -1200,6 +1200,15 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     if !has_review_action {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN review_action TEXT")?;
     }
+    let has_task_type: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tasks') WHERE name='task_type')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_task_type {
+        // Preserve review behavior for all tasks created before this feature.
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'software' CHECK(task_type IN ('general','software'))")?;
+    }
     crate::task_requester::initialize(conn)?;
     crate::task_reviews::initialize(conn)?;
     crate::checkouts::initialize(conn)?;
@@ -7737,6 +7746,7 @@ pub struct TaskParent {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Task {
+    pub task_type: String,
     pub parent: Option<TaskParent>,
     pub routing: crate::task_targets::Routing,
     pub requester: Option<crate::task_dispatch::Target>,
@@ -7797,6 +7807,7 @@ pub struct TaskDelegation {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskSummary {
+    pub task_type: String,
     pub parent: Option<TaskParent>,
     pub routing: crate::task_targets::Routing,
     pub requester: Option<crate::task_dispatch::Target>,
@@ -7833,7 +7844,9 @@ fn os_mismatch(required: Option<&str>, origin: Option<&crate::task_events::Agent
 /// Dynamic update payload for `update_task`. `None` on any field means
 /// "do not touch"; for the `Option<Option<_>>` fields, `Some(None)` means
 /// "clear the column" and `Some(Some(x))` means "set to x".
+#[derive(Default)]
 pub struct TaskUpdate<'a> {
+    pub task_type: Option<&'a str>,
     pub review_action: Option<&'a str>,
     pub goal: Option<Option<&'a str>>,
     pub status: Option<&'a str>,
@@ -7847,6 +7860,7 @@ pub struct TaskUpdate<'a> {
 }
 
 pub struct DelegatedTaskInsert<'a> {
+    pub task_type: &'a str,
     pub project_ident: &'a str,
     pub title: &'a str,
     pub description: Option<&'a str>,
@@ -8321,6 +8335,7 @@ pub fn insert_pattern_comment(
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     Ok(Task {
+        task_type: row.get(24)?,
         parent: read_task_parent(row, 22)?,
         review_action: row.get(23)?,
         id: row.get(0)?,
@@ -8355,7 +8370,7 @@ const TASK_SELECT_COLS: &str =
      hostname, owner_agent_id, reporter, created_at, updated_at, started_at, done_at, \
      kind, delegated_to_project_ident, delegated_to_task_id, owner_origin_json, goal, routing_json, requester_json, \
      (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) \
-      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action";
+      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action, task_type";
 
 fn read_task_parent(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<TaskParent>> {
     row.get::<_, Option<String>>(index)?
@@ -8487,6 +8502,7 @@ pub fn insert_task(
         true,
         None,
         None,
+        crate::task_types::GENERAL,
     )
 }
 
@@ -8501,6 +8517,7 @@ pub fn insert_unassigned_dispatch_task(
     labels: &[String],
     hostname: Option<&str>,
     reporter: &str,
+    task_type: &str,
 ) -> Result<Task> {
     insert_task_record(
         conn,
@@ -8516,6 +8533,7 @@ pub fn insert_unassigned_dispatch_task(
         false,
         None,
         None,
+        task_type,
     )
 }
 
@@ -8557,6 +8575,7 @@ pub fn insert_task_with_goal(
         true,
         None,
         None,
+        crate::task_types::GENERAL,
     )
 }
 
@@ -8574,6 +8593,7 @@ pub fn insert_task_with_requester(
     goal: Option<&str>,
     routing: &crate::task_targets::Routing,
     requester: Option<&crate::task_dispatch::Target>,
+    task_type: &str,
 ) -> Result<Task> {
     insert_task_record(
         conn,
@@ -8589,6 +8609,7 @@ pub fn insert_task_with_requester(
         true,
         Some(routing),
         requester,
+        task_type,
     )
 }
 
@@ -8607,7 +8628,9 @@ fn insert_task_record(
     assign_submitter: bool,
     routing: Option<&crate::task_targets::Routing>,
     requester: Option<&crate::task_dispatch::Target>,
+    task_type: &str,
 ) -> Result<Task> {
+    crate::task_types::validate(task_type)?;
     let project_ident = normalize_project_ident(project_ident);
     let goal = normalize_task_goal(goal)?;
     let goal = goal.as_deref();
@@ -8655,6 +8678,7 @@ fn insert_task_record(
             crud_col("id", id.as_str()),
             crud_col("project_ident", project_ident.as_str()),
             crud_col("title", title),
+            crud_col("task_type", task_type),
             crud_col("goal", goal),
             crud_col("routing_json", serde_json::to_string(&routing)?),
             crud_col(
@@ -8687,6 +8711,7 @@ fn insert_task_record(
     )?;
 
     Ok(Task {
+        task_type: task_type.into(),
         parent: None,
         requester: requester.cloned(),
         routing,
@@ -8738,6 +8763,7 @@ pub fn insert_delegated_task_with_requester(
         true,
         None,
         requester,
+        task.task_type,
     )
 }
 
@@ -8777,7 +8803,7 @@ pub fn list_tasks(
                     t.created_at, t.updated_at, t.kind,
                     t.delegated_to_project_ident, t.delegated_to_task_id, t.goal, t.routing_json, t.requester_json,
                     (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title)
-                     FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id)
+                     FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id), t.task_type
              FROM tasks t
              WHERE t.project_ident = ?1
                AND t.status IN ({in_clause})
@@ -8792,7 +8818,7 @@ pub fn list_tasks(
                     t.created_at, t.updated_at, t.kind,
                     t.delegated_to_project_ident, t.delegated_to_task_id, t.goal, t.routing_json, t.requester_json,
                     (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title)
-                     FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id)
+                     FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id), t.task_type
              FROM tasks t
              WHERE t.project_ident = ?1
                AND t.status IN ({in_clause})
@@ -8815,6 +8841,7 @@ pub fn list_tasks(
     let rows = stmt
         .query_map(params_vec.as_slice(), |r| {
             Ok(TaskSummary {
+                task_type: r.get(18)?,
                 parent: read_task_parent(r, 17)?,
                 id: r.get(0)?,
                 title: r.get(1)?,
@@ -9031,6 +9058,7 @@ pub fn recover_task_claim(
             bail!("task claim changed; inspect it again before recovering");
         }
         let update = TaskUpdate {
+            task_type: None,
             review_action: None,
             goal: None,
             status: Some("todo"),
@@ -9268,6 +9296,9 @@ fn update_task_inner(
     human_request: bool,
 ) -> Result<Option<Task>> {
     let project_ident = normalize_project_ident(project_ident);
+    if let Some(task_type) = upd.task_type {
+        crate::task_types::validate(task_type)?;
+    }
     // Validate requested status early.
     if let Some(s) = upd.status {
         if !matches!(s, "todo" | "in_progress" | "user_review" | "done") {
@@ -9336,10 +9367,18 @@ fn update_task_inner(
         );
     }
     if enforce_owner
+        && upd.task_type.is_some()
+        && (origin.is_some() || actor_agent_id.is_some())
+        && current.owner_origin.is_none()
+    {
+        return Err(crate::task_events::OwnershipConflict.into());
+    }
+    if enforce_owner
         && (upd.status.is_some()
             || upd.owner_agent_id.is_some()
             || upd.goal.is_some()
             || upd.review_action.is_some()
+            || upd.task_type.is_some()
             || os_changed)
     {
         if current.owner_origin.is_none()
@@ -9360,11 +9399,22 @@ fn update_task_inner(
         && (origin.is_some() || actor_agent_id.is_some())
         && (upd.status.is_some_and(|status| status != "user_review")
             || upd.owner_agent_id.is_some()
-            || upd.review_action.is_some())
+            || upd.review_action.is_some()
+            || upd.task_type.is_some())
     {
         return Err(
             crate::task_dispatch::Conflict("tasks in user review require a user decision").into(),
         );
+    }
+    if upd.task_type.is_some_and(|next| next != current.task_type)
+        && (current.status == "done"
+            || current.status == "cancelled"
+            || current.labels.iter().any(|label| label == "task-review"))
+    {
+        return Err(crate::task_dispatch::Conflict(
+            "change task type before completion; review task types are managed by amux",
+        )
+        .into());
     }
     let now = now_ms();
     let new_status = upd.status.unwrap_or(&current.status).to_string();
@@ -9536,6 +9586,10 @@ fn update_task_inner(
         ));
     }
 
+    if let Some(task_type) = upd.task_type {
+        assignments.push(crud_col("task_type", task_type));
+    }
+
     // Always bump updated_at.
     assignments.push(crud_col("updated_at", now));
 
@@ -9554,6 +9608,18 @@ fn update_task_inner(
     )?;
     if n == 0 {
         return Ok(None);
+    }
+    if let Some(task_type) = upd.task_type.filter(|next| *next != current.task_type) {
+        insert_comment(
+            conn,
+            task_id,
+            "amux",
+            "system",
+            &format!(
+                "Task type changed from {} to {task_type}.",
+                current.task_type
+            ),
+        )?;
     }
     if release_owner {
         insert_comment(
@@ -11775,6 +11841,7 @@ mod tests {
         let source = insert_delegated_task(
             &conn,
             &DelegatedTaskInsert {
+                task_type: crate::task_types::GENERAL,
                 project_ident: "source",
                 title: "Build dependency (DELEGATED)",
                 description: None,
@@ -12014,6 +12081,7 @@ mod tests {
         let source = insert_delegated_task(
             &conn,
             &DelegatedTaskInsert {
+                task_type: crate::task_types::GENERAL,
                 project_ident: "source",
                 title: "Build dependency (DELEGATED)",
                 description: Some("Context"),
@@ -12106,6 +12174,7 @@ mod tests {
             insert_task(&conn, "charlie", "c1", None, None, &[], None, "tester").unwrap();
 
         let in_progress = TaskUpdate {
+            task_type: None,
             review_action: None,
             goal: None,
             status: Some("in_progress"),
@@ -12127,6 +12196,7 @@ mod tests {
         .unwrap();
 
         let done = TaskUpdate {
+            task_type: None,
             review_action: None,
             goal: None,
             status: Some("done"),

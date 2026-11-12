@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct TaskEdits {
+    pub task_type: String,
     pub title: String,
     pub description: String,
     pub specification: String,
@@ -14,6 +15,7 @@ pub struct TaskEdits {
 
 impl TaskEdits {
     pub fn validate(&self) -> Result<()> {
+        amux_gateway_backend::task_types::validate(&self.task_type)?;
         ensure!(!self.title.trim().is_empty(), "Enter a task title");
         ensure!(self.title.len() <= 1024, "Task title is too long");
         ensure!(
@@ -25,6 +27,31 @@ impl TaskEdits {
 }
 
 impl Gateway {
+    pub async fn set_task_type(
+        &self,
+        project: &str,
+        task: Uuid,
+        actor: &crate::identity::AgentIdentity,
+        task_type: &str,
+    ) -> Result<Value> {
+        amux_gateway_backend::task_types::validate(task_type)?;
+        self.confirm_owner(project, task, actor).await?;
+        let result = self
+            .request(
+                Method::PATCH,
+                project,
+                &[&task.to_string()],
+                Some(json!({"task_type":task_type})),
+                Some(actor),
+            )
+            .await?;
+        ensure!(
+            result["task_type"] == task_type,
+            "Task type unconfirmed; inspect the task and update the server before retrying"
+        );
+        Ok(result)
+    }
+
     /// An owning agent parks work for a human; it cannot resume the review itself.
     pub async fn request_user_review(
         &self,
@@ -124,14 +151,15 @@ impl Gateway {
                 project,
                 &[&task.to_string()],
                 Some(
-                    json!({"title": edits.title, "description": edits.description,
+                    json!({"task_type":edits.task_type, "title": edits.title, "description": edits.description,
                     "specification": edits.specification}),
                 ),
                 None,
             )
             .await?;
         ensure!(
-            value["title"] == edits.title
+            value["task_type"] == edits.task_type
+                && value["title"] == edits.title
                 && value["description"] == edits.description
                 && value["specification"]
                     .as_str()

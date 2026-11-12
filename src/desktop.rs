@@ -128,6 +128,7 @@ enum Message {
     ),
     TaskTarget(desktop_routing::Choice),
     TaskTitle(String),
+    TaskType(String),
     TaskContext(text_editor::Action),
     SubmitTask,
     PrepareReleaseTask,
@@ -287,6 +288,7 @@ struct TaskPanel {
     observed_at_ms: u64,
     queried_at: Option<Instant>,
     draft_title: String,
+    draft_type: Option<String>,
     draft_context: text_editor::Content,
     draft_status: String,
     request: Option<TaskRequest>,
@@ -1569,6 +1571,12 @@ impl Desktop {
                 }
             }
             Message::RefreshTasks => return self.query_tasks(self.task_workspace()),
+            Message::TaskType(task_type) => {
+                let panel = self.task_panel_mut(self.task_workspace());
+                if panel.request.is_none() {
+                    panel.draft_type = Some(task_type);
+                }
+            }
             Message::TaskTitle(title) => {
                 let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel.request.is_none() {
@@ -1598,6 +1606,7 @@ impl Desktop {
                 let panel = &mut self.task_panel_mut(self.task_workspace());
                 if panel.can_prepare_release() {
                     panel.draft_title = "Prepare and publish a new release".into();
+                    panel.draft_type = Some("software".into());
                     panel.draft_context = text_editor::Content::with_text(RELEASE_TASK_CONTEXT);
                     panel.draft_status =
                         "Review the release request and add any notes before submitting.".into();
@@ -1613,6 +1622,7 @@ impl Desktop {
                     // Explicitly start a different request, never retry an uncertain POST.
                     panel.request = None;
                     panel.draft_title.clear();
+                    panel.draft_type = None;
                     panel.draft_context = text_editor::Content::default();
                     panel.draft_status.clear();
                 }
@@ -2547,6 +2557,7 @@ impl Desktop {
         };
         let request_id = Uuid::new_v4();
         let title = panel.draft_title.clone();
+        let task_type = panel.draft_type.clone().unwrap_or_else(|| "general".into());
         let context = panel.draft_context.text();
         let routing = panel.routing.choice.routing();
         let remote = panel
@@ -2592,6 +2603,7 @@ impl Desktop {
                             &context,
                             actual.as_deref(),
                             &routing,
+                            &task_type,
                         )
                         .await
                 }
@@ -2637,6 +2649,11 @@ impl Desktop {
         column![
             self.routing_form(),
             text_input("Task title", &panel.draft_title).on_input(Message::TaskTitle),
+            iced::widget::pick_list(
+                ["general", "software"],
+                Some(panel.draft_type.as_deref().unwrap_or("general")),
+                |kind| Message::TaskType(kind.into())
+            ),
             text_editor(&panel.draft_context)
                 .placeholder("Context / handoff text (optional)")
                 .on_action(Message::TaskContext)

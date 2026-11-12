@@ -1,4 +1,4 @@
-//! Review: queues one independent review task for every completed task, using
+//! Review: queues one independent review task for every completed Software task, using
 //! the existing deduplicated `task_reviews` store (the same contract as
 //! `POST /v1/projects/{ident}/tasks/{id}/review`).
 use crate::{
@@ -66,6 +66,7 @@ mod tests {
 
     fn status(value: &str) -> db::TaskUpdate<'_> {
         db::TaskUpdate {
+            task_type: Some("software"),
             review_action: (value == "user_review").then_some("Choose the release date"),
             status: Some(value),
             goal: None,

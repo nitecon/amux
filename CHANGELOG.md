@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.0.74 - 2026-11-12
+
+### Added
+
+- General and Software task types in the desktop, CLI, MCP and API. New tasks
+  default to General; convert them to Software before any code or configuration
+  changes with `amux tasks set-type ID software`.
+- Software tasks retain automatic code and documentation reviews and guidance
+  to review documentation and save or update useful durable memories. General
+  tasks skip those reviews and idle memory prompts; memory writes stay optional.
+
+### Upgrade notes
+
+- Update both server and clients for task-type controls and guidance. Existing
+  tasks migrate to Software to preserve their review behavior.
+
 ## v0.0.73 - 2026-11-09
 
 ### Fixed

@@ -20,6 +20,10 @@ pub struct Session {
     review_outcome: Option<String>,
     assignments: BTreeSet<Uuid>,
     #[serde(default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    active_task: Option<Uuid>,
+    #[serde(default)]
     cleared_assignments: BTreeSet<Uuid>,
     memory_digest: Option<String>,
     #[serde(default)]
@@ -34,6 +38,8 @@ impl Default for Session {
             reviewed: false,
             review_outcome: None,
             assignments: BTreeSet::new(),
+            task_type: None,
+            active_task: None,
             cleared_assignments: BTreeSet::new(),
             memory_digest: None,
             instance: None,
@@ -45,6 +51,8 @@ impl Session {
     pub fn activate(&mut self, instance: Uuid) {
         if self.instance != Some(instance) {
             self.instance = Some(instance);
+            self.task_type = None;
+            self.active_task = None;
             self.assignments.clear();
             self.cleared_assignments.clear();
             self.clear();
@@ -54,6 +62,8 @@ impl Session {
     /// Native fresh launches may retain amux's task ownership identity. Their
     /// new model context still begins a distinct work cycle.
     pub fn new_session(&mut self) {
+        self.task_type = None;
+        self.active_task = None;
         self.assignments.clear();
         self.cleared_assignments.clear();
         self.clear();
@@ -66,6 +76,19 @@ impl Session {
             true
         } else {
             false
+        }
+    }
+
+    pub fn assign_typed(&mut self, task: Uuid, task_type: &str) -> bool {
+        let assigned = self.assign(task);
+        self.active_task = Some(task);
+        self.task_type = Some(task_type.into());
+        assigned
+    }
+
+    pub fn observe_task_type(&mut self, task: Uuid, task_type: &str) {
+        if self.active_task == Some(task) {
+            self.task_type = Some(task_type.into());
         }
     }
 
@@ -90,7 +113,7 @@ impl Session {
     }
 
     pub fn reserve_review(&mut self) -> Option<Uuid> {
-        if self.reviewed {
+        if self.reviewed || self.task_type.as_deref() == Some("general") {
             return None;
         }
         self.reviewed = true;
@@ -236,6 +259,24 @@ pub fn terminal_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn general_assignments_suppress_idle_review_until_converted_to_software() {
+        let task = Uuid::new_v4();
+        let mut state = Session::default();
+        assert!(state.assign_typed(task, "general"));
+        assert!(state.reserve_review().is_none());
+        state.clear();
+        assert!(state.reserve_review().is_none());
+        let saved = serde_json::to_vec(&state).unwrap();
+        let mut state: Session = serde_json::from_slice(&saved).unwrap();
+        assert!(state.reserve_review().is_none());
+        assert!(!state.assign_typed(task, "software"));
+        assert!(state.reserve_review().is_some());
+        assert!(state.reserve_review().is_none());
+        assert!(state.assign_typed(Uuid::new_v4(), "general"));
+        assert!(state.reserve_review().is_none());
+    }
 
     #[test]
     fn session_lock_releases_inherited_descriptors_on_success_and_error() {

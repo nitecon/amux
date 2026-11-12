@@ -513,6 +513,8 @@ fn delegate(conn: &Connection, source: &str, actor: &AgentOrigin, req: &Delegate
             let parent = db::get_task_detail_recent(conn, source, parent_id, Some(0))?
                 .ok_or(Conflict("parent task not found in source project"))?
                 .task;
+            // Credential-bound dispatch has its own lifecycle and cannot use
+            // ordinary task conversion; retain its existing software review policy.
             let mut task = db::insert_unassigned_dispatch_task(
                 conn,
                 &target_project,
@@ -522,6 +524,7 @@ fn delegate(conn: &Connection, source: &str, actor: &AgentOrigin, req: &Delegate
                 &[],
                 None,
                 &actor.session_id,
+                crate::task_types::SOFTWARE,
             )?;
             crate::subtasks::attach(conn, &parent, &mut task)?;
             let dispatch = Dispatch {
@@ -2873,6 +2876,7 @@ mod tests {
                     labels,
                     None,
                     "fixture",
+                    crate::task_types::GENERAL,
                 )
                 .unwrap()
             };
@@ -2984,6 +2988,7 @@ mod tests {
                 labels,
                 None,
                 "fixture",
+                crate::task_types::GENERAL,
             )
             .unwrap()
         };

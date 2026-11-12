@@ -408,6 +408,7 @@ mod tests {
                 os: "linux".into(),
             };
             let update = db::TaskUpdate {
+                task_type: None,
                 review_action: None,
                 goal: None,
                 status: Some("done"),
