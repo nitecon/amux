@@ -3643,15 +3643,18 @@ mod tests {
     #[test]
     fn failed_terminal_launch_retries_until_running_and_close_cancels_recovery() {
         let directory = tempfile::tempdir().unwrap();
-        let missing = directory.path().join("missing");
+        let script = directory
+            .path()
+            .join(if cfg!(windows) { "init.cmd" } else { "init.sh" });
         let mut app = desktop();
+        app.workspaces[0].init_script = Some(script.clone());
         let pane = app.workspaces[0].focused;
         let id = app.next_id;
         app.next_id += 1;
-        let failed = app.open_terminal(id, &missing, None, None, false, Some(42));
+        let failed = app.open_terminal(id, directory.path(), None, Some(&script), false, Some(42));
         assert!(
             failed.terminal.is_none(),
-            "missing working directory must fail launch"
+            "missing initialization script must fail launch"
         );
         let retry = failed
             .delegation
@@ -3685,7 +3688,7 @@ mod tests {
         assert!(failed.terminal.is_none());
         let retry = failed.delegation.restart_at.unwrap();
         assert_eq!(failed.delegation.terminal_number, 42);
-        std::fs::create_dir(&missing).unwrap();
+        std::fs::write(&script, b"").unwrap();
         app.recover_terminals(retry);
         let recovered = &app.workspaces[0].panes.get(pane).unwrap().tabs[1];
         assert!(recovered.terminal.is_some());
