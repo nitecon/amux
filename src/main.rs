@@ -888,6 +888,10 @@ fn launch_agent_once(
     }
     let mut args = args.to_vec();
     if matches!(provider, Provider::Codex) {
+        // Keep the server owned by this terminal instead of a shared daemon.
+        if !args.iter().any(|arg| arg == "--no-daemon") {
+            registration.push("--no-daemon".into());
+        }
         args.splice(0..0, registration);
     } else {
         args.extend(registration);

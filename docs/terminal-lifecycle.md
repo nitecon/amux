@@ -12,6 +12,12 @@ output remain attached to the terminal throughout.
 
 ## Process ownership and cleanup
 
+Amux starts Codex with `--no-daemon` so each terminal runs its own foreground
+server instead of connecting to a shared background server. This applies to
+fresh launches, restored conversations and missing-history fallback on Linux,
+macOS and Windows, including the macOS login-shell launch path. Codex must
+support this option. An explicitly supplied `--no-daemon` is preserved once.
+
 On Linux, a newly created desktop terminal retains a native pidfd for its
 initial PTY child and its exact process generation. Alacritty starts that child
 as a new terminal session leader. Closing its tab, pane or desktop requests

@@ -140,15 +140,29 @@ fn three_live_same_project_agents_are_distinct_and_restart_does_not_reuse_a_clai
 }
 
 #[test]
-fn restored_agent_launches_forward_native_continuation_arguments_without_a_prompt() {
+fn agent_launches_keep_codex_foreground_and_preserve_native_arguments() {
     use amux::identity::Provider;
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
     fs::create_dir_all(&target).unwrap();
     let fixture = tempfile::tempdir_in(target).unwrap();
     let root = fixture.path();
-    for (provider, expected) in [
-        (Provider::Codex, "resume\n--last\n"),
-        (Provider::Claude, "--continue\n"),
+    for (provider, args, expected) in [
+        (Provider::Codex, &[][..], "--no-daemon\n"),
+        (
+            Provider::Codex,
+            amux::session::resume_arguments(Provider::Codex),
+            "--no-daemon\nresume\n--last\n",
+        ),
+        (
+            Provider::Codex,
+            &["--no-daemon", "exec", "two words"][..],
+            "--no-daemon\nexec\ntwo words\n",
+        ),
+        (
+            Provider::Claude,
+            amux::session::resume_arguments(Provider::Claude),
+            "--continue\n",
+        ),
     ] {
         let script = root.join(provider.command());
         fs::write(
@@ -165,7 +179,7 @@ fn restored_agent_launches_forward_native_continuation_arguments_without_a_promp
         let mut child = Agent(
             Command::new(env!("CARGO_BIN_EXE_amux"))
                 .args(["agent", provider.command(), "--"])
-                .args(amux::session::resume_arguments(provider))
+                .args(args)
                 .current_dir(root)
                 .env("PATH", path)
                 .env("AMUX_STATE_DIR", root.join("state"))
@@ -183,7 +197,7 @@ fn restored_agent_launches_forward_native_continuation_arguments_without_a_promp
             }
             assert!(
                 Instant::now() < deadline,
-                "provider did not receive native resume arguments"
+                "provider did not receive expected launch arguments: {provider:?} {args:?}"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -205,6 +219,7 @@ fn resume_fixture(root: &Path, provider: amux::identity::Provider) -> std::ffi::
         r#"#!/bin/sh
 printf '%s:%s\n' "$#" "$*" >> "$AMUX_ARGS_FILE"
 printf '%s %s %s\n' "$AMUX_AGENT_SESSION_ID" "$AMUX_AGENT_INSTANCE_ID" "$$" >> "$AMUX_IDENTITY_FILE"
+if [ "$1" = --no-daemon ]; then shift; fi
 if [ "$#" -gt 0 ]; then
     if [ "$AMUX_RESUME_EXIT" = signal ]; then kill -TERM $$; fi
     if [ "$AMUX_RESUME_EXIT" = 1 ]; then echo 'No conversation found' >&2; fi
@@ -249,11 +264,10 @@ fn missing_history_restarts_both_providers_without_resume_args_and_stays_interac
                 .spawn()
                 .unwrap(),
         );
-        let expected = format!(
-            "{}:{}\n0:\n",
-            resume_arguments(provider).len(),
-            resume_arguments(provider).join(" ")
-        );
+        let expected = match provider {
+            Provider::Codex => "3:--no-daemon resume --last\n1:--no-daemon\n",
+            Provider::Claude => "1:--continue\n0:\n",
+        };
         let deadline = Instant::now() + Duration::from_secs(10);
         let records = loop {
             let records = amux::identity::live_agents(&root.join("state")).unwrap();
@@ -338,7 +352,11 @@ fn resume_fallback_is_once_only_and_preserves_other_errors_custom_args_and_signa
                 "{provider:?} {first}/{fresh}: {log}"
             );
             if calls == 2 {
-                assert!(log.ends_with("\n0:\n"));
+                let fresh = match provider {
+                    Provider::Codex => "\n1:--no-daemon\n",
+                    Provider::Claude => "\n0:\n",
+                };
+                assert!(log.ends_with(fresh), "{log}");
             }
         }
     }

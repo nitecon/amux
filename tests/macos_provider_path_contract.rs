@@ -70,7 +70,12 @@ fn providers_use_the_login_profile_keep_arguments_and_find_the_bundled_cli() {
             .lines()
             .filter_map(|line| line.strip_prefix("ARG:"))
             .collect();
-        assert_eq!(actual, args, "{provider}: {stdout}");
+        let mut expected = Vec::new();
+        if provider == "codex" {
+            expected.push("--no-daemon");
+        }
+        expected.extend(args);
+        assert_eq!(actual, expected, "{provider}: {stdout}");
         assert!(
             stdout.contains(&format!("CLI:{}", cli.display())),
             "{stdout}"
