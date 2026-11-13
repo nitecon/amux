@@ -13,6 +13,9 @@ pub fn render(value: &Value) -> String {
             text(&value["id"]),
             text(&value["task_id"])
         ),
+        value if value["next_tool"] == "task_set_changeset" => {
+            format!("{}\n", text(&value["message"]))
+        }
         // Other replies (agents, cancellation, bind) have no stable task shape.
         value => format!(
             "```json\n{}\n```\n",

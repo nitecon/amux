@@ -1555,3 +1555,322 @@ async fn native_websocket_subscribe_receipts_and_reconnect_use_durable_real_even
         "done"
     );
 }
+
+#[tokio::test]
+async fn guided_confirmation_finishes_the_requested_lane_and_fences_stale_callers() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    fixture.client.require_guided_confirmation().await.unwrap();
+    for status in ["done", "user_review"] {
+        for files in [Value::Null, json!(["src/two words.rs", "docs/guide.md"])] {
+            let task = fixture
+                .client
+                .request(
+                    Method::POST,
+                    PROJECT,
+                    &[],
+                    Some(json!({"title":"Guided work", "parent_task_id":fixture.parent()})),
+                    Some(&fixture.actor),
+                )
+                .await
+                .unwrap();
+            let id = task["id"].as_str().unwrap();
+            fixture
+                .client
+                .claim(PROJECT, id, &fixture.actor)
+                .await
+                .unwrap();
+            let mut transition = json!({"status":status});
+            if status == "user_review" {
+                transition["review_action"] = json!("Choose the required behavior");
+            }
+            let question = fixture
+                .client
+                .request(
+                    Method::PATCH,
+                    PROJECT,
+                    &[id],
+                    Some(transition),
+                    Some(&fixture.actor),
+                )
+                .await
+                .unwrap_err();
+            let question = format!("{question:#}");
+            assert!(question.contains(&format!("amux set-task {id} software")));
+            assert!(question.contains(&format!("amux set-changeset {id} null")));
+            {
+                let reopened = fixture.reopen_database();
+                let conn = reopened.lock().unwrap();
+                let origin = amux_gateway_backend::task_events::AgentOrigin {
+                    session_id: fixture.actor.session_id.to_string(),
+                    instance_id: fixture.actor.instance_id.to_string(),
+                    provider: "codex".into(),
+                    os: fixture.actor.os.clone(),
+                };
+                let saved = amux_gateway_backend::task_changesets::pending(
+                    &conn,
+                    PROJECT,
+                    id,
+                    Some(&origin),
+                )
+                .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&saved.request).unwrap()["status"],
+                    status
+                );
+            }
+            let current = fixture
+                .client
+                .task(PROJECT, id.parse().unwrap(), 0)
+                .await
+                .unwrap();
+            assert_eq!(current["status"], "in_progress");
+            assert!(current.get("task_type").is_none());
+            let mut peer = fixture.actor.clone();
+            peer.instance_id = Uuid::new_v4();
+            assert!(
+                fixture
+                    .client
+                    .request(
+                        Method::POST,
+                        PROJECT,
+                        &[id, "confirmation"],
+                        Some(json!({"task_type":"software"})),
+                        Some(&peer)
+                    )
+                    .await
+                    .is_err()
+            );
+            if !files.is_null() {
+                assert!(
+                    fixture
+                        .client
+                        .request(
+                            Method::POST,
+                            PROJECT,
+                            &[id, "confirmation"],
+                            Some(json!({"changeset":files})),
+                            Some(&fixture.actor)
+                        )
+                        .await
+                        .is_err()
+                );
+                let reply = fixture
+                    .client
+                    .request(
+                        Method::POST,
+                        PROJECT,
+                        &[id, "confirmation"],
+                        Some(json!({"task_type":"software"})),
+                        Some(&fixture.actor),
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    reply["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("amux set-changeset {id}"))
+                );
+                let current = fixture
+                    .client
+                    .task(PROJECT, id.parse().unwrap(), 0)
+                    .await
+                    .unwrap();
+                assert!(current.get("task_type").is_none());
+                assert_eq!(
+                    fixture
+                        .database
+                        .lock()
+                        .unwrap()
+                        .query_row("SELECT task_type FROM tasks WHERE id=?1", [id], |r| r
+                            .get::<_, String>(0))
+                        .unwrap(),
+                    "software"
+                );
+                assert_eq!(current["status"], "in_progress");
+                assert!(
+                    fixture
+                        .client
+                        .request(
+                            Method::POST,
+                            PROJECT,
+                            &[id, "confirmation"],
+                            Some(json!({"changeset":null})),
+                            Some(&fixture.actor)
+                        )
+                        .await
+                        .is_err()
+                );
+            }
+            let completed = fixture
+                .client
+                .request(
+                    Method::POST,
+                    PROJECT,
+                    &[id, "confirmation"],
+                    Some(json!({"changeset":files})),
+                    Some(&fixture.actor),
+                )
+                .await
+                .unwrap();
+            assert_eq!(completed["status"], status);
+            assert_eq!(completed["changeset"], files);
+            if status == "user_review" {
+                assert_eq!(completed["review_action"], "Choose the required behavior");
+            }
+            assert!(
+                fixture
+                    .client
+                    .request(
+                        Method::POST,
+                        PROJECT,
+                        &[id, "confirmation"],
+                        Some(json!({"changeset":files})),
+                        Some(&fixture.actor)
+                    )
+                    .await
+                    .is_err()
+            );
+            if status == "user_review" && !files.is_null() {
+                fixture
+                    .client
+                    .request(
+                        Method::PATCH,
+                        PROJECT,
+                        &[id],
+                        Some(json!({"status":"todo"})),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                fixture
+                    .client
+                    .claim(PROJECT, id, &fixture.actor)
+                    .await
+                    .unwrap();
+                assert!(
+                    fixture
+                        .client
+                        .request(
+                            Method::PATCH,
+                            PROJECT,
+                            &[id],
+                            Some(json!({"status":"done"})),
+                            Some(&fixture.actor)
+                        )
+                        .await
+                        .is_err()
+                );
+                let done = fixture
+                    .client
+                    .request(
+                        Method::POST,
+                        PROJECT,
+                        &[id, "confirmation"],
+                        Some(json!({"changeset":null})),
+                        Some(&fixture.actor),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(done["status"], "done");
+                assert_eq!(done["changeset"], files);
+                let conn = fixture.database.lock().unwrap();
+                amux_gateway_backend::task_events::mutation(&conn, None, |conn| {
+                    amux_gateway_backend::task_reviews::enqueue(conn, PROJECT, id)
+                })
+                .unwrap();
+                assert_eq!(
+                    amux_gateway_backend::subtasks::list(&conn, id)
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            }
+            let conn = fixture.database.lock().unwrap();
+            if status == "done" {
+                amux_gateway_backend::task_events::mutation(&conn, None, |conn| {
+                    amux_gateway_backend::task_reviews::enqueue(conn, PROJECT, id)
+                })
+                .unwrap();
+                assert_eq!(
+                    amux_gateway_backend::subtasks::list(&conn, id)
+                        .unwrap()
+                        .len(),
+                    if files.is_null() { 0 } else { 2 }
+                );
+            }
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM task_confirmations WHERE task_id=?1",
+                    [id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+    }
+    let task = fixture
+        .client
+        .request(
+            Method::POST,
+            PROJECT,
+            &[],
+            Some(json!({"title":"Stale question", "parent_task_id":fixture.parent()})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    let id = task["id"].as_str().unwrap();
+    fixture
+        .client
+        .claim(PROJECT, id, &fixture.actor)
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[id],
+                Some(json!({"status":"done"})),
+                Some(&fixture.actor)
+            )
+            .await
+            .is_err()
+    );
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            PROJECT,
+            &[id],
+            Some(json!({"title":"Edited after question"})),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::POST,
+                PROJECT,
+                &[id, "confirmation"],
+                Some(json!({"changeset":null})),
+                Some(&fixture.actor)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .client
+            .task(PROJECT, id.parse().unwrap(), 0)
+            .await
+            .unwrap()["status"],
+        "in_progress"
+    );
+}

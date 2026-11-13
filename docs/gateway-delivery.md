@@ -156,7 +156,9 @@ When main work completes with confirmed file changes, the server's `review`
 plugin queues one code review and one documentation review as sibling tasks under
 the original. Work without file changes queues neither. Agents confirm every
 changed path with a `changeset` array, or explicit null for no file changes;
-omitting confirmation leaves the task unchanged. See
+omitting confirmation leaves the task unchanged. Completion and User review
+questions offer `set-task` then `set-changeset` follow-ups (or `set-changeset null`
+for no mutations), and the final answer finishes the requested transition. See
 [file changes and task transitions](gateway-cli.md#file-changes-and-task-transitions)
 for commands and upgrade requirements.
 

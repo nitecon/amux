@@ -130,9 +130,32 @@ and desktop forms no longer offer task types.
 
 When an agent completes, releases, parks or cancels work, the gateway asks whether
 any files were mutated. Omitting `changeset` returns HTTP 409 with that question;
-the transaction rolls back, including ownership, timestamps, comments and events.
-Repeat the same transition with a non-empty array of all modified, added or
-deleted paths, or explicit `null` for no file changes:
+the task mutation rolls back, including ownership, timestamps, comments and events.
+For completion and User review, the gateway remembers the requested transition
+and returns follow-up calls. If files were mutated:
+
+```sh
+amux tasks done ID
+# Follow the question returned by the gateway:
+amux set-task ID software
+# Follow its changeset instruction:
+amux set-changeset ID '["src/main.rs", "docs/usage.md"]'
+```
+
+`set-task` confirms mutation and updates internal classification; the task stays
+in its old lane. `set-changeset` records the paths and finishes the original
+transition, including the original User review action. If no files were mutated,
+skip `set-task` and run `amux set-changeset ID null`. After confirming mutation,
+submit paths rather than null. MCP exposes `task_confirm_mutation` and
+`task_set_changeset` for these steps. These are responses to a transition question,
+not creation-time type choices. Pending confirmation survives gateway restart,
+is bound to the exact owning execution and task snapshot, and is consumed on
+success. If the task changes or ownership moves, repeat the original transition
+rather than applying a stale answer.
+
+Inline confirmation remains supported for all transitions. Repeat the same
+transition with a non-empty array of every modified, added or deleted path, or
+explicit `null` for no file changes:
 
 ```sh
 amux tasks done ID --changeset '["src/main.rs", "docs/usage.md"]'
@@ -163,7 +186,13 @@ POST endpoint plus `changeset`. File lists are non-empty string arrays, limited
 to 1024 paths and 64 KiB of JSON. Human desktop actions retain
 their existing controls. Upgrade the gateway and clients together; the CLI checks
 `GET /v1/tasks/capabilities` for `changeset_confirmation: 1` before sending a
-transition, so an old gateway cannot silently ignore the new field.
+transition, so an old gateway cannot silently ignore the new field. Guided tools
+also require `guided_confirmation: 1` before sending a confirmation. Their API is
+`POST /v1/projects/{project}/tasks/{id}/confirmation` with either
+`{"task_type":"software"}` or `{"changeset":["path"]}` / `{"changeset":null}`.
+The completion and User review question uses HTTP 409 with code
+`task_confirmation_required`; release/cancellation retain the inline confirmation
+question. No additional terminal notification is sent.
 
 ## Subtasks and parent scope
 

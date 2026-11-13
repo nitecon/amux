@@ -1216,6 +1216,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     )? {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN changeset_json TEXT")?;
     }
+    crate::task_changesets::initialize(conn)?;
     crate::task_requester::initialize(conn)?;
     crate::task_reviews::initialize(conn)?;
     crate::checkouts::initialize(conn)?;

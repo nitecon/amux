@@ -66,6 +66,8 @@ pub enum Kind {
     List,
     /// Explicit array/null confirmation, preserving null instead of omitting it.
     Changeset,
+    /// An array/null changeset passed as one positional JSON value.
+    ChangesetValue,
     /// `--flag=value`, one argument so a value starting with `-` stays a value.
     Option(&'static str),
 }
@@ -115,6 +117,28 @@ const ID: Arg = pos("id", "Task ID");
 /// The single map of exposed tools to the commands they run. It changes only
 /// when a pinned agent-tools or memory version changes its command line.
 pub const TOOLS: &[Tool] = &[
+    Tool {
+        name: "task_confirm_mutation",
+        description: "Confirm this task mutated files after its User review/completion question. Returns the changeset submission instruction; does not move the task yet.",
+        bin: Bin::Amux,
+        command: &["set-task"],
+        args: &[ID],
+    },
+    Tool {
+        name: "task_set_changeset",
+        description: "Supply every mutated file (or null for no mutations) and finish the pending User review/completion transition. Follow task_confirm_mutation first when files changed.",
+        bin: Bin::Amux,
+        command: &["set-changeset"],
+        args: &[
+            ID,
+            Arg {
+                name: "changeset",
+                description: "Every modified, added or deleted path, or null if no files were mutated.",
+                kind: Kind::ChangesetValue,
+                required: true,
+            },
+        ],
+    },
     Tool {
         name: "task_list",
         description: "List this project's tasks (default: todo and in_progress).",
@@ -410,7 +434,7 @@ fn schema(tool: &Tool) -> Value {
         .map(|a| {
             let mut schema = match a.kind {
                 Kind::List => json!({"type": "array", "items": {"type": "string"}}),
-                Kind::Changeset => {
+                Kind::Changeset | Kind::ChangesetValue => {
                     json!({"type": ["array", "null"], "items": {"type": "string"}, "minItems": 1})
                 }
                 _ => json!({"type": "string"}),
@@ -433,11 +457,17 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
     let mut options = Vec::new();
     let mut positionals = Vec::new();
     for arg in tool.args {
-        if matches!(arg.kind, Kind::Changeset) {
+        if matches!(arg.kind, Kind::Changeset | Kind::ChangesetValue) {
             if let Some(value) = arguments.get(arg.name) {
                 amux_gateway_backend::task_changesets::validate(value)
                     .map_err(|e| e.to_string())?;
-                options.push(format!("--changeset={value}"));
+                if matches!(arg.kind, Kind::ChangesetValue) {
+                    positionals.push(value.to_string());
+                } else {
+                    options.push(format!("--changeset={value}"));
+                }
+            } else if arg.required {
+                return Err(format!("missing required argument: {}", arg.name));
             }
             continue;
         }
@@ -464,7 +494,7 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
             Kind::Positional => positionals.push(value),
             Kind::Words => positionals.extend(value.split_whitespace().map(str::to_owned)),
             Kind::Option(flag) => options.push(format!("{flag}={value}")),
-            Kind::List | Kind::Changeset => unreachable!("handled above"),
+            Kind::List | Kind::Changeset | Kind::ChangesetValue => unreachable!("handled above"),
         }
     }
     let mut argv: Vec<String> = tool.command.iter().map(|s| (*s).to_owned()).collect();

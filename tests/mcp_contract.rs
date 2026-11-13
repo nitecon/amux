@@ -299,3 +299,45 @@ fn transition_confirmation_keeps_null_distinct_from_omission() {
     assert!(amux::mcp::argv(tool, &arguments).is_err());
     assert!(!TOOLS.iter().any(|tool| tool.name == "task_set_type"));
 }
+
+#[test]
+fn guided_confirmation_tools_preserve_required_json_and_file_names() {
+    let confirm = TOOLS
+        .iter()
+        .find(|t| t.name == "task_confirm_mutation")
+        .unwrap();
+    assert_eq!(
+        amux::mcp::argv(confirm, &serde_json::json!({"id":"task"})).unwrap(),
+        ["set-task", "--", "task"]
+    );
+    let changeset = TOOLS
+        .iter()
+        .find(|t| t.name == "task_set_changeset")
+        .unwrap();
+    assert!(amux::mcp::argv(changeset, &serde_json::json!({"id":"task"})).is_err());
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!(["docs/two words.md"]),
+    ] {
+        assert_eq!(
+            amux::mcp::argv(
+                changeset,
+                &serde_json::json!({"id":"task","changeset":value})
+            )
+            .unwrap(),
+            [
+                "set-changeset".to_owned(),
+                "--".into(),
+                "task".into(),
+                value.to_string()
+            ]
+        );
+    }
+    assert!(
+        amux::mcp::argv(
+            changeset,
+            &serde_json::json!({"id":"task","changeset":true})
+        )
+        .is_err()
+    );
+}

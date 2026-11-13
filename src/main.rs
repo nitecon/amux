@@ -38,6 +38,33 @@ mod task_creation_tests {
     use super::*;
 
     #[test]
+    fn guided_confirmation_commands_parse_without_creation_type_choices() {
+        let id = "44444444-4444-4444-8444-444444444444";
+        for args in [
+            vec!["amux", "set-task", id, "software"],
+            vec!["amux", "set-task", "--", id],
+            vec!["amux", "set-changeset", id, "null"],
+            vec!["amux", "set-changeset", "--", id, "[\"docs/two words.md\"]"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(Cli::try_parse_from(["amux", "set-task", id, "general"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "amux",
+                "tasks",
+                "create",
+                "Title",
+                "--parent",
+                id,
+                "--task-type",
+                "software"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn roots_require_an_explicit_supported_reason_and_specification() {
         let parse = |args: &[&str]| {
             Cli::try_parse_from(
@@ -148,6 +175,14 @@ enum Operation {
         #[command(flatten)]
         work: WorkArgs,
     },
+    /// Confirm file mutation for the pending User review/completion request.
+    SetTask {
+        id: Uuid,
+        #[arg(default_value = "software", value_parser = ["software"])]
+        task_type: String,
+    },
+    /// Submit changed paths (or null) and finish the pending task transition.
+    SetChangeset { id: Uuid, changeset: String },
     /// Exact-session task dispatch through the gateway's credential-bound API.
     /// Needs the enrolled connection plus operator-issued AMUX_GATEWAY_MACHINE_ID
     /// and AMUX_GATEWAY_MACHINE_KEY; amux never provisions or stores them.
@@ -202,6 +237,13 @@ enum MessageOperation {
 
 #[derive(Subcommand)]
 enum TaskOperation {
+    ConfirmMutation {
+        id: Uuid,
+    },
+    SetChangeset {
+        id: Uuid,
+        changeset: String,
+    },
     /// Read-only local Git work inventory with optional gateway and exact-SHA CI facts.
     Report(amux::work_report::Args),
     /// List tasks (default: todo and in_progress).
@@ -443,10 +485,24 @@ fn run(cli: Cli) -> Result<u8> {
             json: false,
             operation: TaskOperation::SubmitWork(work),
         },
+        Operation::SetTask { id, .. } => Operation::Tasks {
+            project: None,
+            gateway_url: None,
+            json: false,
+            operation: TaskOperation::ConfirmMutation { id },
+        },
+        Operation::SetChangeset { id, changeset } => Operation::Tasks {
+            project: None,
+            gateway_url: None,
+            json: false,
+            operation: TaskOperation::SetChangeset { id, changeset },
+        },
         operation => operation,
     };
     match operation {
-        Operation::SubmitWork { .. } => unreachable!("rewritten as a task operation"),
+        Operation::SubmitWork { .. }
+        | Operation::SetTask { .. }
+        | Operation::SetChangeset { .. } => unreachable!("rewritten as a task operation"),
         Operation::Server { command } => amux::server::run(command)?,
         Operation::Harness { operation } => {
             let environment = amux::harness::Environment::discover()?;
@@ -665,6 +721,16 @@ fn run(cli: Cli) -> Result<u8> {
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
                 let completing = matches!(operation, TaskOperation::Done { .. });
                 let result = match operation {
+                    TaskOperation::ConfirmMutation { id } => {
+                        gateway.require_guided_confirmation().await?;
+                        gateway.request(Method::POST, &project, &[&id.to_string(), "confirmation"], Some(json!({"task_type":"software"})), Some(&actor)).await
+                    },
+                    TaskOperation::SetChangeset { id, changeset } => {
+                        let changeset: serde_json::Value = serde_json::from_str(&changeset).context("changeset must be a JSON array or null")?;
+                        amux_gateway_backend::task_changesets::validate(&changeset)?;
+                        gateway.require_guided_confirmation().await?;
+                        gateway.request(Method::POST, &project, &[&id.to_string(), "confirmation"], Some(json!({"changeset":changeset})), Some(&actor)).await
+                    },
                     TaskOperation::Create { title, parent, root_reason, specification, review_finding, os, notify_results, to_agent, details } => {
                         gateway.require_task_hierarchy().await?;
                         let mut body = json!({"title": title, "parent_task_id":parent, "specification": specification});

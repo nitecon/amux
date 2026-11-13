@@ -66,6 +66,17 @@ async fn response_json(mut response: reqwest::Response) -> Result<Value> {
         bytes.extend_from_slice(&chunk);
     }
     if !status.is_success() {
+        if status == reqwest::StatusCode::CONFLICT
+            && let Ok(body) = serde_json::from_slice::<Value>(&bytes)
+            && body["code"] == "task_confirmation_required"
+            && let Some(id) = body["task_id"]
+                .as_str()
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        {
+            return Err(GatewayStatus(status)).context(
+                amux_gateway_backend::task_changesets::question(&id.to_string()),
+            );
+        }
         // Surface only this defined workflow question, never arbitrary gateway
         // error bodies (which may contain transport credentials or diagnostics).
         if status == reqwest::StatusCode::CONFLICT
@@ -490,6 +501,15 @@ impl Gateway {
         ensure!(
             value["changeset_confirmation"].as_u64() == Some(1),
             "Update the gateway server for changeset confirmation; no task transition was sent"
+        );
+        Ok(())
+    }
+
+    pub async fn require_guided_confirmation(&self) -> Result<()> {
+        let value = self.task_capabilities().await?;
+        ensure!(
+            value["guided_confirmation"].as_u64() == Some(1),
+            "Update the gateway server for guided task confirmation; no confirmation was sent"
         );
         Ok(())
     }

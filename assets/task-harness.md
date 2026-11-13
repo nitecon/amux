@@ -1,4 +1,4 @@
-## amux tasks — managed instructions v8
+## amux tasks — managed instructions v9
 
 Use amux for all task tracking. Do not use local task/todo/plan tools
 (TaskCreate/TaskGet/TaskList/TaskUpdate/TodoWrite or update_plan).
@@ -34,14 +34,23 @@ amux tasks help
 amux submit-work ID "Commit message" PATH...
 ```
 
-Tasks have one creation workflow. When completing, releasing, parking or cancelling
-work, confirm every mutated file with `--changeset '["path/to/file"]'`, or
-`--changeset null` if no files were changed. MCP transition tools accept the same
-array/null `changeset` value. Omission returns the gateway's confirmation question
-without moving the task. Review affected documentation and search/update relevant
-durable memories where useful. Completed main work with file changes queues code
-and documentation reviews when enabled. Generated review/documentation tasks never
-create another review workflow, including when reporting file changes.
+Tasks have one creation workflow. Completing work or moving it to User review
+without a changeset returns a question without moving the task. Follow its tool
+calls: if files were mutated, run `amux set-task ID software` (MCP
+`task_confirm_mutation`), then `amux set-changeset ID '["path/to/file"]'` (MCP
+`task_set_changeset`) with every changed file. If no files were mutated, run
+`amux set-changeset ID null` directly. The final call completes the requested
+transition. These calls require the pending question and the exact owning
+execution; if the task changed, repeat the original transition.
+
+Inline confirmation also works: use `--changeset '["path/to/file"]'`, or
+`--changeset null` for no file changes, when completing, releasing, parking or
+cancelling work. MCP transition tools accept the same array/null `changeset`.
+Confirmed file paths accumulate across transitions; a later null preserves them.
+Review affected documentation and search/update relevant durable memories where
+useful. Completed main work with file changes queues code and documentation
+reviews when enabled. Generated review/documentation tasks never create another
+review workflow, including when reporting file changes.
 
 Before moving a task to User review, comment with the question or decision needed
 and provide the specific user action as the required command argument.

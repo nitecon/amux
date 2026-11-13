@@ -335,7 +335,12 @@ Rules carried over from the desktop:
   newer claim, even when timestamps match.
 - **Review generation:** an agent leaving active work confirms its mutated files
   in the transition request, using `changeset: [paths]` or explicit null. Missing
-  confirmation returns a question and rolls back the transition. Confirmed paths
+  confirmation returns a question and rolls back the task mutation. Completion
+  and User review also retain a durable pending request, fenced to the owning
+  execution and task snapshot. `set-task` confirms file mutation; `set-changeset`
+  supplies the files (or null directly for no mutation) and applies the original
+  transition through the same handler. A changed task invalidates the pending
+  answer. Inline confirmation remains supported. Confirmed paths
   accumulate on the task, so a later null keeps files confirmed by an earlier
   release, park or cancellation. Task creation
   has no agent-selected classification. A completed main task with file changes

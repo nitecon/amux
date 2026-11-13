@@ -63,7 +63,14 @@ executables. Templates are visible in Settings.
 Task creation no longer asks agents to select General or Software. On completion,
 release, User review or cancellation, the tool workflow asks whether files were
 mutated. Reply with a `changeset` array of every changed path, or explicit null
-when no files were changed; omission leaves the task unchanged. This question
+when no files were changed; omission leaves the task unchanged. For completion
+and User review, the question offers `amux set-task ID software` (MCP
+`task_confirm_mutation`), followed by `amux set-changeset ID '["path"]'` (MCP
+`task_set_changeset`). With no mutations, use `amux set-changeset ID null`
+directly. The final call finishes the recorded transition, preserving the User
+review action. Follow-ups require the same owning execution and unchanged task;
+repeat the original transition if either changed. Internal classification is
+updated by the response workflow, never chosen when creating work. This question
 comes from the tool response, without an additional terminal injection.
 
 With automatic reviews enabled in Settings > Gateway > Task automation, completing

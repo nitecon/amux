@@ -243,6 +243,10 @@ pub fn api_router(state: AppState) -> Router {
                 .delete(routes::delete_task_handler),
         )
         .route(
+            "/v1/projects/{ident}/tasks/{id}/confirmation",
+            post(task_changesets::confirm_handler),
+        )
+        .route(
             "/v1/projects/{ident}/tasks/{id}/cancellation",
             get(task_cancel::get_handler).post(task_cancel::create_handler),
         )

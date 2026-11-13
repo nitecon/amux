@@ -32,6 +32,22 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         error!("handler error: {} — {}", self.0, self.1);
         let mut body = serde_json::json!({"error": self.1});
+        if self.0 == StatusCode::CONFLICT
+            && self
+                .1
+                .starts_with("Did this task mutate any files?\nTask: ")
+        {
+            if let Some(id) = self
+                .1
+                .lines()
+                .nth(1)
+                .and_then(|line| line.strip_prefix("Task: "))
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            {
+                body["code"] = Value::String("task_confirmation_required".into());
+                body["task_id"] = Value::String(id.to_string());
+            }
+        }
         if self.0 == StatusCode::CONFLICT && self.1 == crate::task_changesets::QUESTION {
             body["code"] = Value::String("changeset_confirmation_required".into());
         }
@@ -43,8 +59,11 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     fn from(e: E) -> Self {
         let err = e.into();
         let status = if err
-            .downcast_ref::<crate::task_events::OwnershipConflict>()
+            .downcast_ref::<crate::task_changesets::GuidedQuestion>()
             .is_some()
+            || err
+                .downcast_ref::<crate::task_events::OwnershipConflict>()
+                .is_some()
             || err.downcast_ref::<TaskGoalConflict>().is_some()
             || err
                 .downcast_ref::<crate::task_dispatch::Conflict>()
@@ -60,7 +79,7 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     }
 }
 
-type Result<T> = std::result::Result<T, AppError>;
+pub(crate) type Result<T> = std::result::Result<T, AppError>;
 
 // ── Artifact operations envelope accessor (T016 plumbing) ───────────────────
 //
@@ -5656,24 +5675,38 @@ pub struct DelegateTaskRequest {
 
 // Preserve explicit JSON null so owner clearing still passes ownership checks.
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct UpdateTaskRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_token: Option<String>,
     #[serde(default, deserialize_with = "present_nullable_value")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub changeset: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub review_action: Option<String>,
     #[serde(default, deserialize_with = "present_nullable_value")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub goal: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// `Some(null)` in JSON clears the owner; `Some("xyz")` assigns it;
     /// absent leaves the current owner alone.
     #[serde(default, deserialize_with = "present_nullable_value")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_agent_id: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rank: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub specification: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<serde_json::Value>,
 }
 
@@ -6361,6 +6394,11 @@ pub async fn update_task_handler(
     Json(req): Json<UpdateTaskRequest>,
 ) -> Result<Json<db::Task>> {
     let origin = crate::task_events::origin(&headers)?;
+    let pending_request = serde_json::to_string(&req)?;
+    let guided = origin.is_some()
+        && req.changeset.is_none()
+        && matches!(req.status.as_deref(), Some("done" | "user_review"));
+    let confirmation_token = req.confirmation_token.clone();
     // Validate & decode the nullable-string fields up-front so we can return
     // 400 on a client-side shape mistake rather than bubbling a 500.
     let goal_opt = decode_nullable_string("goal", req.goal)?
@@ -6399,10 +6437,36 @@ pub async fn update_task_handler(
     // dedicated error enum.
     let task = spawn_blocking(move || -> anyhow::Result<Option<db::Task>> {
         let conn = db.lock().unwrap();
-        crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
+        let result = crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
             let before =
                 db::get_task_detail(conn, &ident_for_update, &task_id_clone)?.map(|d| d.task);
 
+            if let Some(token) = &confirmation_token {
+                let pending = crate::task_changesets::pending(
+                    conn,
+                    &ident_for_update,
+                    &task_id_clone,
+                    origin.as_ref(),
+                )?;
+                anyhow::ensure!(
+                    pending.token == *token,
+                    crate::task_dispatch::Conflict(
+                        "confirmation was replaced; repeat the transition"
+                    )
+                );
+                if changeset.as_ref().is_some_and(Value::is_null) && pending.mutated {
+                    return Err(crate::task_dispatch::Conflict(
+                        "file mutation was confirmed; submit the changed paths, not null",
+                    )
+                    .into());
+                }
+                if changeset.as_ref().is_some_and(|v| !v.is_null()) && !pending.mutated {
+                    return Err(crate::task_dispatch::Conflict(
+                        "confirm file mutation with set-task before submitting files",
+                    )
+                    .into());
+                }
+            }
             if agent_request {
                 if let Some(goal) = before.as_ref().and_then(|task| task.goal.as_deref()) {
                     let changes_queue = status.as_deref() == Some("in_progress")
@@ -6551,8 +6615,30 @@ pub async fn update_task_handler(
                 }
             }
 
+            if updated.is_some() && confirming {
+                conn.execute(
+                    "DELETE FROM task_confirmations WHERE task_id=?1",
+                    [&task_id_clone],
+                )?;
+            }
             Ok(updated)
-        })
+        });
+        if guided
+            && result.as_ref().err().is_some_and(|e| {
+                e.downcast_ref::<crate::task_dispatch::Conflict>()
+                    .is_some_and(|e| e.0 == crate::task_changesets::QUESTION)
+            })
+        {
+            crate::task_changesets::remember(
+                &conn,
+                &ident_for_update,
+                &task_id_clone,
+                origin.as_ref().unwrap(),
+                &pending_request,
+            )?;
+            return Err(crate::task_changesets::GuidedQuestion(task_id_clone).into());
+        }
+        result
     })
     .await??;
 
