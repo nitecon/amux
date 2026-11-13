@@ -152,8 +152,15 @@ result. When the user returns work to TODO, normal eligibility resumes.
 
 ## Completion reviews
 
-When a task completes, the server's `review` plugin queues one ordinary review
-task. Review assignment is best effort: prefer an available agent from the
+When main work completes with confirmed file changes, the server's `review`
+plugin queues one code review and one documentation review as sibling tasks under
+the original. Work without file changes queues neither. Agents confirm every
+changed path with a `changeset` array, or explicit null for no file changes;
+omitting confirmation leaves the task unchanged. See
+[file changes and task transitions](gateway-cli.md#file-changes-and-task-transitions)
+for commands and upgrade requirements.
+
+Review assignment is best effort: prefer an available agent from the
 other provider in the same project with the required OS and goal, then prefer
 agents outside the contributor/commenter metadata. Busy, drafting, occupied,
 refusing, incompatible or disconnected agents do not hold the queue indefinitely.
@@ -165,9 +172,10 @@ older clients cannot receive a fallback that they cannot safely clear.
 Reviews use the same FIFO assignment
 as other work, except that each ordinary assignment in a project is followed by
 the oldest eligible queued review, if there is one. The server creates at most one
-review per source completion. Completing a code review queues one documentation
-review of the original change, which checks affected user and agent docs against
-the implementation; completing a documentation review creates no further review.
+review of each stage per source completion. The documentation review checks
+affected user and agent docs against the implementation. Generated
+review/documentation tasks and their descendants never start another review
+workflow, even when they report file changes.
 On the host in Server mode, Settings > Gateway > Task automation switches
 automatic reviews off or on for every project on that server (the
 `plugin.review.enabled` setting); queued reviews remain available.

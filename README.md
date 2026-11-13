@@ -18,9 +18,10 @@ agent runs in a live terminal you can watch, join, and talk to directly.
   terminals and injects task instructions on your behalf. You can see the current
   execution, jump into an ongoing task, or start a conversation with any agent.
   Busy agents and unfinished drafts defer delivery.
-- **Keep implementation and review in one workflow.** Completed work can queue a
-  code review followed by a documentation review. Reviewers report findings and
-  create correction tasks; explicit **User review** keeps decisions with you.
+- **Keep implementation and review in one workflow.** Completed work with file
+  changes can queue separate code and documentation reviews. Reviewers report
+  findings and create correction tasks; explicit **User review** keeps decisions
+  with you.
 - **Spend context on the problem.** The bundled MCP server gives agents targeted
   code search, symbol lookup, Markdown sections, knowledge-graph lookups, task
   tools, and durable memory. Relevant memories are injected automatically, and
@@ -70,16 +71,18 @@ projects. amux bundles pinned builds of
    Keep **Give agents amux tools (MCP)** enabled under **Workspaces & Terminals**
    before launching agents.
 4. **Build the queue.** Create tasks in the project's **Tasks** view, or discuss
-   the work with an agent and have it create scoped tasks. New tasks are General;
-   select Software for code or configuration changes. Agents must convert General
-   tasks before making those changes. Idle agents pick up
+   the work with an agent and have it create scoped tasks. Agents confirm changed
+   files when completing, releasing, parking or cancelling work; task creation
+   requires no type selection. Idle agents pick up
    eligible tasks automatically, one per agent. Tasks requiring a human decision
    move to **User review**. You can watch progress in Tasks or open the agent's
    terminal and talk directly.
 5. **Review the result.** On the server, **Gateway Server → Task automation**
    controls automatic code and documentation reviews for all projects. When
-   enabled, Software completion starts that review sequence, with correction tasks joining
-   the same workflow.
+   enabled, completing main work with confirmed file changes queues code and
+   documentation reviews as sibling tasks under the original. Work without file
+   changes queues neither. Generated review/documentation steps and their
+   descendants never start another review workflow.
 
 For example, launch Codex and Claude for a repository on your Linux workstation,
 then do the same on a Windows test machine. Queue independent implementation,
