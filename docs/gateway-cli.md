@@ -146,19 +146,21 @@ MCP `task_done`, `task_release` and `task_user_review` accept `changeset` as an
 array or JSON null. Missing and null are distinct. Claiming work and reordering
 within its current lane do not ask about files. Agents must use a task PATCH,
 not lane reordering, to submit confirmation when crossing out of active work.
+Confirmed paths accumulate on the task: each array adds its paths without
+duplicates, and a later null keeps files confirmed by an earlier release, park
+or cancellation.
 
 A completed main task with confirmed file changes queues one code review and
 one documentation review under the original task when automatic reviews are
-enabled. Explicit null queues neither. Generated review/documentation tasks and
-their workflow descendants never start another review workflow, even if they
-report file changes. The original stays done; completion replay cannot duplicate
+enabled. A task whose confirmations were all null queues neither. Generated
+review/documentation tasks and their workflow descendants never start another
+review workflow, even if they report file changes. The original stays done; completion replay cannot duplicate
 reviews. The legacy classification column remains for database compatibility;
 it is derived from transition evidence, not an agent-selected task type.
 
 API: PATCH a task with `status` and `changeset`; cancellation uses its existing
 POST endpoint plus `changeset`. File lists are non-empty string arrays, limited
-to 1024 paths and 64 KiB of JSON. Confirmations apply to each agent transition;
-previous declarations are not reused implicitly. Human desktop actions retain
+to 1024 paths and 64 KiB of JSON. Human desktop actions retain
 their existing controls. Upgrade the gateway and clients together; the CLI checks
 `GET /v1/tasks/capabilities` for `changeset_confirmation: 1` before sending a
 transition, so an old gateway cannot silently ignore the new field.
