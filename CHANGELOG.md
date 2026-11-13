@@ -2,10 +2,28 @@
 
 ## Unreleased
 
+## v0.0.77 - 2026-11-13
+
 ### Fixed
 
 - Run bundled memory and agent-tools commands without opening a console window
   on Windows, including the memory recall in desktop task notifications.
+- Preserve previously confirmed file changes when a later task transition
+  reports no new changes, so completion still queues the required reviews.
+
+### Changed
+
+- Guide agent completion and User review through mutation-confirmation and
+  changeset tools. The gateway retains the requested transition until the
+  owning execution answers, preserving the original User review action.
+- Keep inline file confirmation supported, accumulate changed paths across
+  transitions, and align onboarding and agent guidance with these workflows.
+
+### Upgrade notes
+
+- Update the gateway and desktop/CLI together to use the guided confirmation
+  tools. Follow-up answers require the same owning execution and unchanged
+  task; repeat the original transition if the task or ownership changed.
 
 ## v0.0.76 - 2026-11-13
 
