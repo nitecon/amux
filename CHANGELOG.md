@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Run bundled memory and agent-tools commands without opening a console window
+  on Windows, including the memory recall in desktop task notifications.
+
 ## v0.0.76 - 2026-11-13
 
 ### Fixed

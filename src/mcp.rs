@@ -500,6 +500,19 @@ fn directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// A bundled executable spawned directly, never through a shell. On Windows a
+/// console child of the windowless desktop would otherwise open a new console.
+fn bundled(path: PathBuf) -> Command {
+    let mut command = Command::new(path);
+    command.envs(NO_UPDATE).stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// Run one command and return (output, is_error).
 fn run(bin: Bin, argv: &[String], directory: &Path) -> (String, bool) {
     let Some(path) = bin.path() else {
@@ -508,12 +521,7 @@ fn run(bin: Bin, argv: &[String], directory: &Path) -> (String, bool) {
             true,
         );
     };
-    let output = Command::new(path)
-        .args(argv)
-        .current_dir(directory)
-        .envs(NO_UPDATE)
-        .stdin(Stdio::null())
-        .output();
+    let output = bundled(path).args(argv).current_dir(directory).output();
     match output {
         Ok(out) => {
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -588,11 +596,9 @@ pub fn durable_memories(project: &Path, query: &str) -> Option<String> {
     use std::io::{Read, Seek};
     let path = Bin::Memory.path()?;
     let mut output = tempfile::tempfile().ok()?;
-    let mut child = Command::new(path)
+    let mut child = bundled(path)
         .args(["search", "--limit=5", "--", query])
         .current_dir(project)
-        .envs(NO_UPDATE)
-        .stdin(Stdio::null())
         .stdout(output.try_clone().ok()?)
         .stderr(Stdio::null())
         .spawn()
