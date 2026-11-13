@@ -60,21 +60,20 @@ Available MCP tools determine tool hints. Memory supports `memory_search`,
 `doc_section`. Sessions without amux MCP receive CLI hints only for present bundled
 executables. Templates are visible in Settings.
 
-When the host enables automatic reviews in Settings > Gateway > Task automation,
-Software task completion queues a code review followed by a separate documentation review.
-New tasks default to General; agents must convert them with
-`amux tasks set-type ID software` before modifying any code or configuration.
-The CLI and MCP creation tools accept `--task-type software` / `task_type`, and
-the desktop has type selectors for creation and editing. Existing tasks retain
-Software behavior on upgrade. General tasks skip both automatic review stages;
-their memory saves and updates are optional.
-The documentation reviewer reads the original task, review results and actual
-implementation, then validates affected user and agent documentation, examples,
-commands, settings and platform requirements. Reviewers report evidence and
-create correction tasks under the source task; they do not edit implementation
-or documentation during review. A documentation review ends the sequence.
-The server switch applies immediately across projects; disabling it leaves
-existing queued reviews available but prevents new review stages.
+Task creation no longer asks agents to select General or Software. On completion,
+release, User review or cancellation, the tool workflow asks whether files were
+mutated. Reply with a `changeset` array of every changed path, or explicit null
+when no files were changed; omission leaves the task unchanged. This question
+comes from the tool response, without an additional terminal injection.
+
+With automatic reviews enabled in Settings > Gateway > Task automation, completing
+main work with confirmed file changes queues separate code and documentation
+reviews under the original task. No file changes means no automatic reviews.
+Generated review/documentation tasks never create another review workflow,
+including when they report changed files. Reviewers inspect the original change,
+report concrete findings and create correction tasks under the original source;
+they do not edit implementation or documentation during review. The server switch
+applies immediately across projects; disabling it preserves already queued reviews.
 
 Recall calls durable `memory search`, never `memory context` or WorkingContext.
 It has a five-second timeout and a bounded output. Unchanged recall is suppressed
@@ -82,13 +81,11 @@ within the same context. Explicit context restoration permits recall again.
 
 ## Idle memory review
 
-Each Software session work cycle allows one idle memory-review injection.
-A General task assignment suppresses this prompt, including after context clear
-and restart. Converting it to Software restores the unconsumed review allowance.
-Sessions without a typed assignment retain their existing idle-review behavior. A fresh session,
+Each session work cycle allows one idle memory-review injection. A fresh session,
 a new task assignment or explicit context clear begins a cycle. Resume, restart,
 comments, ordinary messages and busy/idle changes do not re-arm it. Repeated
-assignments for the same task do not re-arm it or clear context again.
+assignments for the same task do not re-arm it or clear context again. The legacy
+classification no longer gates this optional review.
 
 The allowance is persisted before dispatch in the amux state directory under
 `guidance/<session-id>.json`. It belongs to the session rather than the project

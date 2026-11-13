@@ -66,6 +66,15 @@ async fn response_json(mut response: reqwest::Response) -> Result<Value> {
         bytes.extend_from_slice(&chunk);
     }
     if !status.is_success() {
+        // Surface only this defined workflow question, never arbitrary gateway
+        // error bodies (which may contain transport credentials or diagnostics).
+        if status == reqwest::StatusCode::CONFLICT
+            && serde_json::from_slice::<Value>(&bytes)
+                .is_ok_and(|body| body["code"] == "changeset_confirmation_required")
+        {
+            return Err(GatewayStatus(status))
+                .context(amux_gateway_backend::task_changesets::QUESTION);
+        }
         return Err(GatewayStatus(status).into());
     }
     if bytes.is_empty() {
@@ -83,7 +92,6 @@ pub struct Gateway {
 /// Optional creation metadata shared by task creation and delegation.
 #[derive(Default)]
 pub struct TaskDetails {
-    pub task_type: Option<String>,
     pub description: Option<String>,
     pub labels: Vec<String>,
     pub hostname: Option<String>,
@@ -93,10 +101,6 @@ impl TaskDetails {
     /// Merge into a creation body. Routing labels have dedicated flags, so a
     /// free-form label cannot bypass their acknowledgment checks.
     pub fn apply(&self, body: &mut Value) -> Result<()> {
-        if let Some(task_type) = &self.task_type {
-            amux_gateway_backend::task_types::validate(task_type)?;
-            body["task_type"] = json!(task_type);
-        }
         if self
             .description
             .as_ref()
@@ -462,18 +466,30 @@ impl Gateway {
 
     /// Old gateways ignore unknown creation fields, so check before creating work.
     pub async fn require_task_hierarchy(&self) -> Result<()> {
-        let value = self
-            .exchange(
-                Method::GET,
-                self.base.join("v1/tasks/capabilities")?,
-                None,
-                None,
-                &[],
-            )
-            .await?;
+        let value = self.task_capabilities().await?;
         ensure!(
             value["task_hierarchy"].as_u64() == Some(1),
             "gateway does not support task hierarchy version 1; update the server before creating subtasks. No task creation sent"
+        );
+        Ok(())
+    }
+
+    async fn task_capabilities(&self) -> Result<Value> {
+        self.exchange(
+            Method::GET,
+            self.base.join("v1/tasks/capabilities")?,
+            None,
+            None,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn require_task_changesets(&self) -> Result<()> {
+        let value = self.task_capabilities().await?;
+        ensure!(
+            value["changeset_confirmation"].as_u64() == Some(1),
+            "Update the gateway server for changeset confirmation; no task transition was sent"
         );
         Ok(())
     }
@@ -588,16 +604,32 @@ impl Gateway {
         reason: &str,
         actor: &AgentIdentity,
     ) -> Result<Value> {
+        self.cancel_task_with_changeset(project, id, reason, actor, None)
+            .await
+    }
+
+    pub async fn cancel_task_with_changeset(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        reason: &str,
+        actor: &AgentIdentity,
+        changeset: Option<Value>,
+    ) -> Result<Value> {
         let reason = reason.trim();
         if id.is_nil() || reason.is_empty() || reason.len() > 16_384 {
             bail!("cancellation requires a nonnil task UUID and a reason of 1..=16384 bytes");
+        }
+        let mut body = json!({"reason":reason});
+        if let Some(changeset) = changeset {
+            body["changeset"] = changeset;
         }
         let response = self
             .request(
                 Method::POST,
                 project,
                 &[&id.to_string(), "cancellation"],
-                Some(json!({"reason": reason})),
+                Some(body),
                 Some(actor),
             )
             .await?;
@@ -796,13 +828,6 @@ impl Gateway {
             .await
             .context("delegation not confirmed; inspect tasks in both projects before retrying")?;
         let source = &result["source_task"];
-        if let Some(task_type) = &details.task_type {
-            ensure!(
-                source["task_type"] == task_type.as_str()
-                    && result["target_task"]["task_type"] == task_type.as_str(),
-                "Delegation type unconfirmed; inspect both projects and update the server before retrying"
-            );
-        }
         ensure!(
             source["parent"]["id"] == parent.to_string()
                 && source["parent"]["project_ident"] == project,

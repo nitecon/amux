@@ -896,27 +896,8 @@ impl Desktop {
                     {
                         return Err("work cycle changed before review");
                     }
-                    let new_assignment = assignment_task(&event).is_some_and(|task| {
-                        state.assign_typed(
-                            task,
-                            event["payload"]["event"]["task"]["task_type"]
-                                .as_str()
-                                .unwrap_or("software"),
-                        )
-                    });
-                    let snapshot = &event["payload"]["event"]["task"];
-                    if snapshot["owner_origin"]["session_id"] == current.target.session.to_string()
-                        && snapshot["owner_origin"]["instance_id"]
-                            == current.actor.instance_id.to_string()
-                        && let (Some(id), Some(task_type)) = (
-                            snapshot["id"]
-                                .as_str()
-                                .and_then(|id| Uuid::parse_str(id).ok()),
-                            snapshot["task_type"].as_str(),
-                        )
-                    {
-                        state.observe_task_type(id, task_type);
-                    }
+                    let new_assignment =
+                        assignment_task(&event).is_some_and(|task| state.assign(task));
                     let needs_clear = assignment_task(&event).is_none_or(|task| {
                         (new_assignment || event["amux_assignment_new"] == true)
                             && state.needs_task_clear(task)
@@ -1225,9 +1206,7 @@ pub(super) fn notification_text(event: &Value, candidate: &Candidate, mcp: bool)
     } else {
         String::new()
     };
-    let task_type = source["task"]["task_type"].as_str().unwrap_or("software");
-    let type_hint = amux_gateway_backend::task_types::guidance(task_type, &parsed.task.to_string());
-    Some(format!("{text} {guidance} {type_hint}{hints}"))
+    Some(format!("{text} {guidance}{hints}"))
 }
 
 fn assignment_task(event: &Value) -> Option<Uuid> {

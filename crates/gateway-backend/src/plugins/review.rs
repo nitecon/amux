@@ -172,7 +172,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(reviews, 1);
+            assert_eq!(reviews, 2);
             let review_id: String = conn
                 .query_row(
                     "SELECT review_task_id FROM task_reviews WHERE source_task_id=?1",

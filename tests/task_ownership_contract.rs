@@ -171,11 +171,23 @@ fn run(
         }
         thread::sleep(Duration::from_millis(25));
     };
-    let (url, server) = server(replies(&actor));
+    let mut replies = replies(&actor);
+    let confirming = matches!(op, "done" | "release");
+    if confirming {
+        replies.insert(0, json!({"changeset_confirmation":1}));
+    }
+    let (url, server) = server(replies);
     let native = native_cli::NativeCli::new(&root.join("state"), &url);
     writeln!(agent.stdin.as_mut().unwrap(), "{}", native.url).unwrap();
     let output = agent.wait_with_output().unwrap();
-    let (requests, listener) = server.join().unwrap();
+    let (mut requests, listener) = server.join().unwrap();
+    if confirming {
+        assert!(
+            requests
+                .remove(0)
+                .starts_with("GET /v1/tasks/capabilities ")
+        );
+    }
     assert!(
         matches!(listener.accept(), Err(e) if e.kind() == ErrorKind::WouldBlock),
         "client sent a request after the expected ones"
@@ -235,21 +247,6 @@ fn done_and_release_refuse_without_exact_confirmed_ownership() {
             );
         }
     }
-}
-
-#[test]
-fn general_task_submission_refuses_before_touching_git() {
-    let (ok, stderr, requests) = run("submit-work", |actor| {
-        let mut reply = task("in_progress", exact(actor));
-        reply["task_type"] = json!("general");
-        vec![reply]
-    });
-    assert!(!ok);
-    assert!(
-        stderr.contains("set-type") && stderr.contains("software"),
-        "{stderr}"
-    );
-    assert_eq!(requests.len(), 1);
 }
 
 #[test]

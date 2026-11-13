@@ -1908,7 +1908,7 @@ mod tests {
             (human_headers(), "todo"),
         ] {
             let (code, body) =
-                desktop_http(&state, headers, "PATCH", &path, json!({"status":status, "review_action": (status == "user_review").then_some("Choose the release date")})).await;
+                desktop_http(&state, headers, "PATCH", &path, json!({"status":status, "review_action": (status == "user_review").then_some("Choose the release date"), "changeset":null})).await;
             assert_eq!(code, StatusCode::OK, "{body}");
             assert_eq!(body["requester"], json!(a.target));
         }
@@ -1941,7 +1941,7 @@ mod tests {
             ordinary_headers(&c),
             "PATCH",
             &path,
-            json!({"status":"done"}),
+            json!({"status":"done","changeset":null}),
         )
         .await;
         assert_eq!(code, StatusCode::OK, "{done}");
@@ -2641,7 +2641,7 @@ mod tests {
                 ordinary_headers(&owner),
                 "PATCH",
                 &path,
-                json!({"status":"done"})
+                json!({"status":"done","changeset":null})
             )
             .await
             .0,
@@ -2676,7 +2676,7 @@ mod tests {
             human_headers(),
             "PATCH",
             &path,
-            json!({"status":"done"}),
+            json!({"status":"done","changeset":null}),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{done}");
@@ -2957,7 +2957,7 @@ mod tests {
                 human_headers(),
                 "PATCH",
                 &path,
-                json!({"status":"todo"}),
+                json!({"status":"todo","changeset":null}),
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{result}");
@@ -4427,7 +4427,7 @@ mod tests {
             &windows,
             "PATCH",
             &wrong_path,
-            json!({"status":"user_review", "review_action":"Choose the release date"}),
+            json!({"status":"user_review", "review_action":"Choose the release date", "changeset":null}),
         )
         .await;
         assert_eq!(
@@ -4442,7 +4442,14 @@ mod tests {
             .0,
             StatusCode::CONFLICT
         );
-        ok(&state, &windows, "PATCH", &path, json!({"status":"done"})).await;
+        ok(
+            &state,
+            &windows,
+            "PATCH",
+            &path,
+            json!({"status":"done","changeset":null}),
+        )
+        .await;
         assert_eq!(
             http(
                 &state,

@@ -122,36 +122,46 @@ the audit is not part of this released baseline. The deprecation handoff must
 reconcile any such work before switching generated rules; it must not remove a
 newly released workflow without a replacement.
 
-## Task types
+## File changes and task transitions
 
-New ordinary tasks default to `general`. Use `--task-type software` on `tasks create` or
-`tasks delegate` for work that modifies any code or configuration. Both linked
-delegation records receive the selected type. Before making such changes on an
-existing General task, claim it and run:
+Tasks no longer require a General/Software choice at creation. `submit-work`
+accepts owned work without a prior type conversion. CLI and MCP creation tools
+and desktop forms no longer offer task types.
+
+When an agent completes, releases, parks or cancels work, the gateway asks whether
+any files were mutated. Omitting `changeset` returns HTTP 409 with that question;
+the transaction rolls back, including ownership, timestamps, comments and events.
+Repeat the same transition with a non-empty array of all modified, added or
+deleted paths, or explicit `null` for no file changes:
 
 ```sh
-amux tasks set-type ID software
+amux tasks done ID --changeset '["src/main.rs", "docs/usage.md"]'
+amux tasks done ID --changeset null
+amux tasks release ID --changeset null
+amux tasks user-review ID "Choose the required behavior" --changeset '["src/main.rs"]'
+amux tasks cancel ID --reason "No longer needed" --changeset null
 ```
 
-MCP exposes `task_set_type` and the optional `task_type` creation argument.
-The desktop offers a type selector when creating or editing a task. Type edits
-are confirmed by the server; agents need exact ownership, and completed,
-cancelled and generated review tasks cannot change type. `submit-work` rejects
-General tasks with conversion instructions before touching Git.
+MCP `task_done`, `task_release` and `task_user_review` accept `changeset` as an
+array or JSON null. Missing and null are distinct. Claiming work and reordering
+within its current lane do not ask about files. Agents must use a task PATCH,
+not lane reordering, to submit confirmation when crossing out of active work.
 
-Software tasks queue code and documentation reviews when automatic reviews are
-enabled, and remind agents to review documentation and save/update useful durable
-memories. General tasks skip these review stages and idle memory prompts; memory
-tools are still available and saves/updates are optional. Existing tasks become
-Software on upgrade to preserve review behavior. Upgrade both server and clients
-for type acknowledgment and guidance.
+A completed main task with confirmed file changes queues one code review and
+one documentation review under the original task when automatic reviews are
+enabled. Explicit null queues neither. Generated review/documentation tasks and
+their workflow descendants never start another review workflow, even if they
+report file changes. The original stays done; completion replay cannot duplicate
+reviews. The legacy classification column remains for database compatibility;
+it is derived from transition evidence, not an agent-selected task type.
 
-Credential-bound `amux dispatch` work retains Software classification and its
-separate lifecycle API.
-
-The API field is `task_type` (`general` or `software`) on task creation,
-delegation, updates, details, lists and lifecycle events. Omitted creation values
-default to General; a PATCH without this field preserves the existing type.
+API: PATCH a task with `status` and `changeset`; cancellation uses its existing
+POST endpoint plus `changeset`. File lists are non-empty string arrays, limited
+to 1024 paths and 64 KiB of JSON. Confirmations apply to each agent transition;
+previous declarations are not reused implicitly. Human desktop actions retain
+their existing controls. Upgrade the gateway and clients together; the CLI checks
+`GET /v1/tasks/capabilities` for `changeset_confirmation: 1` before sending a
+transition, so an old gateway cannot silently ignore the new field.
 
 ## Subtasks and parent scope
 

@@ -1209,6 +1209,13 @@ fn apply_schema(conn: &Connection) -> Result<()> {
         // Preserve review behavior for all tasks created before this feature.
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'software' CHECK(task_type IN ('general','software'))")?;
     }
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tasks') WHERE name='changeset_json')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN changeset_json TEXT")?;
+    }
     crate::task_requester::initialize(conn)?;
     crate::task_reviews::initialize(conn)?;
     crate::checkouts::initialize(conn)?;
@@ -7746,6 +7753,8 @@ pub struct TaskParent {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Task {
+    pub changeset: Option<Vec<String>>,
+    #[serde(skip_serializing)]
     pub task_type: String,
     pub parent: Option<TaskParent>,
     pub routing: crate::task_targets::Routing,
@@ -7807,6 +7816,7 @@ pub struct TaskDelegation {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskSummary {
+    #[serde(skip_serializing)]
     pub task_type: String,
     pub parent: Option<TaskParent>,
     pub routing: crate::task_targets::Routing,
@@ -8335,6 +8345,9 @@ pub fn insert_pattern_comment(
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     Ok(Task {
+        changeset: row
+            .get::<_, Option<String>>(25)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
         task_type: row.get(24)?,
         parent: read_task_parent(row, 22)?,
         review_action: row.get(23)?,
@@ -8370,7 +8383,7 @@ const TASK_SELECT_COLS: &str =
      hostname, owner_agent_id, reporter, created_at, updated_at, started_at, done_at, \
      kind, delegated_to_project_ident, delegated_to_task_id, owner_origin_json, goal, routing_json, requester_json, \
      (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) \
-      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action, task_type";
+      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action, task_type, changeset_json";
 
 fn read_task_parent(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<TaskParent>> {
     row.get::<_, Option<String>>(index)?
@@ -8711,6 +8724,7 @@ fn insert_task_record(
     )?;
 
     Ok(Task {
+        changeset: None,
         task_type: task_type.into(),
         parent: None,
         requester: requester.cloned(),
@@ -9365,13 +9379,6 @@ fn update_task_inner(
         return Err(
             crate::task_dispatch::Conflict("only active tasks can change their os: label").into(),
         );
-    }
-    if enforce_owner
-        && upd.task_type.is_some()
-        && (origin.is_some() || actor_agent_id.is_some())
-        && current.owner_origin.is_none()
-    {
-        return Err(crate::task_events::OwnershipConflict.into());
     }
     if enforce_owner
         && (upd.status.is_some()

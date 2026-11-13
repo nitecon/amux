@@ -15,8 +15,33 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         source_done_at INTEGER NOT NULL,
         review_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        PRIMARY KEY(source_task_id,source_done_at));",
+        stage TEXT NOT NULL DEFAULT 'code',
+        PRIMARY KEY(source_task_id,source_done_at,stage));",
     )?;
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_reviews') WHERE name='stage')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        // Retain old workflow identities, including documentation formerly
+        // attached to its code review, under the original completion.
+        let migration = conn.unchecked_transaction()?;
+        migration.execute_batch("ALTER TABLE task_reviews RENAME TO task_reviews_old;
+            CREATE TABLE task_reviews (
+              source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+              source_done_at INTEGER NOT NULL,
+              review_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+              stage TEXT NOT NULL DEFAULT 'code',
+              PRIMARY KEY(source_task_id,source_done_at,stage));
+            INSERT INTO task_reviews
+            SELECT COALESCE(parent.source_task_id,r.source_task_id),
+                   COALESCE(parent.source_done_at,r.source_done_at),r.review_task_id,
+                   CASE WHEN EXISTS(SELECT 1 FROM json_each(t.labels) WHERE value='documentation-review') THEN 'documentation' ELSE 'code' END
+            FROM task_reviews_old r JOIN tasks t ON t.id=r.review_task_id
+            LEFT JOIN task_reviews_old parent ON parent.review_task_id=r.source_task_id;
+            DROP TABLE task_reviews_old;")?;
+        migration.commit()?;
+    }
     Ok(())
 }
 
@@ -184,15 +209,35 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
     if source.task_type != crate::task_types::SOFTWARE {
         return Ok(None);
     }
-    let documentation = source.labels.iter().any(|label| label == "task-review");
-    if source
-        .labels
-        .iter()
-        .any(|label| label == "documentation-review")
-        || (source.kind == "delegated" && source.delegated_to_task_id.is_some())
-    {
+    // Generated reviews are terminal workflow steps. Their labels cannot be
+    // removed, and descendants of a review cannot start another workflow.
+    let followup: bool = conn.query_row(
+        "WITH RECURSIVE ancestors(id) AS (
+          SELECT ?1 UNION SELECT s.parent_id FROM task_subtasks s JOIN ancestors a ON s.child_id=a.id
+        ) SELECT EXISTS(SELECT 1 FROM ancestors a JOIN tasks t ON t.id=a.id
+          WHERE EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(t.labels) THEN t.labels ELSE '[]' END) l
+            WHERE l.value IN ('task-review','documentation-review','documentation'))
+          OR EXISTS(SELECT 1 FROM task_reviews r WHERE r.review_task_id=a.id))",
+        [source_id], |row| row.get(0))?;
+    if followup || (source.kind == "delegated" && source.delegated_to_task_id.is_some()) {
         return Ok(None);
     }
+    let review = enqueue_stage(conn, &source, false)?;
+    enqueue_stage(conn, &source, true)?;
+    Ok(review)
+}
+
+fn enqueue_stage(
+    conn: &Connection,
+    source: &db::Task,
+    documentation: bool,
+) -> Result<Option<db::Task>> {
+    let project = &source.project_ident;
+    let stage = if documentation {
+        "documentation"
+    } else {
+        "code"
+    };
     if source.status != "done" {
         return Err(Conflict("source task is not completed").into());
     }
@@ -201,29 +246,15 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         .ok_or(Conflict("source completion timestamp is missing"))?;
     let existing: Option<String> = conn
         .query_row(
-            "SELECT review_task_id FROM task_reviews WHERE source_task_id=?1 AND source_done_at=?2",
-            params![source.id, completed],
+            "SELECT review_task_id FROM task_reviews WHERE source_task_id=?1 AND source_done_at=?2 AND stage=?3",
+            params![source.id, completed, stage],
             |row| row.get(0),
         )
         .optional()?;
     if let Some(id) = existing {
         return Ok(db::get_task_detail(conn, project, &id)?.map(|detail| detail.task));
     }
-    let original = if documentation {
-        let Some(id) = source
-            .labels
-            .iter()
-            .find_map(|label| label.strip_prefix("review-of:"))
-        else {
-            return Ok(None);
-        };
-        let Some(detail) = db::get_task_detail(conn, project, id)? else {
-            return Ok(None);
-        };
-        detail.task
-    } else {
-        source.clone()
-    };
+    let original = source;
     let mut labels = vec![
         "task-review".to_owned(),
         format!("review-of:{}", original.id),
@@ -302,10 +333,10 @@ pub fn enqueue(conn: &Connection, project: &str, source_id: &str) -> Result<Opti
         "amux-autoreview",
         crate::task_types::SOFTWARE,
     )?;
-    crate::subtasks::attach(conn, &source, &mut task)?;
+    crate::subtasks::attach(conn, source, &mut task)?;
     conn.execute(
-        "INSERT INTO task_reviews VALUES(?1,?2,?3)",
-        params![source.id, completed, task.id],
+        "INSERT INTO task_reviews VALUES(?1,?2,?3,?4)",
+        params![source.id, completed, task.id, stage],
     )?;
     Ok(Some(task))
 }
@@ -402,7 +433,99 @@ mod tests {
         (database, source, author)
     }
     #[test]
-    fn reviews_queue_one_documentation_followup_and_then_stop() {
+    fn documentation_workflow_descendants_do_not_start_another_review_cycle() {
+        let (database, source, _) = fixture();
+        let conn = database.lock().unwrap();
+        task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id)).unwrap();
+        let docs = crate::subtasks::list(&conn, &source.id)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.labels.iter().any(|l| l == "documentation-review"))
+            .unwrap();
+        let child = task_events::mutation(&conn, None, |conn| {
+            let mut child = db::insert_task(
+                conn,
+                "example",
+                "Documentation correction",
+                None,
+                None,
+                &[],
+                None,
+                "fixture",
+            )?;
+            crate::subtasks::attach(conn, &docs, &mut child)?;
+            conn.execute(
+                "UPDATE tasks SET task_type='software',status='done',done_at=1 WHERE id=?1",
+                [&child.id],
+            )?;
+            Ok(child)
+        })
+        .unwrap();
+        assert!(
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &child.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(crate::subtasks::list(&conn, &child.id).unwrap().is_empty());
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM task_reviews", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn legacy_review_chain_migrates_without_duplicate_workflows() {
+        let (database, source, _) = fixture();
+        let conn = database.lock().unwrap();
+        let code = task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
+            .unwrap()
+            .unwrap();
+        let docs = crate::subtasks::list(&conn, &source.id)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.labels.iter().any(|l| l == "documentation-review"))
+            .unwrap();
+        conn.execute_batch("ALTER TABLE task_reviews RENAME TO new_reviews;
+            CREATE TABLE task_reviews(source_task_id TEXT NOT NULL,source_done_at INTEGER NOT NULL,review_task_id TEXT NOT NULL,PRIMARY KEY(source_task_id,source_done_at));").unwrap();
+        conn.execute("INSERT INTO task_reviews SELECT source_task_id,source_done_at,review_task_id FROM new_reviews WHERE stage='code'", []).unwrap();
+        conn.execute(
+            "INSERT INTO task_reviews VALUES(?1,?2,?3)",
+            params![code.id, source.done_at.unwrap(), docs.id],
+        )
+        .unwrap();
+        conn.execute_batch("DROP TABLE new_reviews").unwrap();
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        let again = task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.id, code.id);
+        assert_eq!(crate::subtasks::list(&conn, &source.id).unwrap().len(), 2);
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM task_reviews WHERE source_task_id=?1",
+                [&source.id],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        conn.execute(
+            "UPDATE tasks SET labels='[]',status='done',done_at=1 WHERE id=?1",
+            [&docs.id],
+        )
+        .unwrap();
+        assert!(
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &docs.id))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn original_completion_queues_two_terminal_review_steps() {
         let (database, source, author) = fixture();
         let conn = database.lock().unwrap();
         let review =
@@ -427,14 +550,25 @@ mod tests {
         let peer = actor();
         update(&conn, &review.id, "in_progress", &peer).unwrap();
         update(&conn, &review.id, "done", &peer).unwrap();
-        let docs = task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &review.id))
+        assert!(
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &review.id))
+                .unwrap()
+                .is_none()
+        );
+        let docs = crate::subtasks::list(&conn, &source.id)
             .unwrap()
+            .into_iter()
+            .find(|task| {
+                task.labels
+                    .iter()
+                    .any(|label| label == "documentation-review")
+            })
             .unwrap();
         assert_eq!(
             docs.title,
             format!("Documentation review: {}", source.title)
         );
-        assert_eq!(docs.parent.as_ref().unwrap().id, review.id);
+        assert_eq!(docs.parent.as_ref().unwrap().id, source.id);
         assert_eq!(docs.status, "todo");
         assert!(docs.owner_agent_id.is_none() && docs.owner_origin.is_none());
         assert!(docs.labels.contains(&"documentation-review".into()));
@@ -449,12 +583,10 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("matches the implementation"));
-        assert_eq!(
+        assert!(
             task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &review.id))
                 .unwrap()
-                .unwrap()
-                .id,
-            docs.id
+                .is_none()
         );
         update(&conn, &docs.id, "in_progress", &author).unwrap();
         update(&conn, &docs.id, "done", &author).unwrap();

@@ -64,6 +64,8 @@ pub enum Kind {
     /// A JSON array of strings, each passed as its own positional value, so
     /// values may contain whitespace.
     List,
+    /// Explicit array/null confirmation, preserving null instead of omitting it.
+    Changeset,
     /// `--flag=value`, one argument so a value starting with `-` stays a value.
     Option(&'static str),
 }
@@ -82,6 +84,13 @@ pub struct Tool {
     pub command: &'static [&'static str],
     pub args: &'static [Arg],
 }
+
+const CHANGESET: Arg = Arg {
+    name: "changeset",
+    description: "Every file mutated by this task (modified, added or deleted), or null if no files were mutated. Omit to receive the server confirmation question without moving the task.",
+    kind: Kind::Changeset,
+    required: false,
+};
 
 const fn pos(name: &'static str, description: &'static str) -> Arg {
     Arg {
@@ -132,11 +141,6 @@ pub const TOOLS: &[Tool] = &[
         args: &[
             pos("title", "Task title"),
             opt(
-                "task_type",
-                "--task-type",
-                "general (default) or software; software for code/configuration changes",
-            ),
-            opt(
                 "parent",
                 "--parent",
                 "Existing parent task UUID whose scope includes this work",
@@ -154,13 +158,6 @@ pub const TOOLS: &[Tool] = &[
         ],
     },
     Tool {
-        name: "task_set_type",
-        description: "Convert owned work to software before modifying any code or configuration; general tasks skip automatic code/documentation reviews and mandatory memory prompts.",
-        bin: Bin::Amux,
-        command: &["tasks", "set-type"],
-        args: &[ID, pos("task_type", "general or software")],
-    },
-    Tool {
         name: "task_claim",
         description: "Claim a task before working on it.",
         bin: Bin::Amux,
@@ -174,11 +171,6 @@ pub const TOOLS: &[Tool] = &[
         command: &["tasks", "delegate"],
         args: &[
             pos("title", "Handoff title"),
-            opt(
-                "task_type",
-                "--task-type",
-                "general (default) or software; software for code/configuration changes",
-            ),
             Arg {
                 name: "parent",
                 description: "Source parent whose scope includes this work",
@@ -223,6 +215,7 @@ pub const TOOLS: &[Tool] = &[
                 "action",
                 "Specific decision or action required from the user",
             ),
+            CHANGESET,
         ],
     },
     Tool {
@@ -230,14 +223,14 @@ pub const TOOLS: &[Tool] = &[
         description: "Release an owned task you cannot continue.",
         bin: Bin::Amux,
         command: &["tasks", "release"],
-        args: &[ID],
+        args: &[ID, CHANGESET],
     },
     Tool {
         name: "task_done",
         description: "Mark an owned task done.",
         bin: Bin::Amux,
         command: &["tasks", "done"],
-        args: &[ID],
+        args: &[ID, CHANGESET],
     },
     Tool {
         name: "submit_work",
@@ -417,6 +410,9 @@ fn schema(tool: &Tool) -> Value {
         .map(|a| {
             let mut schema = match a.kind {
                 Kind::List => json!({"type": "array", "items": {"type": "string"}}),
+                Kind::Changeset => {
+                    json!({"type": ["array", "null"], "items": {"type": "string"}, "minItems": 1})
+                }
                 _ => json!({"type": "string"}),
             };
             schema["description"] = a.description.into();
@@ -437,6 +433,14 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
     let mut options = Vec::new();
     let mut positionals = Vec::new();
     for arg in tool.args {
+        if matches!(arg.kind, Kind::Changeset) {
+            if let Some(value) = arguments.get(arg.name) {
+                amux_gateway_backend::task_changesets::validate(value)
+                    .map_err(|e| e.to_string())?;
+                options.push(format!("--changeset={value}"));
+            }
+            continue;
+        }
         if matches!(arg.kind, Kind::List) {
             let values = list(arguments.get(arg.name), arg.name)?;
             if values.is_empty() && arg.required {
@@ -460,7 +464,7 @@ pub fn argv(tool: &Tool, arguments: &Value) -> Result<Vec<String>, String> {
             Kind::Positional => positionals.push(value),
             Kind::Words => positionals.extend(value.split_whitespace().map(str::to_owned)),
             Kind::Option(flag) => options.push(format!("{flag}={value}")),
-            Kind::List => unreachable!("handled above"),
+            Kind::List | Kind::Changeset => unreachable!("handled above"),
         }
     }
     let mut argv: Vec<String> = tool.command.iter().map(|s| (*s).to_owned()).collect();

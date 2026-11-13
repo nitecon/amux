@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.0.76 - 2026-11-13
+
+### Fixed
+
+- Stop recursive review/documentation workflows. Main task completion creates
+  the independent code and documentation review steps; those steps cannot
+  start another workflow, including after legacy labels are lost.
+- Start Codex terminals with `--no-daemon`, including restored conversations
+  and missing-history fallback, while preserving an explicit copy of the flag.
+
+### Changed
+
+- Replace upfront General/Software choices with file confirmation when agents
+  complete, release, park or cancel work. Supply every changed path or explicit
+  null; missing confirmation asks a question and leaves the task unchanged.
+- Remove task-type selectors and conversion instructions from CLI, MCP,
+  desktop forms and bundled agent instructions. Preserve existing task/review
+  history while migrating completion deduplication to the two review stages.
+
+### Upgrade notes
+
+- Update the gateway and desktop/CLI together for changeset-aware transitions.
+  The new CLI refuses to send transitions to gateways without this support.
+- Codex must support `--no-daemon`. Existing terminals adopt the new launch
+  behavior on their next launch; this release does not restart running agents.
+
 ## v0.0.75 - 2026-11-12
 
 ### Fixed

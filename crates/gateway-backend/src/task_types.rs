@@ -12,17 +12,6 @@ pub fn validate(value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn guidance(task_type: &str, task_id: &str) -> String {
-    crate::templates::render(
-        if task_type == GENERAL {
-            crate::templates::GENERAL_TASK_GUIDANCE
-        } else {
-            crate::templates::SOFTWARE_TASK_GUIDANCE
-        },
-        &[("task_id", task_id)],
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,7 +27,7 @@ mod tests {
     }
 
     #[test]
-    fn general_skips_reviews_and_conversion_preserves_software_review_chain() {
+    fn legacy_classification_preserves_root_workflows_without_recursive_reviews() {
         let database = db::open(":memory:").unwrap();
         let conn = database.lock().unwrap();
         conn.execute("INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES('types','none','',0)", []).unwrap();
@@ -122,11 +111,22 @@ mod tests {
                     )
                 })
                 .unwrap();
-                let docs = task_events::mutation(&conn, None, |conn| {
-                    task_reviews::enqueue(conn, "types", &review.id)
-                })
-                .unwrap()
-                .unwrap();
+                assert!(
+                    task_events::mutation(&conn, None, |conn| task_reviews::enqueue(
+                        conn, "types", &review.id
+                    ))
+                    .unwrap()
+                    .is_none()
+                );
+                let docs = crate::subtasks::list(&conn, id)
+                    .unwrap()
+                    .into_iter()
+                    .find(|task| {
+                        task.labels
+                            .iter()
+                            .any(|label| label == "documentation-review")
+                    })
+                    .unwrap();
                 assert_eq!(docs.task_type, SOFTWARE);
                 assert!(docs.labels.iter().any(|l| l == "documentation-review"));
             }

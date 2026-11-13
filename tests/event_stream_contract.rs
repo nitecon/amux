@@ -264,7 +264,11 @@ async fn task_mutations_reach_only_subscribed_remote_consumers_at_least_once() {
         )
         .await;
     server
-        .send(reqwest::Method::PATCH, &path, json!({"status": "done"}))
+        .send(
+            reqwest::Method::PATCH,
+            &path,
+            json!({"status": "done", "changeset":null}),
+        )
         .await;
 
     let created = event(&mut a, true).await;
@@ -877,7 +881,7 @@ async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_of
         .send(
             reqwest::Method::POST,
             &format!("/v1/projects/{PROJECT}/tasks"),
-            json!({"title": "Build it", "task_type":"software"}),
+            json!({"title": "Build it"}),
         )
         .await;
     let source = source["id"].as_str().unwrap().to_owned();
@@ -895,7 +899,7 @@ async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_of
         .send(
             reqwest::Method::PATCH,
             &format!("/v1/projects/{PROJECT}/tasks/{source}"),
-            json!({"status": "done"}),
+            json!({"status": "done", "changeset":["src/fixture.rs"]}),
         )
         .await;
 
@@ -966,7 +970,7 @@ async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_of
         .send(
             reqwest::Method::POST,
             &format!("/v1/projects/{PROJECT}/tasks"),
-            json!({"title": "Quick fix", "task_type":"software"}),
+            json!({"title": "Quick fix"}),
         )
         .await;
     let quick = quick["id"].as_str().unwrap().to_owned();
@@ -979,7 +983,11 @@ async fn completed_work_is_reviewed_by_another_agent_until_review_is_switched_of
         )
         .await;
     server
-        .send(reqwest::Method::PATCH, &path, json!({"status": "done"}))
+        .send(
+            reqwest::Method::PATCH,
+            &path,
+            json!({"status": "done", "changeset":["src/fixture.rs"]}),
+        )
         .await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(

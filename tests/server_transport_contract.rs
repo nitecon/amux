@@ -224,7 +224,7 @@ fn transport_fixture_worker() {
         let stream = tokio::spawn(delegation_connection::run_profile(profile.clone(), consumer, Some(1), incoming, outgoing));
         let initial_connection = loop { if let ConnectionEvent::Subscribed { connection, .. } = event(&mut events, "initial subscription").await { break connection; } };
         let caller = actor(&root);
-        let task = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"Real mTLS task", "task_type":"software", "parent_task_id":parent["id"]})), Some(&caller)).await.unwrap();
+        let task = gateway.request(Method::POST, "transport-fixture", &[], Some(json!({"title":"Real mTLS task", "parent_task_id":parent["id"]})), Some(&caller)).await.unwrap();
         let received_id = loop { if let ConnectionEvent::Event(item) = event(&mut events, "task event").await { break item.id; } };
         commands.send(StreamCommand { connection: initial_connection, frame: json!({"type":"ack","event_id":received_id,"status":"skipped","message":"isolated transport fixture"}) }).await.unwrap();
         let cursor = loop { if let ConnectionEvent::Recorded { cursor, .. } = event(&mut events, "receipt").await { break cursor; } };
@@ -257,7 +257,7 @@ fn transport_fixture_worker() {
         assert_eq!(memory["results"][0]["action"], "created");
         let source = task["id"].as_str().unwrap();
         gateway.claim("transport-fixture", source, &caller).await.unwrap();
-        gateway.request(Method::PATCH, "transport-fixture", &[source], Some(json!({"status":"done"})), Some(&caller)).await.unwrap();
+        gateway.request(Method::PATCH, "transport-fixture", &[source], Some(json!({"status":"done","changeset":["src/fixture.rs"]})), Some(&caller)).await.unwrap();
         // The server's review plugin queues exactly one review for the completion.
         let reviews = |list: Value| -> Vec<Value> {
             list.as_array().unwrap().iter().filter(|t| t["title"] == "Review: Real mTLS task").cloned().collect()
@@ -275,11 +275,11 @@ fn transport_fixture_worker() {
         // With no available independent peer, best-effort review claims may
         // fall back to the author. Return it so the second client can claim.
         gateway.claim("transport-fixture", review_id, &caller).await.unwrap();
-        gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"todo"})), Some(&caller)).await.unwrap();
+        gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"todo","changeset":null})), Some(&caller)).await.unwrap();
         assert!(gateway.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"labels":[]})), Some(&caller)).await.is_err());
         let reviewer = actor(&root);
         second.claim("transport-fixture", review_id, &reviewer).await.unwrap();
-        second.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"done"})), Some(&reviewer)).await.unwrap();
+        second.request(Method::PATCH, "transport-fixture", &[review_id], Some(json!({"status":"done","changeset":null})), Some(&reviewer)).await.unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
         let titles: Vec<Value> = gateway.list("transport-fixture").await.unwrap().as_array().unwrap().iter().map(|t| t["title"].clone()).collect();
         assert!(!titles.iter().any(|t| t == "Review: Review: Real mTLS task"), "a completed review is not reviewed");
@@ -288,7 +288,7 @@ fn transport_fixture_worker() {
         assert!(docs["labels"].as_array().unwrap().contains(&json!(format!("review-of:{source}"))));
         let docs_id = docs["id"].as_str().unwrap();
         gateway.claim("transport-fixture", docs_id, &caller).await.unwrap();
-        gateway.request(Method::PATCH, "transport-fixture", &[docs_id], Some(json!({"status":"done"})), Some(&caller)).await.unwrap();
+        gateway.request(Method::PATCH, "transport-fixture", &[docs_id], Some(json!({"status":"done","changeset":null})), Some(&caller)).await.unwrap();
         assert!(server_controller::automatic_reviews(admin.clone(), None).await.unwrap());
         assert!(!server_controller::automatic_reviews(admin.clone(), Some(false)).await.unwrap());
         assert!(!server_controller::automatic_reviews(admin.clone(), None).await.unwrap());

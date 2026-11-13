@@ -1,4 +1,4 @@
-## amux tasks — managed instructions v7
+## amux tasks — managed instructions v8
 
 Use amux for all task tracking. Do not use local task/todo/plan tools
 (TaskCreate/TaskGet/TaskList/TaskUpdate/TodoWrite or update_plan).
@@ -23,7 +23,6 @@ source project, preserving the link to the feature or requirement.
 amux tasks list
 amux tasks get ID
 amux tasks create "Title" --parent PARENT_ID --specification "Context and acceptance criteria"
-amux tasks set-type ID software
 amux tasks claim ID
 amux tasks started ID
 amux tasks comment ID "Progress, evidence, or question"
@@ -35,13 +34,14 @@ amux tasks help
 amux submit-work ID "Commit message" PATH...
 ```
 
-New tasks default to General. Before modifying any code or configuration,
-convert the owned task with `amux tasks set-type ID software` (MCP
-`task_set_type`), or create it with `--task-type software`. Software completion
-queues code and documentation reviews when enabled; review affected documentation
-and search/update relevant durable memories before completion. General tasks skip
-these automatic reviews and idle memory prompts. Memory tools remain available
-for optional saves and updates on General tasks.
+Tasks have one creation workflow. When completing, releasing, parking or cancelling
+work, confirm every mutated file with `--changeset '["path/to/file"]'`, or
+`--changeset null` if no files were changed. MCP transition tools accept the same
+array/null `changeset` value. Omission returns the gateway's confirmation question
+without moving the task. Review affected documentation and search/update relevant
+durable memories where useful. Completed main work with file changes queues code
+and documentation reviews when enabled. Generated review/documentation tasks never
+create another review workflow, including when reporting file changes.
 
 Before moving a task to User review, comment with the question or decision needed
 and provide the specific user action as the required command argument.

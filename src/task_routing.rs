@@ -297,10 +297,8 @@ impl Gateway {
         context: &str,
         remote: Option<&str>,
         routing: &Routing,
-        task_type: &str,
     ) -> Result<Uuid> {
-        amux_gateway_backend::task_types::validate(task_type)?;
-        let mut body = json!({"title": title, "task_type":task_type, "specification": context,
+        let mut body = json!({"title": title, "specification": context,
             "hostname": sysinfo::System::host_name()});
         if let Some(remote) = remote {
             ensure!(
@@ -330,10 +328,6 @@ impl Gateway {
         let task = self
             .request(Method::POST, project, &[], Some(body), None)
             .await?;
-        ensure!(
-            task["task_type"] == task_type,
-            "Task type unconfirmed; inspect task and update the server before retrying"
-        );
         if *routing != Routing::Auto {
             let acknowledged: Routing = serde_json::from_value(task["routing"].clone()).context(
                 "Task accepted without confirmed routing; inspect the task before retrying",

@@ -226,9 +226,6 @@ enum TaskOperation {
     },
     Create {
         title: String,
-        /// General by default; use software for any code or configuration changes.
-        #[arg(long, value_parser = ["general", "software"], default_value = "general")]
-        task_type: String,
         /// Existing task whose scope includes this work. Read it before creating a subtask.
         #[arg(
             long,
@@ -260,9 +257,6 @@ enum TaskOperation {
     /// A lost reply is uncertain: inspect both projects before manually retrying.
     Delegate {
         title: String,
-        /// General by default; use software for any code or configuration changes.
-        #[arg(long, value_parser = ["general", "software"], default_value = "general")]
-        task_type: String,
         /// Parent task in this project for the cross-project handoff.
         #[arg(long)]
         parent: Uuid,
@@ -297,12 +291,6 @@ enum TaskOperation {
         #[arg(long)]
         clear: bool,
     },
-    /// Convert owned work before making code or configuration changes.
-    SetType {
-        id: Uuid,
-        #[arg(value_parser = ["general", "software"])]
-        task_type: String,
-    },
     /// Change the OS requirement of owned work; incompatible work returns to the queue.
     SetOs {
         id: Uuid,
@@ -317,6 +305,8 @@ enum TaskOperation {
         id: Uuid,
         /// Exact decision or action the user must take.
         action: String,
+        #[command(flatten)]
+        confirmation: Changeset,
     },
     Comment {
         id: Uuid,
@@ -328,15 +318,21 @@ enum TaskOperation {
     },
     Done {
         id: Uuid,
+        #[command(flatten)]
+        confirmation: Changeset,
     },
     Release {
         id: Uuid,
+        #[command(flatten)]
+        confirmation: Changeset,
     },
     /// Record cancellation; this does not confirm the executor has stopped.
     Cancel {
         id: Uuid,
         #[arg(long)]
         reason: String,
+        #[command(flatten)]
+        confirmation: Changeset,
     },
     /// Fetch a cancellation report, including after an uncertain submission.
     Cancellation {
@@ -350,6 +346,26 @@ enum TaskOperation {
     Bind {
         ident: String,
     },
+}
+
+#[derive(clap::Args)]
+struct Changeset {
+    /// JSON array of every file mutated by this task, or null for no changes.
+    #[arg(long, value_name = "JSON")]
+    changeset: Option<String>,
+}
+
+impl Changeset {
+    fn value(&self) -> Result<Option<serde_json::Value>> {
+        self.changeset
+            .as_ref()
+            .map(|text| {
+                let value = serde_json::from_str(text)?;
+                amux_gateway_backend::task_changesets::validate(&value)?;
+                Ok(value)
+            })
+            .transpose()
+    }
 }
 
 #[derive(clap::Args)]
@@ -385,7 +401,6 @@ struct DetailArgs {
 impl DetailArgs {
     fn into_details(self) -> amux::gateway::TaskDetails {
         amux::gateway::TaskDetails {
-            task_type: None,
             description: self.description,
             labels: self.labels,
             hostname: self.hostname.or_else(sysinfo::System::host_name),
@@ -648,10 +663,11 @@ fn run(cli: Cli) -> Result<u8> {
                 if let TaskOperation::Cancellation { id } = operation { return gateway.cancellation(&project, id).await; }
                 let actor = AgentIdentity::assigned(cli.agent.as_deref(), &project_dir)?;
                 if actor.project_directory != amux::project_identity::resolve(&project_dir)?.directory { bail!("task mutation project directory differs from this agent's launch; switch to its project directory"); }
+                let completing = matches!(operation, TaskOperation::Done { .. });
                 let result = match operation {
-                    TaskOperation::Create { title, task_type, parent, root_reason, specification, review_finding, os, notify_results, to_agent, details } => {
+                    TaskOperation::Create { title, parent, root_reason, specification, review_finding, os, notify_results, to_agent, details } => {
                         gateway.require_task_hierarchy().await?;
-                        let mut body = json!({"title": title, "task_type":task_type, "parent_task_id":parent, "specification": specification});
+                        let mut body = json!({"title": title, "parent_task_id":parent, "specification": specification});
                         if let Some(reason) = root_reason { body["root_reason"] = json!(reason); }
                         let mut labels = Vec::new();
                         if review_finding { labels.push("autoreview-finding".to_owned()); }
@@ -679,7 +695,6 @@ fn run(cli: Cli) -> Result<u8> {
                         } else {
                             gateway.request(Method::POST, &project, &[], Some(body), Some(&actor)).await?
                         };
-                        anyhow::ensure!(task["task_type"] == task_type, "Task type unconfirmed; inspect task and update the server before retrying");
                         if let Some(parent) = parent {
                             anyhow::ensure!(task["parent"]["id"] == parent.to_string() && task["parent"]["project_ident"] == project,
                                 "Parent link unconfirmed; inspect the task before retrying. The gateway may need updating.");
@@ -701,11 +716,10 @@ fn run(cli: Cli) -> Result<u8> {
                         }
                         Ok(task)
                     },
-                    TaskOperation::Delegate { title, task_type, parent, target_project, specification, notify_results, details } => {
+                    TaskOperation::Delegate { title, parent, target_project, specification, notify_results, details } => {
                         gateway.require_task_hierarchy().await?;
                         let requester = if notify_results { Some(gateway.requester_target(&project, &actor).await?) } else { None };
-                        let mut details = details.into_details();
-                        details.task_type = Some(task_type);
+                        let details = details.into_details();
                         gateway.delegate_with_requester(&project, &target_project, parent, title, specification, &details, &actor, requester.as_ref()).await
                     },
                     TaskOperation::Rank { id, rank } => gateway.rank(&project, id, rank, &actor).await,
@@ -719,18 +733,16 @@ fn run(cli: Cli) -> Result<u8> {
                         let requester = if clear { None } else { Some(gateway.requester_target(&project, &actor).await?) };
                         gateway.set_task_requester(&project, id, requester.as_ref(), Some(&actor)).await
                     },
-                    TaskOperation::SetType { id, task_type } => gateway.set_task_type(&project, id, &actor, &task_type).await,
                     TaskOperation::SetOs { id, os, .. } => gateway.set_task_os(&project, id, os, &actor).await,
-                    TaskOperation::UserReview { id, action } => gateway.request_user_review(&project, id, &actor, &action).await,
-                    TaskOperation::Cancel { id, reason } => gateway.cancel_task(&project, id, &reason, &actor).await,
+                    TaskOperation::UserReview { id, action, confirmation } => { gateway.require_task_changesets().await?; gateway.request_user_review_with_changeset(&project, id, &actor, &action, confirmation.value()?).await },
+                    TaskOperation::Cancel { id, reason, confirmation } => { gateway.require_task_changesets().await?; gateway.cancel_task_with_changeset(&project, id, &reason, &actor, confirmation.value()?).await },
                     TaskOperation::Comment { id, body } => gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":body})), Some(&actor)).await,
                     TaskOperation::Started { id } => {
                         gateway.confirm_owner(&project, id, &actor).await?;
                         gateway.request(Method::POST, &project, &[&id.to_string(), "comments"], Some(json!({"content":format!("Agent reports execution started: session={} instance={}; recorded as a comment, not an atomic gateway lifecycle transition", actor.session_id, actor.instance_id)})), Some(&actor)).await
                     },
                     TaskOperation::SubmitWork(work) => {
-                        let task = gateway.confirm_owner(&project, work.task, &actor).await.context("work was not submitted")?;
-                        anyhow::ensure!(task["task_type"].as_str() != Some("general"), "Convert this General task with amux tasks set-type {} software before submitting code or configuration changes", work.task);
+                        gateway.confirm_owner(&project, work.task, &actor).await.context("work was not submitted")?;
                         let selected = match work.paths_file {
                             Some(file) => serde_json::from_reader(std::fs::File::open(&file).with_context(|| format!("cannot read path list {}", file.display()))?).context("path list must be a JSON array of file paths")?,
                             None => work.paths,
@@ -745,23 +757,26 @@ fn run(cli: Cli) -> Result<u8> {
                             .with_context(|| format!("work was submitted as {}, but posting the result on the task failed", outcome.reference))?;
                         Ok(json!({"task_id": work.task, "reference": outcome.reference, "files": outcome.files, "comment_id": comment["id"]}))
                     },
-                    TaskOperation::Done { id } | TaskOperation::Release { id } => {
+                    TaskOperation::Done { id, confirmation } | TaskOperation::Release { id, confirmation } => {
+                        gateway.require_task_changesets().await?;
                         gateway.confirm_owner(&project, id, &actor).await?;
-                        let status = if matches!(operation, TaskOperation::Done { .. }) { "done" } else { "todo" };
-                        gateway.request(Method::PATCH, &project, &[&id.to_string()], Some(json!({"status":status})), Some(&actor)).await
+                        let status = if completing { "done" } else { "todo" };
+                        let mut body = json!({"status":status});
+                        if let Some(changeset) = confirmation.value()? { body["changeset"] = changeset; }
+                        gateway.request(Method::PATCH, &project, &[&id.to_string()], Some(body), Some(&actor)).await
                     },
                     _ => unreachable!(),
                 }?;
-                // CLI/MCP claims, creation and conversion share the desktop's
+                // CLI/MCP claims and creation share the desktop's
                 // durable memory policy, including tasks claimed without an offer.
                 if result["owner_origin"]["session_id"] == actor.session_id.to_string()
                     && result["owner_origin"]["instance_id"] == actor.instance_id.to_string()
-                    && let (Some(id), Some(task_type)) = (result["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()), result["task_type"].as_str())
+                    && let Some(id) = result["id"].as_str().and_then(|id| Uuid::parse_str(id).ok())
                 {
                     let guidance = identity::state_directory().and_then(|registry| {
                         amux::guidance::with_session(&registry, actor.session_id, |state| {
                             state.activate(actor.instance_id);
-                            state.assign_typed(id, task_type);
+                            state.assign(id);
                         })
                     });
                     if let Err(error) = guidance { eprintln!("Task updated; idle memory guidance could not be saved: {error:#}"); }

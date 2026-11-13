@@ -31,7 +31,11 @@ pub struct AppError(pub StatusCode, pub String);
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         error!("handler error: {} — {}", self.0, self.1);
-        (self.0, Json(serde_json::json!({"error": self.1}))).into_response()
+        let mut body = serde_json::json!({"error": self.1});
+        if self.0 == StatusCode::CONFLICT && self.1 == crate::task_changesets::QUESTION {
+            body["code"] = Value::String("changeset_confirmation_required".into());
+        }
+        (self.0, Json(body)).into_response()
     }
 }
 
@@ -5596,7 +5600,7 @@ pub async fn add_pattern_comment_handler(
 
 // ── Tasks API ────────────────────────────────────────────────────────────────
 
-fn present_nullable_value<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn present_nullable_value<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<Value>, D::Error> {
     Value::deserialize(deserializer).map(Some)
@@ -5616,7 +5620,6 @@ pub struct ListTasksQuery {
 
 #[derive(Deserialize)]
 pub struct CreateTaskRequest {
-    pub task_type: Option<String>,
     pub parent_task_id: Option<String>,
     /// Agent-created root exception: user-directed or principle.
     pub root_reason: Option<String>,
@@ -5639,7 +5642,6 @@ pub struct CreateTaskRequest {
 
 #[derive(Deserialize)]
 pub struct DelegateTaskRequest {
-    pub task_type: Option<String>,
     pub parent_task_id: Option<String>,
     pub requester: Option<crate::task_dispatch::Target>,
     pub target_project_ident: String,
@@ -5656,7 +5658,8 @@ pub struct DelegateTaskRequest {
 
 #[derive(Deserialize)]
 pub struct UpdateTaskRequest {
-    pub task_type: Option<String>,
+    #[serde(default, deserialize_with = "present_nullable_value")]
+    pub changeset: Option<Value>,
     pub review_action: Option<String>,
     #[serde(default, deserialize_with = "present_nullable_value")]
     pub goal: Option<Value>,
@@ -6055,12 +6058,7 @@ pub async fn create_task_handler(
     Path(ident): Path<String>,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskCreateResponse>> {
-    let task_type = req
-        .task_type
-        .as_deref()
-        .unwrap_or(crate::task_types::GENERAL)
-        .to_owned();
-    crate::task_types::validate(&task_type)?;
+    let task_type = crate::task_types::GENERAL.to_owned();
     let origin = task_creation_origin(&headers)?;
     // Verify project exists.
     {
@@ -6191,12 +6189,7 @@ pub async fn delegate_task_handler(
     Path(source_ident): Path<String>,
     Json(req): Json<DelegateTaskRequest>,
 ) -> Result<Json<DelegationResponse>> {
-    let task_type = req
-        .task_type
-        .as_deref()
-        .unwrap_or(crate::task_types::GENERAL)
-        .to_owned();
-    crate::task_types::validate(&task_type)?;
+    let task_type = crate::task_types::GENERAL.to_owned();
     let origin = task_creation_origin(&headers)?;
     let source_ident = normalize_project_ident(&source_ident);
     let target_ident = normalize_project_ident(&req.target_project_ident);
@@ -6389,7 +6382,18 @@ pub async fn update_task_handler(
     let db = state.db.clone();
     let ident_for_update = ident.clone();
     let task_id_clone = task_id;
-    let task_type = req.task_type;
+    let changeset = req.changeset;
+    if let Some(value) = &changeset {
+        crate::task_changesets::validate(value)?;
+    }
+    let task_type = changeset.as_ref().map(|value| {
+        if value.is_null() {
+            "general"
+        } else {
+            "software"
+        }
+        .to_owned()
+    });
     let review_action = req.review_action;
     let status = req.status;
     let rank = req.rank;
@@ -6417,8 +6421,33 @@ pub async fn update_task_handler(
                     }
                 }
             }
+            let confirming = status.as_deref().is_some_and(|next| {
+                next != "in_progress"
+                    && before.as_ref().is_some_and(|task| {
+                        task.status != next || (next == "todo" && task.owner_origin.is_some())
+                    })
+            });
+            // Validate ownership with the normal task store before returning the
+            // question. The surrounding transaction rolls back every mutation.
+            if confirming {
+                if let Some(value) = &changeset {
+                    conn.execute(
+                        "UPDATE tasks SET changeset_json=?1 WHERE id=?2",
+                        rusqlite::params![value.to_string(), task_id_clone],
+                    )?;
+                }
+            }
+            let task_type = if !confirming
+                || before
+                    .as_ref()
+                    .is_some_and(|task| task.labels.iter().any(|label| label == "task-review"))
+            {
+                None
+            } else {
+                task_type.as_deref()
+            };
             let upd = db::TaskUpdate {
-                task_type: task_type.as_deref(),
+                task_type,
                 review_action: review_action.as_deref(),
                 goal: goal_opt.as_ref().map(|g| g.as_deref()),
                 status: status.as_deref(),
@@ -6442,6 +6471,11 @@ pub async fn update_task_handler(
                 db::update_task_from_user(conn, &ident_for_update, &task_id_clone, &upd)?
             };
 
+            if agent_request && confirming && changeset.is_none() && updated.is_some() {
+                return Err(
+                    crate::task_dispatch::Conflict(crate::task_changesets::QUESTION).into(),
+                );
+            }
             if let (Some(before), Some(after)) = (&before, &updated) {
                 if before.status != "done" && after.status == "done" {
                     if let Some(delegation) =
@@ -6834,7 +6868,17 @@ pub async fn reorder_tasks_handler(
                     }
                 }
             }
-            db::reorder_tasks_in_column(conn, &ident_clone, &status_clone, &order, actor.as_deref())
+            let mut crossing = false;
+            if agent_request && status_clone != "in_progress" {
+                for id in &order {
+                    if let Some(detail) = db::get_task_detail(conn, &ident_clone, id)? {
+                        crossing |= detail.task.status != status_clone;
+                    }
+                }
+            }
+            db::reorder_tasks_in_column(conn, &ident_clone, &status_clone, &order, actor.as_deref())?;
+            if crossing { return Err(crate::task_dispatch::Conflict("Did this task mutate any files? Move the task with PATCH status and changeset (file paths or null) before reordering; the task has not moved.").into()); }
+            Ok(())
         })?;
         let mut tasks = db::list_tasks(
             &conn,
@@ -7433,6 +7477,105 @@ pub async fn taking_action_on(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn transitions_require_explicit_file_confirmation_and_reviews_do_not_recurse() {
+        for files in [
+            serde_json::Value::Null,
+            serde_json::json!(["src/main.rs", "docs/usage.md"]),
+        ] {
+            let state = test_state();
+            let headers = native_task_headers();
+            let Json(created) = create_task_handler(State(state.clone()), headers.clone(), Path("demo".into()),
+                Json(serde_json::from_value(serde_json::json!({"title":"Confirmed work", "parent_task_id": task_parent_fixture(&state)})).unwrap())).await.unwrap();
+            let id = created.task.id;
+            let patch = |body| Json(serde_json::from_value(body).unwrap());
+            let _ = update_task_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(("demo".into(), id.clone())),
+                patch(serde_json::json!({"status":"in_progress"})),
+            )
+            .await
+            .unwrap();
+            let before_events: i64 = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM task_events", [], |r| r.get(0))
+                .unwrap();
+            let error = update_task_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(("demo".into(), id.clone())),
+                patch(serde_json::json!({"status":"done"})),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.0, StatusCode::CONFLICT);
+            assert!(error.1.contains("Did this task mutate any files?"));
+            {
+                let conn = state.db.lock().unwrap();
+                let current = db::get_task_detail(&conn, "demo", &id)
+                    .unwrap()
+                    .unwrap()
+                    .task;
+                assert_eq!(current.status, "in_progress");
+                assert!(current.owner_origin.is_some());
+                assert_eq!(
+                    conn.query_row("SELECT COUNT(*) FROM task_events", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    before_events
+                );
+            }
+            let Json(done) = update_task_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(("demo".into(), id.clone())),
+                patch(serde_json::json!({"status":"done", "changeset":files})),
+            )
+            .await
+            .unwrap();
+            assert_eq!(done.status, "done");
+            assert_eq!(serde_json::to_value(&done).unwrap()["changeset"], files);
+            let reviews = {
+                let conn = state.db.lock().unwrap();
+                crate::task_events::mutation(&conn, None, |conn| {
+                    crate::task_reviews::enqueue(conn, "demo", &id)
+                })
+                .unwrap();
+                crate::subtasks::list(&conn, &id).unwrap()
+            };
+            assert_eq!(reviews.len(), if files.is_null() { 0 } else { 2 });
+            for review in reviews {
+                assert_eq!(review.parent.as_ref().unwrap().id, id);
+                let _ = update_task_handler(
+                    State(state.clone()),
+                    headers.clone(),
+                    Path(("demo".into(), review.id.clone())),
+                    patch(serde_json::json!({"status":"in_progress"})),
+                )
+                .await
+                .unwrap();
+                let _ = update_task_handler(
+                    State(state.clone()),
+                    headers.clone(),
+                    Path(("demo".into(), review.id.clone())),
+                    patch(serde_json::json!({"status":"done", "changeset":["docs/review.md"]})),
+                )
+                .await
+                .unwrap();
+                let conn = state.db.lock().unwrap();
+                assert!(crate::task_events::mutation(&conn, None, |conn| {
+                    crate::task_reviews::enqueue(conn, "demo", &review.id)
+                })
+                .unwrap()
+                .is_none());
+                assert!(crate::subtasks::list(&conn, &review.id).unwrap().is_empty());
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -7754,7 +7897,7 @@ mod tests {
                     State(state.clone()),
                     agent.clone(),
                     path(),
-                    update(serde_json::json!({"status":"user_review", "review_action":"Choose the release date"})),
+                    update(serde_json::json!({"status":"user_review", "review_action":"Choose the release date", "changeset":null})),
                 )
                 .await
                 .unwrap();
@@ -7962,7 +8105,7 @@ mod tests {
         let path = || Path(("demo".into(), id.clone()));
         let update = |status: &str| {
             Json(
-                serde_json::from_value::<UpdateTaskRequest>(serde_json::json!({"status": status, "review_action": (status == "user_review").then_some("Choose the release date")}))
+                serde_json::from_value::<UpdateTaskRequest>(serde_json::json!({"status": status, "review_action": (status == "user_review").then_some("Choose the release date"), "changeset":null}))
                     .unwrap(),
             )
         };
@@ -8314,6 +8457,7 @@ mod tests {
 
     fn sample_task() -> db::Task {
         db::Task {
+            changeset: None,
             task_type: "software".into(),
             review_action: None,
             parent: None,

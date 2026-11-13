@@ -921,7 +921,13 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
     assert_eq!(saved["created_at"], comment["created_at"]);
     let cancelled = fixture
         .client
-        .cancel_task(PROJECT, id, "fixture complete", &fixture.actor)
+        .cancel_task_with_changeset(
+            PROJECT,
+            id,
+            "fixture complete",
+            &fixture.actor,
+            Some(Value::Null),
+        )
         .await
         .unwrap();
     assert_eq!(cancelled["task"]["status"], "cancelled");
@@ -980,54 +986,29 @@ async fn native_rest_clients_register_send_claim_watch_comment_and_cancel_on_rea
 }
 
 #[tokio::test]
-async fn task_type_creation_conversion_and_lifecycle_snapshots_use_the_real_backend() {
+async fn changeset_confirmation_and_lifecycle_snapshots_use_the_real_backend() {
     let fixture = Fixture::start().await;
     fixture.project_and_requester().await;
-    for task_type in ["general", "software"] {
-        let mut body = json!({"title":"Typed work", "parent_task_id":fixture.parent()});
-        if task_type == "software" {
-            body["task_type"] = json!(task_type);
-        }
+    fixture.client.require_task_changesets().await.unwrap();
+    for files in [Value::Null, json!(["src/main.rs"])] {
         let task = fixture
             .client
-            .request(Method::POST, PROJECT, &[], Some(body), Some(&fixture.actor))
+            .request(
+                Method::POST,
+                PROJECT,
+                &[],
+                Some(json!({"title":"Confirmed work", "parent_task_id":fixture.parent()})),
+                Some(&fixture.actor),
+            )
             .await
             .unwrap();
-        assert_eq!(task["task_type"], task_type);
         let id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
-        let snapshot: String = fixture.database.lock().unwrap().query_row(
-            "SELECT json_extract(task_json,'$.task_type') FROM task_events WHERE kind='task_created' AND json_extract(task_json,'$.id')=?1",
-            [id.to_string()], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(snapshot, task_type);
         fixture
             .client
             .claim(PROJECT, &id.to_string(), &fixture.actor)
             .await
             .unwrap();
-        let converted = fixture
-            .client
-            .set_task_type(PROJECT, id, &fixture.actor, "software")
-            .await
-            .unwrap();
-        assert_eq!(converted["task_type"], "software");
-        assert!(
-            fixture
-                .client
-                .set_task_type(PROJECT, id, &fixture.actor, "invalid")
-                .await
-                .is_err()
-        );
-        let mut peer = fixture.actor.clone();
-        peer.instance_id = Uuid::new_v4();
-        assert!(
-            fixture
-                .client
-                .set_task_type(PROJECT, id, &peer, "general")
-                .await
-                .is_err()
-        );
-        fixture
+        let question = fixture
             .client
             .request(
                 Method::PATCH,
@@ -1037,18 +1018,45 @@ async fn task_type_creation_conversion_and_lifecycle_snapshots_use_the_real_back
                 Some(&fixture.actor),
             )
             .await
-            .unwrap();
-        let after = fixture.client.task(PROJECT, id, 0).await.unwrap();
-        assert_eq!(after["task_type"], "software");
+            .unwrap_err();
+        assert!(format!("{question:#}").contains("Did this task mutate any files?"));
+        assert_eq!(
+            fixture.client.task(PROJECT, id, 0).await.unwrap()["status"],
+            "in_progress"
+        );
+        let mut peer = fixture.actor.clone();
+        peer.instance_id = Uuid::new_v4();
         assert!(
             fixture
                 .client
-                .set_task_type(PROJECT, id, &fixture.actor, "general")
+                .request(
+                    Method::PATCH,
+                    PROJECT,
+                    &[&id.to_string()],
+                    Some(json!({"status":"done", "changeset":files})),
+                    Some(&peer)
+                )
                 .await
                 .is_err()
         );
+        let done = fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&id.to_string()],
+                Some(json!({"status":"done", "changeset":files})),
+                Some(&fixture.actor),
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["changeset"], files);
+        let snapshot: String = fixture.database.lock().unwrap().query_row("SELECT task_json FROM task_events WHERE kind='task_completed' AND json_extract(task_json,'$.id')=?1", [id.to_string()], |row| row.get(0)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&snapshot).unwrap()["changeset"],
+            files
+        );
     }
-    assert!(fixture.client.request(Method::POST, PROJECT, &[], Some(json!({"title":"Bad type", "parent_task_id":fixture.parent(), "task_type":"invalid"})), Some(&fixture.actor)).await.is_err());
 }
 
 #[tokio::test]
@@ -1116,7 +1124,7 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
             Method::PATCH,
             PROJECT,
             &[&id.to_string()],
-            Some(json!({"status":"todo"})),
+            Some(json!({"status":"todo","changeset":null})),
             Some(&fixture.actor),
         )
         .await
@@ -1139,7 +1147,13 @@ async fn oversized_threads_stay_readable_and_only_the_exact_owner_can_release() 
         .unwrap();
     fixture
         .client
-        .request_user_review(PROJECT, id, &fixture.actor, "Choose the next step")
+        .request_user_review_with_changeset(
+            PROJECT,
+            id,
+            &fixture.actor,
+            "Choose the next step",
+            Some(Value::Null),
+        )
         .await
         .unwrap();
     fixture
@@ -1311,7 +1325,7 @@ async fn a_delegated_source_stays_readable_when_the_target_thread_exceeds_the_ca
             Method::PATCH,
             PROJECT,
             &[&target],
-            Some(json!({"status":"done"})),
+            Some(json!({"status":"done","changeset":null})),
             None,
         )
         .await
@@ -1502,7 +1516,7 @@ async fn native_websocket_subscribe_receipts_and_reconnect_use_durable_real_even
             Method::PATCH,
             PROJECT,
             &[&id.to_string()],
-            Some(json!({"status":"done"})),
+            Some(json!({"status":"done","changeset":null})),
             Some(&fixture.actor),
         )
         .await

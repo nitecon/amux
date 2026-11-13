@@ -99,6 +99,8 @@ pub fn initialize(conn: &Connection) -> Result<()> {
 #[serde(deny_unknown_fields)]
 pub struct CancelRequest {
     pub reason: String,
+    #[serde(default, deserialize_with = "crate::routes::present_nullable_value")]
+    pub changeset: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -164,6 +166,18 @@ pub fn cancel(
     actor: &AgentOrigin,
     reason: &str,
 ) -> Result<Option<CancelResponse>> {
+    cancel_inner(conn, project, task_id, actor, reason, None, false)
+}
+
+fn cancel_inner(
+    conn: &Connection,
+    project: &str,
+    task_id: &str,
+    actor: &AgentOrigin,
+    reason: &str,
+    changeset: Option<&serde_json::Value>,
+    confirm: bool,
+) -> Result<Option<CancelResponse>> {
     let project = normalize_project_ident(project);
     let reason = reason.trim();
     task_events::mutation(conn, Some(actor), |conn| {
@@ -201,6 +215,15 @@ pub fn cancel(
             }
             None if owned => return Err(task_events::OwnershipConflict.into()),
             _ => {}
+        }
+        if confirm && changeset.is_none() {
+            return Err(Conflict(crate::task_changesets::QUESTION).into());
+        }
+        if let Some(value) = changeset {
+            conn.execute(
+                "UPDATE tasks SET changeset_json=?1 WHERE id=?2",
+                params![value.to_string(), task_id],
+            )?;
         }
         let now = db::now_ms();
         conn.execute(
@@ -265,12 +288,23 @@ pub async fn create_handler(
             format!("reason must be 1..={REASON_BYTES} bytes"),
         ));
     }
+    if let Some(value) = &req.changeset {
+        crate::task_changesets::validate(value)?;
+    }
     let database = state.db.clone();
     tokio::task::spawn_blocking(move || {
         let conn = database.lock().unwrap();
-        cancel(&conn, &project, &task_id, &actor, &req.reason)?
-            .map(Json)
-            .ok_or_else(|| not_found(&project, &task_id))
+        cancel_inner(
+            &conn,
+            &project,
+            &task_id,
+            &actor,
+            &req.reason,
+            req.changeset.as_ref(),
+            true,
+        )?
+        .map(Json)
+        .ok_or_else(|| not_found(&project, &task_id))
     })
     .await?
 }
@@ -733,7 +767,24 @@ mod tests {
             .0,
             StatusCode::NOT_FOUND
         );
-        let (status, body) = call(&app, "POST", &path, Some(&a), json!({"reason":"stop"})).await;
+        let (question, reply) = call(&app, "POST", &path, Some(&a), json!({"reason":"stop"})).await;
+        assert_eq!(question, StatusCode::CONFLICT);
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("Did this task mutate any files?"));
+        assert_eq!(
+            call(&app, "GET", &path, None, Value::Null).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (status, body) = call(
+            &app,
+            "POST",
+            &path,
+            Some(&a),
+            json!({"reason":"stop","changeset":null}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["task"]["status"], "cancelled");
         assert_eq!(
@@ -745,9 +796,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(got, body["cancellation"]);
         assert_eq!(
-            call(&app, "POST", &path, Some(&a), json!({"reason":"stop"}))
-                .await
-                .1,
+            call(
+                &app,
+                "POST",
+                &path,
+                Some(&a),
+                json!({"reason":"stop","changeset":null})
+            )
+            .await
+            .1,
             body
         );
         assert_eq!(
@@ -756,7 +813,7 @@ mod tests {
                 "POST",
                 &path,
                 Some(&origin(2)),
-                json!({"reason":"stop"})
+                json!({"reason":"stop","changeset":null})
             )
             .await
             .0,

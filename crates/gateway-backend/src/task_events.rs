@@ -225,7 +225,6 @@ pub(crate) fn task_json(alias: &str) -> String {
         "goal",
         "description",
         "review_action",
-        "task_type",
         "details",
         "status",
         "rank",
@@ -244,6 +243,7 @@ pub(crate) fn task_json(alias: &str) -> String {
         .iter()
         .map(|field| format!("'{field}',{alias}.{field}"))
         .collect();
+    entries.push(format!("'changeset',json({alias}.changeset_json)"));
     entries.push(format!(
         "'labels',json(CASE WHEN json_valid({alias}.labels) THEN {alias}.labels ELSE '[]' END)"
     ));

@@ -333,19 +333,16 @@ Rules carried over from the desktop:
   Any subsequent task or comment mutation invalidates the old offer in that
   mutation's transaction, so a delayed rejection cannot undo progress or a
   newer claim, even when timestamps match.
-- **Review generation:** completing a Software task, including a manual Close, queues a
-  separate independent review task. New tasks default to General and do not
-  generate code or documentation reviews. Existing tasks migrate as Software.
-  Type is distinct from normal/delegated linkage; agents convert owned tasks to
-  Software before changing code or configuration. Review tasks remain Software.
-  The original stays done; creating review
-  work never returns it to TODO or User review. Replayed completion events do
-  not create duplicate reviews. Completing the code review queues one separate
-  documentation review linked to the original change. It checks affected user
-  and agent documentation against the implementation and records concrete
-  correction tasks under the source task. Documentation reviews do not generate
-  further reviews. Both stages preserve platform requirements and use the same
-  queue, provider preferences and completion deduplication.
+- **Review generation:** an agent leaving active work confirms its mutated files
+  in the transition request, using `changeset: [paths]` or explicit null. Missing
+  confirmation returns a question and rolls back the transition. Task creation
+  has no agent-selected classification. A completed main task with file changes
+  queues independent code and documentation reviews as siblings under the source;
+  null queues neither. Generated review/documentation steps and their workflow
+  descendants never create another review workflow. The original stays done.
+  Durable `(source, completion, stage)` identities prevent replay duplicates;
+  existing workflow identities migrate without losing queued tasks. Review
+  metadata, platform requirements and provider preferences remain preserved.
 - **Review provider:** reviews prefer an available opposite-provider agent in
   their project, OS and goal. Independence metadata is a secondary preference,
   not a hard exclusion. Busy, drafting, occupied or refusing agents do not block

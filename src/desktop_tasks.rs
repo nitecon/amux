@@ -16,7 +16,6 @@ pub(super) enum Action {
     Edit,
     Cancel,
     Title(String),
-    Type(String),
     Description(text_editor::Action),
     Specification(text_editor::Action),
     Comment(text_editor::Action),
@@ -78,7 +77,6 @@ pub(super) struct Panel {
     uncertain: bool,
     mode: Mode,
     title: String,
-    task_type: String,
     description: text_editor::Content,
     specification: text_editor::Content,
     comment: text_editor::Content,
@@ -244,7 +242,6 @@ impl Desktop {
             }
             Action::Edit if panel.ready() => {
                 let task = panel.task.as_ref().unwrap();
-                panel.task_type = task["task_type"].as_str().unwrap_or("software").into();
                 panel.title = task["title"].as_str().unwrap_or_default().into();
                 panel.description = text_editor::Content::with_text(
                     task["description"].as_str().unwrap_or_default(),
@@ -258,9 +255,6 @@ impl Desktop {
                 panel.mode = Mode::Edit;
             }
             Action::Cancel if !panel.unresolved() => panel.mode = Mode::View,
-            Action::Type(task_type) if panel.ready() && panel.mode == Mode::Edit => {
-                panel.task_type = task_type;
-            }
             Action::Title(title) if panel.ready() && panel.mode == Mode::Edit => {
                 if title.len() <= 1024 {
                     panel.title = title;
@@ -407,7 +401,6 @@ impl Desktop {
             }
             Change::ClearWatcher => Mutation::Requester(None),
             Change::Edit if panel.mode == Mode::Edit => Mutation::Edit(TaskEdits {
-                task_type: panel.task_type.clone(),
                 title: panel.title.clone(),
                 description: panel.description.text(),
                 specification: panel.specification.text(),
@@ -697,13 +690,6 @@ impl Desktop {
                 ]
                 .spacing(8),
             );
-        body = body.push(
-            text(format!(
-                "Type: {}",
-                task["task_type"].as_str().unwrap_or("software")
-            ))
-            .size(13),
-        );
         if let Some(parent) = task["parent"]["id"].as_str() {
             body = body.push(
                 text(format!(
@@ -745,11 +731,6 @@ impl Desktop {
                         .size(15)
                         .on_input(|s| message(Action::Title(s))),
                 )
-                .push(iced::widget::pick_list(
-                    ["general", "software"],
-                    Some(panel.task_type.as_str()),
-                    |kind| message(Action::Type(kind.into())),
-                ))
                 .push(text("Description").size(13))
                 .push(
                     text_editor(&panel.description)

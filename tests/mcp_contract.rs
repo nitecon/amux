@@ -273,3 +273,29 @@ fn memory_push_all_continues_past_retained_gateway_deletions() {
         .unwrap();
     assert_eq!(retained, 2);
 }
+
+#[test]
+fn transition_confirmation_keeps_null_distinct_from_omission() {
+    let tool = TOOLS.iter().find(|tool| tool.name == "task_done").unwrap();
+    let mut arguments = serde_json::json!({"id":"task"});
+    assert!(
+        !amux::mcp::argv(tool, &arguments)
+            .unwrap()
+            .iter()
+            .any(|arg| arg.starts_with("--changeset="))
+    );
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!(["docs/two words.md"]),
+    ] {
+        arguments["changeset"] = value.clone();
+        assert!(
+            amux::mcp::argv(tool, &arguments)
+                .unwrap()
+                .contains(&format!("--changeset={value}"))
+        );
+    }
+    arguments["changeset"] = serde_json::json!([]);
+    assert!(amux::mcp::argv(tool, &arguments).is_err());
+    assert!(!TOOLS.iter().any(|tool| tool.name == "task_set_type"));
+}

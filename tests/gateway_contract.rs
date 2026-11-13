@@ -867,7 +867,11 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
     .unwrap();
     let owned = json!({"id":TASK,"project_ident":"demo","status":"in_progress","owner_origin":{"session_id":actor.session_id,"instance_id":actor.instance_id,"provider":actor.provider,"os":actor.os}});
     let parked = json!({"id":TASK,"project_ident":"demo","status":"user_review","review_action":"Choose the release date","owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null});
-    let (url, server) = server(vec![reply(200, &owned), reply(200, &parked)]);
+    let (url, server) = server(vec![
+        reply(200, &json!({"changeset_confirmation":1})),
+        reply(200, &owned),
+        reply(200, &parked),
+    ]);
     let native = native_cli::NativeCli::new(state.path(), &url);
     let url = native.url.clone();
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_amux"));
@@ -902,7 +906,7 @@ fn cli_can_park_owned_work_for_user_review_without_provider_environment() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["status"],
         "user_review"
     );
-    assert_eq!(server.join().unwrap().len(), 2);
+    assert_eq!(server.join().unwrap().len(), 3);
 }
 
 #[test]
@@ -965,7 +969,6 @@ fn sidebar_actions_are_human_requests_and_confirm_the_requested_result() {
                 "demo",
                 id,
                 &TaskEdits {
-                    task_type: "software".into(),
                     title: "Updated title".into(),
                     description: "Two\nlines".into(),
                     specification: "Exact handoff\nwith newlines".into(),
@@ -1164,7 +1167,6 @@ fn desktop_presence_and_selected_task_use_bearer_without_impersonating_the_recip
                     "exact\ncontext",
                     Some("github.com/nitecon/amux"),
                     &routing,
-                    "general",
                 )
                 .await
                 .unwrap()
@@ -1238,7 +1240,6 @@ fn routed_task_errors_never_retry_or_silently_fall_back_to_auto() {
                 "",
                 Some("github.com/nitecon/amux"),
                 &Routing::Unassigned,
-                "general",
             ))
             .is_err()
     );
@@ -1250,7 +1251,6 @@ fn routed_task_errors_never_retry_or_silently_fall_back_to_auto() {
                 "",
                 Some("github.com/nitecon/amux"),
                 &Routing::Broadcast,
-                "general",
             ))
             .is_err()
     );
@@ -1330,7 +1330,7 @@ fn local_only_project_routes_with_a_null_remote_and_never_matches_a_repository()
         let directory = gateway.task_targets("games", None).await.unwrap();
         assert_eq!(directory.canonical_remote, None);
         gateway
-            .create_routed_task("games", "Local", "context", None, &routing, "general")
+            .create_routed_task("games", "Local", "context", None, &routing)
             .await
             .unwrap();
         assert!(gateway.task_targets("games", None).await.is_err());
@@ -1342,7 +1342,7 @@ fn local_only_project_routes_with_a_null_remote_and_never_matches_a_repository()
         );
         assert!(
             gateway
-                .create_routed_task("games", "Local", "context", None, &routing, "general",)
+                .create_routed_task("games", "Local", "context", None, &routing)
                 .await
                 .is_err()
         );
@@ -1370,7 +1370,6 @@ fn changed_repository_project_prevents_even_an_automatic_task_post() {
                 "",
                 Some("github.com/nitecon/amux"),
                 &amux::task_routing::Routing::Auto,
-                "general",
             ))
             .is_err()
     );
@@ -1754,7 +1753,6 @@ fn list_filters_and_rank_use_the_agent_tools_wire_contract() {
 #[test]
 fn task_details_merge_metadata_but_never_routing_labels() {
     let details = TaskDetails {
-        task_type: None,
         description: Some("Why this matters.".into()),
         labels: vec!["enhancement".into()],
         hostname: Some("Defcon2".into()),
@@ -1889,4 +1887,27 @@ fn last_task_owner_is_the_newest_event_snapshot_that_still_had_one() {
     assert!(requests[0].head.starts_with("get /v1/task-events?"));
     assert!(requests[0].head.contains(&format!("task_id={TASK}")));
     assert!(requests[0].head.contains("project=demo"));
+}
+
+#[test]
+fn transition_capability_refuses_old_gateways_before_mutation() {
+    for capabilities in [
+        json!({"task_hierarchy":1}),
+        json!({"changeset_confirmation":1}),
+    ] {
+        let (url, mock) = server(vec![reply(200, &capabilities)]);
+        let gateway = Gateway::new(&url, "test-only".into()).unwrap();
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(gateway.require_task_changesets());
+        assert_eq!(result.is_ok(), capabilities["changeset_confirmation"] == 1);
+        let requests = mock.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0]
+                .head
+                .to_lowercase()
+                .starts_with("get /v1/tasks/capabilities ")
+        );
+    }
 }
