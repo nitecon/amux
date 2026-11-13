@@ -25,3 +25,31 @@ pub fn validate(value: &Value) -> Result<()> {
     }
     Ok(())
 }
+
+/// Record a confirmation without losing files confirmed earlier for the task:
+/// array paths are added to the stored list and null keeps it. Returns whether
+/// the task has recorded file mutations.
+pub fn record(
+    conn: &rusqlite::Connection,
+    task_id: &str,
+    prior: Option<&[String]>,
+    value: &Value,
+) -> Result<bool> {
+    let mut files = prior.unwrap_or_default().to_vec();
+    for path in value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !files.iter().any(|file| file == path) {
+            files.push(path.to_owned());
+        }
+    }
+    let stored = (!files.is_empty()).then(|| serde_json::json!(files));
+    conn.execute(
+        "UPDATE tasks SET changeset_json=?1 WHERE id=?2",
+        rusqlite::params![stored.unwrap_or(Value::Null).to_string(), task_id],
+    )?;
+    Ok(!files.is_empty())
+}

@@ -335,7 +335,9 @@ Rules carried over from the desktop:
   newer claim, even when timestamps match.
 - **Review generation:** an agent leaving active work confirms its mutated files
   in the transition request, using `changeset: [paths]` or explicit null. Missing
-  confirmation returns a question and rolls back the transition. Task creation
+  confirmation returns a question and rolls back the transition. Confirmed paths
+  accumulate on the task, so a later null keeps files confirmed by an earlier
+  release, park or cancellation. Task creation
   has no agent-selected classification. A completed main task with file changes
   queues independent code and documentation reviews as siblings under the source;
   null queues neither. Generated review/documentation steps and their workflow

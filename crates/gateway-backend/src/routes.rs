@@ -6386,14 +6386,6 @@ pub async fn update_task_handler(
     if let Some(value) = &changeset {
         crate::task_changesets::validate(value)?;
     }
-    let task_type = changeset.as_ref().map(|value| {
-        if value.is_null() {
-            "general"
-        } else {
-            "software"
-        }
-        .to_owned()
-    });
     let review_action = req.review_action;
     let status = req.status;
     let rank = req.rank;
@@ -6429,23 +6421,21 @@ pub async fn update_task_handler(
             });
             // Validate ownership with the normal task store before returning the
             // question. The surrounding transaction rolls back every mutation.
+            let mut task_type = None;
             if confirming {
                 if let Some(value) = &changeset {
-                    conn.execute(
-                        "UPDATE tasks SET changeset_json=?1 WHERE id=?2",
-                        rusqlite::params![value.to_string(), task_id_clone],
-                    )?;
+                    let prior = before.as_ref().and_then(|task| task.changeset.as_deref());
+                    let mutated =
+                        crate::task_changesets::record(conn, &task_id_clone, prior, value)?;
+                    task_type = Some(if mutated { "software" } else { "general" });
                 }
             }
-            let task_type = if !confirming
-                || before
-                    .as_ref()
-                    .is_some_and(|task| task.labels.iter().any(|label| label == "task-review"))
+            if before
+                .as_ref()
+                .is_some_and(|task| task.labels.iter().any(|label| label == "task-review"))
             {
-                None
-            } else {
-                task_type.as_deref()
-            };
+                task_type = None;
+            }
             let upd = db::TaskUpdate {
                 task_type,
                 review_action: review_action.as_deref(),
@@ -7477,6 +7467,42 @@ pub async fn taking_action_on(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn later_null_confirmation_keeps_earlier_files_and_reviews() {
+        let state = test_state();
+        let headers = native_task_headers();
+        let Json(created) = create_task_handler(State(state.clone()), headers.clone(), Path("demo".into()),
+            Json(serde_json::from_value(serde_json::json!({"title":"Resumed work", "parent_task_id": task_parent_fixture(&state)})).unwrap())).await.unwrap();
+        let id = created.task.id;
+        for body in [
+            serde_json::json!({"status":"in_progress"}),
+            serde_json::json!({"status":"todo", "changeset":["x"]}),
+            serde_json::json!({"status":"in_progress"}),
+            serde_json::json!({"status":"done", "changeset":null}),
+        ] {
+            let _ = update_task_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(("demo".into(), id.clone())),
+                Json(serde_json::from_value(body).unwrap()),
+            )
+            .await
+            .unwrap();
+        }
+        let conn = state.db.lock().unwrap();
+        let task = db::get_task_detail(&conn, "demo", &id)
+            .unwrap()
+            .unwrap()
+            .task;
+        assert_eq!(task.task_type, "software");
+        assert_eq!(task.changeset, Some(vec!["x".to_owned()]));
+        crate::task_events::mutation(&conn, None, |conn| {
+            crate::task_reviews::enqueue(conn, "demo", &id)
+        })
+        .unwrap();
+        assert_eq!(crate::subtasks::list(&conn, &id).unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn transitions_require_explicit_file_confirmation_and_reviews_do_not_recurse() {
         for files in [

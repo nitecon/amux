@@ -220,10 +220,7 @@ fn cancel_inner(
             return Err(Conflict(crate::task_changesets::QUESTION).into());
         }
         if let Some(value) = changeset {
-            conn.execute(
-                "UPDATE tasks SET changeset_json=?1 WHERE id=?2",
-                params![value.to_string(), task_id],
-            )?;
+            crate::task_changesets::record(conn, task_id, before.changeset.as_deref(), value)?;
         }
         let now = db::now_ms();
         conn.execute(
