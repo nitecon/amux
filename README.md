@@ -70,17 +70,16 @@ projects. amux bundles pinned builds of
    work and send task notifications to agents in this app**, then **Save & Close**.
    Keep **Give agents amux tools (MCP)** enabled under **Workspaces & Terminals**
    before launching agents.
-4. **Build the queue.** Create tasks in the project's **Tasks** view, or discuss
-   the work with an agent and have it create scoped tasks. Agents confirm changed
-   files when completing, releasing, parking or cancelling work; task creation
-   requires no type selection. Idle agents pick up
-   eligible tasks automatically, one per agent. Tasks requiring a human decision
-   move to **User review**. You can watch progress in Tasks or open the agent's
-   terminal and talk directly.
+4. **Build the queue.** In the project's **Tasks** view, submit a title and body
+   to the gateway, or discuss the work with an agent and have it create scoped
+   tasks. Idle agents pick up eligible tasks automatically, one per agent. Tasks
+   requiring a human decision move to **User review**. You can watch progress in
+   Tasks or open the agent's terminal and talk directly.
 5. **Review the result.** On the server, **Gateway Server → Task automation**
-   controls automatic code and documentation reviews for all projects. When
-   enabled, completing main work with confirmed file changes queues code and
-   documentation reviews as sibling tasks under the original. Work without file
+   controls automatic code and documentation reviews for all projects. Agents
+   confirm changed files through their task tools. When reviews are enabled,
+   completing main work with confirmed file changes queues code and documentation
+   reviews as sibling tasks under the original. Work without file
    changes queues neither. Generated review/documentation steps and their
    descendants never start another review workflow.
 
