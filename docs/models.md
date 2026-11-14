@@ -42,7 +42,8 @@ not replace the lead's binding. Codex asks you to review and trust the
 `amux record-native-session` hook in its normal hook UI. Amux does not bypass trust.
 If Codex has no recorded binding (including a legacy terminal or an untrusted hook),
 it starts fresh with a diagnostic instead of guessing another persona's history.
-An explicit saved conversation that cannot resume reports the provider's error.
+A saved conversation without history (exit 1) shows the provider's error, then
+starts once with a fresh session and binding, keeping the launch profile.
 
 ## Installation catalog
 

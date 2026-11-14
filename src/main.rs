@@ -930,27 +930,31 @@ fn launch_agent(
     project: PathBuf,
     provider: Provider,
     mcp: bool,
-    mut args: Vec<String>,
+    args: Vec<String>,
     desktop_session: bool,
     restore_native: bool,
 ) -> Result<u8> {
-    let actor = AgentIdentity::new(provider, &project)?.resume_at(
-        &identity::state_directory()?,
-        std::time::Duration::from_secs(5),
-    );
-    if desktop_session {
-        let mut native = amux::native_conversation::arguments(
-            &identity::state_directory()?,
-            &actor,
-            restore_native,
-        )?;
-        native.append(&mut args);
-        args = native;
-    }
-    let restoring = args
-        .iter()
-        .map(String::as_str)
-        .eq(amux::session::resume_arguments(provider).iter().copied());
+    let state = identity::state_directory()?;
+    let actor = AgentIdentity::new(provider, &project)?
+        .resume_at(&state, std::time::Duration::from_secs(5));
+    // Desktop terminals prepend their own conversation binding to the profile arguments.
+    let native = |restore| -> Result<Vec<String>> {
+        let mut native = amux::native_conversation::arguments(&state, &actor, restore)?;
+        native.extend(args.iter().cloned());
+        Ok(native)
+    };
+    let (launch, restoring) = if desktop_session {
+        let launch = native(restore_native)?;
+        let restoring = amux::session::is_resume(provider, &launch);
+        (launch, restoring)
+    } else {
+        let restoring = args
+            .iter()
+            .map(String::as_str)
+            .eq(amux::session::resume_arguments(provider).iter().copied());
+        (args.clone(), restoring)
+    };
+    let args = launch;
     let begin_cycle = || {
         let result = identity::state_directory().and_then(|registry| {
             amux::guidance::with_session(&registry, actor.session_id, |state| {
@@ -967,14 +971,21 @@ fn launch_agent(
     }
     let mut status = launch_agent_once(&project, provider, mcp, &args, &actor)?;
     // Missing native conversation history exits with 1. Retry only the standard
-    // restore invocation, once, leaving custom arguments and signals alone.
+    // restore invocation, or a desktop terminal's exact recorded conversation,
+    // once, leaving custom arguments and signals alone. A fresh desktop session
+    // records a new binding and keeps its launch profile.
     if restoring && status.code() == Some(1) {
         eprintln!(
             "Unable to resume {}; starting a new session.",
             provider.command()
         );
         begin_cycle();
-        status = launch_agent_once(&project, provider, mcp, &[], &actor)?;
+        let fresh = if desktop_session {
+            native(false)?
+        } else {
+            Vec::new()
+        };
+        status = launch_agent_once(&project, provider, mcp, &fresh, &actor)?;
     }
     Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
 }

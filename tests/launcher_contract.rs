@@ -361,3 +361,106 @@ fn resume_fallback_is_once_only_and_preserves_other_errors_custom_args_and_signa
         }
     }
 }
+
+#[test]
+fn desktop_exact_restore_without_history_starts_fresh_with_new_binding_and_profile() {
+    use amux::identity::Provider;
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+    fs::create_dir_all(&target).unwrap();
+    let first = "11111111-1111-4111-8111-111111111111";
+    let second = "22222222-2222-4222-8222-222222222222";
+    for (provider, profile) in [
+        (Provider::Claude, &["--model", "sonnet"][..]),
+        (Provider::Codex, &["--model", "gpt-6-luna"][..]),
+    ] {
+        let fixture = tempfile::tempdir_in(&target).unwrap();
+        let root = fixture.path();
+        let script = root.join(provider.command());
+        // Exact resume of a conversation without history exits 1. A fresh Codex
+        // session records its root conversation through the SessionStart hook.
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$AMUX_ARGS_FILE"
+case " $* " in *" resume "*|*" --resume "*) echo 'No conversation found' >&2; exit 1;; esac
+if [ -n "$AMUX_HOOK_SESSION" ]; then
+    printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"%s"}' "$AMUX_HOOK_SESSION" | amux record-native-session || exit 9
+fi
+exit 0
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::join_paths(std::iter::once(root.to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        let binding = || {
+            let dir = root.join("state/native-conversations");
+            let entries: Vec<_> = fs::read_dir(dir).unwrap().collect();
+            assert_eq!(entries.len(), 1);
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(entries[0].as_ref().unwrap().path()).unwrap())
+                    .unwrap();
+            saved["conversation"].as_str().unwrap().to_owned()
+        };
+        let run = |hook: &str| {
+            let output = Command::new(env!("CARGO_BIN_EXE_amux"))
+                .args([
+                    "agent",
+                    provider.command(),
+                    "--desktop-session",
+                    "--restore-native",
+                    "--",
+                ])
+                .args(profile)
+                .current_dir(root)
+                .env("PATH", &path)
+                .env("AMUX_STATE_DIR", root.join("state"))
+                .env("AMUX_ARGS_FILE", root.join("args"))
+                .env("AMUX_TERMINAL_NUMBER", "1")
+                .env_remove("AMUX_AGENT_SESSION_ID")
+                .env("AMUX_HOOK_SESSION", hook)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{provider:?}: {output:?}");
+        };
+        let hook = |id| if provider == Provider::Codex { id } else { "" };
+        run(hook(first));
+        let recorded = binding();
+        if provider == Provider::Codex {
+            assert_eq!(recorded, first);
+        }
+        run(hook(second));
+        let log = fs::read_to_string(root.join("args")).unwrap();
+        let lines: Vec<_> = log.lines().collect();
+        assert_eq!(lines.len(), 3, "{provider:?}: {log}");
+        assert!(
+            lines[1].contains(&recorded),
+            "restore uses the exact binding: {log}"
+        );
+        assert!(
+            !format!(" {} ", lines[2]).contains(" resume ") && !lines[2].contains("--resume"),
+            "fallback has no resume arguments: {log}"
+        );
+        assert!(
+            !lines[2].contains(&recorded),
+            "fallback starts fresh: {log}"
+        );
+        assert!(
+            lines[2].contains("record-native-session"),
+            "fallback keeps the hook: {log}"
+        );
+        assert!(
+            lines[2].ends_with(&profile.join(" ")),
+            "fallback keeps the profile: {log}"
+        );
+        let fresh = binding();
+        assert_ne!(fresh, recorded, "fallback replaces the stale binding");
+        if provider == Provider::Codex {
+            assert_eq!(fresh, second);
+        } else {
+            assert!(lines[2].contains(&format!("--session-id {fresh}")), "{log}");
+        }
+    }
+}

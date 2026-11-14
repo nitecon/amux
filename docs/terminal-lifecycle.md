@@ -7,12 +7,15 @@ with an explicit UUID, and session-only SessionStart hooks record root transitio
 for both providers. Codex's hook requires its normal trust review. A missing Codex
 binding starts fresh with a diagnostic; it never guesses another terminal's newest
 conversation. See [model profiles](models.md#terminal-and-persona-profiles).
-An explicit binding that fails to resume preserves the provider error.
+A recorded binding without history (for example a Claude terminal closed before its
+first message, which writes no transcript) exits 1 after showing the provider error.
+Amux then retries once with a fresh session and a newly recorded binding, keeping
+the terminal's launch profile and assigned Amux identity.
 
-For manually supplied legacy CLI continuation only (`amux agent codex -- resume --last`
-or `amux agent claude -- --continue`), an exit code of 1 still retries once with
+For manually supplied legacy CLI continuation (`amux agent codex -- resume --last`
+or `amux agent claude -- --continue`), an exit code of 1 also retries once with
 no provider arguments, retaining the assigned Amux identity. Custom arguments,
-other exit codes and signals do not trigger that legacy fallback. Provider input
+other exit codes and signals do not trigger either fallback. Provider input
 and output remain attached throughout.
 
 ## Process ownership and cleanup
