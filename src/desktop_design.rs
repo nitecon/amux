@@ -45,6 +45,7 @@ pub(super) enum Action {
     CloseMenuTab,
     RestartMenuTab,
     ProjectMenu(String),
+    LocalProjectMenu(PathBuf),
     DismissProjectMenu,
     /// Clone the menu's project: into the Default Projects directory when true,
     /// otherwise into a folder chosen in the file browser.
@@ -70,7 +71,7 @@ pub(super) struct State {
     cursor: iced::Point,
     viewport: Option<iced::Size>,
     tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
-    project_menu: Option<(String, iced::Point)>,
+    project_menu: Option<(ProjectMenuTarget, iced::Point)>,
     mode: View,
     compact: bool,
     filter: Filter,
@@ -95,6 +96,10 @@ pub(super) struct State {
     pub(super) local_projects: Vec<desktop_workspace::LocalProject>,
     pub(super) local_projects_polled: Option<(PathBuf, std::time::Instant)>,
     pub(super) local_projects_revision: u64,
+}
+enum ProjectMenuTarget {
+    Remote(String),
+    Local(PathBuf),
 }
 #[derive(Debug, Clone)]
 pub(super) struct ProjectData {
@@ -484,7 +489,12 @@ impl Desktop {
             }
             Action::DismissTabMenu => self.design.tab_menu = None,
             Action::ProjectMenu(ident) => {
-                self.design.project_menu = Some((ident, self.design.cursor));
+                self.design.project_menu =
+                    Some((ProjectMenuTarget::Remote(ident), self.design.cursor));
+            }
+            Action::LocalProjectMenu(directory) => {
+                self.design.project_menu =
+                    Some((ProjectMenuTarget::Local(directory), self.design.cursor));
             }
             Action::DismissProjectMenu => self.design.project_menu = None,
             Action::AddLocalProject(directory) => {
@@ -492,8 +502,25 @@ impl Desktop {
             }
             Action::RemoteProject(project) => return self.select_remote_project(project),
             Action::CheckoutProject(projects_dir) => {
-                let Some((ident, _)) = self.design.project_menu.take() else {
+                let Some((target, _)) = self.design.project_menu.take() else {
                     return Task::none();
+                };
+                let ident = match target {
+                    ProjectMenuTarget::Remote(ident) => ident,
+                    ProjectMenuTarget::Local(directory) => {
+                        if directory.join(".git").exists() {
+                            let origin = amux::gateway_project::clone_origin(&directory)
+                                .unwrap_or_else(|| directory.display().to_string());
+                            return self.checkout_project(origin, projects_dir);
+                        }
+                        // A saved workspace can outlive its checkout. Use its explicit
+                        // gateway binding to recover the URL, never a folder-name guess.
+                        self.workspaces
+                            .iter()
+                            .find(|workspace| workspace.directory == directory)
+                            .map(|workspace| workspace.gateway.project.clone())
+                            .unwrap_or_default()
+                    }
                 };
                 let Some(origin) = self
                     .design
@@ -505,18 +532,7 @@ impl Desktop {
                     self.status = format!("No machine has reported a Git URL for {ident}.");
                     return Task::none();
                 };
-                let parent = if projects_dir {
-                    let dir = self.preferences.current.projects_dir.trim();
-                    if dir.is_empty() {
-                        self.status =
-                            "Set a Default Projects directory in Settings → General first.".into();
-                        return Task::none();
-                    }
-                    Some(PathBuf::from(dir))
-                } else {
-                    None
-                };
-                return self.open_clone_dialog(origin, parent);
+                return self.checkout_project(origin, projects_dir);
             }
             Action::CloseMenuTab => {
                 if let Some((workspace, pane, tab, _)) = self.design.tab_menu.take()
@@ -623,6 +639,20 @@ impl Desktop {
             }
         }
         Task::none()
+    }
+    fn checkout_project(&mut self, origin: String, projects_dir: bool) -> Task<Message> {
+        let parent = if projects_dir {
+            let dir = self.preferences.current.projects_dir.trim();
+            if dir.is_empty() {
+                self.status =
+                    "Set a Default Projects directory in Settings → General first.".into();
+                return Task::none();
+            }
+            Some(PathBuf::from(dir))
+        } else {
+            None
+        };
+        self.open_clone_dialog(origin, parent)
     }
     fn load_project(&mut self, path: PathBuf) -> Task<Message> {
         self.design.loading = true;

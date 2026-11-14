@@ -147,29 +147,48 @@ pub async fn clone_repository(parent: PathBuf, repository: String) -> Result<Pat
     use std::{io::Read, process::Stdio};
     let parent = directory(parent.to_str().context("Directory must be valid Unicode")?)?;
     let destination = parent.join(clone_name(&repository)?);
-    // Reserve atomically so a concurrent checkout cannot be overwritten. An
-    // existing matching checkout can be opened without changing its contents.
-    if let Err(error) = std::fs::create_dir(&destination) {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            return tokio::task::spawn_blocking(move || {
-                existing_checkout(&parent, &destination, &repository)
-            })
-            .await?;
+    // Git can also clone into an existing empty folder. Reserve that folder
+    // atomically below, while preserving all nonempty folders for validation.
+    let created = match std::fs::create_dir(&destination) {
+        Ok(()) => true,
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                if destination.is_dir() && std::fs::read_dir(&destination)?.next().is_none() {
+                    // Git accepts an empty destination; the reservation below
+                    // also excludes concurrent attempts in this case.
+                    false
+                } else {
+                    return tokio::task::spawn_blocking(move || {
+                        existing_checkout(&parent, &destination, &repository)
+                    })
+                    .await?;
+                }
+            } else {
+                return Err(error)
+                    .with_context(|| format!("Cannot create {}", destination.display()));
+            }
         }
-        return Err(error).with_context(|| {
-            format!(
-                "Cannot create {}. Choose a parent without an existing folder of that name",
-                destination.display()
-            )
-        });
-    }
+    };
     // Keep this outside the destination: Git requires an empty clone folder.
     // A failed or killed clone retains the reservation for subsequent requests.
-    // Creating the destination above is the lock, so a reservation left by a
-    // clone whose folder was since deleted is stale and is replaced.
+    // A freshly recreated destination may reuse a failed reservation, but must
+    // lock it so a concurrent request cannot steal an active clone's marker.
     let reservation = clone_reservation(&destination);
-    std::fs::write(&reservation, b"")
-        .with_context(|| format!("Cannot reserve clone at {}", reservation.display()))?;
+    let reservation_file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&reservation)
+    {
+        Ok(file) => Ok(file),
+        Err(error) if created && error.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::OpenOptions::new().write(true).open(&reservation)
+        }
+        Err(error) => Err(error),
+    }
+    .with_context(|| format!("Cannot reserve clone at {}", reservation.display()))?;
+    reservation_file
+        .try_lock()
+        .with_context(|| format!("Clone is already running at {}", destination.display()))?;
     let mut log = tempfile::tempfile()?;
     let mut command = tokio::process::Command::new("git");
     command
@@ -231,6 +250,20 @@ fn existing_checkout(parent: &Path, destination: &Path, repository: &str) -> Res
         "{}",
         conflict()
     );
+    // A local-only project may have no origin. Cloning it into its own parent
+    // means reusing that exact checkout, after validating its Git root above.
+    if parent
+        .join(repository.trim())
+        .canonicalize()
+        .is_ok_and(|source| external_path(source) == directory)
+    {
+        anyhow::ensure!(
+            !clone_reservation(destination).try_exists()?,
+            "Clone is still reserved at {}",
+            destination.display()
+        );
+        return Ok(directory);
+    }
     let (status, origin) = crate::git::observe(
         &directory,
         &["config", "--local", "--get", "remote.origin.url"],
@@ -389,6 +422,82 @@ mod tests {
                 assert!(stdout.contains("REPLY=hello"), "{stdout}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn local_project_without_origin_is_reused_or_cloned_at_another_location() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("local project");
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            clone_repository(fixture.path().into(), source.display().to_string())
+                .await
+                .unwrap(),
+            external_path(source.canonicalize().unwrap())
+        );
+        let parent = fixture.path().join("elsewhere");
+        std::fs::create_dir(&parent).unwrap();
+        let cloned = clone_repository(parent, source.display().to_string())
+            .await
+            .unwrap();
+        assert_ne!(cloned, source);
+        assert!(cloned.join(".git").is_dir());
+    }
+
+    #[tokio::test]
+    async fn clone_populates_empty_destination_and_respects_clone_reservation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let origin = fixture.path().join("origin.git");
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare"])
+                .arg(&origin)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let parent = fixture.path().join("projects with spaces");
+        let destination = parent.join("origin");
+        std::fs::create_dir_all(&destination).unwrap();
+        let reservation = clone_reservation(&destination);
+        std::fs::write(&reservation, "another clone").unwrap();
+        assert!(
+            clone_repository(parent.clone(), origin.display().to_string())
+                .await
+                .is_err()
+        );
+        assert!(std::fs::read_dir(&destination).unwrap().next().is_none());
+        assert_eq!(
+            std::fs::read_to_string(&reservation).unwrap(),
+            "another clone"
+        );
+        let active = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&reservation)
+            .unwrap();
+        active.try_lock().unwrap();
+        std::fs::remove_dir(&destination).unwrap();
+        assert!(
+            clone_repository(parent.clone(), origin.display().to_string())
+                .await
+                .is_err()
+        );
+        assert!(std::fs::read_dir(&destination).unwrap().next().is_none());
+        drop(active);
+        std::fs::remove_file(&reservation).unwrap();
+        let checkout = clone_repository(parent, origin.display().to_string())
+            .await
+            .unwrap();
+        assert!(checkout.join(".git").is_dir());
+        assert!(!reservation.exists());
+        assert_eq!(checkout, external_path(destination.canonicalize().unwrap()));
     }
 
     #[tokio::test]

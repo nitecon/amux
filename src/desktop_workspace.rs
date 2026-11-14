@@ -675,6 +675,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_checkout_menu_uses_git_origin_and_recovers_missing_checkout_from_binding() {
+        let fixture = tempfile::tempdir().unwrap();
+        let checkout = fixture.path().join("local checkout");
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut app = super::super::tests::desktop();
+        app.workspaces[0].directory = checkout.clone();
+        app.workspaces[0].gateway.project = "bound-project".into();
+        let origin = "https://example.org/team/project.git";
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args(["remote", "add", "origin", origin])
+                .status()
+                .unwrap()
+                .success()
+        );
+        drop(app.design_message(desktop_design::Action::LocalProjectMenu(checkout.clone())));
+        drop(app.design_message(desktop_design::Action::CheckoutProject(false)));
+        assert!(app.workspace_dialog.open);
+        assert_eq!(app.workspace_dialog.repository, origin);
+        assert!(app.workspace_dialog.folders.is_some());
+        assert!(!app.workspace_dialog.busy);
+        drop(app.close_workspace_dialog());
+
+        // A saved local workspace without .git must clone its reported remote,
+        // rather than treating the ordinary folder as an existing checkout.
+        std::fs::remove_dir_all(checkout.join(".git")).unwrap();
+        app.design.projects = vec![amux::gateway::ProjectOverview {
+            ident: "bound-project".into(),
+            machines: vec![amux::gateway::ProjectMachine {
+                hostname: "another-host".into(),
+                origin: Some(origin.into()),
+            }],
+            ..Default::default()
+        }];
+        app.preferences.current.projects_dir = fixture.path().display().to_string();
+        drop(app.design_message(desktop_design::Action::LocalProjectMenu(checkout)));
+        drop(app.design_message(desktop_design::Action::CheckoutProject(true)));
+        assert!(app.workspace_dialog.open);
+        assert!(app.workspace_dialog.busy);
+        assert_eq!(app.workspace_dialog.repository, origin);
+        assert_eq!(
+            app.workspace_dialog.folder,
+            fixture.path().display().to_string()
+        );
+    }
+
+    #[test]
     fn local_project_discovery_lists_only_immediate_checkouts_without_modifying_them() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
         std::fs::create_dir_all(&root).unwrap();

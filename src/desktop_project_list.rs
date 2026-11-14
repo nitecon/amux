@@ -376,7 +376,8 @@ impl Desktop {
         });
         sidebar = sidebar.push(
             tooltip(
-                card,
+                mouse_area(card)
+                    .on_right_press(action(Action::LocalProjectMenu(w.directory.clone()))),
                 container(diagnostic)
                     .padding(14)
                     .width(300)
@@ -439,24 +440,29 @@ impl Desktop {
         };
         sidebar = sidebar.push(
             tooltip(
-                container(
-                    row![
-                        text("●").size(12).color(MUTED),
-                        column![title, text("Not added").size(10).color(MUTED)]
-                            .spacing(2)
-                            .width(Length::Fill),
-                        self.project_favorite_button(ProjectRow::Checkout(project)),
-                        button(text("Add").size(11).color(CYAN))
-                            .on_press(action(Action::AddLocalProject(project.directory.clone())))
-                            .padding([5, 8])
-                            .style(button::text)
-                    ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
+                mouse_area(
+                    container(
+                        row![
+                            text("●").size(12).color(MUTED),
+                            column![title, text("Not added").size(10).color(MUTED)]
+                                .spacing(2)
+                                .width(Length::Fill),
+                            self.project_favorite_button(ProjectRow::Checkout(project)),
+                            button(text("Add").size(11).color(CYAN))
+                                .on_press(action(Action::AddLocalProject(
+                                    project.directory.clone()
+                                )))
+                                .padding([5, 8])
+                                .style(button::text)
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([10, 6])
+                    .width(Length::Fill)
+                    .style(|_| surface(CARD, true)),
                 )
-                .padding([10, 6])
-                .width(Length::Fill)
-                .style(|_| surface(CARD, true)),
+                .on_right_press(action(Action::LocalProjectMenu(project.directory.clone()))),
                 text(format!(
                     "{}\nAdd this existing checkout to amux",
                     project.directory.display()
@@ -550,6 +556,49 @@ mod tests {
             .into_iter()
             .map(|entry| entry.name)
             .collect()
+    }
+
+    #[test]
+    fn right_click_opens_checkout_menu_for_added_and_discovered_local_projects() {
+        use iced::advanced::{Shell, layout, renderer::Headless, widget::Tree};
+        let renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(14.0),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let app = desktop();
+        let project = desktop_workspace::LocalProject {
+            directory: PathBuf::from("discovered checkout"),
+            canonical_remote: None,
+        };
+        for (mut view, expected) in [
+            (app.workspace_project_card(0), &app.workspaces[0].directory),
+            (app.checkout_project_card(&project), &project.directory),
+        ] {
+            let mut tree = Tree::new(view.as_widget());
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(240.0, 400.0)),
+            );
+            let mut messages = Vec::new();
+            view.as_widget_mut().update(
+                &mut tree,
+                &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                    iced::mouse::Button::Right,
+                )),
+                iced::advanced::Layout::new(&node),
+                iced::mouse::Cursor::Available(iced::Point::new(20.0, 20.0)),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &iced::Rectangle::with_size(node.size()),
+            );
+            assert!(
+                matches!(messages.as_slice(), [Message::Design(Action::LocalProjectMenu(directory))] if directory == expected)
+            );
+        }
     }
 
     #[test]
