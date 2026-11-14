@@ -115,6 +115,7 @@ impl Desktop {
         }
         content = content.push(text("Persona / terminal overrides").size(18));
         content = content.push(text("Terminal numbers retain their assigned persona across restarts. Unlisted/new terminals use the provider launch default.").size(12));
+        let mut shown = std::collections::HashSet::new();
         for workspace in &self.workspaces {
             for (_, pane) in workspace.panes.iter() {
                 for tab in &pane.tabs {
@@ -125,6 +126,7 @@ impl Desktop {
                     if number == 0 {
                         continue;
                     }
+                    shown.insert(format!("{}:{number}", provider.command()));
                     let profile = self.preferences.draft.models.launch(provider, number);
                     let label = format!(
                         "{} · {} #{}",
@@ -156,6 +158,35 @@ impl Desktop {
                     }
                 }
             }
+        }
+        // Catalog entries may be retired after a terminal closes. Keep its saved
+        // override editable/removable instead of letting an invisible choice block Save.
+        for (key, profile) in &self.preferences.draft.models.terminals {
+            if shown.contains(key) {
+                continue;
+            }
+            let Some((provider, number)) = key.split_once(':') else {
+                continue;
+            };
+            let provider = match provider {
+                "codex" => Provider::Codex,
+                "claude" => Provider::Claude,
+                _ => continue,
+            };
+            let Ok(number) = number.parse::<u64>() else {
+                continue;
+            };
+            content = content.push(profile_row(
+                &catalog,
+                provider,
+                Target::Terminal(number),
+                format!("Saved {} #{number} (terminal closed)", provider.command()),
+                profile,
+            ));
+            content = content.push(
+                button("Remove saved override")
+                    .on_press(Message::Models(Action::Inherit(provider, number))),
+            );
         }
         content.into()
     }
@@ -264,5 +295,23 @@ mod tests {
         );
         assert!(restored.models.launch(Provider::Codex, 8).model.is_empty());
         assert_eq!(restored.models.claude.basic.model, "haiku");
+        app.preferences
+            .draft
+            .models
+            .terminals
+            .insert("codex:99".into(), Profile::new("retired-model", "medium"));
+        assert!(
+            app.preferences
+                .draft
+                .models
+                .validate(&Catalog::load().unwrap())
+                .is_err()
+        );
+        app.models_message(Action::Inherit(Provider::Codex, 99));
+        drop(app.save_preferences());
+        let restored = GatewayPreferences::load(app.preferences.path.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(!restored.models.terminals.contains_key("codex:99"));
     }
 }

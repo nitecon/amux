@@ -25,7 +25,8 @@ is introduced.
 Set **Terminal launch default** separately for Codex and Claude. **Provider default**
 leaves model and thinking selection to the provider. Override these settings for
 an individual terminal/persona in the same panel. **Use provider launch default**
-removes the override. Choices persist in this device's preferences by provider and
+removes the override. Saved overrides for closed terminals remain visible and
+removable so retired catalog entries cannot silently block Settings saves. Choices persist in this device's preferences by provider and
 stable terminal number; closing that terminal and creating another allocates a new
 number. These are independent of the models requested for delegated work.
 
