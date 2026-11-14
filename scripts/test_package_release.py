@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -65,6 +66,15 @@ class ModelCatalogPackaging(unittest.TestCase):
             (bundles[0] / "models.json").unlink()
             with self.assertRaisesRegex(ValueError, "incomplete"):
                 package_release.package(root, output, tag, revision)
+
+    def test_windows_style_checkout_keeps_the_catalog_identical(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).as_posix() + "/"
+            subprocess.run(["git", "-c", "core.autocrlf=true", "-c", "core.eol=crlf",
+                            "checkout-index", "--prefix=" + prefix, "--", "assets/models.json"],
+                           check=True, capture_output=True)
+            self.assertEqual((Path(temporary) / "assets/models.json").read_bytes(),
+                             Path("assets/models.json").read_bytes())
 
     def test_catalog_drift_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,2 +1,4 @@
 # Hashed byte-for-byte by tests/updater_contract.rs; never convert line endings.
 tests/fixtures/updater/*.rs -text
+# The shared installation catalog is compared across native release bundles.
+assets/models.json text eol=lf
