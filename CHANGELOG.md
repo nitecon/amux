@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+
+## v0.0.78 - 2026-11-14
+
+### Added
+
+- Configure native subagent routing in Settings → Models & Routing. Defaults
+  are Luna/Sonnet for routine code, Terra/Haiku for research and basic tasks,
+  and Sol/Opus for complex work. Each task notification carries the current
+  saved provider policy; the lead retains ownership, reviews and submits.
+- Set separate provider launch defaults and persistent terminal/persona model
+  and thinking overrides. A shared installation models.json catalog supplies
+  choices on Linux, Windows and macOS.
+
+### Fixed
+
+- Resume each desktop terminal's recorded native conversation independently
+  of other personas in the same checkout. Missing conversation history retries
+  once with a fresh session, preserving the launch profile and Amux identity.
+- Keep closed-terminal profiles editable when catalog entries retire, allow
+  provider-default launch if an older updater omitted the catalog, and restore
+  missing catalogs through verified bundled-file repair.
+- Restore local project checkout menus and allow cloning into empty destinations.
+
+### Upgrade notes
+
+- Extract the complete bundle, including models.json. Older updaters can omit
+  this new file; run the updated amux --update or extract the complete bundle
+  to recover it. A full update replaces the installation catalog.
+- Save launch profile changes, then explicitly restart the terminal to apply
+  them. Review and trust the Codex SessionStart hook normally to enable exact
+  conversation binding; an unrecorded Codex terminal starts fresh. Hook trust
+  does not retroactively record an earlier startup event.
+- Native delegation and model access depend on the installed provider and
+  account. Linux native checks verified model selection and conversational
+  leads; Windows/macOS CI verifies packaging, arguments and delivery contracts.
+  See docs/models.md for behavior and validation limits.
+
 ## v0.0.77 - 2026-11-13
 
 ### Fixed
