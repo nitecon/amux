@@ -738,8 +738,14 @@ impl Desktop {
                         .current
                         .models
                         .launch(provider, terminal_number);
-                    let checked = amux::model_profiles::Catalog::load()
-                        .and_then(|catalog| catalog.validate(provider, profile));
+                    // A legacy updater can omit the new data file. Provider-default
+                    // launches still reach the wrapper's bundled-file repair path.
+                    let checked = if *profile == amux::model_profiles::Profile::default() {
+                        Ok(())
+                    } else {
+                        amux::model_profiles::Catalog::load()
+                            .and_then(|catalog| catalog.validate(provider, profile))
+                    };
                     if let Err(error) = checked {
                         failed_state.restart_at = None;
                         return Tab {

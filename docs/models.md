@@ -61,7 +61,9 @@ default thinking only. Model availability and supported effort depend on the
 installed provider and account; the catalog is a maintained list, not an access
 check. Update its entries as offerings change. Removed selections stay visible
 until corrected; invalid provider/model/effort combinations cannot be saved or
-launched. A missing/malformed catalog reports an actionable error.
+launched. A missing/malformed catalog reports an actionable error for explicit
+profiles and selectors. Provider-default terminals can still launch; MCP-enabled
+wrappers also attempt the existing verified missing-file repair.
 
 Platform bundles ship the catalog, and the updater installs it with the application.
 An older updater may skip this new data file: run the newly installed `amux --update`
