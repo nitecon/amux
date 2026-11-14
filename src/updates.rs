@@ -44,11 +44,12 @@ const MAX_ARCHIVE: u64 = 256 << 20;
 const MAX_ENTRY: u64 = 128 << 20;
 const MAX_UNPACKED: u64 = 256 << 20;
 const MAX_ENTRIES: usize = 64;
-const DOCUMENTS: [&str; 4] = [
+const DOCUMENTS: [&str; 5] = [
     "LICENSE",
     "ICED_TERM_LICENSE",
     "REVIEW.md",
     "notification-validation.md",
+    crate::model_profiles::CATALOG_FILE,
 ];
 
 /// Where release metadata and assets come from. Production uses [`ReleaseSource::github`];
@@ -301,7 +302,7 @@ pub fn bootstrap_bundled_tools() -> Result<()> {
 }
 
 fn tools_to_restore(dir: &Path, build: &Build, platform: &Platform) -> HashSet<String> {
-    platform
+    let mut missing: HashSet<String> = platform
         .tools
         .iter()
         .filter(|name| {
@@ -313,7 +314,13 @@ fn tools_to_restore(dir: &Path, build: &Build, platform: &Platform) -> HashSet<S
             })
         })
         .cloned()
-        .collect()
+        .collect();
+    if build.model_catalog_sha256.is_some()
+        && !dir.join(crate::model_profiles::CATALOG_FILE).exists()
+    {
+        missing.insert(crate::model_profiles::CATALOG_FILE.into());
+    }
+    missing
 }
 
 async fn apply(running: &Running, source: &ReleaseSource, restore_only: bool) -> Result<String> {
@@ -475,7 +482,8 @@ async fn apply(running: &Running, source: &ReleaseSource, restore_only: bool) ->
             build.revision == previous.revision
                 && build.binary_sha256 == previous.binary_sha256
                 && build.gui_binary_sha256 == previous.gui_binary_sha256
-                && build.bundled_sha256 == previous.bundled_sha256,
+                && build.bundled_sha256 == previous.bundled_sha256
+                && build.model_catalog_sha256 == previous.model_catalog_sha256,
             "release bundle differs from the installed BUILD.json; nothing was changed"
         );
         ensure!(
@@ -604,6 +612,8 @@ struct Build {
     /// SHA-256 of each bundled tool executable, by file name.
     #[serde(default)]
     bundled_sha256: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    model_catalog_sha256: Option<String>,
 }
 
 fn read_build(path: &Path) -> Result<Build> {
@@ -1127,6 +1137,14 @@ fn verify_staged(
             &sha256_file(&dir.join(name))? == expected,
             "bundle {name} does not match its BUILD.json"
         );
+    }
+    if let Some(expected) = &build.model_catalog_sha256 {
+        let path = dir.join(crate::model_profiles::CATALOG_FILE);
+        ensure!(
+            sha256_file(&path)? == *expected,
+            "Model catalog differs from BUILD.json"
+        );
+        crate::model_profiles::Catalog::read(&path)?;
     }
     // A bundled tool is installed only when BUILD.json lists its exact hash.
     for name in &platform.tools {

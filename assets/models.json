@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "models": [
+    {"provider":"codex","id":"gpt-6.1-sol","label":"Sol","thinking":["low","medium","high","xhigh","max","ultra"]},
+    {"provider":"codex","id":"gpt-6.1-terra","label":"Terra","thinking":["low","medium","high","xhigh","max","ultra"]},
+    {"provider":"codex","id":"gpt-6-luna","label":"Luna","thinking":["low","medium","high","xhigh","max"]},
+    {"provider":"codex","id":"gpt-6-astra","label":"Astra","thinking":["low","medium","high","xhigh","max","ultra"]},
+    {"provider":"claude","id":"opus","label":"Opus","thinking":["low","medium","high","max"]},
+    {"provider":"claude","id":"sonnet","label":"Sonnet","thinking":["low","medium","high"]},
+    {"provider":"claude","id":"haiku","label":"Haiku","thinking":[]}
+  ]
+}

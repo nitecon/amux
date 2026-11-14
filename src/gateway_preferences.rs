@@ -88,6 +88,7 @@ pub struct GatewayPreferences {
     pub clear_on_task: bool,
     /// How `amux submit-work` publishes an agent's finished work.
     pub work_submission: crate::work_submission::Preferences,
+    pub models: crate::model_profiles::Preferences,
     pub machine_id: String,
     pub machine_key: String,
 }
@@ -107,6 +108,7 @@ impl Default for GatewayPreferences {
             mcp_tools: true,
             clear_on_task: false,
             work_submission: Default::default(),
+            models: Default::default(),
             machine_id: String::new(),
             machine_key: String::new(),
         }

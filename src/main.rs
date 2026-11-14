@@ -133,12 +133,20 @@ enum Operation {
         /// Register `amux mcp` (tasks, agent-tools and memory) for this session.
         #[arg(long)]
         mcp: bool,
+        /// Bind this desktop terminal to its own native conversation.
+        #[arg(long, hide = true)]
+        desktop_session: bool,
+        #[arg(long, hide = true)]
+        restore_native: bool,
         #[arg(last = true)]
         args: Vec<String>,
     },
     /// Serve amux tasks and the bundled agent-tools and memory commands as an
     /// MCP stdio server for one agent session.
     Mcp,
+    /// Record the root provider conversation from a SessionStart hook.
+    #[command(hide = true)]
+    RecordNativeSession,
     /// Print the calling agent's full execution identity.
     Whoami,
     /// List live amux-launched agent sessions, including three in one project.
@@ -539,12 +547,29 @@ fn run(cli: Cli) -> Result<u8> {
         Operation::Agent {
             provider,
             mcp,
+            desktop_session,
+            restore_native,
             args,
         } => {
-            return launch_agent(project_dir, provider, mcp, args);
+            return launch_agent(
+                project_dir,
+                provider,
+                mcp,
+                args,
+                desktop_session,
+                restore_native,
+            );
         }
         Operation::Mcp => {
             amux::mcp::serve()?;
+        }
+        Operation::RecordNativeSession => {
+            let actor = AgentIdentity::from_environment()?;
+            amux::native_conversation::record(
+                &identity::state_directory()?,
+                &actor,
+                std::io::stdin().lock(),
+            )?;
         }
         Operation::Whoami => println!(
             "{}",
@@ -901,11 +926,27 @@ async fn cli_gateway(
 /// already guards bound owner_origin claims, but until it enforces the exact
 /// owner atomically for every claim type, ownership can change between this read
 /// and the mutation.
-fn launch_agent(project: PathBuf, provider: Provider, mcp: bool, args: Vec<String>) -> Result<u8> {
+fn launch_agent(
+    project: PathBuf,
+    provider: Provider,
+    mcp: bool,
+    mut args: Vec<String>,
+    desktop_session: bool,
+    restore_native: bool,
+) -> Result<u8> {
     let actor = AgentIdentity::new(provider, &project)?.resume_at(
         &identity::state_directory()?,
         std::time::Duration::from_secs(5),
     );
+    if desktop_session {
+        let mut native = amux::native_conversation::arguments(
+            &identity::state_directory()?,
+            &actor,
+            restore_native,
+        )?;
+        native.append(&mut args);
+        args = native;
+    }
     let restoring = args
         .iter()
         .map(String::as_str)

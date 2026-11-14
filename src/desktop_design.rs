@@ -1845,6 +1845,7 @@ impl Desktop {
             PreferencesTab::Updates=>self.updates_view(),
             PreferencesTab::Harness=>self.harness_view(),
             PreferencesTab::Templates=>templates_view(),
+            PreferencesTab::Models=>self.models_view(),
             PreferencesTab::General=>column![
                 text("Workspaces & Terminals").size(22),
                 settings_card(column![
@@ -1903,6 +1904,7 @@ impl Desktop {
                     PreferencesTab::General
                 ),
                 group("AI & AUTOMATION"),
+                nav("cpu", "Models & Routing", PreferencesTab::Models),
                 nav("cpu", "Agent Instructions", PreferencesTab::Harness),
                 nav("file", "Instruction Templates", PreferencesTab::Templates),
                 group("SYSTEM"),

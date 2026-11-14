@@ -54,3 +54,6 @@ pub mod event_client;
 
 pub mod autoreview;
 pub mod project_identity;
+
+pub mod model_profiles;
+pub mod native_conversation;

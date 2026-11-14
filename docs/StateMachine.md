@@ -471,6 +471,9 @@ The client keeps only what the server cannot observe or do:
   project are frozen on receipt and checked again before paste; requester
   notices also retain their execution-generation fence. A changed native
   attachment can resume only for the same logical owner execution.
+  Immediately before paste, the client appends the current provider-specific
+  native-subagent guidance from saved Models & Routing settings. This is lead
+  guidance, with retained custody and review scope; it adds no client scheduler.
 - The UI as a consumer: server `agent.idle` / `agent.busy` drive each terminal's
   activity indicator, and `task.*` events refresh that project's task panel.
 - Manual task UI and CLI (`desktop_tasks.rs`, `task_routing.rs`,

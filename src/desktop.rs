@@ -12,6 +12,8 @@ mod desktop_design;
 mod desktop_harness;
 #[path = "desktop_icon.rs"]
 mod desktop_icon;
+#[path = "desktop_models.rs"]
+mod desktop_models;
 #[path = "desktop_routing.rs"]
 mod desktop_routing;
 #[path = "desktop_task_context.rs"]
@@ -73,6 +75,7 @@ enum Message {
     RestartTab(pane_grid::Pane, u64),
     Preferences(bool),
     PreferencesTab(PreferencesTab),
+    Models(desktop_models::Action),
     CheckHarness,
     InstallHarness(amux::harness::Provider),
     ManualHarness(amux::harness::Provider),
@@ -214,6 +217,7 @@ enum PreferencesTab {
     Updates,
     Harness,
     Templates,
+    Models,
 }
 
 struct Updates {
@@ -661,37 +665,7 @@ impl Desktop {
         self.open_terminal(id, directory, provider, script, false, None)
     }
 
-    // Native --last/--continue is shared by tabs in the same directory. Only
-    // the newest tab may use it; older tabs start fresh and recover via tasks.
-    fn resume_restarted_tab(
-        &self,
-        id: u64,
-        provider: Provider,
-        directory: &std::path::Path,
-    ) -> bool {
-        let directory = directory
-            .canonicalize()
-            .unwrap_or_else(|_| directory.into());
-        !self.workspaces.iter().any(|workspace| {
-            workspace.panes.iter().any(|(_, pane)| {
-                pane.tabs.iter().any(|tab| {
-                    if tab.id <= id || tab.delegation.provider.or(tab.provider) != Some(provider) {
-                        return false;
-                    }
-                    let other_directory = tab
-                        .terminal
-                        .as_ref()
-                        .and_then(|terminal| {
-                            amux::session::working_directory(terminal.child_pid()?)
-                        })
-                        .or_else(|| tab.delegation.directory.clone())
-                        .unwrap_or_else(|| workspace.directory.clone());
-                    other_directory.canonicalize().unwrap_or(other_directory) == directory
-                })
-            })
-        })
-    }
-
+    // Native conversation bindings are owned by the wrapper for this terminal number.
     fn open_terminal(
         &mut self,
         id: u64,
@@ -759,12 +733,33 @@ impl Desktop {
             match std::env::current_exe().and_then(|exe| amux::cli_path::cli_beside(&exe)) {
                 Ok(exe) => {
                     backend.program = exe.display().to_string();
+                    let profile = self
+                        .preferences
+                        .current
+                        .models
+                        .launch(provider, terminal_number);
+                    let checked = amux::model_profiles::Catalog::load()
+                        .and_then(|catalog| catalog.validate(provider, profile));
+                    if let Err(error) = checked {
+                        failed_state.restart_at = None;
+                        return Tab {
+                            id,
+                            title: format!("Model profile: {error:#}"),
+                            #[cfg(any(target_os = "linux", windows))]
+                            lifetime: None,
+                            terminal: None,
+                            stopped_output: None,
+                            provider: Some(provider),
+                            delegation: failed_state,
+                        };
+                    }
                     backend.args = agent_arguments(
                         directory,
                         provider,
                         resume,
                         self.preferences.current.mcp_tools,
                     );
+                    backend.args.extend(profile.arguments(provider));
                 }
                 Err(e) => {
                     return Tab {
@@ -927,8 +922,7 @@ impl Desktop {
             .unwrap_or_else(|| workspace.directory.clone());
         let title = tab.title.clone();
         let script = workspace.init_script.clone();
-        let resume = provider
-            .is_some_and(|provider| self.resume_restarted_tab(terminal_id, provider, &directory));
+        let resume = provider.is_some();
         // Keep the assigned agent number, but retire the runtime event ID.
         // Iced retains a subscription by that ID across one update; reusing
         // it keeps the old receiver and lets delayed old Exit events stop
@@ -1116,6 +1110,7 @@ impl Desktop {
                 self.close_design_popovers();
             }
             Message::Design(value) => return self.design_message(value),
+            Message::Models(action) => self.models_message(action),
             Message::WindowReady => {}
             Message::AutoResume(value) => self.preferences.draft.auto_resume = value,
             Message::StartOnLogin(value) => self.preferences.draft.start_on_login = value,
@@ -2256,6 +2251,13 @@ impl Desktop {
             self.preferences.status = "A gateway task action is pending or unconfirmed. Refresh and inspect its result before changing connections.".into();
             return Task::none();
         }
+        if self.preferences.draft.models != self.preferences.current.models
+            && let Err(error) = amux::model_profiles::Catalog::load()
+                .and_then(|catalog| self.preferences.draft.models.validate(&catalog))
+        {
+            self.preferences.status = format!("Not saved: {error:#}");
+            return Task::none();
+        }
         let mut draft = self.preferences.draft.clone();
         draft.machine_key = draft.machine_key.trim().to_owned();
         draft.machine_id = draft.machine_id.trim().to_owned();
@@ -2792,14 +2794,11 @@ fn agent_arguments(
     if mcp {
         args.push("--mcp".into());
     }
+    args.push("--desktop-session".into());
     if resume {
-        args.push("--".into());
-        args.extend(
-            amux::session::resume_arguments(provider)
-                .iter()
-                .map(|s| (*s).into()),
-        );
+        args.push("--restore-native".into());
     }
+    args.push("--".into());
     args
 }
 
@@ -2819,13 +2818,21 @@ mod tests {
                 "agent",
                 "claude",
                 "--mcp",
-                "--",
-                "--continue"
+                "--desktop-session",
+                "--restore-native",
+                "--"
             ]
         );
         assert_eq!(
             agent_arguments(dir, Provider::Codex, false, false),
-            ["--project-dir", "/p", "agent", "codex"]
+            [
+                "--project-dir",
+                "/p",
+                "agent",
+                "codex",
+                "--desktop-session",
+                "--"
+            ]
         );
         assert!(GatewayPreferences::default().mcp_tools, "on by default");
     }
@@ -2905,41 +2912,6 @@ mod tests {
             notification_status: String::new(),
             delegation: desktop_delegation::Bridge::default(),
             client_run: Uuid::new_v4(),
-        }
-    }
-
-    #[test]
-    fn restart_resumes_only_newest_matching_provider_and_directory_across_workspaces() {
-        for provider in [Provider::Codex, Provider::Claude] {
-            let mut app = desktop();
-            let directory = app.workspaces[0].directory.clone();
-            for (index, workspace) in app.workspaces.iter_mut().enumerate() {
-                workspace.directory = directory.clone();
-                let tab = &mut workspace.panes.get_mut(workspace.focused).unwrap().tabs[0];
-                tab.id = index as u64;
-                tab.provider = Some(provider);
-            }
-            assert!(!app.resume_restarted_tab(0, provider, &directory));
-            assert!(app.resume_restarted_tab(1, provider, &directory));
-
-            let other_provider = match provider {
-                Provider::Codex => Provider::Claude,
-                Provider::Claude => Provider::Codex,
-            };
-            let newer = &mut app.workspaces[1];
-            newer.panes.get_mut(newer.focused).unwrap().tabs[0].provider = Some(other_provider);
-            assert!(app.resume_restarted_tab(0, provider, &directory));
-            let newer = &mut app.workspaces[1];
-            newer.panes.get_mut(newer.focused).unwrap().tabs[0].provider = None;
-            assert!(app.resume_restarted_tab(0, provider, &directory));
-            // An agent discovered inside a shell tab also shares native resume.
-            let newer = &mut app.workspaces[1];
-            newer.panes.get_mut(newer.focused).unwrap().tabs[0]
-                .delegation
-                .provider = Some(provider);
-            assert!(!app.resume_restarted_tab(0, provider, &directory));
-            app.workspaces[1].directory = directory.join("other-project");
-            assert!(app.resume_restarted_tab(0, provider, &directory));
         }
     }
 

@@ -33,6 +33,7 @@ if [ -n "${AMUX_BUNDLED_DIR:-}" ]; then
     tools="agent-tools memory"
     for tool in $tools; do cp "$AMUX_BUNDLED_DIR/$tool" "$app/Contents/MacOS/"; done
 fi
+cp "$root/assets/models.json" "$app/Contents/Resources/models.json"
 cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
 printf '\nEmbedded gateway backend: nitecon/agent-gateway, commit 986d84544aae086579c72349a1afc366cef6b589 (Apache-2.0). Ported API-only backend; see crates/gateway-backend/UPSTREAM.md in the source distribution.\n' >> "$app/Contents/Resources/LICENSE"
 if [ -n "$tools" ]; then

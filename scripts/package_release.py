@@ -38,15 +38,22 @@ def package(artifacts, output, tag, revision):
         suffix = ".exe" if platform == "windows" else ""
         tools = {f"agent-tools{suffix}", f"memory{suffix}"}
         names = {cli, gui, "BUILD.json", "SHA256SUMS", "LICENSE", "ICED_TERM_LICENSE",
-                 "REVIEW.md", "notification-validation.md"} | tools
+                 "REVIEW.md", "notification-validation.md", "models.json"} | tools
         if {p.name for p in bundle.iterdir()} != names:
             raise ValueError(f"{target}: incomplete or unexpected bundle files")
         if any(p.is_symlink() or not p.is_file() for p in bundle.iterdir()):
             raise ValueError(f"{target}: bundle contains a non-regular file")
+        catalog = json.loads((bundle / "models.json").read_text(encoding="utf-8"))
+        if catalog.get("version") != 1 or not catalog.get("models"):
+            raise ValueError(f"{target}: invalid model catalog")
+        if (bundle / "models.json").read_bytes() != Path("assets/models.json").read_bytes():
+            raise ValueError(f"{target}: model catalog differs from source")
         build = json.loads((bundle / "BUILD.json").read_text(encoding="utf-8-sig"))
         if (build["revision"], build["target"], build["version"], build["gui_binary"],
             build["candidate_only"]) != (revision, target, version, gui, False):
             raise ValueError(f"{target}: release metadata differs from tag/source/platform")
+        if build.get("model_catalog_sha256") != sha(bundle / "models.json"):
+            raise ValueError(f"{target}: model catalog hash differs")
         checksums = dict(line.split()[::-1] for line in
                          (bundle / "SHA256SUMS").read_text(encoding="utf-8-sig").splitlines()
                          if line.strip())

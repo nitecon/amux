@@ -485,7 +485,17 @@ fn text(app: &Desktop, agent: &Agent, event: &Value) -> String {
         .iter()
         .find(|c| c.target.terminal == agent.terminal)
         .unwrap();
-    events::notification_text(event, candidate, false).unwrap()
+    let mut text = events::notification_text(event, candidate, false).unwrap();
+    if !event["amux_guidance"].is_string() {
+        text.push('\n');
+        text.push_str(
+            &app.preferences
+                .current
+                .models
+                .guidance(candidate.actor.provider),
+        );
+    }
+    amux::guidance::terminal_text(&text)
 }
 
 fn verification(app: &Desktop, verified: bool) -> Event {
@@ -808,10 +818,22 @@ fn check_context_clear_delivery(fallback_review: bool) {
             assert_eq!(agent.lines(), ["/clear"]);
         } else {
             let notification = text(&app, agent, &event);
-            let notification = format!(
-                "{notification} {}",
+            let candidate = app
+                .delegation
+                .candidates
+                .iter()
+                .find(|c| c.target.terminal == agent.terminal)
+                .unwrap();
+            let policy = app
+                .preferences
+                .current
+                .models
+                .guidance(candidate.actor.provider);
+            let prefix = notification.strip_suffix(&policy).unwrap().trim_end();
+            let notification = amux::guidance::terminal_text(&format!(
+                "{prefix} {} {policy}",
                 amux_gateway_backend::templates::SESSION_GUIDANCE
-            );
+            ));
             let notification = if index == 0 {
                 format!("\x1b[200~{notification}\x1b[201~")
             } else {
@@ -1887,4 +1909,28 @@ fn sidebar_lists_other_projects_alphabetically_when_agent_availability_matches()
         app.workspace_dialog.open,
         "check out at location opens the file browser"
     );
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn queued_task_uses_current_policy_at_verified_delivery_without_changing_custody() {
+    let mut app = desktop();
+    let agent = spawn(&mut app, 0, 0, Provider::Codex, "ready");
+    app.registry = Some(agent.directory.clone());
+    let mut frames = router(&mut app);
+    project(&mut app, &agent, "alpha");
+    wait(&app, |app| {
+        grid(app, 0).is_some_and(|g| g.observation.lines[0].starts_with("fixture agent"))
+    });
+    scan(&mut app);
+    let event = notify(&app, &agent, 1, false);
+    receive(&mut app, event);
+    app.preferences.current.models.codex.code =
+        amux::model_profiles::Profile::new("gpt-6.1-terra", "low");
+    deliver(&mut app);
+    let lines = wait_lines(&agent, 1);
+    assert!(lines[0].contains("Routine code changes: gpt-6.1-terra (low thinking)"));
+    assert!(!lines[0].contains("gpt-6-luna"));
+    assert!(lines[0].contains("retain Amux task ownership"));
+    assert_eq!(results(&mut frames), ["delivered"]);
 }

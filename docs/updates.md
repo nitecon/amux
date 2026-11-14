@@ -7,7 +7,7 @@ check shows an error and preserves any update already reported.
 
 ## Direct downloads
 
-Keep the CLI, desktop and `BUILD.json` from the downloaded bundle together.
+Keep the CLI, desktop, `models.json` and `BUILD.json` from the downloaded bundle together.
 Open the top-right bell, or **Preferences → Updates**, and click **Update now**.
 The app downloads the release, verifies archive checksums, build metadata and both
 executables, then installs the pair. It stays open and keeps your terminals
@@ -21,7 +21,9 @@ backup files if manual recovery is necessary.
 
 Updaters shipped before bundled agent-tools and memory skip those two files.
 After such an upgrade, starting an MCP-enabled agent restores missing or mismatched
-helpers from the exact installed release. Archive checksums, executable hashes and
+helpers from the exact installed release. New releases also restore a missing
+`models.json` catalog this way; after upgrading through an older updater that
+skips the catalog, run the new `amux --update` or extract the complete bundle. Archive checksums, executable hashes and
 the installed build's helper pins are verified before installation; the application
 revision stays unchanged. If recovery cannot finish (for example while offline),
 the agent still starts with available tools and reports the failure. Run
@@ -56,8 +58,10 @@ The desktop checks for an installed replacement. When one is ready, the update
 panel offers **Restart amux**, including the number of running sessions it will
 close. Restart is explicit: it saves the layout, starts the updated desktop and
 closes the current app. Previously running terminal tabs reopen in their saved
-directories. Agent tabs use `codex resume --last` or `claude --continue`, following
-the provider’s latest conversation in that directory. Tabs whose processes had
+directories. Agent tabs retain their saved model/thinking profiles and use their
+recorded native conversation IDs, independently of other personas in the same
+directory. Codex requires trusting its session-only binding hook; a missing binding
+starts fresh rather than choosing another persona's history. See [model profiles](models.md). Tabs whose processes had
 already exited remain stopped. Gateway claims and queued terminal input are not
 restored, and initialization scripts are not automatically rerun. If saving or starting the replacement
 fails, the current app remains open. Some installation methods may require

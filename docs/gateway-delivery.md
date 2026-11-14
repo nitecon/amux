@@ -65,6 +65,13 @@ notification asking the agent to check whether the task is still required,
 implement it, ask the user, or close it with a reason. One task is handed to an
 idle agent at a time.
 
+Immediately before each task notification is pasted, the desktop appends the
+current provider-specific native-subagent policy from **Settings → Models & Routing**.
+This also covers reviews, updates and deliveries that were queued before a settings
+change. The lead retains custody and submission; helpers receive scoped work, not
+independent Amux claims. Review notifications permit analysis only. The server's
+assignment and eligibility rules are unchanged. See [models and native delegation](models.md).
+
 Codex gets first choice of ordinary work only while available to take it; busy,
 occupied, drafting or refusing Codex agents do not prevent an available Claude
 agent from progressing the queue. Unknown activity remains ineligible for work.

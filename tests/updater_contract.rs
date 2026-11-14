@@ -134,6 +134,7 @@ struct Bundle {
     gui: Vec<u8>,
     /// Bundled tool executables (`crate::mcp`), listed in BUILD.json.
     tools: Vec<(String, Vec<u8>)>,
+    catalog: Option<Vec<u8>>,
 }
 
 fn tool(name: &str) -> String {
@@ -149,6 +150,7 @@ impl Bundle {
             cli: format!("cli {revision}").into_bytes(),
             gui: format!("gui {revision}").into_bytes(),
             tools: Vec::new(),
+            catalog: None,
         }
     }
 
@@ -168,6 +170,7 @@ impl Bundle {
             "gui_binary_sha256": sha(&self.gui),
             "candidate_only": self.candidate,
             "runner": "fixture",
+            "model_catalog_sha256": self.catalog.as_ref().map(|bytes| sha(bytes)),
             "bundled_sha256": self.tools.iter()
                 .map(|(name, bytes)| (name.clone(), json!(sha(bytes))))
                 .collect::<serde_json::Map<_, _>>(),
@@ -183,6 +186,11 @@ impl Bundle {
             (GUI.into(), Entry::File(self.gui.clone())),
         ]
         .into_iter()
+        .chain(
+            self.catalog
+                .iter()
+                .map(|bytes| ("models.json".into(), Entry::File(bytes.clone()))),
+        )
         .chain(
             self.tools
                 .iter()
@@ -859,6 +867,48 @@ async fn bundled_tools_are_installed_with_amux() {
             assert_eq!(mode & 0o111, 0o111, "{name} is executable");
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn model_catalog_is_installed_verified_and_repaired_after_an_old_updater_skips_it() {
+    let root = fixture_root();
+    let dir = root.path().join("bundle");
+    Bundle::new(INSTALLED).install(&dir);
+    let server = Server::start();
+    let mut newer = Bundle::new(NEWER);
+    newer.catalog = Some(include_bytes!("../assets/models.json").to_vec());
+    let mut spec = review(NEWER, "2026-10-03T00:00:00Z");
+    spec.archive = Some(archive(&newer.entries()));
+    server.publish(&[
+        release(&server, review(INSTALLED, "2026-10-02T00:00:00Z")),
+        release(&server, spec),
+    ]);
+    updates::update(&Running::at(dir.join(CLI)), &server.source())
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read(dir.join("models.json")).unwrap(),
+        newer.catalog.clone().unwrap()
+    );
+    let binaries = (
+        fs::read(dir.join(CLI)).unwrap(),
+        fs::read(dir.join(GUI)).unwrap(),
+    );
+    fs::remove_file(dir.join("models.json")).unwrap();
+    updates::restore_bundled_tools(&Running::at(dir.join(CLI)), &server.source())
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read(dir.join("models.json")).unwrap(),
+        newer.catalog.unwrap()
+    );
+    assert_eq!(
+        binaries,
+        (
+            fs::read(dir.join(CLI)).unwrap(),
+            fs::read(dir.join(GUI)).unwrap()
+        )
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

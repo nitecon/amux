@@ -132,7 +132,10 @@ pairing desktops alone does not configure that tool. See
 ## Everyday controls
 
 Open **Settings & Gateway** for **Gateway Server**, **Workspaces & Terminals**,
-**Agent Instructions**, **Instruction Templates**, and **Updates**.
+**Models & Routing**, **Agent Instructions**, **Instruction Templates**, and **Updates**.
+Configure provider-specific subagent models and thinking levels, plus separate
+terminal/persona launch profiles, in **Models & Routing**. The current routing
+policy accompanies every task delivery. See [models and native delegation](docs/models.md).
 
 Select a local or remote project to manage its task queue, even without opening
 a checkout. Tasks and subtasks retain their parent context in the desktop and CLI.

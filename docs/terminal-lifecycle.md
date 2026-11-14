@@ -2,13 +2,18 @@
 
 ## Missing conversation history
 
-Restored agent tabs first use the provider's standard continuation command:
-`codex resume --last` or `claude --continue`. If that attempt exits with code 1,
-amux launches the same provider once with no arguments, retaining the terminal
-and assigned amux identity. The fresh process is registered with its own native
-PID/generation, and its exit status is returned. Successful resumes, other exit
-codes, signals and custom arguments do not trigger a fallback. Provider input and
-output remain attached to the terminal throughout.
+Desktop agent tabs resume their own recorded native conversation IDs. Claude starts
+with an explicit UUID, and session-only SessionStart hooks record root transitions
+for both providers. Codex's hook requires its normal trust review. A missing Codex
+binding starts fresh with a diagnostic; it never guesses another terminal's newest
+conversation. See [model profiles](models.md#terminal-and-persona-profiles).
+An explicit binding that fails to resume preserves the provider error.
+
+For manually supplied legacy CLI continuation only (`amux agent codex -- resume --last`
+or `amux agent claude -- --continue`), an exit code of 1 still retries once with
+no provider arguments, retaining the assigned Amux identity. Custom arguments,
+other exit codes and signals do not trigger that legacy fallback. Provider input
+and output remain attached throughout.
 
 ## Process ownership and cleanup
 

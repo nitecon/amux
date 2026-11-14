@@ -1026,6 +1026,16 @@ impl Desktop {
                 );
             }
         }
+        if !event["amux_guidance"].is_string() {
+            message.push('\n');
+            message.push_str(
+                &self
+                    .preferences
+                    .current
+                    .models
+                    .guidance(current.actor.provider),
+            );
+        }
         // Providers without bracketed paste interpret literal line breaks as
         // submissions. Contextual recall must remain one compact message.
         let message = amux::guidance::terminal_text(&message);
