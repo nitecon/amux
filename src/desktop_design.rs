@@ -65,7 +65,7 @@ pub(super) enum Action {
     ClearEvents,
     Single,
     Browse(browser::BrowserMessage),
-    Loaded(Uuid, u64, PathBuf, Result<ProjectData, String>),
+    Loaded(Uuid, u64, bool, PathBuf, Result<ProjectData, String>),
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -84,10 +84,13 @@ pub(super) struct State {
     search: String,
     hidden_events: std::collections::HashSet<String>,
     seen_events: std::collections::HashSet<String>,
-    project: Option<(Uuid, PathBuf, Result<ProjectData, String>)>,
+    git_project: Option<(Uuid, PathBuf, Result<ProjectData, String>)>,
+    preview: Option<(Uuid, PathBuf, Result<ProjectData, String>)>,
     files: Option<(Uuid, browser::FileBrowser)>,
-    loading: bool,
-    revision: u64,
+    git_loading: bool,
+    git_revision: u64,
+    preview_loading: bool,
+    preview_revision: u64,
     /// Gateway-wide presence; `None` until loaded or when the gateway lacks it.
     pub(super) gateway_stats: Option<amux::gateway::PresenceSummary>,
     pub(super) gateway_stats_polled: Option<std::time::Instant>,
@@ -562,7 +565,9 @@ impl Desktop {
                     View::Tasks => return self.query_tasks(self.task_workspace()),
                     View::Files => {
                         // The Files view uses the shared browser, confined to this workspace.
-                        self.design.project = None;
+                        self.design.preview = None;
+                        self.design.preview_loading = false;
+                        self.design.preview_revision = self.design.preview_revision.wrapping_add(1);
                         self.design.files = Some((
                             workspace.id,
                             browser::FileBrowser::new(
@@ -572,7 +577,7 @@ impl Desktop {
                             ),
                         ));
                     }
-                    View::Git => return self.load_project(workspace.directory.clone()),
+                    View::Git => return self.load_project(workspace.directory.clone(), false),
                     View::Terminals => return self.focus(),
                 }
             }
@@ -630,17 +635,29 @@ impl Desktop {
                     };
                     files.update(message);
                     if let Some(path) = preview {
-                        return self.load_project(path);
+                        return self.load_project(path, true);
                     }
                     if files.selected.is_none() {
-                        self.design.project = None;
+                        self.design.preview = None;
+                        self.design.preview_loading = false;
+                        self.design.preview_revision = self.design.preview_revision.wrapping_add(1);
                     }
                 }
             }
-            Action::Loaded(id, revision, path, result) => {
-                if self.workspaces[self.active].id == id && self.design.revision == revision {
-                    self.design.project = Some((id, path, result));
-                    self.design.loading = false;
+            Action::Loaded(id, revision, is_preview, path, result) => {
+                let current_revision = if is_preview {
+                    self.design.preview_revision
+                } else {
+                    self.design.git_revision
+                };
+                if self.workspaces[self.active].id == id && current_revision == revision {
+                    if is_preview {
+                        self.design.preview = Some((id, path, result));
+                        self.design.preview_loading = false;
+                    } else {
+                        self.design.git_project = Some((id, path, result));
+                        self.design.git_loading = false;
+                    }
                 }
             }
         }
@@ -660,10 +677,16 @@ impl Desktop {
         };
         self.open_clone_dialog(origin, parent)
     }
-    fn load_project(&mut self, path: PathBuf) -> Task<Message> {
-        self.design.loading = true;
-        self.design.revision = self.design.revision.wrapping_add(1);
-        let revision = self.design.revision;
+    fn load_project(&mut self, path: PathBuf, is_preview: bool) -> Task<Message> {
+        let revision = if is_preview {
+            self.design.preview_loading = true;
+            self.design.preview_revision = self.design.preview_revision.wrapping_add(1);
+            self.design.preview_revision
+        } else {
+            self.design.git_loading = true;
+            self.design.git_revision = self.design.git_revision.wrapping_add(1);
+            self.design.git_revision
+        };
         let id = self.workspaces[self.active].id;
         let root = self.workspaces[self.active].directory.clone();
         let destination = path.clone();
@@ -674,7 +697,15 @@ impl Desktop {
                     .map_err(|e| e.to_string())
                     .and_then(|r| r)
             },
-            move |result| action(Action::Loaded(id, revision, path.clone(), result)),
+            move |result| {
+                action(Action::Loaded(
+                    id,
+                    revision,
+                    is_preview,
+                    path.clone(),
+                    result,
+                ))
+            },
         )
     }
     pub(super) fn design_view(&self) -> Element<'_, Message> {
@@ -2015,10 +2046,10 @@ impl Desktop {
         if mode == View::Files {
             return self.files_view(content);
         }
-        if self.design.loading {
+        if self.design.git_loading {
             content = content.push(text("Loading project…").size(12));
         }
-        if let Some((id, _, result)) = &self.design.project
+        if let Some((id, _, result)) = &self.design.git_project
             && *id == root.id
         {
             match result {
@@ -2061,7 +2092,7 @@ impl Desktop {
             return container(header).padding(24).into();
         };
         // A selected file shows its bounded preview under the browser.
-        let preview: Element<'_, Message> = match &self.design.project {
+        let preview: Element<'_, Message> = match &self.design.preview {
             Some((id, path, result)) if *id == root.id && files.selected.as_ref() == Some(path) => {
                 let body = match result {
                     Ok(data) => text(data.preview.as_deref().unwrap_or(""))
@@ -2075,7 +2106,7 @@ impl Desktop {
                     .style(|_| surface(CARD, true))
                     .into()
             }
-            _ if self.design.loading => text("Loading preview…").size(12).into(),
+            _ if self.design.preview_loading => text("Loading preview…").size(12).into(),
             _ => Space::new().height(0).into(),
         };
         container(
@@ -2694,15 +2725,141 @@ mod tests {
     fn stale_project_preview_cannot_replace_the_latest_navigation() {
         let mut app = super::super::tests::desktop();
         let id = app.workspaces[0].id;
-        app.design.revision = 2;
-        app.design.loading = true;
+        app.design.preview_revision = 2;
+        app.design.preview_loading = true;
         drop(app.design_message(Action::Loaded(
             id,
             1,
+            true,
             PathBuf::from("old"),
             Err("old".into()),
         )));
-        assert!(app.design.project.is_none());
-        assert!(app.design.loading);
+        assert!(app.design.preview.is_none());
+        assert!(app.design.preview_loading);
+    }
+
+    #[test]
+    fn git_and_files_keep_independent_results_and_async_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let first = dir.path().join("first.txt");
+        let second = nested.join("second.txt");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+
+        let mut app = super::super::tests::desktop();
+        let id = app.workspaces[0].id;
+        app.workspaces[0].directory = dir.path().to_path_buf();
+        drop(app.design_message(Action::View(View::Git)));
+        let git_revision = app.design.git_revision;
+        drop(app.design_message(Action::Loaded(
+            id,
+            git_revision,
+            false,
+            dir.path().to_path_buf(),
+            Ok(ProjectData {
+                preview: None,
+                branch: "main".into(),
+                changes: "clean".into(),
+                commits: "initial".into(),
+            }),
+        )));
+
+        let git_pane = app.workspaces[0].focused;
+        let (files_pane, _) = app.workspaces[0]
+            .panes
+            .split(
+                pane_grid::Axis::Vertical,
+                git_pane,
+                Pane {
+                    tabs: Vec::new(),
+                    active: 0,
+                    view: View::Terminals,
+                },
+            )
+            .unwrap();
+        app.workspaces[0].focused = files_pane;
+        drop(app.design_message(Action::View(View::Files)));
+        assert!(app.design.git_project.is_some());
+
+        drop(
+            app.design_message(Action::Browse(browser::BrowserMessage::Select(
+                first.clone(),
+            ))),
+        );
+        let stale_preview_revision = app.design.preview_revision;
+        drop(
+            app.design_message(Action::Browse(browser::BrowserMessage::Open(
+                nested.clone(),
+            ))),
+        );
+        assert!(!app.design.preview_loading);
+        assert!(app.design.preview.is_none());
+        drop(app.design_message(Action::Loaded(
+            id,
+            stale_preview_revision,
+            true,
+            first,
+            Ok(ProjectData {
+                preview: Some("stale".into()),
+                branch: String::new(),
+                changes: String::new(),
+                commits: String::new(),
+            }),
+        )));
+        assert!(app.design.preview.is_none());
+
+        drop(
+            app.design_message(Action::Browse(browser::BrowserMessage::Select(
+                second.clone(),
+            ))),
+        );
+        let preview_revision = app.design.preview_revision;
+        app.workspaces[0].focused = git_pane;
+        drop(app.design_message(Action::View(View::Git)));
+        let newer_git_revision = app.design.git_revision;
+        drop(app.design_message(Action::Loaded(
+            id,
+            newer_git_revision,
+            false,
+            dir.path().to_path_buf(),
+            Ok(ProjectData {
+                preview: None,
+                branch: "main".into(),
+                changes: "updated".into(),
+                commits: "latest".into(),
+            }),
+        )));
+        assert!(app.design.preview_loading);
+        drop(app.design_message(Action::Loaded(
+            id,
+            preview_revision,
+            true,
+            second,
+            Ok(ProjectData {
+                preview: Some("second".into()),
+                branch: String::new(),
+                changes: String::new(),
+                commits: String::new(),
+            }),
+        )));
+        assert!(!app.design.preview_loading);
+        assert!(matches!(
+            app.design.preview.as_ref().map(|(_, _, result)| result),
+            Some(Ok(data)) if data.preview.as_deref() == Some("second")
+        ));
+        assert!(matches!(
+            app.design.git_project.as_ref().map(|(_, _, result)| result),
+            Some(Ok(data)) if data.changes == "updated"
+        ));
+        assert_eq!(
+            app.workspaces[0].panes.get(git_pane).unwrap().view,
+            View::Git
+        );
+        assert_eq!(
+            app.workspaces[0].panes.get(files_pane).unwrap().view,
+            View::Files
+        );
     }
 }
