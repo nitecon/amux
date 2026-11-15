@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.0.82 - 2026-11-15
+
 ### Removed
 
 - Removed the Settings → Agent Instructions section and the `amux harness`
