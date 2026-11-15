@@ -181,6 +181,11 @@ const FRAME_BYTES: usize = 65536;
 pub fn initialize(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let conn = &*tx;
+    let completion_owners_exist: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_completion_owners')",
+        [],
+        |row| row.get(0),
+    )?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS task_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
         project_ident TEXT NOT NULL, canonical_remote TEXT, task_json TEXT NOT NULL,
@@ -196,13 +201,6 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     CREATE TRIGGER IF NOT EXISTS task_completion_owner_clear AFTER UPDATE OF status ON tasks
     WHEN NEW.status!='user_review'
     BEGIN DELETE FROM task_completion_owners WHERE task_id=NEW.id; END;
-    INSERT OR IGNORE INTO task_completion_owners(task_id,origin_json)
-    SELECT t.id,(SELECT json_extract(e.task_json,'$.owner_origin') FROM task_events e
-        WHERE e.project_ident=t.project_ident AND json_extract(e.task_json,'$.id')=t.id
-          AND json_type(e.task_json,'$.owner_origin')='object' ORDER BY e.id DESC LIMIT 1)
-    FROM tasks t WHERE t.status='user_review' AND EXISTS(
-        SELECT 1 FROM task_events e WHERE e.project_ident=t.project_ident
-          AND json_extract(e.task_json,'$.id')=t.id AND json_type(e.task_json,'$.owner_origin')='object');
     CREATE INDEX IF NOT EXISTS task_events_project ON task_events(project_ident,id);
     CREATE TABLE IF NOT EXISTS task_stream_consumers (
         consumer_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL, connection_id TEXT,
@@ -230,6 +228,35 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         if !present {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))?;
         }
+    }
+    // Table creation is the migration boundary. A missing row in an existing
+    // table can be a deliberate revocation and must never be reconstructed.
+    // Only the undrained FIFO outbox proves a continuous parking episode;
+    // retained comments/router history can have gaps or refer to older owners.
+    let outbox_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='router_task_outbox')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !completion_owners_exist && outbox_exists {
+        conn.execute_batch(
+            "WITH states AS (
+                SELECT project, json_extract(task_json,'$.id') AS task_id, kind,
+                    LAG(json_extract(task_json,'$.owner_origin')) OVER (
+                        PARTITION BY project,json_extract(task_json,'$.id') ORDER BY id
+                    ) AS prior_owner,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY project,json_extract(task_json,'$.id') ORDER BY id DESC
+                    ) AS latest
+                FROM router_task_outbox
+                WHERE kind='user_review' OR json_extract(task_json,'$.status')!='user_review'
+            )
+            INSERT INTO task_completion_owners(task_id,origin_json)
+            SELECT t.id,s.prior_owner FROM states s JOIN tasks t
+                ON t.id=s.task_id AND t.project_ident=s.project
+            WHERE s.latest=1 AND s.kind='user_review'
+                AND t.status='user_review' AND json_type(s.prior_owner)='object';",
+        )?;
     }
     conn.execute_batch("CREATE TABLE IF NOT EXISTS task_mutation_context (id INTEGER PRIMARY KEY CHECK(id=1), origin_json TEXT);
         INSERT OR IGNORE INTO task_mutation_context(id) VALUES (1);
@@ -1007,6 +1034,89 @@ mod tests {
             )
         })
         .unwrap();
+    }
+
+    #[test]
+    fn legacy_completion_owner_migration_requires_continuous_owned_parking() {
+        for scenario in ["owned", "human_repark", "agent_unowned", "missing_history"] {
+            let database = database();
+            let conn = database.lock().unwrap();
+            let task = task(&conn);
+            let worker = actor();
+            mutation(&conn, Some(&worker), |conn| {
+                db::update_task(
+                    conn,
+                    "example",
+                    &task.id,
+                    &status_update("in_progress"),
+                    Some("worker"),
+                )?;
+                db::insert_comment(conn, &task.id, "worker", "agent", "Owned work")?;
+                db::update_task(
+                    conn,
+                    "example",
+                    &task.id,
+                    &status_update("user_review"),
+                    Some("worker"),
+                )
+            })
+            .unwrap();
+            if matches!(scenario, "human_repark" | "agent_unowned") {
+                db::update_task_from_user(&conn, "example", &task.id, &status_update("todo"))
+                    .unwrap();
+                if scenario == "human_repark" {
+                    db::update_task_from_user(
+                        &conn,
+                        "example",
+                        &task.id,
+                        &status_update("user_review"),
+                    )
+                    .unwrap();
+                } else {
+                    mutation(&conn, Some(&worker), |conn| {
+                        db::update_task(
+                            conn,
+                            "example",
+                            &task.id,
+                            &status_update("user_review"),
+                            Some("worker"),
+                        )
+                    })
+                    .unwrap();
+                }
+            }
+            if scenario == "missing_history" {
+                // A retained old owner comment cannot replace missing transition evidence.
+                conn.execute(
+                    "DELETE FROM router_task_outbox WHERE kind!='user_review'",
+                    [],
+                )
+                .unwrap();
+            }
+            // Emulate an upgrade from before durable completion-owner storage.
+            conn.execute_batch(
+                "DROP TRIGGER task_completion_owner_park;
+                DROP TRIGGER task_completion_owner_clear;
+                DROP TABLE task_completion_owners;",
+            )
+            .unwrap();
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            let parked = db::get_task_detail(&conn, "example", &task.id)
+                .unwrap()
+                .unwrap()
+                .task;
+            assert_eq!(
+                parked.completion_owner,
+                (scenario == "owned").then_some(worker.clone()),
+                "{scenario}"
+            );
+            assert_eq!(
+                can_complete_parked(&conn, &parked, Some(&worker)).unwrap(),
+                scenario == "owned",
+                "{scenario}"
+            );
+        }
     }
 
     #[test]

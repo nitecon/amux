@@ -1879,6 +1879,74 @@ async fn guided_confirmation_finishes_the_requested_lane_and_fences_stale_caller
 }
 
 #[tokio::test]
+async fn startup_preserves_revoked_parked_completion_authority() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    let id = fixture.parent();
+    fixture
+        .client
+        .claim(PROJECT, &id, &fixture.actor)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request(
+            Method::POST,
+            PROJECT,
+            &[&id, "comments"],
+            Some(json!({"content":"Owned work"})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request_user_review_with_changeset(
+            PROJECT,
+            id.parse().unwrap(),
+            &fixture.actor,
+            "Verify the result",
+            Some(Value::Null),
+        )
+        .await
+        .unwrap();
+    for body in [
+        json!({"status":"todo"}),
+        json!({"status":"user_review","review_action":"Verify the result"}),
+    ] {
+        fixture
+            .client
+            .request(Method::PATCH, PROJECT, &[&id], Some(body), None)
+            .await
+            .unwrap();
+    }
+    // Startup must preserve the absence of authority even with retained old owner events.
+    for _ in 0..2 {
+        drop(fixture.reopen_database());
+        let parked = fixture
+            .client
+            .task(PROJECT, id.parse().unwrap(), 0)
+            .await
+            .unwrap();
+        assert_eq!(parked["status"], "user_review");
+        assert!(parked["completion_owner"].is_null());
+        assert!(
+            fixture
+                .client
+                .request(
+                    Method::PATCH,
+                    PROJECT,
+                    &[&id],
+                    Some(json!({"status":"done","changeset":null})),
+                    Some(&fixture.actor),
+                )
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn exact_prior_owner_can_complete_parked_work_with_guided_confirmation() {
     let fixture = Fixture::start().await;
     fixture.project_and_requester().await;
@@ -1911,6 +1979,7 @@ async fn exact_prior_owner_can_complete_parked_work_with_guided_confirmation() {
                 [&id],
             )
             .unwrap();
+        drop(fixture.reopen_database());
         let mut peer = fixture.actor.clone();
         peer.instance_id = Uuid::new_v4();
         assert!(

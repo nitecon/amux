@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- Preserve revoked parked-task completion authority across server restarts.
+  Legacy ownership recovery runs only when its storage is first created and
+  continuous pending task history proves who owned the current parking episode;
+  ambiguous historical comments do not grant completion authority.
+
 ## v0.0.80 - 2026-11-14
 
 ### Changed
