@@ -133,7 +133,7 @@ pairing desktops alone does not configure that tool. See
 ## Everyday controls
 
 Open **Settings** from the global bar for **Gateway Server**, **Workspaces & Terminals**,
-**Models & Routing**, **Agent Instructions**, **Instruction Templates**, and **Updates**.
+**Models & Routing**, **Instruction Templates**, and **Updates**.
 Configure provider-specific subagent models and thinking levels, plus separate
 terminal/persona launch profiles, in **Models & Routing**. The current routing
 policy accompanies every task delivery. See [models and native delegation](docs/models.md).
@@ -213,8 +213,8 @@ with the same MCP tools.
 - [Gateway CLI](docs/gateway-cli.md): task and inline message commands.
 - [Native backend hosting](docs/server/Compatibility.md): run `amux server secure`
   with enrolled mTLS clients and optional external channel integrations.
-- [Agent instructions](docs/agent-instructions.md): detect providers, install and
-  verify managed task guidance, and configure local task tools from Settings.
+- [Agent instructions](docs/agent-instructions.md): contextual session guidance
+  and launch-parameter task-tool settings.
 - [Gateway delivery](docs/gateway-delivery.md): automatic notifications, session identity
   and built-in terminal agent identity.
 - [Reminder validation](docs/reminder-validation.md): historical selected-task

@@ -20,7 +20,7 @@ pub const NO_UPDATE: [(&str, &str); 2] = [
     ("AGENT_TOOLS_NO_UPDATE", "1"),
 ];
 /// Session settings authorize only amux MCP tools and disable attribution.
-pub const CLAUDE_SESSION_SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false,"permissions":{"allow":["mcp__amux__*"]}}"#;
+pub const CLAUDE_SESSION_SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false,"permissions":{"allow":["mcp__amux__*"],"deny":["TaskCreate","TaskGet","TaskList","TaskUpdate","TodoWrite"]}}"#;
 /// Startup memory context is skipped rather than delay the agent's start.
 const CONTEXT_WAIT: Duration = Duration::from_secs(5);
 
@@ -604,17 +604,23 @@ fn run_tool(tool: &Tool, arguments: &Value, directory: &Path) -> Result<(String,
     Ok(output)
 }
 
+/// A provider's config folder: the override variable, else `~/<default>`.
+fn provider_home(variable: &str, default: &str) -> Option<PathBuf> {
+    match std::env::var_os(variable) {
+        Some(value) if !value.is_empty() => Some(PathBuf::from(value)),
+        _ => directories::BaseDirs::new().map(|d| d.home_dir().join(default)),
+    }
+}
+
 /// True when the provider already injects memory each turn through
 /// `memory setup hooks`, so startup context would only duplicate it.
 pub fn memory_hook_installed(provider: &str) -> bool {
-    let Ok(environment) = crate::harness::Environment::discover() else {
-        return false;
-    };
     let file = match provider {
-        "claude" => environment.claude_home.join("settings.json"),
-        "codex" => environment.codex_home.join("config.toml"),
+        "claude" => provider_home("CLAUDE_CONFIG_DIR", ".claude").map(|h| h.join("settings.json")),
+        "codex" => provider_home("CODEX_HOME", ".codex").map(|h| h.join("config.toml")),
         _ => return false,
     };
+    let Some(file) = file else { return false };
     std::fs::read_to_string(file)
         .map(|text| text.contains("memory hook --agent") || text.contains("memory-inject"))
         .unwrap_or(false)
@@ -669,9 +675,7 @@ pub fn startup_context(_provider: &str, project: &Path) -> Option<String> {
 /// which a launch override would replace: the user config (any profile) or a
 /// project `.codex/config.toml` in the project folder or a parent.
 fn codex_sets_developer_instructions(project: &Path) -> bool {
-    let user = crate::harness::Environment::discover()
-        .ok()
-        .map(|e| e.codex_home.join("config.toml"));
+    let user = provider_home("CODEX_HOME", ".codex").map(|h| h.join("config.toml"));
     user.into_iter()
         .chain(
             project
@@ -807,6 +811,9 @@ pub fn launch_arguments(
                 "mcp_servers.amux.default_tools_approval_mode=\"approve\"".into(),
                 "-c".into(),
                 format!("mcp_servers.amux.env={table}"),
+                // Tasks live on the amux board, not in Codex's native planner.
+                "-c".into(),
+                "tools.update_plan.enabled=false".into(),
             ]
         }
     }
@@ -945,7 +952,10 @@ mod tests {
         let settings: Value = serde_json::from_str(&claude[1]).unwrap();
         assert_eq!(settings["attribution"], json!({"commit": "", "pr": ""}));
         assert_eq!(settings["includeCoAuthoredBy"], false);
-        assert_eq!(settings["permissions"], json!({"allow": ["mcp__amux__*"]}));
+        assert_eq!(
+            settings["permissions"],
+            json!({"allow": ["mcp__amux__*"], "deny": ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TodoWrite"]})
+        );
         assert_eq!(claude[2], "--mcp-config");
         let config: Value = serde_json::from_str(&claude[3]).unwrap();
         assert_eq!(config["mcpServers"]["amux"]["command"], "/opt/amux/amux");
@@ -968,10 +978,14 @@ mod tests {
         assert!(
             codex.contains(&"mcp_servers.amux.default_tools_approval_mode=\"approve\"".to_owned())
         );
+        assert!(codex.contains(&"tools.update_plan.enabled=false".to_owned()));
         for value in codex.iter().filter(|a| *a != "-c") {
             let (key, value) = value.split_once('=').unwrap();
             let parsed: toml_edit::DocumentMut = format!("v = {value}").parse().unwrap();
-            assert!(key.starts_with("mcp_servers.amux."), "{key}");
+            assert!(
+                key.starts_with("mcp_servers.amux.") || key == "tools.update_plan.enabled",
+                "{key}"
+            );
             if key.ends_with("command") {
                 assert_eq!(parsed["v"].as_str(), Some("C:\\amux\\amux.exe"));
             }

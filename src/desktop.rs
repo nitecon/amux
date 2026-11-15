@@ -8,8 +8,6 @@ use amux::session::{Layout, SavedTab, SavedWorkspace, Snapshot};
 mod desktop_delegation;
 #[path = "desktop_design.rs"]
 mod desktop_design;
-#[path = "desktop_harness.rs"]
-mod desktop_harness;
 #[path = "desktop_icon.rs"]
 mod desktop_icon;
 #[path = "desktop_models.rs"]
@@ -76,13 +74,7 @@ enum Message {
     Preferences(bool),
     PreferencesTab(PreferencesTab),
     Models(desktop_models::Action),
-    CheckHarness,
-    InstallHarness(amux::harness::Provider),
-    ManualHarness(amux::harness::Provider),
-    CopyHarnessRules,
-    HarnessChecked(Result<desktop_harness::Checked, String>),
     DismissToast(u64),
-    DismissHarnessNotice,
     WindowReady,
     SavePreferences,
     GatewayMode(GatewayMode),
@@ -215,7 +207,6 @@ enum PreferencesTab {
     Gateway,
     General,
     Updates,
-    Harness,
     Templates,
     Models,
 }
@@ -362,7 +353,6 @@ struct Desktop {
     preferences: Preferences,
     embedded: EmbeddedServer,
     updates: Updates,
-    harness: desktop_harness::State,
     toasts: desktop_toasts::State,
     workspaces: Vec<Workspace>,
     remote_workspaces: Vec<RemoteWorkspace>,
@@ -436,7 +426,6 @@ impl Desktop {
             main_window,
             updates: Updates::new(),
             embedded: EmbeddedServer::default(),
-            harness: desktop_harness::State::startup(),
             toasts: desktop_toasts::State::default(),
             preferences: Preferences { draft: preferences.clone(), current: preferences, path: preferences_path, open: false, tab: PreferencesTab::Gateway, status: preferences_error },
             workspaces: Vec::new(), remote_workspaces: Vec::new(), remote_active: None, active: 0, workspace_dialog: WorkspaceDialog::default(), closing_workspace: None, next_id: 0,
@@ -1259,55 +1248,11 @@ impl Desktop {
             }
             Message::PreferencesTab(tab) => {
                 if !self.preferences.open {
-                    let focus = self.open_preferences(tab);
-                    return if tab == PreferencesTab::Harness {
-                        Task::batch([focus, self.check_harness(desktop_harness::Action::Check)])
-                    } else {
-                        focus
-                    };
+                    return self.open_preferences(tab);
                 }
                 self.preferences.tab = tab;
-                if tab == PreferencesTab::Harness {
-                    return self.check_harness(desktop_harness::Action::Check);
-                }
-            }
-            Message::CheckHarness => return self.check_harness(desktop_harness::Action::Check),
-            Message::InstallHarness(provider) => {
-                return self.check_harness(desktop_harness::Action::Automatic(provider));
-            }
-            Message::ManualHarness(provider) => {
-                let focus = self.open_preferences(PreferencesTab::Harness);
-                return Task::batch([
-                    focus,
-                    self.check_harness(desktop_harness::Action::Manual(provider)),
-                ]);
-            }
-            Message::CopyHarnessRules => {
-                if let Some(manual) = &self.harness.manual {
-                    return iced::clipboard::write(manual.clone());
-                }
-            }
-            Message::HarnessChecked(result) => {
-                self.harness.busy = false;
-                match result {
-                    Ok(checked) => {
-                        let title = if checked.reports.iter().any(|report| report.error.is_some()) {
-                            "Agent rules need attention"
-                        } else {
-                            "Agent instructions"
-                        };
-                        self.toasts.show("harness", title, &checked.status);
-                        self.harness.apply(checked);
-                    }
-                    Err(error) => {
-                        self.toasts
-                            .show("harness", "Agent rules need attention", &error);
-                        self.harness.status = error;
-                    }
-                }
             }
             Message::DismissToast(id) => self.toasts.dismiss(id),
-            Message::DismissHarnessNotice => self.harness.notice_dismissed = true,
             Message::SavePreferences => return self.save_preferences(),
             Message::AutomaticReviews(enabled) => return self.automatic_reviews(Some(enabled)),
             Message::AutomaticReviewsReady(epoch, result) => {
@@ -2900,7 +2845,6 @@ mod tests {
                 },
                 error: String::new(),
             },
-            harness: desktop_harness::State::default(),
             toasts: desktop_toasts::State::default(),
             embedded: EmbeddedServer::default(),
             preferences: Preferences {

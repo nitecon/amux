@@ -2,33 +2,9 @@
 
 amux delivers operational guidance inside each agent session. It does not
 install operational command manuals in user-level root harnesses or introduce
-provider hooks. Repository instruction files remain untouched.
-
-## Root harness cleanup
-
-Every desktop startup removes recognized legacy managed blocks before restoring
-saved terminals, including providers previously set to manual maintenance.
-Unrelated user-authored text, including strict rules outside those blocks,
-is preserved byte for byte. Recognized boundaries are:
-
-- `<!-- amux:tasks:start -->` / `<!-- amux:tasks:end -->`
-- `<agent-tools-rules>` / `</agent-tools-rules>`
-- `<memory-rules>` / `</memory-rules>`
-
-Changed existing files receive the existing sibling `.amux.bak` backup. Repeated
-cleanup is a no-op. Duplicate, overlapping, inline or unmatched boundaries are
-reported without changing that provider's instruction files.
-
-| Provider | Root files | Home override |
-| --- | --- | --- |
-| Claude | `~/.claude/CLAUDE.md` | `CLAUDE_CONFIG_DIR` |
-| Codex | `~/.codex/AGENTS.md` and `AGENTS.override.md` | `CODEX_HOME` |
-| Copilot | `~/.copilot/copilot-instructions.md` | `COPILOT_HOME` |
-
-Both Codex files are cleaned, including a base file shadowed by an override.
-The existing **Settings → Agent Instructions** checks show resolved paths and
-file errors. Neither automatic maintenance nor manual setup instructions can
-reinstall the retired blocks.
+provider hooks. Repository instruction files remain untouched. Launches disable
+Claude local task tools and Codex `update_plan` through launch parameters,
+without editing provider config.
 
 ## Contextual guidance
 
@@ -106,23 +82,3 @@ and discoveries; search and inspect existing memories; update a matching memory
 where appropriate; and store a new memory only when useful. No write is required.
 Routine progress, transient logs and source-recoverable facts do not qualify.
 No shared project handoff buffer is used for recall or session state.
-
-## Optional local task settings
-
-The existing settings choice still controls provider task-tool settings. Claude
-setup adds local task tools to `permissions.deny`; Codex setup disables
-`tools.update_plan`. Subagent and background tools remain available. Copilot has
-instructional guidance only. Settings changes preserve other JSON/TOML values.
-
-```sh
-amux harness check
-amux harness print claude
-amux harness install claude
-amux harness install codex
-amux harness install copilot
-```
-
-`check` is read-only. `print` describes removal and optional task settings without
-editing files. `install` cleans recognized blocks and configures task settings;
-it never adds operational blocks. CLI installation does not change the desktop's
-saved automatic/manual task-settings choice.

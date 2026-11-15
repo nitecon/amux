@@ -1068,26 +1068,6 @@ impl Desktop {
                 .push(container(opaque(self.settings_modal())).center(Length::Fill));
         }
         let mut notices = column![].spacing(8).width(400);
-        let show_harness =
-            self.harness.needs_notice() && !self.preferences.open && !self.workspace_dialog.open;
-        if show_harness {
-            notices = notices.push(
-                container(
-                    column![
-                        row![
-                            text("Agent instructions").size(14),
-                            Space::new().width(Length::Fill),
-                            button("×").on_press(Message::DismissHarnessNotice)
-                        ]
-                        .align_y(Alignment::Center),
-                        self.harness_suggestion(),
-                    ]
-                    .spacing(6),
-                )
-                .padding(12)
-                .style(|_| surface(CARD, true)),
-            );
-        }
         for toast in &self.toasts.items {
             notices = notices.push(
                 container(
@@ -1107,7 +1087,7 @@ impl Desktop {
                 .style(|_| surface(CARD, true)),
             );
         }
-        if show_harness || !self.toasts.items.is_empty() {
+        if !self.toasts.items.is_empty() {
             layers = layers.push(
                 container(opaque(notices))
                     .padding(16)
@@ -1899,7 +1879,6 @@ impl Desktop {
         let body: Element<'_,Message>=match self.preferences.tab {
             PreferencesTab::Gateway=>self.preferences_view(),
             PreferencesTab::Updates=>self.updates_view(),
-            PreferencesTab::Harness=>self.harness_view(),
             PreferencesTab::Templates=>templates_view(),
             PreferencesTab::Models=>self.models_view(),
             PreferencesTab::General=>column![
@@ -1961,7 +1940,6 @@ impl Desktop {
                 ),
                 group("AI & AUTOMATION"),
                 nav("cpu", "Models & Routing", PreferencesTab::Models),
-                nav("cpu", "Agent Instructions", PreferencesTab::Harness),
                 nav("file", "Instruction Templates", PreferencesTab::Templates),
                 group("SYSTEM"),
                 nav("refresh", "Updates", PreferencesTab::Updates),

@@ -119,11 +119,6 @@ enum Operation {
         #[command(subcommand)]
         command: amux::server::Command,
     },
-    /// Check or install managed task instructions for local coding agents.
-    Harness {
-        #[command(subcommand)]
-        operation: HarnessOperation,
-    },
     /// Launch the desktop (also the default).
     Desktop,
     /// Run a native agent with its own session and execution identity.
@@ -201,22 +196,6 @@ enum Operation {
         gateway_url: Option<String>,
         #[command(subcommand)]
         operation: amux::dispatch::Command,
-    },
-}
-
-#[derive(Subcommand)]
-enum HarnessOperation {
-    /// Detect providers and check instructions/settings without changing files.
-    Check,
-    /// Print manual instructions and settings snippets without editing files.
-    Print {
-        #[arg(value_enum)]
-        provider: amux::harness::Provider,
-    },
-    /// Install/update one provider's global rules and local-task settings.
-    Install {
-        #[arg(value_enum)]
-        provider: amux::harness::Provider,
     },
 }
 
@@ -512,26 +491,6 @@ fn run(cli: Cli) -> Result<u8> {
         | Operation::SetTask { .. }
         | Operation::SetChangeset { .. } => unreachable!("rewritten as a task operation"),
         Operation::Server { command } => amux::server::run(command)?,
-        Operation::Harness { operation } => {
-            let environment = amux::harness::Environment::discover()?;
-            match operation {
-                HarnessOperation::Check => {
-                    println!("{}", serde_json::to_string_pretty(&environment.reports())?)
-                }
-                HarnessOperation::Print { provider } => {
-                    print!("{}", environment.manual_instructions(provider)?)
-                }
-                HarnessOperation::Install { provider } => {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&environment.install(provider)?)?
-                    );
-                    println!(
-                        "Start a new provider session to load the updated instructions and settings."
-                    );
-                }
-            }
-        }
         Operation::Desktop => {
             #[cfg(feature = "desktop")]
             {

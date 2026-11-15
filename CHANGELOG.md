@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Removed
+
+- Removed the Settings → Agent Instructions section and the `amux harness`
+  command. Native task tools are now disabled through launch parameters.
+
 ## v0.0.81 - 2026-11-15
 
 ### Changed
