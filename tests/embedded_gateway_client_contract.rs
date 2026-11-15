@@ -2199,3 +2199,134 @@ async fn delegated_completion_requires_sender_inspection_and_relays_clarificatio
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn parked_work_accepts_only_the_registered_successor_after_prior_lease_expires() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    let id = fixture.parent();
+    fixture
+        .client
+        .claim(PROJECT, &id, &fixture.actor)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request_user_review_with_changeset(
+            PROJECT,
+            id.parse().unwrap(),
+            &fixture.actor,
+            "Verify completed result",
+            Some(Value::Null),
+        )
+        .await
+        .unwrap();
+    let mut successor = fixture.actor.clone();
+    successor.instance_id = Uuid::new_v4();
+    fixture
+        .client
+        .advertise_task_target(PROJECT, Some(REMOTE), &successor, Uuid::new_v4())
+        .await
+        .unwrap();
+    // A fresh advertisement cannot steal completion from a still-live prior execution.
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&id],
+                Some(json!({"status":"done","changeset":null})),
+                Some(&successor)
+            )
+            .await
+            .is_err()
+    );
+    {
+        let conn = fixture.database.lock().unwrap();
+        conn.execute(
+            "UPDATE task_target_presence SET seen_at=0 WHERE instance_id=?1",
+            [fixture.actor.instance_id.to_string()],
+        )
+        .unwrap();
+    }
+    let mut foreign = successor.clone();
+    foreign.session_id = Uuid::new_v4();
+    fixture
+        .client
+        .advertise_task_target(PROJECT, Some(REMOTE), &foreign, Uuid::new_v4())
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&id],
+                Some(json!({"status":"done","changeset":null})),
+                Some(&foreign)
+            )
+            .await
+            .is_err()
+    );
+    // Even with an expired advertisement, a fresh native report keeps the old
+    // execution authoritative until its report also expires.
+    {
+        let conn = fixture.database.lock().unwrap();
+        let report = json!({"session_id":fixture.actor.session_id,"instance_id":fixture.actor.instance_id,
+            "provider":"codex","os":fixture.actor.os,"project":PROJECT,"canonical_remote":REMOTE});
+        conn.execute(
+            "UPDATE task_target_presence SET agent_json=?1,report_seen_at=?2 WHERE instance_id=?3",
+            rusqlite::params![
+                report.to_string(),
+                db::now_ms(),
+                fixture.actor.instance_id.to_string()
+            ],
+        )
+        .unwrap();
+    }
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&id],
+                Some(json!({"status":"done","changeset":null})),
+                Some(&successor)
+            )
+            .await
+            .is_err()
+    );
+    fixture
+        .database
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE task_target_presence SET report_seen_at=NULL WHERE instance_id=?1",
+            [fixture.actor.instance_id.to_string()],
+        )
+        .unwrap();
+    fixture
+        .client
+        .confirm_completion_owner(PROJECT, id.parse().unwrap(), &successor)
+        .await
+        .unwrap();
+    let done = fixture
+        .client
+        .request(
+            Method::PATCH,
+            PROJECT,
+            &[&id],
+            Some(json!({"status":"done","changeset":null})),
+            Some(&successor),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done["status"], "done");
+    assert_eq!(
+        done["owner_origin"]["instance_id"],
+        successor.instance_id.to_string()
+    );
+}

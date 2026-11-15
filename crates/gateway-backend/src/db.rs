@@ -9342,7 +9342,7 @@ fn update_task_inner(
     }
     let origin = crate::task_events::current_origin(conn)?;
     let completing_parked = upd.status == Some("done")
-        && crate::task_events::can_complete_parked(&current, origin.as_ref());
+        && crate::task_events::can_complete_parked(conn, &current, origin.as_ref())?;
     if enforce_owner && crate::task_dispatch::managed(conn, task_id)? {
         return Err(crate::task_dispatch::Conflict(
             "dispatch tasks require the credential-bound dispatch API",

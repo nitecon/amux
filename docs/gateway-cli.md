@@ -125,8 +125,10 @@ newly released workflow without a replacement.
 ## File changes and task transitions
 
 `amux tasks done ID` can also finish a User review task held previously by this
-exact session and instance when its question is resolved or superseded. Record
-the evidence in a comment first. A peer cannot finish it and agents cannot
+exact session and instance when its question is resolved or superseded. A
+currently advertised successor instance of the same agent can also finish it
+after the old instance's lease expires. Record the evidence in a comment first.
+A different agent identity cannot finish it and agents cannot
 return it to the queue; normal mutation confirmation still applies.
 
 For delegated work, completing the destination task requests inspection of the

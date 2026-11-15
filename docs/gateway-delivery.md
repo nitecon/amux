@@ -167,8 +167,11 @@ Agents cannot resume parked work themselves. The exact execution that parked
 the task can nevertheless complete it after verifying that the question was
 resolved or superseded. `amux tasks done` retains changeset confirmation and
 the server atomically checks the prior session and instance. This authority is
-stored independently of journal retention; a different execution cannot claim
-or close the parked task. Human return-to-queue clears that authority.
+stored independently of journal retention. After an app restart, a newly
+advertised execution of the same stable agent identity can finish that work
+once the old execution's advertisement expires. The new instance is recorded
+as completer; another agent identity cannot claim or close the parked task.
+Human return-to-queue clears that authority.
 
 Parked tasks never enter assignment, in-progress reminders or owner
 notifications. An explicit requester can still receive an informational comment

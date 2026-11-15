@@ -291,7 +291,7 @@ fn parked_completion_uses_one_read_and_never_authorizes_peer_or_release() {
         let (ok, stderr, requests) = run(op, |actor| {
             let mut parked = task("user_review", None);
             parked["completion_owner"] = json!({
-                "session_id": actor.session_id,
+                "session_id": if matching { actor.session_id } else { uuid::Uuid::new_v4() },
                 "instance_id": if matching { actor.instance_id } else { uuid::Uuid::new_v4() },
             });
             let mut replies = vec![parked];

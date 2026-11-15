@@ -251,7 +251,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "task_done",
-        description: "Complete owned work, or resolved parked work held by this exact prior execution. Inspect delegated results before confirming the sender tracker.",
+        description: "Complete owned work or resolved parked work held by this agent (a registered successor must wait for the old execution to expire). Inspect delegated results before confirming the sender tracker.",
         bin: Bin::Amux,
         command: &["tasks", "done"],
         args: &[ID, CHANGESET],

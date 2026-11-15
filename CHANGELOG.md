@@ -8,6 +8,8 @@
 
 - Allow the exact prior execution to complete resolved User review work while
   preserving changeset confirmation and ownership checks across journal cleanup.
+  A registered successor of the same agent can complete it after an app restart
+  once the old execution's lease expires.
 - Require sender-side inspection before closing delegated trackers. Route the
   inspection to an available sender agent and relay progress, confirmation and
   clarification to the delegated project.

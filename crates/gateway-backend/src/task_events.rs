@@ -112,12 +112,43 @@ pub fn current_origin(conn: &Connection) -> Result<Option<AgentOrigin>> {
 
 /// Parking clears current ownership without transferring completion authority.
 /// The prior owner is retained independently of journal retention.
-pub fn can_complete_parked(task: &db::Task, origin: Option<&AgentOrigin>) -> bool {
-    task.status == "user_review"
-        && origin.is_some()
-        && task.owner_origin.is_none()
-        && task.owner_agent_id.is_none()
-        && task.completion_owner.as_ref() == origin
+pub fn can_complete_parked(
+    conn: &Connection,
+    task: &db::Task,
+    origin: Option<&AgentOrigin>,
+) -> Result<bool> {
+    if task.status != "user_review" || task.owner_origin.is_some() || task.owner_agent_id.is_some()
+    {
+        return Ok(false);
+    }
+    let (Some(prior), Some(actor)) = (task.completion_owner.as_ref(), origin) else {
+        return Ok(false);
+    };
+    if prior == actor {
+        return Ok(true);
+    }
+    // A supported app restart replaces instances, not stable agent identities.
+    // Require its advertised successor in this project, and wait for the old
+    // advertisement to expire rather than guessing that its execution is gone.
+    if prior.session_id != actor.session_id
+        || prior.provider != actor.provider
+        || prior.os != actor.os
+    {
+        return Ok(false);
+    }
+    let targets = crate::plugins::presence::targets(conn, &task.project_ident)?;
+    let origins = targets
+        .iter()
+        .map(|target| serde_json::from_value::<AgentOrigin>(target["target"]["origin"].clone()))
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let prior_reported = crate::plugins::presence::agents(conn, db::now_ms())?
+        .iter()
+        .any(|report| {
+            report.agent["project"] == task.project_ident
+                && report.agent["session_id"] == prior.session_id
+                && report.agent["instance_id"] == prior.instance_id
+        });
+    Ok(origins.contains(actor) && !origins.contains(prior) && !prior_reported)
 }
 
 pub fn read_origin(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<AgentOrigin>> {

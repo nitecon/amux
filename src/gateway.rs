@@ -288,6 +288,15 @@ impl Gateway {
         completing: bool,
     ) -> Result<Value> {
         let task = self.task(project, id, 0).await?;
+        if completing
+            && task["status"] == "user_review"
+            && task["completion_owner"]["session_id"] == actor.session_id.to_string()
+            && task["completion_owner"]["instance_id"] != actor.instance_id.to_string()
+        {
+            self.requester_target(project, actor).await?;
+            // The server also checks that the old instance's lease has expired.
+            return Ok(task);
+        }
         let owner = if completing && task["status"] == "user_review" {
             &task["completion_owner"]
         } else {

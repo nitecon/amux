@@ -102,7 +102,7 @@ fn owned(
     let task = crate::db::get_task_detail(conn, project, id)?
         .ok_or(Conflict("task not found"))?
         .task;
-    let parked = crate::task_events::can_complete_parked(&task, origin);
+    let parked = crate::task_events::can_complete_parked(conn, &task, origin)?;
     if !parked && (origin.is_none() || task.owner_origin.as_ref() != origin) {
         return Err(crate::task_events::OwnershipConflict.into());
     }
