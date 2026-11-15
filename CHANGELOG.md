@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## v0.0.80 - 2026-11-14
+
+### Changed
+
+- Tasks, Files and Git views now open in the focused pane instead of covering
+  every pane, so splits keep working in any view and each pane keeps its own
+  view.
+- The toolbar shows view tabs plus actions for the focused pane's view (New
+  Terminal, New Codex, New Claude, New Task, New Release). New Task focuses the
+  task title field.
+
+### Fixed
+
+- Selecting a workspace while a remote session is active now shows tasks for
+  the newly selected workspace.
+
 ## v0.0.79 - 2026-11-14
 
 ### Fixed
