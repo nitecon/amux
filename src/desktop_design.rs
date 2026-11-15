@@ -53,6 +53,8 @@ pub(super) enum Action {
     AddLocalProject(PathBuf),
     RemoteProject(String),
     View(View),
+    /// Start a task draft in the composer.
+    NewTask,
     Filter(Filter),
     TaskSearch(String),
     ProjectSearch(String),
@@ -72,7 +74,6 @@ pub(super) struct State {
     viewport: Option<iced::Size>,
     tab_menu: Option<(Uuid, pane_grid::Pane, u64, iced::Point)>,
     project_menu: Option<(ProjectMenuTarget, iced::Point)>,
-    mode: View,
     compact: bool,
     filter: Filter,
     task_search: String,
@@ -555,7 +556,7 @@ impl Desktop {
                     return Task::none();
                 }
                 self.design.tab_menu = None;
-                self.design.mode = mode;
+                self.set_view_mode(mode);
                 let workspace = &self.workspaces[self.active];
                 match mode {
                     View::Tasks => return self.query_tasks(self.task_workspace()),
@@ -574,6 +575,12 @@ impl Desktop {
                     View::Git => return self.load_project(workspace.directory.clone()),
                     View::Terminals => return self.focus(),
                 }
+            }
+            Action::NewTask => {
+                return Task::batch([
+                    self.update(Message::NewTaskRequest),
+                    iced::widget::operation::focus("task-title"),
+                ]);
             }
             Action::Filter(filter) => self.design.filter = filter,
             Action::TaskSearch(value) => {
@@ -603,7 +610,6 @@ impl Desktop {
                 .hidden_events
                 .extend(self.design_events().into_iter().map(|e| e.key)),
             Action::Single => {
-                self.show_terminals();
                 let w = &mut self.workspaces[self.active];
                 if w.panes.maximized().is_some() {
                     w.panes.restore();
@@ -773,53 +779,82 @@ impl Desktop {
         .height(48)
         .style(|_| surface(Color::from_rgb8(15, 21, 32), false));
         let sidebar = self.project_sidebar();
+        let mode = self.view_mode();
+        let compact = self.design.compact;
+        let mut toolbar = row![
+            control(
+                "server",
+                "Tasks",
+                action(Action::View(View::Tasks)),
+                mode == View::Tasks
+            ),
+            control(
+                "terminal",
+                "Terminals",
+                action(Action::View(View::Terminals)),
+                mode == View::Terminals
+            ),
+            tool_control(
+                "files",
+                "Files",
+                action(Action::View(View::Files)),
+                mode == View::Files,
+                compact
+            ),
+            tool_control(
+                "git",
+                "Git",
+                action(Action::View(View::Git)),
+                mode == View::Git,
+                compact
+            ),
+            Space::new().width(Length::Fill),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+        // Actions for the focused pane's view sit beside the layout controls.
+        match mode {
+            View::Terminals => {
+                toolbar = toolbar
+                    .push(control(
+                        "terminal",
+                        "New Terminal",
+                        Message::NewTab(None),
+                        false,
+                    ))
+                    .push(control(
+                        "cpu",
+                        "New Codex",
+                        Message::NewTab(Some(Provider::Codex)),
+                        false,
+                    ))
+                    .push(
+                        control(
+                            "sparkles",
+                            "New Claude",
+                            Message::NewTab(Some(Provider::Claude)),
+                            false,
+                        )
+                        .style(claude_style),
+                    );
+            }
+            View::Tasks => {
+                let can_release = self.task_panel(self.task_workspace()).can_prepare_release();
+                toolbar = toolbar
+                    .push(control("send", "New Task", action(Action::NewTask), false))
+                    .push(tooltip(
+                        control("send", "New Release", Message::PrepareReleaseTask, false)
+                            .on_press_maybe(can_release.then_some(Message::PrepareReleaseTask)),
+                        text("Prepare a release request with optional notes. Requires an empty task draft."),
+                        tooltip::Position::Bottom,
+                    ));
+            }
+            View::Files | View::Git => {}
+        }
         let toolbar = container(
-            row![
-                control(
-                    "server",
-                    "Tasks",
-                    action(Action::View(View::Tasks)),
-                    self.tasks_visible()
-                ),
-                control(
-                    "terminal",
-                    "Terminals",
-                    action(Action::View(View::Terminals)),
-                    !self.tasks_visible()
-                ),
-                text(if self.design.compact { "" } else { "LAUNCH:" })
-                    .size(9)
-                    .color(MUTED),
-                control("terminal", "+ Terminal", Message::NewTab(None), false),
-                control(
-                    "cpu",
-                    "+ Codex",
-                    Message::NewTab(Some(Provider::Codex)),
-                    true
-                ),
-                control(
-                    "sparkles",
-                    "+ Claude",
-                    Message::NewTab(Some(Provider::Claude)),
-                    false
-                )
-                .style(claude_style),
-                tool_control(
-                    "files",
-                    "Files",
-                    action(Action::View(View::Files)),
-                    self.design.mode == View::Files,
-                    self.design.compact
-                ),
-                tool_control(
-                    "git",
-                    "Git",
-                    action(Action::View(View::Git)),
-                    self.design.mode == View::Git,
-                    self.design.compact
-                ),
-                Space::new().width(Length::Fill),
-                tool_control(
+            toolbar
+                .push(text("|").size(12).color(LINE))
+                .push(tool_control(
                     "single",
                     if workspace.panes.maximized().is_some() {
                         "Restore panes"
@@ -828,25 +863,22 @@ impl Desktop {
                     },
                     action(Action::Single),
                     workspace.panes.maximized().is_some(),
-                    self.design.compact
-                ),
-                tool_control(
+                    compact,
+                ))
+                .push(tool_control(
                     "columns",
                     "Split right",
                     Message::Split(pane_grid::Axis::Vertical),
                     false,
-                    self.design.compact
-                ),
-                tool_control(
+                    compact,
+                ))
+                .push(tool_control(
                     "rows",
                     "Split down",
                     Message::Split(pane_grid::Axis::Horizontal),
                     false,
-                    self.design.compact
-                ),
-            ]
-            .spacing(5)
-            .align_y(Alignment::Center),
+                    compact,
+                )),
         )
         .padding([5, 12])
         .height(44)
@@ -876,30 +908,16 @@ impl Desktop {
         } else {
             toolbar
         };
-        let center: Element<'_, Message> = if self.tasks_visible() {
-            if self.design.task_window.is_some() {
-                container(
-                    column![
-                        text("Tasks are open in a separate window"),
-                        control("back", "Show tasks here", action(Action::DockTasks), false)
-                    ]
-                    .spacing(12),
-                )
-                .center(Length::Fill)
-                .into()
-            } else {
-                self.design_tasks()
-            }
-        } else if self.design.mode == View::Terminals {
-            self.design_terminals()
+        let center: Element<'_, Message> = if self.remote_active.is_some() {
+            self.tasks_pane()
         } else {
-            self.project_view()
+            self.design_panes()
         };
         let base: Element<'_, Message> = column![
             header,
             row![
                 sidebar,
-                column![center, toolbar]
+                column![toolbar, center]
                     .width(Length::Fill)
                     .height(Length::Fill),
             ]
@@ -1165,9 +1183,40 @@ impl Desktop {
             })
             .into()
     }
-    fn design_terminals(&self) -> Element<'_, Message> {
+    /// Tasks, or a placeholder while they are open in their own window.
+    fn tasks_pane(&self) -> Element<'_, Message> {
+        if self.design.task_window.is_none() {
+            return self.design_tasks();
+        }
+        container(
+            column![
+                text("Tasks are open in a separate window"),
+                control("back", "Show tasks here", action(Action::DockTasks), false)
+            ]
+            .spacing(12),
+        )
+        .center(Length::Fill)
+        .into()
+    }
+    /// Every pane renders its own view, so splits keep working in any view.
+    fn design_panes(&self) -> Element<'_, Message> {
         let w = &self.workspaces[self.active];
         pane_grid::PaneGrid::new(&w.panes, |pane_id, pane, _| {
+            let (name, label, body) = match pane.view {
+                View::Terminals => ("", "", None),
+                View::Tasks => ("server", "Tasks", Some(self.tasks_pane())),
+                View::Files => ("files", "Files", Some(self.project_view(View::Files))),
+                View::Git => ("git", "Git", Some(self.project_view(View::Git))),
+            };
+            if let Some(body) = body {
+                let title = row![icon(name), text(label).size(12)]
+                    .spacing(6)
+                    .padding([6, 10])
+                    .align_y(Alignment::Center);
+                return pane_grid::Content::new(body)
+                    .title_bar(pane_grid::TitleBar::new(title).padding(0))
+                    .style(|_| surface(BG, false));
+            }
             let mut strip = row![].spacing(3);
             for (index, tab) in pane.tabs.iter().enumerate() {
                 let label = match tab_provider(tab) {
@@ -1603,13 +1652,6 @@ impl Desktop {
                 row![
                     icon("send"),
                     text("DISPATCH NEW GATEWAY TASK").size(10).color(CYAN),
-                    Space::new().width(Length::Fill),
-                    tooltip(
-                        button(text("New release").size(11))
-                            .on_press_maybe(panel.can_prepare_release().then_some(Message::PrepareReleaseTask)),
-                        text("Prepare a release request with optional notes. Requires an empty task draft."),
-                        tooltip::Position::Top,
-                    ),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -1955,32 +1997,22 @@ impl Desktop {
         .style(|_| surface(Color::from_rgb8(17, 24, 38), true))
         .into()
     }
-    fn project_view(&self) -> Element<'_, Message> {
+    fn project_view(&self, mode: View) -> Element<'_, Message> {
         let root = &self.workspaces[self.active];
         let mut content = column![
-            row![
-                text(if self.design.mode == View::Files {
-                    "Workspace Explorer"
-                } else {
-                    "Git Worktree Status"
-                })
-                .size(18),
-                Space::new().width(Length::Fill),
-                control(
-                    "back",
-                    "Back to terminals",
-                    action(Action::View(View::Terminals)),
-                    false
-                )
-            ]
-            .align_y(Alignment::Center),
+            text(if mode == View::Files {
+                "Workspace Explorer"
+            } else {
+                "Git Worktree Status"
+            })
+            .size(18),
             text(root.directory.display().to_string())
                 .font(iced::Font::MONOSPACE)
                 .size(11)
                 .color(MUTED)
         ]
         .spacing(14);
-        if self.design.mode == View::Files {
+        if mode == View::Files {
             return self.files_view(content);
         }
         if self.design.loading {
@@ -1992,7 +2024,7 @@ impl Desktop {
             match result {
                 Err(error) => content = content.push(text(error).size(12).color(AMBER)),
                 Ok(data) => {
-                    if self.design.mode == View::Git {
+                    if mode == View::Git {
                         content = content
                             .push(
                                 text(format!("Branch: {}", data.branch))
@@ -2154,14 +2186,41 @@ impl Desktop {
     pub(super) fn set_compact(&mut self, value: bool) {
         self.design.compact = value;
     }
+    /// The focused pane's view; a remote task workspace only has tasks.
+    pub(super) fn view_mode(&self) -> View {
+        if self.remote_active.is_some() {
+            return View::Tasks;
+        }
+        let Some(workspace) = self.workspaces.get(self.active) else {
+            return View::Tasks;
+        };
+        workspace
+            .panes
+            .get(workspace.focused)
+            .map_or(View::Terminals, |pane| pane.view)
+    }
+    fn set_view_mode(&mut self, mode: View) {
+        if let Some(workspace) = self.workspaces.get_mut(self.active)
+            && let Some(pane) = workspace.panes.get_mut(workspace.focused)
+        {
+            pane.view = mode;
+        }
+    }
     pub(super) fn show_terminals(&mut self) {
-        self.design.mode = View::Terminals;
+        self.set_view_mode(View::Terminals);
     }
     pub(super) fn show_tasks(&mut self) {
-        self.design.mode = View::Tasks;
+        self.set_view_mode(View::Tasks);
     }
+    /// True when any visible pane, or the remote workspace, shows tasks.
     pub(super) fn tasks_visible(&self) -> bool {
-        self.remote_active.is_some() || self.design.mode == View::Tasks
+        self.remote_active.is_some()
+            || self.workspaces.get(self.active).is_some_and(|workspace| {
+                workspace
+                    .panes
+                    .iter()
+                    .any(|(_, pane)| pane.view == View::Tasks)
+            })
     }
     pub(super) fn clear_project_inventory(&mut self) {
         self.reset_remote_projects();
@@ -2406,6 +2465,40 @@ mod tests {
         assert!(!app.restarting);
     }
     #[test]
+    fn views_belong_to_panes_so_splits_mix_views() {
+        let mut app = super::super::tests::desktop();
+        app.active = 0;
+        drop(app.design_message(Action::View(View::Git)));
+        let w = &mut app.workspaces[0];
+        let original = w.focused;
+        let (other, _) = w
+            .panes
+            .split(
+                pane_grid::Axis::Vertical,
+                original,
+                Pane {
+                    tabs: Vec::new(),
+                    active: 0,
+                    view: View::Terminals,
+                },
+            )
+            .unwrap();
+        w.focused = other;
+        assert_eq!(app.view_mode(), View::Terminals);
+        assert_eq!(
+            app.workspaces[0].panes.get(original).unwrap().view,
+            View::Git
+        );
+        assert!(!app.tasks_visible());
+        drop(app.design_message(Action::View(View::Tasks)));
+        assert!(app.tasks_visible());
+        assert_eq!(
+            app.workspaces[0].panes.get(original).unwrap().view,
+            View::Git
+        );
+        drop(app.design_view());
+    }
+    #[test]
     fn project_views_use_real_files_and_git_and_bound_preview() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("hello.txt"), "hello").unwrap();
@@ -2449,6 +2542,7 @@ mod tests {
                 Pane {
                     tabs: Vec::new(),
                     active: 0,
+                    view: View::Terminals,
                 },
             )
             .unwrap();
@@ -2552,6 +2646,7 @@ mod tests {
                 Pane {
                     tabs: Vec::new(),
                     active: 0,
+                    view: View::Terminals,
                 },
             )
             .unwrap();

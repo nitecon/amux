@@ -344,6 +344,8 @@ struct Tab {
 struct Pane {
     tabs: Vec<Tab>,
     active: usize,
+    /// What this pane shows; views honor splits instead of covering every pane.
+    view: desktop_design::View,
 }
 struct Workspace {
     name: Option<String>,
@@ -563,6 +565,7 @@ impl Desktop {
                     })
                     .collect(),
                 active,
+                view: desktop_design::View::Terminals,
             }),
             Layout::Split {
                 vertical,
@@ -1000,6 +1003,7 @@ impl Desktop {
         let (panes, focused) = pane_grid::State::new(Pane {
             tabs: vec![tab],
             active: 0,
+            view: desktop_design::View::Terminals,
         });
         self.workspaces.push(Workspace {
             name: None,
@@ -1015,7 +1019,10 @@ impl Desktop {
     }
 
     fn focus(&self) -> Task<Message> {
-        if self.preferences.open || self.workspace_dialog.open || self.tasks_visible() {
+        if self.preferences.open
+            || self.workspace_dialog.open
+            || self.view_mode() != desktop_design::View::Terminals
+        {
             return Task::none();
         }
         let workspace = &self.workspaces[self.active];
@@ -1158,10 +1165,10 @@ impl Desktop {
             Message::CancelCloseWorkspace => self.closing_workspace = None,
             Message::SelectWorkspace(index) => {
                 if index < self.workspaces.len() {
+                    self.active = index;
                     if self.remote_active.take().is_some() {
                         self.show_tasks();
                     }
-                    self.active = index;
                     return Task::batch([self.query(index), self.focus()]);
                 }
             }
@@ -1192,7 +1199,6 @@ impl Desktop {
                 return self.focus();
             }
             Message::Split(axis) => {
-                self.show_terminals();
                 let directory = self.workspaces[self.active].directory.clone();
                 let script = self.workspaces[self.active].init_script.clone();
                 let tab = self.terminal_with_script(&directory, None, script.as_deref());
@@ -1204,6 +1210,7 @@ impl Desktop {
                     Pane {
                         tabs: vec![tab],
                         active: 0,
+                        view: desktop_design::View::Terminals,
                     },
                 ) {
                     workspace.focused = pane;
@@ -2699,7 +2706,9 @@ impl Desktop {
         }
         column![
             self.routing_form(),
-            text_input("Task title", &panel.draft_title).on_input(Message::TaskTitle),
+            text_input("Task title", &panel.draft_title)
+                .id("task-title")
+                .on_input(Message::TaskTitle),
             text_editor(&panel.draft_context)
                 .placeholder("Context / handoff text (optional)")
                 .on_action(Message::TaskContext)
@@ -2859,6 +2868,7 @@ mod tests {
                     delegation: desktop_delegation::TabState::default(),
                 }],
                 active: 0,
+                view: desktop_design::View::Terminals,
             });
             workspaces.push(Workspace {
                 name: None,
@@ -3330,6 +3340,7 @@ mod tests {
                 Pane {
                     tabs: vec![tab],
                     active: 0,
+                    view: desktop_design::View::Terminals,
                 },
             )
             .unwrap();
