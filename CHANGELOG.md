@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.0.81 - 2026-11-15
+
+### Changed
+
+- Each pane now has its own Tasks, Terminals, Files and Git navigation and
+  view-specific actions. Controls in another pane focus and act on that pane.
+- The global bar groups Single, Split Right and Split Down on the left and
+  Events, the update bell and Settings on the right. Remove the duplicate
+  sidebar Settings & Gateway button and redundant Tasks heading.
+
+### Fixed
+
+- Keep Git branch, status and history visible while another pane browses Files,
+  and preserve file previews while Git loads or refreshes.
+
 ## v0.0.80 - 2026-11-15
 
 ### Changed

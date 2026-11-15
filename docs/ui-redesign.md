@@ -17,16 +17,17 @@ The desktop remains a native Rust/Iced application with native terminal panes.
 
 ## Implemented surfaces
 
-The header exposes connection state, agent activity, Events, app updates and
-Settings. `Ctrl+,` opens Settings without forwarding the shortcut to the terminal
-or replacing its typed input. A 256-pixel project sidebar selects local workspaces
+The header exposes connection state and agent activity. The global bar places
+Single, Split Right and Split Down on the left, with Events, the update bell and
+Settings on the right. `Ctrl+,` opens Settings without forwarding the shortcut
+to the terminal or replacing its typed input. A 256-pixel project sidebar selects local workspaces
 or remote gateway projects. Local and remote projects share a full task queue and
-detail view. The toolbar sits at the top of the main panel: view tabs Tasks |
-Terminals | Files | Git, then actions for the focused pane's view (Terminals: New
-Terminal, New Codex, New Claude; Tasks: New Task, New Release), then Single, Split
-right and Split down. Tasks, Files and Git open in the focused pane and respect
-splits, so each pane keeps its own view. Narrow windows use compact,
-labeled-on-hover toolbar controls.
+detail view. Each pane has its own top navigation Tasks |
+Terminals | Files | Git, followed by actions for that pane's view (Terminals: New
+Terminal, New Codex, New Claude; Tasks: New Task, New Release). Controls focus and
+act on the pane that contains them. Tasks, Files and Git respect splits, so each
+pane keeps its own view. Pane controls scroll horizontally in narrow panes.
+Remote task workspaces show task actions and Check out locally.
 
 Project stars pin favorites above the rest of the list and persist on this device
 with the saved layout. Added local projects sort alphabetically without changing

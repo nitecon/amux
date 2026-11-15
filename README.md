@@ -132,7 +132,7 @@ pairing desktops alone does not configure that tool. See
 
 ## Everyday controls
 
-Open **Settings & Gateway** for **Gateway Server**, **Workspaces & Terminals**,
+Open **Settings** from the global bar for **Gateway Server**, **Workspaces & Terminals**,
 **Models & Routing**, **Agent Instructions**, **Instruction Templates**, and **Updates**.
 Configure provider-specific subagent models and thinking levels, plus separate
 terminal/persona launch profiles, in **Models & Routing**. The current routing

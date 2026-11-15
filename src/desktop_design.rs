@@ -53,6 +53,7 @@ pub(super) enum Action {
     AddLocalProject(PathBuf),
     RemoteProject(String),
     View(View),
+    Pane(pane_grid::Pane, Box<Message>),
     /// Start a task draft in the composer.
     NewTask,
     Filter(Filter),
@@ -393,20 +394,6 @@ fn control<'a>(
         .padding([6, 9])
         .style(move |theme, status| button_style(selected, theme, status))
 }
-fn tool_control<'a>(
-    name: &str,
-    label: &'static str,
-    message: Message,
-    selected: bool,
-    compact: bool,
-) -> Element<'a, Message> {
-    tooltip(
-        control(name, if compact { "" } else { label }, message, selected),
-        label,
-        tooltip::Position::Bottom,
-    )
-    .into()
-}
 fn action(value: Action) -> Message {
     Message::Design(value)
 }
@@ -550,6 +537,14 @@ impl Desktop {
                     && self.workspaces[self.active].id == workspace
                 {
                     return self.update(Message::RestartTab(pane, tab));
+                }
+            }
+            Action::Pane(pane, message) => {
+                if self.remote_active.is_none()
+                    && self.workspaces[self.active].panes.get(pane).is_some()
+                {
+                    self.workspaces[self.active].focused = pane;
+                    return self.update(*message);
                 }
             }
             Action::View(mode) => {
@@ -777,6 +772,38 @@ impl Desktop {
                      output within the last 5 seconds.",
                     tooltip::Position::Bottom
                 ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([7, 16])
+        .height(48)
+        .style(|_| surface(Color::from_rgb8(15, 21, 32), false));
+        let sidebar = self.project_sidebar();
+        let toolbar = container(
+            row![
+                control(
+                    "single",
+                    if workspace.panes.maximized().is_some() {
+                        "Restore panes"
+                    } else {
+                        "Single"
+                    },
+                    action(Action::Single),
+                    workspace.panes.maximized().is_some(),
+                ),
+                control(
+                    "columns",
+                    "Split Right",
+                    Message::Split(pane_grid::Axis::Vertical),
+                    false
+                ),
+                control(
+                    "rows",
+                    "Split Down",
+                    Message::Split(pane_grid::Axis::Horizontal),
+                    false
+                ),
                 Space::new().width(Length::Fill),
                 control(
                     "activity",
@@ -803,144 +830,27 @@ impl Desktop {
                 ),
                 control("settings", "", Message::Preferences(true), false),
             ]
-            .spacing(8)
+            .spacing(5)
             .align_y(Alignment::Center),
-        )
-        .padding([7, 16])
-        .height(48)
-        .style(|_| surface(Color::from_rgb8(15, 21, 32), false));
-        let sidebar = self.project_sidebar();
-        let mode = self.view_mode();
-        let compact = self.design.compact;
-        let mut toolbar = row![
-            control(
-                "server",
-                "Tasks",
-                action(Action::View(View::Tasks)),
-                mode == View::Tasks
-            ),
-            control(
-                "terminal",
-                "Terminals",
-                action(Action::View(View::Terminals)),
-                mode == View::Terminals
-            ),
-            tool_control(
-                "files",
-                "Files",
-                action(Action::View(View::Files)),
-                mode == View::Files,
-                compact
-            ),
-            tool_control(
-                "git",
-                "Git",
-                action(Action::View(View::Git)),
-                mode == View::Git,
-                compact
-            ),
-            Space::new().width(Length::Fill),
-        ]
-        .spacing(5)
-        .align_y(Alignment::Center);
-        // Actions for the focused pane's view sit beside the layout controls.
-        match mode {
-            View::Terminals => {
-                toolbar = toolbar
-                    .push(control(
-                        "terminal",
-                        "New Terminal",
-                        Message::NewTab(None),
-                        false,
-                    ))
-                    .push(control(
-                        "cpu",
-                        "New Codex",
-                        Message::NewTab(Some(Provider::Codex)),
-                        false,
-                    ))
-                    .push(
-                        control(
-                            "sparkles",
-                            "New Claude",
-                            Message::NewTab(Some(Provider::Claude)),
-                            false,
-                        )
-                        .style(claude_style),
-                    );
-            }
-            View::Tasks => {
-                let can_release = self.task_panel(self.task_workspace()).can_prepare_release();
-                toolbar = toolbar
-                    .push(control("send", "New Task", action(Action::NewTask), false))
-                    .push(tooltip(
-                        control("send", "New Release", Message::PrepareReleaseTask, false)
-                            .on_press_maybe(can_release.then_some(Message::PrepareReleaseTask)),
-                        text("Prepare a release request with optional notes. Requires an empty task draft."),
-                        tooltip::Position::Bottom,
-                    ));
-            }
-            View::Files | View::Git => {}
-        }
-        let toolbar = container(
-            toolbar
-                .push(text("|").size(12).color(LINE))
-                .push(tool_control(
-                    "single",
-                    if workspace.panes.maximized().is_some() {
-                        "Restore panes"
-                    } else {
-                        "Single"
-                    },
-                    action(Action::Single),
-                    workspace.panes.maximized().is_some(),
-                    compact,
-                ))
-                .push(tool_control(
-                    "columns",
-                    "Split right",
-                    Message::Split(pane_grid::Axis::Vertical),
-                    false,
-                    compact,
-                ))
-                .push(tool_control(
-                    "rows",
-                    "Split down",
-                    Message::Split(pane_grid::Axis::Horizontal),
-                    false,
-                    compact,
-                )),
         )
         .padding([5, 12])
         .height(44)
         .style(|_| surface(PANEL, false));
-        let toolbar = if self.remote_active.is_some() {
-            container(
-                row![
-                    text("Task workspace · no local workspace required")
-                        .size(12)
-                        .color(MUTED),
-                    Space::new().width(Length::Fill),
-                    control(
-                        "folder-git",
-                        "Check out locally",
-                        action(Action::ProjectMenu(
-                            self.task_panel(self.task_workspace()).project.clone()
-                        )),
-                        false
-                    ),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .padding([5, 12])
-            .height(44)
-            .style(|_| surface(PANEL, false))
-        } else {
-            toolbar
-        };
         let center: Element<'_, Message> = if self.remote_active.is_some() {
-            self.tasks_pane()
+            column![
+                self.pane_controls(None, View::Tasks),
+                control(
+                    "folder-git",
+                    "Check out locally",
+                    action(Action::ProjectMenu(
+                        self.task_panel(self.task_workspace()).project.clone()
+                    )),
+                    false
+                ),
+                self.tasks_pane()
+            ]
+            .height(Length::Fill)
+            .into()
         } else {
             self.design_panes()
         };
@@ -967,7 +877,7 @@ impl Desktop {
                 container(opaque(self.events_view()))
                     .align_left(Length::Fill)
                     .padding(iced::Padding {
-                        top: 48.0,
+                        top: 92.0,
                         ..Default::default()
                     })
                     .height(Length::Fill),
@@ -1022,7 +932,7 @@ impl Desktop {
                 ))
                 .align_right(Length::Fill)
                 .padding(iced::Padding {
-                    top: 48.0,
+                    top: 92.0,
                     right: 16.0,
                     ..Default::default()
                 }),
@@ -1229,23 +1139,96 @@ impl Desktop {
         .center(Length::Fill)
         .into()
     }
+    /// View selection and context actions always belong to the pane that renders them.
+    fn pane_controls(&self, pane: Option<pane_grid::Pane>, view: View) -> Element<'_, Message> {
+        let target = |message| match pane {
+            Some(pane) => action(Action::Pane(pane, Box::new(message))),
+            None => message,
+        };
+        let mut controls = column![].spacing(4);
+        if pane.is_some() {
+            let mut views = row![].spacing(5);
+            for (icon, label, mode) in [
+                ("server", "Tasks", View::Tasks),
+                ("terminal", "Terminals", View::Terminals),
+                ("files", "Files", View::Files),
+                ("git", "Git", View::Git),
+            ] {
+                views = views.push(control(
+                    icon,
+                    label,
+                    target(action(Action::View(mode))),
+                    view == mode,
+                ));
+            }
+            controls = controls.push(scrollable(views).horizontal().height(34));
+        }
+        match view {
+            View::Tasks => {
+                let can_release = self.task_panel(self.task_workspace()).can_prepare_release();
+                controls = controls.push(scrollable(row![
+                    control("send", "New Task", target(action(Action::NewTask)), false),
+                    tooltip(
+                        control("send", "New Release", target(Message::PrepareReleaseTask), false)
+                            .on_press_maybe(can_release.then(|| target(Message::PrepareReleaseTask))),
+                        text("Prepare a release request with optional notes. Requires an empty task draft."),
+                        tooltip::Position::Bottom,
+                    ),
+                ].spacing(5)).horizontal().height(34));
+            }
+            View::Terminals => {
+                controls = controls.push(
+                    scrollable(
+                        row![
+                            control(
+                                "terminal",
+                                "New Terminal",
+                                target(Message::NewTab(None)),
+                                false
+                            ),
+                            control(
+                                "cpu",
+                                "New Codex",
+                                target(Message::NewTab(Some(Provider::Codex))),
+                                false
+                            ),
+                            control(
+                                "sparkles",
+                                "New Claude",
+                                target(Message::NewTab(Some(Provider::Claude))),
+                                false
+                            )
+                            .style(claude_style),
+                        ]
+                        .spacing(5),
+                    )
+                    .horizontal()
+                    .height(34),
+                );
+            }
+            View::Files | View::Git => {}
+        }
+        container(controls)
+            .padding([5, 8])
+            .width(Length::Fill)
+            .style(|_| surface(PANEL, false))
+            .into()
+    }
+
     /// Every pane renders its own view, so splits keep working in any view.
     fn design_panes(&self) -> Element<'_, Message> {
         let w = &self.workspaces[self.active];
         pane_grid::PaneGrid::new(&w.panes, |pane_id, pane, _| {
-            let (name, label, body) = match pane.view {
-                View::Terminals => ("", "", None),
-                View::Tasks => ("server", "Tasks", Some(self.tasks_pane())),
-                View::Files => ("files", "Files", Some(self.project_view(View::Files))),
-                View::Git => ("git", "Git", Some(self.project_view(View::Git))),
+            let controls = self.pane_controls(Some(pane_id), pane.view);
+            let body = match pane.view {
+                View::Terminals => None,
+                View::Tasks => Some(self.tasks_pane()),
+                View::Files => Some(self.project_view(View::Files)),
+                View::Git => Some(self.project_view(View::Git)),
             };
             if let Some(body) = body {
-                let title = row![icon(name), text(label).size(12)]
-                    .spacing(6)
-                    .padding([6, 10])
-                    .align_y(Alignment::Center);
                 return pane_grid::Content::new(body)
-                    .title_bar(pane_grid::TitleBar::new(title).padding(0))
+                    .title_bar(pane_grid::TitleBar::new(controls).padding(0))
                     .style(|_| surface(BG, false));
             }
             let mut strip = row![].spacing(3);
@@ -1316,7 +1299,7 @@ impl Desktop {
                         w.gateway.project
                     )
                 });
-            let mut title = column![scrollable(strip).horizontal().height(55)].spacing(2);
+            let mut title = column![controls, scrollable(strip).horizontal().height(55)].spacing(2);
             if let Some(identity) = identity {
                 title = title.push(
                     text(identity)
@@ -2521,8 +2504,20 @@ mod tests {
             View::Git
         );
         assert!(!app.tasks_visible());
-        drop(app.design_message(Action::View(View::Tasks)));
+        app.workspaces[0].focused = original;
+        drop(app.design_message(Action::Pane(
+            other,
+            Box::new(action(Action::View(View::Tasks))),
+        )));
+        assert_eq!(app.workspaces[0].focused, other);
         assert!(app.tasks_visible());
+        app.workspaces[0].focused = original;
+        drop(app.design_message(Action::Pane(other, Box::new(Message::PrepareReleaseTask))));
+        assert_eq!(app.workspaces[0].focused, other);
+        assert_eq!(
+            app.workspaces[0].gateway.draft_context.text(),
+            RELEASE_TASK_CONTEXT
+        );
         assert_eq!(
             app.workspaces[0].panes.get(original).unwrap().view,
             View::Git

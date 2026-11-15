@@ -487,9 +487,9 @@ remote project from the authenticated inventory opens a task context without
 cloning a repository or advertising a local executor. Task lists, details,
 comments, assignment and dispatch use the existing gateway APIs. Terminal,
 file and Git actions require a real local workspace; local workspaces show
-terminal, view and split controls in the top toolbar, while remote projects show
-a task-only strip with Check out locally. The client retains project drafts and
-request receipts independently of terminal selection, fences replies by context
+split and utility controls in the global bar, with view and context controls
+inside each pane. Remote projects show task actions and Check out locally. The
+client retains project drafts and request receipts independently of terminal selection, fences replies by context
 identity and connection generation, and refreshes the visible task view even
 when no local agent is running. Scheduling remains entirely server-owned.
 
