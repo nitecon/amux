@@ -62,7 +62,8 @@ projects. amux bundles pinned builds of
 1. **Add a project.** Launch amux and use **New workspace** to select your local
    repository (**General**) or clone one (**Clone**). Projects are matched by Git
    remote, so checkouts of the same repository resolve to the same server project.
-2. **Launch your agents.** Select the project and use **+ Codex** and **+ Claude**.
+2. **Launch your agents.** Select the project, open **Terminals** and use **New Codex**
+   and **New Claude**.
    Each gets its own terminal and execution identity. Launch more sessions when
    you have independent work for them.
 3. **Enable task delivery.** Open **Settings → Gateway Server**. Fresh installs

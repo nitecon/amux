@@ -21,8 +21,12 @@ The header exposes connection state, agent activity, Events, app updates and
 Settings. `Ctrl+,` opens Settings without forwarding the shortcut to the terminal
 or replacing its typed input. A 256-pixel project sidebar selects local workspaces
 or remote gateway projects. Local and remote projects share a full task queue and
-detail view; terminal and split controls remain at the bottom. Narrow windows use
-compact, labeled-on-hover toolbar controls.
+detail view. The toolbar sits at the top of the main panel: view tabs Tasks |
+Terminals | Files | Git, then actions for the focused pane's view (Terminals: New
+Terminal, New Codex, New Claude; Tasks: New Task, New Release), then Single, Split
+right and Split down. Tasks, Files and Git open in the focused pane and respect
+splits, so each pane keeps its own view. Narrow windows use compact,
+labeled-on-hover toolbar controls.
 
 Project stars pin favorites above the rest of the list and persist on this device
 with the saved layout. Added local projects sort alphabetically without changing
