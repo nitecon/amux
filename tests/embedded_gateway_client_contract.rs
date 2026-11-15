@@ -1333,7 +1333,10 @@ async fn a_delegated_source_stays_readable_when_the_target_thread_exceeds_the_ca
 
     let id: Uuid = source.parse().unwrap();
     let detail = fixture.client.task(PROJECT, id, 10).await.unwrap();
-    assert_eq!(detail["status"], "done", "{detail}");
+    assert_eq!(
+        detail["status"], "todo",
+        "source awaits inspection: {detail}"
+    );
     let comments = detail["comments"].as_array().unwrap();
     let summary = comments
         .iter()
@@ -1872,5 +1875,327 @@ async fn guided_confirmation_finishes_the_requested_lane_and_fences_stale_caller
             .await
             .unwrap()["status"],
         "in_progress"
+    );
+}
+
+#[tokio::test]
+async fn exact_prior_owner_can_complete_parked_work_with_guided_confirmation() {
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    for files in [Value::Null, json!(["docs/verified.md"])] {
+        let id = fixture.parent();
+        fixture
+            .client
+            .claim(PROJECT, &id, &fixture.actor)
+            .await
+            .unwrap();
+        // No work comment is needed to retain the prior owner's authority.
+        fixture
+            .client
+            .request_user_review_with_changeset(
+                PROJECT,
+                id.parse().unwrap(),
+                &fixture.actor,
+                "Confirm the result",
+                Some(Value::Null),
+            )
+            .await
+            .unwrap();
+        // Journal retention must not revoke the exact owner's ability to finish.
+        fixture
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM task_events WHERE json_extract(task_json,'$.id')=?1",
+                [&id],
+            )
+            .unwrap();
+        let mut peer = fixture.actor.clone();
+        peer.instance_id = Uuid::new_v4();
+        assert!(
+            fixture
+                .client
+                .confirm_completion_owner(PROJECT, id.parse().unwrap(), &peer)
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .client
+                .request(
+                    Method::PATCH,
+                    PROJECT,
+                    &[&id],
+                    Some(json!({"status":"done","changeset":null})),
+                    Some(&peer)
+                )
+                .await
+                .is_err()
+        );
+        fixture
+            .client
+            .confirm_completion_owner(PROJECT, id.parse().unwrap(), &fixture.actor)
+            .await
+            .unwrap();
+        let question = fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&id],
+                Some(json!({"status":"done"})),
+                Some(&fixture.actor),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            question
+                .to_string()
+                .contains("Did this task mutate any files"),
+            "{question:#}"
+        );
+        if !files.is_null() {
+            fixture
+                .client
+                .request(
+                    Method::POST,
+                    PROJECT,
+                    &[&id, "confirmation"],
+                    Some(json!({"task_type":"software"})),
+                    Some(&fixture.actor),
+                )
+                .await
+                .unwrap();
+        }
+        let done = fixture
+            .client
+            .request(
+                Method::POST,
+                PROJECT,
+                &[&id, "confirmation"],
+                Some(json!({"changeset":files})),
+                Some(&fixture.actor),
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["status"], "done");
+        assert_eq!(
+            done["owner_origin"]["instance_id"],
+            fixture.actor.instance_id.to_string()
+        );
+        assert!(done["review_action"].is_null());
+    }
+}
+
+#[tokio::test]
+async fn delegated_completion_requires_sender_inspection_and_relays_clarification() {
+    const DESTINATION: &str = "delegation-target";
+    let fixture = Fixture::start().await;
+    fixture.project_and_requester().await;
+    let (source, target) = {
+        let conn = fixture.database.lock().unwrap();
+        conn.execute(
+            "INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES(?1,'fixture','',0)",
+            [DESTINATION],
+        )
+        .unwrap();
+        let target = db::insert_task(
+            &conn,
+            DESTINATION,
+            "Target work",
+            None,
+            None,
+            &[],
+            None,
+            "user",
+        )
+        .unwrap()
+        .id;
+        let source = db::insert_delegated_task(
+            &conn,
+            &db::DelegatedTaskInsert {
+                task_type: "general",
+                project_ident: PROJECT,
+                title: "Inspect target work",
+                description: None,
+                details: None,
+                labels: &[],
+                hostname: None,
+                reporter: "user",
+                target_project_ident: DESTINATION,
+                target_task_id: &target,
+            },
+        )
+        .unwrap()
+        .id;
+        db::insert_task_delegation(&conn, PROJECT, &source, DESTINATION, &target, None, None)
+            .unwrap();
+        (source, target)
+    };
+    assert!(
+        fixture
+            .client
+            .claim(PROJECT, &source, &fixture.actor)
+            .await
+            .is_err()
+    );
+    let mut worker = fixture.actor.clone();
+    worker.session_id = Uuid::new_v4();
+    worker.instance_id = Uuid::new_v4();
+    fixture
+        .client
+        .claim(DESTINATION, &target, &worker)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            DESTINATION,
+            &[&target],
+            Some(json!({"status":"done","changeset":null})),
+            Some(&worker),
+        )
+        .await
+        .unwrap();
+    let tracker = fixture
+        .client
+        .task(PROJECT, source.parse().unwrap(), 10)
+        .await
+        .unwrap();
+    assert_eq!(tracker["status"], "todo");
+    assert!(tracker["owner_origin"].is_null());
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&source],
+                Some(json!({"status":"done","changeset":null})),
+                Some(&fixture.actor)
+            )
+            .await
+            .is_err()
+    );
+    {
+        let conn = fixture.database.lock().unwrap();
+        assert!(
+            db::get_delegation_by_source(&conn, PROJECT, &source)
+                .unwrap()
+                .unwrap()
+                .completed_at
+                .is_none()
+        );
+    }
+    fixture
+        .client
+        .claim(PROJECT, &source, &fixture.actor)
+        .await
+        .unwrap();
+    let detail = fixture
+        .client
+        .task(DESTINATION, target.parse().unwrap(), 10)
+        .await
+        .unwrap();
+    assert!(detail["comments"].as_array().unwrap().iter().any(|c| {
+        c["content"]
+            .as_str()
+            .unwrap()
+            .contains("will close after inspection")
+    }));
+    fixture
+        .client
+        .request(
+            Method::POST,
+            PROJECT,
+            &[&source, "comments"],
+            Some(json!({"content":"Please clarify the acceptance evidence"})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    let detail = fixture
+        .client
+        .task(DESTINATION, target.parse().unwrap(), 10)
+        .await
+        .unwrap();
+    assert!(detail["comments"].as_array().unwrap().iter().any(|c| {
+        c["content"]
+            .as_str()
+            .unwrap()
+            .contains("Please clarify the acceptance evidence")
+    }));
+    // Reopened destination work cannot accidentally be accepted by the sender.
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            DESTINATION,
+            &[&target],
+            Some(json!({"status":"todo","owner_agent_id":null,"changeset":null})),
+            Some(&worker),
+        )
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .client
+            .request(
+                Method::PATCH,
+                PROJECT,
+                &[&source],
+                Some(json!({"status":"done","changeset":null})),
+                Some(&fixture.actor)
+            )
+            .await
+            .is_err()
+    );
+    fixture
+        .client
+        .claim(DESTINATION, &target, &worker)
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            DESTINATION,
+            &[&target],
+            Some(json!({"status":"done","changeset":null})),
+            Some(&worker),
+        )
+        .await
+        .unwrap();
+    fixture
+        .client
+        .request(
+            Method::PATCH,
+            PROJECT,
+            &[&source],
+            Some(json!({"status":"done","changeset":null})),
+            Some(&fixture.actor),
+        )
+        .await
+        .unwrap();
+    let detail = fixture
+        .client
+        .task(DESTINATION, target.parse().unwrap(), 10)
+        .await
+        .unwrap();
+    assert!(detail["comments"].as_array().unwrap().iter().any(|c| {
+        c["content"]
+            .as_str()
+            .unwrap()
+            .contains("confirmed completion")
+    }));
+    let conn = fixture.database.lock().unwrap();
+    assert!(
+        db::get_delegation_by_source(&conn, PROJECT, &source)
+            .unwrap()
+            .unwrap()
+            .completed_at
+            .is_some()
     );
 }

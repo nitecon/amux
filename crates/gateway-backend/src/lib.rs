@@ -28,6 +28,7 @@ pub mod security;
 pub mod subtasks;
 pub mod task_cancel;
 pub mod task_changesets;
+pub mod task_delegations;
 pub mod task_dispatch;
 pub mod task_events;
 pub mod task_platform;

@@ -251,7 +251,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "task_done",
-        description: "Mark an owned task done.",
+        description: "Complete owned work, or resolved parked work held by this exact prior execution. Inspect delegated results before confirming the sender tracker.",
         bin: Bin::Amux,
         command: &["tasks", "done"],
         args: &[ID, CHANGESET],

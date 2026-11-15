@@ -850,7 +850,8 @@ fn run(cli: Cli) -> Result<u8> {
                     },
                     TaskOperation::Done { id, confirmation } | TaskOperation::Release { id, confirmation } => {
                         gateway.require_task_changesets().await?;
-                        gateway.confirm_owner(&project, id, &actor).await?;
+                        if completing { gateway.confirm_completion_owner(&project, id, &actor).await?; }
+                        else { gateway.confirm_owner(&project, id, &actor).await?; }
                         let status = if completing { "done" } else { "todo" };
                         let mut body = json!({"status":status});
                         if let Some(changeset) = confirmation.value()? { body["changeset"] = changeset; }

@@ -166,6 +166,7 @@ impl Event {
         if kind == Kind::Created
             && value["task"]["kind"] == "delegated"
             && value["task"]["delegated_to_task_id"].is_string()
+            && value["task"]["delegation_ready"] != true
         {
             return Ok(None);
         }

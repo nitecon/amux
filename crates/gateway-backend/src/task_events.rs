@@ -110,6 +110,16 @@ pub fn current_origin(conn: &Connection) -> Result<Option<AgentOrigin>> {
     Ok(raw.map(|s| serde_json::from_str(&s)).transpose()?)
 }
 
+/// Parking clears current ownership without transferring completion authority.
+/// The prior owner is retained independently of journal retention.
+pub fn can_complete_parked(task: &db::Task, origin: Option<&AgentOrigin>) -> bool {
+    task.status == "user_review"
+        && origin.is_some()
+        && task.owner_origin.is_none()
+        && task.owner_agent_id.is_none()
+        && task.completion_owner.as_ref() == origin
+}
+
 pub fn read_origin(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<AgentOrigin>> {
     let raw: Option<String> = row.get(index)?;
     raw.map(|s| {
@@ -145,6 +155,23 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         project_ident TEXT NOT NULL, canonical_remote TEXT, task_json TEXT NOT NULL,
         comment_json TEXT, created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS task_completion_owners (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        origin_json TEXT NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS task_completion_owner_park BEFORE UPDATE OF status ON tasks
+    WHEN NEW.status='user_review' AND OLD.status!='user_review' AND OLD.owner_origin_json IS NOT NULL
+    BEGIN INSERT OR REPLACE INTO task_completion_owners(task_id,origin_json) VALUES(OLD.id,OLD.owner_origin_json); END;
+    CREATE TRIGGER IF NOT EXISTS task_completion_owner_clear AFTER UPDATE OF status ON tasks
+    WHEN NEW.status!='user_review'
+    BEGIN DELETE FROM task_completion_owners WHERE task_id=NEW.id; END;
+    INSERT OR IGNORE INTO task_completion_owners(task_id,origin_json)
+    SELECT t.id,(SELECT json_extract(e.task_json,'$.owner_origin') FROM task_events e
+        WHERE e.project_ident=t.project_ident AND json_extract(e.task_json,'$.id')=t.id
+          AND json_type(e.task_json,'$.owner_origin')='object' ORDER BY e.id DESC LIMIT 1)
+    FROM tasks t WHERE t.status='user_review' AND EXISTS(
+        SELECT 1 FROM task_events e WHERE e.project_ident=t.project_ident
+          AND json_extract(e.task_json,'$.id')=t.id AND json_type(e.task_json,'$.owner_origin')='object');
     CREATE INDEX IF NOT EXISTS task_events_project ON task_events(project_ident,id);
     CREATE TABLE IF NOT EXISTS task_stream_consumers (
         consumer_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL, connection_id TEXT,

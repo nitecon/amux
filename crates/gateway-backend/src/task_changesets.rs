@@ -102,11 +102,12 @@ fn owned(
     let task = crate::db::get_task_detail(conn, project, id)?
         .ok_or(Conflict("task not found"))?
         .task;
-    if origin.is_none() || task.owner_origin.as_ref() != origin {
+    let parked = crate::task_events::can_complete_parked(&task, origin);
+    if !parked && (origin.is_none() || task.owner_origin.as_ref() != origin) {
         return Err(crate::task_events::OwnershipConflict.into());
     }
     if crate::task_dispatch::managed(conn, id)?
-        || !matches!(task.status.as_str(), "todo" | "in_progress")
+        || (!parked && !matches!(task.status.as_str(), "todo" | "in_progress"))
     {
         return Err(Conflict("confirmation requires owned ordinary active work").into());
     }
@@ -188,8 +189,9 @@ pub async fn confirm_handler(
                 let before = owned(conn, &saved_project, &saved_id, origin.as_ref())?;
                 // Generated review classification is managed by the workflow.
                 let update = crate::db::TaskUpdate {
-                    task_type: (!before.labels.iter().any(|l| l == "task-review"))
-                        .then_some("software"),
+                    task_type: (before.status != "user_review"
+                        && !before.labels.iter().any(|l| l == "task-review"))
+                    .then_some("software"),
                     ..Default::default()
                 };
                 let task = crate::db::update_task(

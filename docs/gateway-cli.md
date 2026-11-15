@@ -124,6 +124,18 @@ newly released workflow without a replacement.
 
 ## File changes and task transitions
 
+`amux tasks done ID` can also finish a User review task held previously by this
+exact session and instance when its question is resolved or superseded. Record
+the evidence in a comment first. A peer cannot finish it and agents cannot
+return it to the queue; normal mutation confirmation still applies.
+
+For delegated work, completing the destination task requests inspection of the
+sender's tracker. An available sender-project agent receives an inspection
+assignment, checks the linked results, then comments and runs `tasks done` on
+the tracker to confirm completion. Sender comments are relayed to the destination
+for clarification. The sender cannot claim or complete a tracker while its
+destination is incomplete.
+
 Tasks no longer require a General/Software choice at creation. `submit-work`
 accepts owned work without a prior type conversion. CLI and MCP creation tools
 and desktop forms no longer offer task types.

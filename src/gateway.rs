@@ -266,15 +266,42 @@ impl Gateway {
         id: uuid::Uuid,
         actor: &AgentIdentity,
     ) -> Result<Value> {
+        self.confirm_task_owner(project, id, actor, false).await
+    }
+
+    /// The prior exact owner may finish parked work once its question is resolved.
+    /// The server revalidates this authority atomically with completion.
+    pub async fn confirm_completion_owner(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        actor: &AgentIdentity,
+    ) -> Result<Value> {
+        self.confirm_task_owner(project, id, actor, true).await
+    }
+
+    async fn confirm_task_owner(
+        &self,
+        project: &str,
+        id: uuid::Uuid,
+        actor: &AgentIdentity,
+        completing: bool,
+    ) -> Result<Value> {
         let task = self.task(project, id, 0).await?;
-        if task["status"] != "in_progress"
-            || task["owner_origin"]["session_id"] != actor.session_id.to_string()
-            || task["owner_origin"]["instance_id"] != actor.instance_id.to_string()
-        {
-            bail!(
+        let owner = if completing && task["status"] == "user_review" {
+            &task["completion_owner"]
+        } else {
+            anyhow::ensure!(
+                task["status"] == "in_progress",
                 "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
             );
-        }
+            &task["owner_origin"]
+        };
+        anyhow::ensure!(
+            owner["session_id"] == actor.session_id.to_string()
+                && owner["instance_id"] == actor.instance_id.to_string(),
+            "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
+        );
         Ok(task)
     }
 

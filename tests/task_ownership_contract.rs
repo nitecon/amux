@@ -280,3 +280,33 @@ fn exact_owner_completes_or_releases_after_the_read() {
         assert!(requests[1].ends_with(&format!("{{\"status\":\"{status}\"}}")));
     }
 }
+
+#[test]
+fn parked_completion_uses_one_read_and_never_authorizes_peer_or_release() {
+    for (op, matching, allowed) in [
+        ("done", true, true),
+        ("done", false, false),
+        ("release", true, false),
+    ] {
+        let (ok, stderr, requests) = run(op, |actor| {
+            let mut parked = task("user_review", None);
+            parked["completion_owner"] = json!({
+                "session_id": actor.session_id,
+                "instance_id": if matching { actor.instance_id } else { uuid::Uuid::new_v4() },
+            });
+            let mut replies = vec![parked];
+            if allowed {
+                replies.push(task("done", exact(actor)));
+            }
+            replies
+        });
+        assert_eq!(ok, allowed, "{op}, matching={matching}: {stderr}");
+        assert_eq!(requests.len(), if allowed { 2 } else { 1 });
+        assert!(
+            requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK}?comments=0 "))
+        );
+        if allowed {
+            assert!(requests[1].starts_with(&format!("PATCH /v1/projects/demo/tasks/{TASK} ")));
+        }
+    }
+}

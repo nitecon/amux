@@ -817,6 +817,103 @@ async fn a_clock_tick_assigns_cross_project_delegation_to_the_destination_deskto
     assert_eq!(assigned["status"], "in_progress");
     assert_eq!(assigned["owner_origin"]["session_id"], SESSION);
     assert_eq!(assigned["owner_origin"]["instance_id"], INSTANCE);
+
+    // The source tracker cannot close until an available sender agent receives
+    // an inspection assignment and explicitly confirms the destination result.
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let source_id = delegated["source_task"]["id"].as_str().unwrap();
+        let mut sender = server
+            .subscribe_targets(
+                Uuid::new_v4(),
+                &["agent.notify", "agent.idle"],
+                &[DELEGATOR],
+                None,
+            )
+            .await;
+        emit(
+            &mut sender,
+            "client.heartbeat",
+            json!({"agents":[{
+                "session_id":DELEGATOR,"instance_id":DELEGATOR_INSTANCE,
+                "provider":"codex","os":"windows","project":SOURCE
+            }, {
+                "session_id":SESSION,"instance_id":INSTANCE,
+                "provider":"claude","os":"linux","project":PROJECT
+            }]}),
+            None,
+        )
+        .await;
+        emit(
+            &mut sender,
+            "terminal.activity",
+            json!({"session_id":DELEGATOR,
+        "instance_id":DELEGATOR_INSTANCE,"output_at":now_ms()-60_000,"draft":false}),
+            None,
+        )
+        .await;
+        server
+            .send(
+                reqwest::Method::PATCH,
+                &format!("/v1/projects/{PROJECT}/tasks/{id}"),
+                json!({"status":"done","changeset":null}),
+            )
+            .await;
+        let notification = loop {
+            let notice = expect(&mut sender, "agent.notify").await;
+            if notice["payload"]["mode"] == "assigned" {
+                break notice;
+            }
+        };
+        assert_eq!(notification["payload"]["target"], DELEGATOR);
+        assert_eq!(notification["payload"]["event"]["task"]["id"], source_id);
+        assert_eq!(
+            notification["payload"]["heading"],
+            "Inspect delegated completion"
+        );
+        assert!(
+            notification["payload"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("only after confirmation")
+        );
+        let mut wire = notification["payload"]["event"].clone();
+        wire["id"] = notification["seq"].clone();
+        assert!(amux::delegation::Event::parse(&wire).unwrap().is_some());
+        let inspected = server
+            .http
+            .patch(format!(
+                "http://{}/v1/projects/{SOURCE}/tasks/{source_id}",
+                server.endpoint
+            ))
+            .bearer_auth(KEY)
+            .header("X-Agent-Session-Id", DELEGATOR)
+            .header("X-Agent-Instance-Id", DELEGATOR_INSTANCE)
+            .header("X-Agent-Provider", "codex")
+            .header("X-Agent-OS", "windows")
+            .json(&json!({"status":"done","changeset":null}))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            inspected.status().is_success(),
+            "{}",
+            inspected.text().await.unwrap()
+        );
+        let confirmed: Value = inspected.json().await.unwrap();
+        assert_eq!(confirmed["status"], "done");
+        let confirmation = loop {
+            let notice = expect(&mut socket, "agent.notify").await;
+            if notice["payload"]["event"]["comment"]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("confirmed completion"))
+            {
+                break notice;
+            }
+        };
+        assert_eq!(confirmation["payload"]["target"], SESSION);
+    })
+    .await
+    .expect("delegation inspection and confirmation did not reach both terminals");
 }
 
 #[tokio::test]

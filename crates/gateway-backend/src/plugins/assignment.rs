@@ -345,7 +345,14 @@ pub(crate) fn automatically_eligible(
     task: &Value,
     agent: &Value,
 ) -> Result<bool> {
-    if !eligible(task, agent) {
+    let mut candidate = task.clone();
+    if task["kind"] == "delegated" {
+        candidate["delegation_ready"] = json!(crate::task_delegations::ready(
+            conn,
+            task["id"].as_str().unwrap_or_default()
+        )?);
+    }
+    if !eligible(&candidate, agent) {
         return Ok(false);
     }
     let released: bool = conn.query_row(
@@ -372,7 +379,9 @@ pub fn eligible(task: &Value, agent: &Value) -> bool {
     };
     if os.is_some_and(|os| agent["os"].as_str() != Some(os))
         || task["status"] != "todo"
-        || (task["kind"] == "delegated" && task["delegated_to_task_id"].is_string())
+        || (task["kind"] == "delegated"
+            && task["delegated_to_task_id"].is_string()
+            && task["delegation_ready"] != true)
         || (!task["goal"].is_null() && task["goal"] != agent["goal"])
     {
         return false;
@@ -449,7 +458,11 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
             params![id],
             |row| row.get(0),
         )?;
-        let current: Value = serde_json::from_str(&current)?;
+        let mut current: Value = serde_json::from_str(&current)?;
+        let inspection = current["kind"] == "delegated";
+        if inspection {
+            current["delegation_ready"] = json!(true);
+        }
         let review = is_review(&current);
         let clear_context =
             review && crate::task_reviews::rank(tx, &current, agent)? != (false, false);
@@ -462,6 +475,11 @@ fn claim(conn: &Connection, ctx: &StepContext, agent: &Value, task: &Value) -> R
                     templates::HEADING_QUEUED_INDEPENDENT_REVIEW
                 },
                 templates::QUEUED_REVIEW.to_owned(),
+            )
+        } else if inspection {
+            (
+                templates::HEADING_DELEGATED_INSPECTION,
+                templates::render(templates::DELEGATED_INSPECTION, &[("task_id", id)]),
             )
         } else {
             (

@@ -62,6 +62,11 @@ pub const DELEGATED_UPDATED: &str = "Project `{source_project}` updated delegate
 pub const TASK_CREATED: &str = "New task `{task_id}` was created in project `{project}`: {title}\n\nFetch task `{task_id}` to claim and execute it.";
 pub const DELEGATED_COMPLETED: &str = "Delegated task completed in project `{target_project}`.\n\nTitle: {title}\nDescription: {description}\nSpecification: {specification}\nComments:\n{comments}";
 pub const DELEGATED_COMPLETED_COMMENT: &str = "- {author}: {content}";
+pub const DELEGATED_INSPECTION: &str = "The delegated project has completed this ticket. Inspect its linked target task, comments and acceptance evidence. This sender-side ticket remains open until inspection confirms completion. Comment with the result and close this ticket with amux tasks done {task_id} only after confirmation. If work is incomplete, comment with concrete clarification for the delegated project or request User review for a specific unresolved decision. Do not repeat completed deployment work.";
+pub const DELEGATED_INSPECTING: &str = "Project `{source_project}` has selected an agent to inspect completed task `{target_task_id}` under sender ticket `{source_task_id}`. The sender ticket will close after inspection confirms completion. Clarifications will be recorded on the linked tickets.";
+pub const DELEGATED_CONFIRMED: &str = "Project `{source_project}` inspected completed task `{target_task_id}` and confirmed completion by closing sender ticket `{source_task_id}`.";
+pub const DELEGATED_CLARIFICATION: &str =
+    "Sender project `{source_project}`, ticket `{source_task_id}`:\n\n{author}: {content}";
 pub const DELEGATED_COMMENT: &str =
     "New comment on delegated task `{source_task_id}` from project `{target_project}`:\n\n{author}: {content}";
 
@@ -78,6 +83,7 @@ pub const MEMORY_UNAVAILABLE_HINT: &str =
 // Notice headings shown as `{heading}` in the gateway notice line.
 pub const HEADING_NEW_TASK: &str = "New task";
 pub const HEADING_NEW_DELEGATED_TASK: &str = "New delegated task";
+pub const HEADING_DELEGATED_INSPECTION: &str = "Inspect delegated completion";
 pub const HEADING_TASK_COMMENT: &str = "Task comment";
 pub const HEADING_TASK_COMPLETED: &str = "Task completed";
 pub const HEADING_TASK_UNASSIGNED: &str = "Task unassigned";
@@ -88,6 +94,26 @@ pub const HEADING_TASK_UPDATE_REQUESTED: &str = "Task update requested";
 pub const HEADING_IN_PROGRESS_REMINDER: &str = "In-progress task reminder";
 
 pub const TEMPLATES: &[Template] = &[
+    Template {
+        name: "delegated_clarification",
+        text: DELEGATED_CLARIFICATION,
+    },
+    Template {
+        name: "heading_delegated_inspection",
+        text: HEADING_DELEGATED_INSPECTION,
+    },
+    Template {
+        name: "delegated_inspection",
+        text: DELEGATED_INSPECTION,
+    },
+    Template {
+        name: "delegated_inspecting",
+        text: DELEGATED_INSPECTING,
+    },
+    Template {
+        name: "delegated_confirmed",
+        text: DELEGATED_CONFIRMED,
+    },
     Template {
         name: "context_restored",
         text: CONTEXT_RESTORED,

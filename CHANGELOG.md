@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## v0.0.79 - 2026-11-14
+
+### Fixed
+
+- Allow the exact prior execution to complete resolved User review work while
+  preserving changeset confirmation and ownership checks across journal cleanup.
+- Require sender-side inspection before closing delegated trackers. Route the
+  inspection to an available sender agent and relay progress, confirmation and
+  clarification to the delegated project.
+
+### Upgrade notes
+
+- Update the server and clients before using agent completion of parked tasks.
+  Existing parked tasks recover prior ownership from retained history where
+  available; they are not automatically closed or redeployed.
+
 
 ## v0.0.78 - 2026-11-14
 

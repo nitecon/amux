@@ -83,6 +83,18 @@ agents. The source tracking task and delegation record retain the requester;
 delegating does not reserve destination work for the source session. Releasing a
 reserved TODO task clears its ownership even when it was already queued.
 
+Destination completion queues the sender's delegated tracker for inspection;
+it does not close that tracker. The normal assignment controller selects an
+available sender-project agent with the required OS and goal and injects an
+`Inspect delegated completion` notice. The delegated project receives a linked
+comment saying inspection has started. After checking acceptance evidence, the
+sender agent comments with its conclusion and completes its owned tracker.
+That confirmation closes the delegation and notifies the destination owner.
+Sender comments also appear on the destination ticket, so incomplete results
+can be clarified without silently accepting them. Genuine unresolved user
+decisions may still use User review. Do not repeat completed deployments merely
+to reconcile ticket state.
+
 An explicit agent release also records that execution's session and instance for
 the task. Automatic assignment skips the unchanged task for that execution,
 including after terminal output or a server restart. Other eligible executions
@@ -151,7 +163,12 @@ response requires inspection before any retry.
 The task panel has Active (the default), User review and Completed filters.
 Users can inspect parked tasks and their comments, return them to the queue, or
 close them. Returning a task uses the human connection without agent headers.
-Agents cannot resume parked work themselves.
+Agents cannot resume parked work themselves. The exact execution that parked
+the task can nevertheless complete it after verifying that the question was
+resolved or superseded. `amux tasks done` retains changeset confirmation and
+the server atomically checks the prior session and instance. This authority is
+stored independently of journal retention; a different execution cannot claim
+or close the parked task. Human return-to-queue clears that authority.
 
 Parked tasks never enter assignment, in-progress reminders or owner
 notifications. An explicit requester can still receive an informational comment

@@ -7776,6 +7776,7 @@ pub struct Task {
     pub hostname: Option<String>,
     pub owner_agent_id: Option<String>,
     pub owner_origin: Option<crate::task_events::AgentOrigin>,
+    pub completion_owner: Option<crate::task_events::AgentOrigin>,
     pub reporter: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -8371,6 +8372,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         delegated_to_project_ident: row.get(16)?,
         delegated_to_task_id: row.get(17)?,
         owner_origin: crate::task_events::read_origin(row, 18)?,
+        completion_owner: crate::task_events::read_origin(row, 26)?,
         goal: row.get(19)?,
         requester: crate::task_requester::read(row, 21)?,
         routing: serde_json::from_str(&row.get::<_, String>(20)?).map_err(|e| {
@@ -8384,7 +8386,8 @@ const TASK_SELECT_COLS: &str =
      hostname, owner_agent_id, reporter, created_at, updated_at, started_at, done_at, \
      kind, delegated_to_project_ident, delegated_to_task_id, owner_origin_json, goal, routing_json, requester_json, \
      (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) \
-      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action, task_type, changeset_json";
+      FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=tasks.id), review_action, task_type, changeset_json, \
+     (SELECT origin_json FROM task_completion_owners WHERE task_id=tasks.id)";
 
 fn read_task_parent(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<TaskParent>> {
     row.get::<_, Option<String>>(index)?
@@ -8743,6 +8746,7 @@ fn insert_task_record(
         hostname: hostname.map(str::to_string),
         owner_agent_id,
         owner_origin,
+        completion_owner: None,
         reporter: reporter.to_string(),
         created_at: now,
         updated_at: now,
@@ -9337,6 +9341,8 @@ fn update_task_inner(
         return Err(crate::task_dispatch::Conflict("cancelled tasks are terminal").into());
     }
     let origin = crate::task_events::current_origin(conn)?;
+    let completing_parked = upd.status == Some("done")
+        && crate::task_events::can_complete_parked(&current, origin.as_ref());
     if enforce_owner && crate::task_dispatch::managed(conn, task_id)? {
         return Err(crate::task_dispatch::Conflict(
             "dispatch tasks require the credential-bound dispatch API",
@@ -9404,6 +9410,7 @@ fn update_task_inner(
     }
     if enforce_owner
         && current.status == "user_review"
+        && !completing_parked
         && (origin.is_some() || actor_agent_id.is_some())
         && (upd.status.is_some_and(|status| status != "user_review")
             || upd.owner_agent_id.is_some()
@@ -9426,6 +9433,24 @@ fn update_task_inner(
     }
     let now = now_ms();
     let new_status = upd.status.unwrap_or(&current.status).to_string();
+    if enforce_owner
+        && current.kind == "delegated"
+        && matches!(upd.status, Some("in_progress" | "done"))
+        && !crate::task_delegations::ready(conn, &current.id)?
+    {
+        return Err(crate::task_dispatch::Conflict(
+            "delegated work must complete in its target project before source inspection",
+        )
+        .into());
+    }
+    if enforce_owner
+        && current.kind == "delegated"
+        && upd.status == Some("done")
+        && current.status != "in_progress"
+        && !completing_parked
+    {
+        return Err(crate::task_events::OwnershipConflict.into());
+    }
     if new_status == "in_progress" && current.status != "in_progress" {
         crate::task_reviews::ensure_reviewer(conn, &current, origin.as_ref(), actor_agent_id)?;
     }
@@ -9576,6 +9601,12 @@ fn update_task_inner(
             "owner_origin_json",
             origin.as_ref().map(serde_json::to_string).transpose()?,
         ));
+    } else if completing_parked {
+        assignments.push(crud_col(
+            "owner_origin_json",
+            origin.as_ref().map(serde_json::to_string).transpose()?,
+        ));
+        assignments.push(crud_col("owner_agent_id", actor_agent_id));
     } else if (transitioning || releasing_queued)
         && matches!(new_status.as_str(), "todo" | "user_review")
     {
@@ -9640,6 +9671,10 @@ fn update_task_inner(
                 next_os.unwrap_or("any")
             ),
         )?;
+    }
+
+    if transitioning && new_status == "in_progress" && current.kind == "delegated" {
+        crate::task_delegations::inspecting(conn, &project_ident, task_id)?;
     }
 
     // Re-read the row to return a fully-consistent Task.

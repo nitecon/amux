@@ -6532,86 +6532,7 @@ pub async fn update_task_handler(
             }
             if let (Some(before), Some(after)) = (&before, &updated) {
                 if before.status != "done" && after.status == "done" {
-                    if let Some(delegation) =
-                        db::get_delegation_by_target(conn, &ident_for_update, &task_id_clone)?
-                    {
-                        let target_detail = db::get_task_detail(
-                            conn,
-                            &delegation.target_project_ident,
-                            &delegation.target_task_id,
-                        )?
-                        .ok_or_else(|| anyhow::anyhow!("target delegated task missing"))?;
-                        let comments = target_detail
-                            .comments
-                            .iter()
-                            .filter(|c| c.author_type != "system")
-                            .map(|c| {
-                                crate::templates::render(
-                                    crate::templates::DELEGATED_COMPLETED_COMMENT,
-                                    &[("author", &c.author), ("content", &c.content)],
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let summary = db::cap_comment(&crate::templates::render(
-                            crate::templates::DELEGATED_COMPLETED,
-                            &[
-                                ("target_project", &delegation.target_project_ident),
-                                ("title", &target_detail.task.title),
-                                (
-                                    "description",
-                                    target_detail.task.description.as_deref().unwrap_or(""),
-                                ),
-                                (
-                                    "specification",
-                                    target_detail.task.details.as_deref().unwrap_or(""),
-                                ),
-                                (
-                                    "comments",
-                                    if comments.is_empty() {
-                                        "(none)"
-                                    } else {
-                                        &comments
-                                    },
-                                ),
-                            ],
-                        ))
-                        .into_owned();
-                        db::insert_comment(
-                            conn,
-                            &delegation.source_task_id,
-                            "agent-gateway",
-                            "system",
-                            &summary,
-                        )?;
-                        let done_upd = db::TaskUpdate {
-                            task_type: None,
-                            review_action: None,
-                            goal: None,
-                            status: Some("done"),
-                            owner_agent_id: None,
-                            rank: None,
-                            title: None,
-                            description: None,
-                            details: None,
-                            labels: None,
-                            hostname: None,
-                        };
-                        let _ = db::update_task_mirrored(
-                            conn,
-                            &delegation.source_project_ident,
-                            &delegation.source_task_id,
-                            &done_upd,
-                        )?
-                        .ok_or_else(|| anyhow::anyhow!("source delegated task missing"))?;
-                        let message_id = system_nudge(
-                            conn,
-                            &delegation.source_project_ident,
-                            "Delegated task completed",
-                            summary,
-                        )?;
-                        db::mark_delegation_complete(conn, &delegation.id, message_id)?;
-                    }
+                    crate::task_delegations::completed(conn, after)?;
                 }
             }
 
@@ -6841,6 +6762,26 @@ pub async fn add_comment_handler(
                 req.hostname.as_deref(),
             )?;
             if author_type != "system" {
+                if let Some(delegation) =
+                    db::get_delegation_by_source(conn, &ident_clone, &task_id_clone)?
+                {
+                    let body = crate::templates::render(
+                        crate::templates::DELEGATED_CLARIFICATION,
+                        &[
+                            ("source_project", &ident_clone),
+                            ("source_task_id", &task_id_clone),
+                            ("author", &author),
+                            ("content", &content),
+                        ],
+                    );
+                    db::insert_comment(
+                        conn,
+                        &delegation.target_task_id,
+                        "agent-gateway",
+                        "system",
+                        &db::cap_comment(&body),
+                    )?;
+                }
                 if let Some(delegation) =
                     db::get_delegation_by_target(conn, &ident_clone, &task_id_clone)?
                 {
@@ -8384,7 +8325,7 @@ mod tests {
             .await
             .unwrap();
             assert!(queue.is_empty());
-            for status in ["todo", "in_progress", "done"] {
+            for status in ["todo", "in_progress"] {
                 assert_eq!(
                     update_task_handler(
                         State(state.clone()),
@@ -8585,6 +8526,7 @@ mod tests {
             hostname: Some("host".to_string()),
             owner_agent_id: None,
             owner_origin: None,
+            completion_owner: None,
             routing: Default::default(),
             requester: None,
             reporter: "agent".to_string(),
