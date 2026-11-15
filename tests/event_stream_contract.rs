@@ -1270,7 +1270,20 @@ async fn heartbeat_renews_the_remote_replay_lease_without_acknowledging_events()
     .unwrap();
     let before = now_ms();
     send(&mut socket, json!({"type":"heartbeat"})).await;
-    assert_eq!(frame(&mut socket).await["type"], "heartbeat_ack");
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let reply = frame(&mut socket).await;
+            // Retransmission can race the heartbeat; leave the event unacked.
+            if reply["type"] == "event" {
+                assert_eq!(reply["event"], unacked, "unexpected replay: {reply}");
+                continue;
+            }
+            assert_eq!(reply["type"], "heartbeat_ack", "{reply}");
+            break;
+        }
+    })
+    .await
+    .expect("no heartbeat acknowledgement before the deadline");
     let (seen, unchanged): (i64, i64) = conn
         .query_row(
             "SELECT last_seen_at,cursor FROM remote_consumers WHERE consumer_id=?1",
