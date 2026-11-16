@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_is_idempotent_and_cancelled_is_terminal() {
+    fn replay_is_idempotent_and_cancelled_can_only_move_to_done() {
         let database = database();
         let conn = database.lock().unwrap();
         let t = task(&conn);
@@ -639,7 +639,7 @@ mod tests {
                 .err()
                 .unwrap()
         ));
-        for status in ["todo", "in_progress", "done"] {
+        for status in ["todo", "in_progress"] {
             let err = task_events::mutation(&conn, Some(&reporter), |conn| {
                 db::reorder_tasks_in_column(
                     conn,
@@ -651,12 +651,20 @@ mod tests {
             });
             assert!(conflict(err.err().unwrap()), "{status}");
         }
+        task_events::mutation(&conn, Some(&reporter), |conn| {
+            db::reorder_tasks_in_column(conn, "example", "done", std::slice::from_ref(&t.id), None)
+        })
+        .unwrap();
         let status: String = conn
             .query_row("SELECT status FROM tasks WHERE id=?1", [&t.id], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(status, "cancelled");
+        assert_eq!(status, "done");
+        assert_eq!(
+            super::get(&conn, "example", &t.id).unwrap().unwrap(),
+            first.cancellation
+        );
     }
 
     fn state(database: db::Db) -> AppState {

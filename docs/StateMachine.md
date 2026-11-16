@@ -333,10 +333,15 @@ Rules carried over from the desktop:
   Any subsequent task or comment mutation invalidates the old offer in that
   mutation's transaction, so a delayed rejection cannot undo progress or a
   newer claim, even when timestamps match.
+- **Completion:** users and agents may close ordinary tasks in any state,
+  regardless of ownership, through PATCH or desktop Done transitions. File-change
+  confirmation still applies to agents. Claim, release and submission retain
+  their ownership rules; credential-bound dispatch tasks use their dedicated API.
+  Closing an unfinished delegation tracker leaves its target open and unaccepted.
 - **Review generation:** an agent leaving active work confirms its mutated files
   in the transition request, using `changeset: [paths]` or explicit null. Missing
   confirmation returns a question and rolls back the task mutation. Completion
-  and User review also retain a durable pending request, fenced to the owning
+  and User review also retain a durable pending request, fenced to the requesting
   execution and task snapshot. `set-task` confirms file mutation; `set-changeset`
   supplies the files (or null directly for no mutation) and applies the original
   transition through the same handler. A changed task invalidates the pending

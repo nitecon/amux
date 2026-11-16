@@ -80,10 +80,9 @@ pub fn completed(conn: &Connection, task: &db::Task) -> Result<()> {
     }
     if let Some(link) = db::get_delegation_by_source(conn, &task.project_ident, &task.id)? {
         if !ready(conn, &task.id)? {
-            return Err(crate::task_dispatch::Conflict(
-                "delegated target is not complete; inspect its result before closing the source",
-            )
-            .into());
+            // Closing a tracker is always allowed. An unfinished target is not
+            // accepted or closed by that decision.
+            return Ok(());
         }
         let message = templates::render(
             templates::DELEGATED_CONFIRMED,

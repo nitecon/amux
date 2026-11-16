@@ -258,7 +258,7 @@ impl Gateway {
         Ok(result)
     }
 
-    /// Only the exact owning execution may change a task's lifecycle. Reads no
+    /// Only the exact owning execution may release or submit work. Reads no
     /// comments, so ownership checks work however long the thread grows.
     pub async fn confirm_owner(
         &self,
@@ -266,18 +266,17 @@ impl Gateway {
         id: uuid::Uuid,
         actor: &AgentIdentity,
     ) -> Result<Value> {
-        self.confirm_task_owner(project, id, actor, false).await
+        self.confirm_task_owner(project, id, actor).await
     }
 
-    /// The prior exact owner may finish parked work once its question is resolved.
-    /// The server revalidates this authority atomically with completion.
+    /// Completion is available regardless of task ownership or status.
     pub async fn confirm_completion_owner(
         &self,
         project: &str,
         id: uuid::Uuid,
-        actor: &AgentIdentity,
+        _actor: &AgentIdentity,
     ) -> Result<Value> {
-        self.confirm_task_owner(project, id, actor, true).await
+        self.task(project, id, 0).await
     }
 
     async fn confirm_task_owner(
@@ -285,27 +284,13 @@ impl Gateway {
         project: &str,
         id: uuid::Uuid,
         actor: &AgentIdentity,
-        completing: bool,
     ) -> Result<Value> {
         let task = self.task(project, id, 0).await?;
-        if completing
-            && task["status"] == "user_review"
-            && task["completion_owner"]["session_id"] == actor.session_id.to_string()
-            && task["completion_owner"]["instance_id"] != actor.instance_id.to_string()
-        {
-            self.requester_target(project, actor).await?;
-            // The server also checks that the old instance's lease has expired.
-            return Ok(task);
-        }
-        let owner = if completing && task["status"] == "user_review" {
-            &task["completion_owner"]
-        } else {
-            anyhow::ensure!(
-                task["status"] == "in_progress",
-                "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
-            );
-            &task["owner_origin"]
-        };
+        anyhow::ensure!(
+            task["status"] == "in_progress",
+            "only the confirmed owning execution (this exact session and instance) may change this task; no status update or start report was sent"
+        );
+        let owner = &task["owner_origin"];
         anyhow::ensure!(
             owner["session_id"] == actor.session_id.to_string()
                 && owner["instance_id"] == actor.instance_id.to_string(),

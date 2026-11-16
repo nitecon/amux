@@ -2635,13 +2635,14 @@ mod tests {
         assert_eq!(detail["comments"].as_array().unwrap().len(), 1);
         assert_eq!(detail["comments"][0]["author_type"], "user");
         assert!(detail["comments"][0]["origin"].is_null());
+        // A non-owner cannot release the assignment.
         assert_eq!(
             desktop_http(
                 &state,
                 ordinary_headers(&owner),
                 "PATCH",
                 &path,
-                json!({"status":"done","changeset":null})
+                json!({"status":"todo","changeset":null})
             )
             .await
             .0,

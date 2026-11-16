@@ -1140,7 +1140,7 @@ mod tests {
         let mut other_instance = worker.clone();
         other_instance.instance_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into();
         for actor in [Some(&other_session), Some(&other_instance), None] {
-            for status in ["in_progress", "todo", "done"] {
+            for status in ["in_progress", "todo"] {
                 let err = mutation(&conn, actor, |conn| {
                     db::update_task(
                         conn,
@@ -1169,7 +1169,7 @@ mod tests {
             assert!(mutation(&conn, actor, |conn| db::reorder_tasks_in_column(
                 conn,
                 "example",
-                "done",
+                "todo",
                 std::slice::from_ref(&task.id),
                 Some("shared-machine")
             ))
@@ -1235,7 +1235,7 @@ mod tests {
         );
         // A legacy machine label does not prove ownership of an unbound claim.
         for actor in [None, Some(&worker), Some(&other_session)] {
-            for status in ["in_progress", "todo", "done"] {
+            for status in ["in_progress", "todo"] {
                 let err = mutation(&conn, actor, |conn| {
                     db::update_task(
                         conn,
@@ -1259,7 +1259,7 @@ mod tests {
                 db::reorder_tasks_in_column(
                     conn,
                     "example",
-                    "done",
+                    "todo",
                     std::slice::from_ref(&task.id),
                     Some("legacy"),
                 )
@@ -1409,7 +1409,7 @@ mod tests {
         )
         .is_err());
         assert!(db::recover_task_claim(&conn, "example", &original.id, &token, " ").is_err());
-        for status in ["todo", "in_progress", "done"] {
+        for status in ["todo", "in_progress"] {
             let err = mutation(&conn, Some(&old_session), |conn| {
                 db::update_task(
                     conn,

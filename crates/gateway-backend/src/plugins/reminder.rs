@@ -411,7 +411,7 @@ mod tests {
                 task_type: None,
                 review_action: None,
                 goal: None,
-                status: Some("done"),
+                status: Some("todo"),
                 owner_agent_id: None,
                 rank: None,
                 title: None,

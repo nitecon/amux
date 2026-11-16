@@ -9337,12 +9337,11 @@ fn update_task_inner(
         }
     };
 
-    if current.status == "cancelled" && upd.status.is_some() {
+    let completing = upd.status == Some("done");
+    if current.status == "cancelled" && upd.status.is_some() && !completing {
         return Err(crate::task_dispatch::Conflict("cancelled tasks are terminal").into());
     }
     let origin = crate::task_events::current_origin(conn)?;
-    let completing_parked = upd.status == Some("done")
-        && crate::task_events::can_complete_parked(conn, &current, origin.as_ref())?;
     if enforce_owner && crate::task_dispatch::managed(conn, task_id)? {
         return Err(crate::task_dispatch::Conflict(
             "dispatch tasks require the credential-bound dispatch API",
@@ -9387,12 +9386,12 @@ fn update_task_inner(
             crate::task_dispatch::Conflict("only active tasks can change their os: label").into(),
         );
     }
+    // Completion does not transfer ownership or authorize other lifecycle edits.
     if enforce_owner
-        && (upd.status.is_some()
+        && ((!completing && (upd.status.is_some() || upd.task_type.is_some()))
             || upd.owner_agent_id.is_some()
             || upd.goal.is_some()
             || upd.review_action.is_some()
-            || upd.task_type.is_some()
             || os_changed)
     {
         if current.owner_origin.is_none()
@@ -9410,7 +9409,7 @@ fn update_task_inner(
     }
     if enforce_owner
         && current.status == "user_review"
-        && !completing_parked
+        && !completing
         && (origin.is_some() || actor_agent_id.is_some())
         && (upd.status.is_some_and(|status| status != "user_review")
             || upd.owner_agent_id.is_some()
@@ -9422,8 +9421,7 @@ fn update_task_inner(
         );
     }
     if upd.task_type.is_some_and(|next| next != current.task_type)
-        && (current.status == "done"
-            || current.status == "cancelled"
+        && ((matches!(current.status.as_str(), "done" | "cancelled") && !completing)
             || current.labels.iter().any(|label| label == "task-review"))
     {
         return Err(crate::task_dispatch::Conflict(
@@ -9435,21 +9433,13 @@ fn update_task_inner(
     let new_status = upd.status.unwrap_or(&current.status).to_string();
     if enforce_owner
         && current.kind == "delegated"
-        && matches!(upd.status, Some("in_progress" | "done"))
+        && upd.status == Some("in_progress")
         && !crate::task_delegations::ready(conn, &current.id)?
     {
         return Err(crate::task_dispatch::Conflict(
             "delegated work must complete in its target project before source inspection",
         )
         .into());
-    }
-    if enforce_owner
-        && current.kind == "delegated"
-        && upd.status == Some("done")
-        && current.status != "in_progress"
-        && !completing_parked
-    {
-        return Err(crate::task_events::OwnershipConflict.into());
     }
     if new_status == "in_progress" && current.status != "in_progress" {
         crate::task_reviews::ensure_reviewer(conn, &current, origin.as_ref(), actor_agent_id)?;
@@ -9601,7 +9591,7 @@ fn update_task_inner(
             "owner_origin_json",
             origin.as_ref().map(serde_json::to_string).transpose()?,
         ));
-    } else if completing_parked {
+    } else if completing && current.status == "user_review" {
         assignments.push(crud_col(
             "owner_origin_json",
             origin.as_ref().map(serde_json::to_string).transpose()?,
@@ -10021,7 +10011,7 @@ pub fn reorder_tasks_in_column(
                 Some(v) => v,
                 None => anyhow::bail!("task '{task_id}' not found in project '{project_ident}'"),
             };
-        if old_status == "cancelled" {
+        if old_status == "cancelled" && target_status != "done" {
             return Err(crate::task_dispatch::Conflict("cancelled tasks are terminal").into());
         }
         let old_labels = parse_labels(old_labels);
@@ -10046,16 +10036,22 @@ pub fn reorder_tasks_in_column(
             ).into());
         }
         if old_status != target_status {
-            if old_status == "user_review" && (origin.is_some() || actor_agent_id.is_some()) {
+            if old_status == "user_review"
+                && target_status != "done"
+                && (origin.is_some() || actor_agent_id.is_some())
+            {
                 return Err(crate::task_dispatch::Conflict(
                     "tasks in user review require a user decision",
                 )
                 .into());
             }
-            if old_origin.is_none() && (old_owner.is_some() || old_status == "in_progress") {
+            if target_status != "done"
+                && old_origin.is_none()
+                && (old_owner.is_some() || old_status == "in_progress")
+            {
                 return Err(crate::task_events::OwnershipConflict.into());
             }
-            if let Some(owner) = old_origin {
+            if let Some(owner) = old_origin.filter(|_| target_status != "done") {
                 if !origin.as_ref().is_some_and(|actor| {
                     actor.session_id == owner.session_id && actor.instance_id == owner.instance_id
                 }) {
@@ -10090,14 +10086,11 @@ pub fn reorder_tasks_in_column(
                     new_started_at = None;
                     new_owner = None;
                 }
-                ("in_progress", "done") => {
+                (_, "done") => {
                     new_done_at = Some(now);
                     // started_at stays put as a historical record of the
                     // in_progress window; `update_task` behaves the same way
                     // when transitioning directly to done.
-                }
-                ("todo", "done") => {
-                    new_done_at = Some(now);
                 }
                 ("done", "todo") => {
                     new_done_at = None;

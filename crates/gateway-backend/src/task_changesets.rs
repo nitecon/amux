@@ -55,7 +55,7 @@ pub fn record(
 }
 
 /// The requested destination is durable, but the task remains in its old lane
-/// until its exact owning execution supplies confirmation.
+/// until the requesting execution supplies confirmation.
 pub fn initialize(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS task_confirmations (
@@ -87,7 +87,8 @@ pub fn remember(
     origin: &crate::task_events::AgentOrigin,
     request: &str,
 ) -> Result<()> {
-    let task = owned(conn, project, id, Some(origin))?;
+    let completing = serde_json::from_str::<Value>(request)?["status"] == "done";
+    let task = owned(conn, project, id, Some(origin), completing)?;
     conn.execute("INSERT OR REPLACE INTO task_confirmations(task_id,token,origin_json,snapshot_json,request_json) VALUES(?1,?2,?3,?4,?5)",
         rusqlite::params![id, uuid::Uuid::now_v7().to_string(), serde_json::to_string(origin)?, serde_json::to_string(&task)?, request])?;
     Ok(())
@@ -98,16 +99,16 @@ fn owned(
     project: &str,
     id: &str,
     origin: Option<&crate::task_events::AgentOrigin>,
+    completing: bool,
 ) -> Result<crate::db::Task> {
     let task = crate::db::get_task_detail(conn, project, id)?
         .ok_or(Conflict("task not found"))?
         .task;
-    let parked = crate::task_events::can_complete_parked(conn, &task, origin)?;
-    if !parked && (origin.is_none() || task.owner_origin.as_ref() != origin) {
+    if origin.is_none() || (!completing && task.owner_origin.as_ref() != origin) {
         return Err(crate::task_events::OwnershipConflict.into());
     }
     if crate::task_dispatch::managed(conn, id)?
-        || (!parked && !matches!(task.status.as_str(), "todo" | "in_progress"))
+        || (!completing && !matches!(task.status.as_str(), "todo" | "in_progress"))
     {
         return Err(Conflict("confirmation requires owned ordinary active work").into());
     }
@@ -127,10 +128,11 @@ pub fn pending(
     origin: Option<&crate::task_events::AgentOrigin>,
 ) -> Result<Pending> {
     use rusqlite::OptionalExtension;
-    let task = owned(conn, project, id, origin)?;
     let row = conn.query_row("SELECT token,origin_json,snapshot_json,request_json,mutated FROM task_confirmations WHERE task_id=?1", [id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, bool>(4)?))
     }).optional()?.ok_or(Conflict("no pending confirmation; repeat the requested task transition"))?;
+    let completing = serde_json::from_str::<Value>(&row.3)?["status"] == "done";
+    let task = owned(conn, project, id, origin, completing)?;
     if Some(serde_json::from_str::<crate::task_events::AgentOrigin>(
         &row.1,
     )?) != origin.cloned()
@@ -186,10 +188,14 @@ pub async fn confirm_handler(
         crate::task_events::mutation(&conn, origin.as_ref(), |conn| {
             let pending = pending(conn, &saved_project, &saved_id, origin.as_ref())?;
             if confirming_mutation {
-                let before = owned(conn, &saved_project, &saved_id, origin.as_ref())?;
+                let completing =
+                    serde_json::from_str::<Value>(&pending.request)?["status"] == "done";
+                let before = owned(conn, &saved_project, &saved_id, origin.as_ref(), completing)?;
                 // Generated review classification is managed by the workflow.
                 let update = crate::db::TaskUpdate {
                     task_type: (before.status != "user_review"
+                        && before.status != "cancelled"
+                        && before.owner_origin.as_ref() == origin.as_ref()
                         && !before.labels.iter().any(|l| l == "task-review"))
                     .then_some("software"),
                     ..Default::default()

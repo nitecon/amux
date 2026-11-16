@@ -1,4 +1,4 @@
-//! `done`, `release` and `submit-work` confirm exact execution ownership with an authoritative
+//! `release` and `submit-work` confirm exact execution ownership with an authoritative
 //! read before sending any mutation. This is a client preflight, not atomic
 //! server authorization.
 #![cfg(unix)]
@@ -200,7 +200,7 @@ fn run(
 }
 
 #[test]
-fn done_and_release_refuse_without_exact_confirmed_ownership() {
+fn release_and_submit_refuse_without_exact_confirmed_ownership() {
     let refusals: [(&str, Reply); 7] = [
         ("unclaimed", |_| task("todo", None)),
         ("already done", |a| task("done", exact(a))),
@@ -231,7 +231,7 @@ fn done_and_release_refuse_without_exact_confirmed_ownership() {
         }),
     ];
     // submit-work refuses before reading or changing the checkout.
-    for op in ["done", "release", "submit-work"] {
+    for op in ["release", "submit-work"] {
         for (case, reply) in refusals {
             let (ok, stderr, requests) = run(op, |a| vec![reply(a)]);
             assert!(!ok, "{op} with {case} must be refused: {stderr}");
@@ -282,10 +282,10 @@ fn exact_owner_completes_or_releases_after_the_read() {
 }
 
 #[test]
-fn parked_completion_uses_one_read_and_never_authorizes_peer_or_release() {
+fn parked_completion_allows_peers_but_release_still_requires_ownership() {
     for (op, matching, allowed) in [
         ("done", true, true),
-        ("done", false, false),
+        ("done", false, true),
         ("release", true, false),
     ] {
         let (ok, stderr, requests) = run(op, |actor| {
@@ -306,6 +306,31 @@ fn parked_completion_uses_one_read_and_never_authorizes_peer_or_release() {
             requests[0].starts_with(&format!("GET /v1/projects/demo/tasks/{TASK}?comments=0 "))
         );
         if allowed {
+            assert!(requests[1].starts_with(&format!("PATCH /v1/projects/demo/tasks/{TASK} ")));
+        }
+    }
+}
+
+#[test]
+fn completion_allows_every_status_and_owner() {
+    for status in ["todo", "in_progress", "user_review", "cancelled", "done"] {
+        for owned in [false, true] {
+            let (ok, stderr, requests) = run("done", |_| {
+                vec![
+                    task(
+                        status,
+                        owned.then(|| {
+                            (
+                                uuid::Uuid::new_v4().to_string(),
+                                uuid::Uuid::new_v4().to_string(),
+                            )
+                        }),
+                    ),
+                    task("done", None),
+                ]
+            });
+            assert!(ok, "{status}, owned={owned}: {stderr}");
+            assert_eq!(requests.len(), 2);
             assert!(requests[1].starts_with(&format!("PATCH /v1/projects/demo/tasks/{TASK} ")));
         }
     }

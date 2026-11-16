@@ -163,15 +163,17 @@ response requires inspection before any retry.
 The task panel has Active (the default), User review and Completed filters.
 Users can inspect parked tasks and their comments, return them to the queue, or
 close them. Returning a task uses the human connection without agent headers.
-Agents cannot resume parked work themselves. The exact execution that parked
-the task can nevertheless complete it after verifying that the question was
-resolved or superseded. `amux tasks done` retains changeset confirmation and
-the server atomically checks the prior session and instance. This authority is
-stored independently of journal retention. After an app restart, a newly
-advertised execution of the same stable agent identity can finish that work
-once the old execution's advertisement expires. The new instance is recorded
-as completer; another agent identity cannot claim or close the parked task.
-Human return-to-queue clears that authority.
+Agents cannot resume parked work themselves. Users and agents can explicitly
+complete ordinary tasks regardless of status or owner, including parked,
+cancelled, unclaimed and previously completed tasks. Completion does not grant
+claim, release or submission rights over another execution's work.
+`amux tasks done` retains file-change confirmation; pending answers stay bound
+to the requesting execution and the task snapshot. Desktop Close and dragging
+to Done use the same completion policy. Credential-bound dispatch tasks retain
+their dedicated lifecycle API.
+
+A delegated tracker may close while its target is unfinished. That closes only
+the tracker: it neither completes the target nor records its result as accepted.
 
 Parked tasks never enter assignment, in-progress reminders or owner
 notifications. An explicit requester can still receive an informational comment
