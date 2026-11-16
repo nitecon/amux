@@ -9592,11 +9592,26 @@ fn update_task_inner(
             origin.as_ref().map(serde_json::to_string).transpose()?,
         ));
     } else if completing && current.status == "user_review" {
-        assignments.push(crud_col(
-            "owner_origin_json",
-            origin.as_ref().map(serde_json::to_string).transpose()?,
-        ));
-        assignments.push(crud_col("owner_agent_id", actor_agent_id));
+        // Only the parking agent (or its successor session) is stamped; another
+        // closer keeps the implementer recorded so reviews stay independent.
+        let prior = current.completion_owner.as_ref();
+        let closer_is_prior = match (prior, origin.as_ref()) {
+            (Some(prior), Some(actor)) => prior.session_id == actor.session_id,
+            (None, _) => true,
+            _ => false,
+        };
+        if closer_is_prior {
+            assignments.push(crud_col(
+                "owner_origin_json",
+                origin.as_ref().map(serde_json::to_string).transpose()?,
+            ));
+            assignments.push(crud_col("owner_agent_id", actor_agent_id));
+        } else {
+            assignments.push(crud_col(
+                "owner_origin_json",
+                prior.map(serde_json::to_string).transpose()?,
+            ));
+        }
     } else if (transitioning || releasing_queued)
         && matches!(new_status.as_str(), "todo" | "user_review")
     {

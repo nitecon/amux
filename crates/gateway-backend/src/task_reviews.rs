@@ -433,6 +433,28 @@ mod tests {
         (database, source, author)
     }
     #[test]
+    fn peer_closing_parked_work_keeps_implementer_for_review_independence() {
+        let (database, source, author) = fixture();
+        let conn = database.lock().unwrap();
+        update(&conn, &source.id, "in_progress", &author).unwrap();
+        update(&conn, &source.id, "user_review", &author).unwrap();
+        let mut closer = actor();
+        closer.provider = "claude".into();
+        let done = update(&conn, &source.id, "done", &closer).unwrap();
+        assert_eq!(done.owner_origin.as_ref(), Some(&author));
+        let review =
+            task_events::mutation(&conn, None, |conn| enqueue(conn, "example", &source.id))
+                .unwrap()
+                .unwrap();
+        assert!(review.labels.contains(&"review-provider:claude".into()));
+        assert!(review
+            .labels
+            .contains(&format!("review-exclude:{}", author.session_id)));
+        assert!(!review
+            .labels
+            .contains(&format!("review-exclude:{}", closer.session_id)));
+    }
+    #[test]
     fn documentation_workflow_descendants_do_not_start_another_review_cycle() {
         let (database, source, _) = fixture();
         let conn = database.lock().unwrap();
