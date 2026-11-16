@@ -63,7 +63,7 @@ and User review, the question offers `amux set-task ID software` (MCP
 `task_confirm_mutation`), followed by `amux set-changeset ID '["path"]'` (MCP
 `task_set_changeset`). With no mutations, use `amux set-changeset ID null`
 directly. The final call finishes the recorded transition, preserving the User
-review action. Follow-ups require the same owning execution and unchanged task;
+review action. Follow-ups require the same requesting execution and unchanged task;
 repeat the original transition if either changed. Internal classification is
 updated by the response workflow, never chosen when creating work. This question
 comes from the tool response, without an additional terminal injection.

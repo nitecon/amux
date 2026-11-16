@@ -577,7 +577,8 @@ offline resources. Connection loss never changes a client into the shared server
 | Read tasks/messages/patterns/memory and search | Use the durable snapshot/index; expose freshness and pending state. |
 | Create local tasks, notes, comments or memories | Persist locally immediately; replay with stable IDs/idempotency keys. |
 | Edit a shared resource | Keep a pending branch with its base revision; accept only if the server precondition still holds. Preserve both versions on conflict. |
-| Claim/reassign/cancel/complete shared work | Cannot establish global ownership offline. Record intent or local progress separately; revalidate current ownership/lease before server acceptance. |
+| Claim/reassign/cancel shared work | Cannot establish global ownership offline. Record intent or local progress separately; revalidate current ownership/lease before server acceptance. |
+| Complete shared work | Record intent locally; revalidate the task and any pending confirmation snapshot on reconnect. Ordinary task completion does not require ownership. |
 | Execute work | Local-only work can continue. Work begun under a shared claim may continue locally, but reclaim elsewhere remains possible; do not report exclusive ownership or automatically dispatch more shared tasks. |
 | Delete or supersede memory | Persist a tombstone and base revision; never resurrect a remote deletion through snapshot refresh. |
 

@@ -881,11 +881,6 @@ async fn cli_gateway(
     Ok((config.gateway()?, server, config))
 }
 
-/// Only the exact owning execution may report start, complete or release a task.
-/// This is a client preflight read, not atomic server authorization. The gateway
-/// already guards bound owner_origin claims, but until it enforces the exact
-/// owner atomically for every claim type, ownership can change between this read
-/// and the mutation.
 fn launch_agent(
     project: PathBuf,
     provider: Provider,

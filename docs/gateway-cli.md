@@ -69,7 +69,7 @@ comment UUID attached to the requested task, including explicit start reports
 which are currently ordinary comments. Ambiguous replies leave the operation
 unconfirmed and are not retried.
 
-`started`, `done` and `release` first read the task (without its comments, so
+`started` and `release` first read the task (without its comments, so
 long threads stay under the response cap) and continue only if it is
 `in_progress` with this exact session and instance as owner. Otherwise no status
 update or start report is sent, including for older claims that lack owner
@@ -77,6 +77,11 @@ session and instance. This read is a client check, not server authorization. The
 gateway already guards claims with a bound owner origin, but until it enforces
 the exact owner atomically for every claim type, ownership can change between
 the read and the update.
+
+`done` reads the task to verify its UUID and project, without an ownership or
+status restriction. Users and agents may complete ordinary tasks in any state;
+file-change confirmation still applies to agents. Credential-bound dispatch tasks
+retain their dedicated API.
 
 ## Replacing `agent-tools tasks`
 
@@ -102,7 +107,7 @@ the caller's amux identity (from the agent terminal's environment, or an explici
 | `tasks add-delegated --target-project P --title T --description D --specification S [--label L]… [--hostname H]` | `amux tasks delegate T --parent <parent-task-id> --target-project P [--description D] [--specification S] [--label L]… [--hostname H]` |
 | `tasks claim ID` | `amux tasks claim ID` (also refuses tasks that require another OS) |
 | `tasks release ID` | `amux tasks release ID` (exact owner only) |
-| `tasks done ID` | `amux tasks done ID` (exact owner only) |
+| `tasks done ID` | `amux tasks done ID` (ordinary tasks, regardless of status or owner) |
 | `tasks comment ID TEXT` | `amux tasks comment ID TEXT` |
 | `tasks rank ID N` | `amux tasks rank ID N`; the reply must acknowledge the new rank |
 | `tasks help [COMMAND]`, `--help` | `amux tasks help [COMMAND]`, `--help` |
@@ -124,19 +129,18 @@ newly released workflow without a replacement.
 
 ## File changes and task transitions
 
-`amux tasks done ID` can also finish a User review task held previously by this
-exact session and instance when its question is resolved or superseded. A
-currently advertised successor instance of the same agent can also finish it
-after the old instance's lease expires. Record the evidence in a comment first.
-A different agent identity cannot finish it and agents cannot
-return it to the queue; normal mutation confirmation still applies.
+`amux tasks done ID` can also finish a User review task when its question is
+resolved or superseded, regardless of its previous owner. Record the evidence in
+a comment first. Agents cannot return parked work to the queue; normal mutation
+confirmation still applies.
 
 For delegated work, completing the destination task requests inspection of the
 sender's tracker. An available sender-project agent receives an inspection
 assignment, checks the linked results, then comments and runs `tasks done` on
 the tracker to confirm completion. Sender comments are relayed to the destination
-for clarification. The sender cannot claim or complete a tracker while its
-destination is incomplete.
+for clarification. The sender cannot claim a tracker while its destination is
+incomplete, but may close it. Closing an unfinished delegation tracker closes
+only the tracker: the target stays open and its result remains unaccepted.
 
 Tasks no longer require a General/Software choice at creation. `submit-work`
 accepts owned work without a prior type conversion. CLI and MCP creation tools
@@ -163,7 +167,7 @@ skip `set-task` and run `amux set-changeset ID null`. After confirming mutation,
 submit paths rather than null. MCP exposes `task_confirm_mutation` and
 `task_set_changeset` for these steps. These are responses to a transition question,
 not creation-time type choices. Pending confirmation survives gateway restart,
-is bound to the exact owning execution and task snapshot, and is consumed on
+is bound to the exact requesting execution and task snapshot, and is consumed on
 success. If the task changes or ownership moves, repeat the original transition
 rather than applying a stale answer.
 
