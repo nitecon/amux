@@ -223,11 +223,22 @@ fn cancel_inner(
             crate::task_changesets::record(conn, task_id, before.changeset.as_deref(), value)?;
         }
         let now = db::now_ms();
+        // Upsert: a cancelled task completed then reopened may be cancelled again,
+        // and the retained row describes the latest cancellation.
         conn.execute(
             "INSERT INTO task_cancellations(task_id,project_ident,reason,prior_status,
                 prior_owner_agent_id,prior_owner_origin_json,prior_started_at,
                 reporter_origin_json,cancelled_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(task_id) DO UPDATE SET
+                project_ident=excluded.project_ident,
+                reason=excluded.reason,
+                prior_status=excluded.prior_status,
+                prior_owner_agent_id=excluded.prior_owner_agent_id,
+                prior_owner_origin_json=excluded.prior_owner_origin_json,
+                prior_started_at=excluded.prior_started_at,
+                reporter_origin_json=excluded.reporter_origin_json,
+                cancelled_at=excluded.cancelled_at",
             params![
                 task_id,
                 project,
@@ -665,6 +676,42 @@ mod tests {
             super::get(&conn, "example", &t.id).unwrap().unwrap(),
             first.cancellation
         );
+    }
+
+    #[test]
+    fn cancel_again_after_complete_and_reopen_replaces_cancellation_row() {
+        let database = database();
+        let conn = database.lock().unwrap();
+        let t = task(&conn);
+        let reporter = origin(1);
+        cancel(&conn, "example", &t.id, &reporter, "reason A")
+            .unwrap()
+            .unwrap();
+        for column in ["done", "todo"] {
+            task_events::mutation(&conn, Some(&reporter), |conn| {
+                db::reorder_tasks_in_column(
+                    conn,
+                    "example",
+                    column,
+                    std::slice::from_ref(&t.id),
+                    None,
+                )
+            })
+            .unwrap();
+        }
+        let out = cancel(&conn, "example", &t.id, &reporter, "reason B")
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.task.status, "cancelled");
+        assert_eq!(out.cancellation.reason, "reason B");
+        let (rows, reason): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*),MAX(reason) FROM task_cancellations WHERE task_id=?1",
+                [&t.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, reason.as_str()), (1, "reason B"));
     }
 
     fn state(database: db::Db) -> AppState {
