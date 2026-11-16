@@ -6886,15 +6886,28 @@ pub async fn reorder_tasks_handler(
                 }
             }
             let mut crossing = false;
-            if agent_request && status_clone != "in_progress" {
+            let mut entering_done = Vec::new();
+            if status_clone != "in_progress" {
                 for id in &order {
                     if let Some(detail) = db::get_task_detail(conn, &ident_clone, id)? {
-                        crossing |= detail.task.status != status_clone;
+                        let before = detail.task.status;
+                        crossing |= agent_request && before != status_clone;
+                        if status_clone == "done"
+                            && before != "done"
+                            && !entering_done.contains(id)
+                        {
+                            entering_done.push(id.clone());
+                        }
                     }
                 }
             }
             db::reorder_tasks_in_column(conn, &ident_clone, &status_clone, &order, actor.as_deref())?;
             if crossing { return Err(crate::task_dispatch::Conflict("Did this task mutate any files? Move the task with PATCH status and changeset (file paths or null) before reordering; the task has not moved.").into()); }
+            for id in entering_done {
+                if let Some(task) = db::get_task_detail(conn, &ident_clone, &id)? {
+                    crate::task_delegations::completed(conn, &task.task)?;
+                }
+            }
             Ok(())
         })?;
         let mut tasks = db::list_tasks(
@@ -8506,6 +8519,182 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn reorder_into_done_notifies_delegation_once_and_same_column_is_noop() {
+        let state = test_state();
+        let (source, target, patch_source, patch_target) = {
+            let conn = state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO projects (ident, channel_name, room_id, created_at) VALUES ('target', 'target', 'target', 1)",
+                [],
+            ).unwrap();
+            let source =
+                db::insert_task(&conn, "demo", "Source", None, None, &[], None, "user").unwrap();
+            let target =
+                db::insert_task(&conn, "target", "Target", None, None, &[], None, "user").unwrap();
+            db::insert_task_delegation(&conn, "demo", &source.id, "target", &target.id, None, None)
+                .unwrap();
+            let patch_source =
+                db::insert_task(&conn, "demo", "PATCH source", None, None, &[], None, "user")
+                    .unwrap();
+            let patch_target = db::insert_task(
+                &conn,
+                "target",
+                "PATCH target",
+                None,
+                None,
+                &[],
+                None,
+                "user",
+            )
+            .unwrap();
+            db::insert_task_delegation(
+                &conn,
+                "demo",
+                &patch_source.id,
+                "target",
+                &patch_target.id,
+                None,
+                None,
+            )
+            .unwrap();
+            (source.id, target.id, patch_source.id, patch_target.id)
+        };
+        let reorder_done = || {
+            reorder_tasks_handler(
+                State(state.clone()),
+                HeaderMap::new(),
+                Path("target".into()),
+                Query(ReorderTasksQuery {
+                    goal: None,
+                    status: "done".into(),
+                }),
+                Json(ReorderTasksRequest {
+                    order: vec![target.clone(), target.clone()],
+                }),
+            )
+        };
+        let comment_count = || {
+            let conn = state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM task_comments WHERE task_id=?1",
+                [&source],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let target_state = || {
+            let conn = state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT status, rank FROM tasks WHERE id=?1",
+                [&target],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap()
+        };
+        let before = target_state();
+        let mut agent = HeaderMap::new();
+        agent.insert("x-agent-id", "worker".parse().unwrap());
+        assert_eq!(
+            reorder_tasks_handler(
+                State(state.clone()),
+                agent,
+                Path("target".into()),
+                Query(ReorderTasksQuery {
+                    goal: None,
+                    status: "done".into()
+                }),
+                Json(ReorderTasksRequest {
+                    order: vec![target.clone()]
+                }),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(comment_count(), 0);
+        assert_eq!(target_state(), before);
+        // A failure in delegation bookkeeping must roll back the status/rank change too.
+        state.db.lock().unwrap().execute_batch(
+            "CREATE TRIGGER reject_delegation_comment BEFORE INSERT ON task_comments BEGIN SELECT RAISE(ABORT, 'test hook failure'); END;"
+        ).unwrap();
+        assert!(reorder_done().await.is_err());
+        assert_eq!(comment_count(), 0);
+        assert_eq!(target_state(), before);
+        state
+            .db
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_delegation_comment")
+            .unwrap();
+        let _ = reorder_done().await.unwrap();
+        assert_eq!(comment_count(), 1);
+        {
+            let conn = state.db.lock().unwrap();
+            let routing: String = conn
+                .query_row(
+                    "SELECT routing_json FROM tasks WHERE id=?1",
+                    [&source],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&routing).unwrap()["mode"],
+                "auto"
+            );
+        }
+        let _ = reorder_done().await.unwrap();
+        assert_eq!(comment_count(), 1);
+        let _ = reorder_tasks_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("demo".into()),
+            Query(ReorderTasksQuery {
+                goal: None,
+                status: "done".into(),
+            }),
+            Json(ReorderTasksRequest {
+                order: vec![source.clone()],
+            }),
+        )
+        .await
+        .unwrap();
+        {
+            let conn = state.db.lock().unwrap();
+            assert!(db::get_delegation_by_source(&conn, "demo", &source)
+                .unwrap()
+                .unwrap()
+                .completed_at
+                .is_some());
+            let confirmation_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM task_comments WHERE task_id=?1 AND content LIKE '%confirmed%'",
+            [&target], |row| row.get(0),
+        ).unwrap();
+            assert_eq!(confirmation_count, 1);
+        }
+        let _ = update_task_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path(("target".into(), patch_target.clone())),
+            Json(
+                serde_json::from_value::<UpdateTaskRequest>(serde_json::json!({"status":"done"}))
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        let conn = state.db.lock().unwrap();
+        let patch_comment_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_comments WHERE task_id=?1",
+                [&patch_source],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(patch_comment_count, 1);
     }
 
     fn sample_task() -> db::Task {
