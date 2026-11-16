@@ -6,6 +6,25 @@ provider hooks. Repository instruction files remain untouched. Launches disable
 Claude local task tools and Codex `update_plan` through launch parameters,
 without editing provider config.
 
+## Upgrading from the retired installer
+
+The former opt-in Agent Instructions installer (`amux harness install`) added
+task-tool restrictions to provider settings that persist after the installer is
+removed. This can affect standalone provider sessions. amux launches continue to
+apply task-tool restrictions through launch parameters.
+
+If you want to remove only the settings previously added by amux, edit the
+relevant provider configuration and remove these entries:
+
+- Claude: `permissions.deny` in `~/.claude/settings.json` (or
+  `$CLAUDE_CONFIG_DIR/settings.json`): `TaskCreate`, `TaskGet`, `TaskList`,
+  `TaskUpdate`, and `TodoWrite`.
+- Codex: `tools.update_plan.enabled` in `~/.codex/config.toml` (or
+  `$CODEX_HOME/config.toml`): remove `enabled = false` if amux added it.
+
+Preserve unrelated and intentionally configured settings. Restart the provider
+session for the changes to take effect.
+
 ## Contextual guidance
 
 Session start/resume and explicit `/clear` receive current task-policy and tool

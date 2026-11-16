@@ -9,6 +9,13 @@
 - Removed the Settings → Agent Instructions section and the `amux harness`
   command. Native task tools are now disabled through launch parameters.
 
+### Upgrade notes
+
+- The retired opt-in installer left persistent provider settings in place.
+  See [upgrade guidance](docs/agent-instructions.md#upgrading-from-the-retired-installer)
+  for optional manual cleanup; amux launches still restrict task tools through
+  launch parameters.
+
 ## v0.0.81 - 2026-11-15
 
 ### Changed
