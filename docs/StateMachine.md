@@ -333,6 +333,12 @@ Rules carried over from the desktop:
   Any subsequent task or comment mutation invalidates the old offer in that
   mutation's transaction, so a delayed rejection cannot undo progress or a
   newer claim, even when timestamps match.
+- **Column ordering:** crossing into another status uses the ordinary agent or
+  human task-update rules, including claim eligibility and inspection notices.
+  Sorting within the current column changes rank without releasing queued
+  reservations or changing lifecycle timestamps. This differs from an explicit
+  PATCH `todo` request, which releases work even when it is already queued.
+  A rejected batch rolls back all rows and transition side effects together.
 - **Completion:** users and agents may close ordinary tasks in any state,
   regardless of ownership, through PATCH or desktop Done transitions. File-change
   confirmation still applies to agents. Claim, release and submission retain

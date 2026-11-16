@@ -9925,32 +9925,14 @@ pub fn delete_task(conn: &Connection, project_ident: &str, task_id: &str) -> Res
     Ok(n > 0)
 }
 
-/// Current row snapshot read at the top of `reorder_tasks_in_column`:
-/// `(status, owner_agent_id, started_at, done_at, owner_origin, labels)`.
-type TaskStateSnapshot = (
-    String,
-    Option<String>,
-    Option<i64>,
-    Option<i64>,
-    Option<crate::task_events::AgentOrigin>,
-    Option<String>,
-);
-
-/// Apply a client-driven order to one status column. For each id in `order`,
-/// set `status = target_status` and `rank = index` (0-based). Any status
-/// transition also maintains the invariants enforced by [`update_task`]:
+/// Apply a client-driven order to one status column, setting each task's rank
+/// to its index (0-based). Tasks already in the column receive only a rank
+/// update, preserving queued reservations and lifecycle timestamps. Cross-column
+/// moves use the same transition rules as ordinary agent or human updates.
 ///
-/// - transitioning into `in_progress` sets `started_at = now`, auto-assigns
-///   `owner_agent_id = actor_agent_id` (when provided and the current owner
-///   is `NULL`),
-/// - transitioning into `done` sets `done_at = now`,
-/// - transitioning out of `done` clears `done_at`,
-/// - transitioning out of `in_progress` clears `started_at` and clears
-///   `owner_agent_id`.
-///
-/// All writes happen inside a single transaction; any id that does not exist
-/// in this project causes the whole batch to be rolled back via
-/// `anyhow::bail!`.
+/// All writes, including transition side effects, happen inside a single
+/// transaction. Any missing task or rejected transition rolls back the batch;
+/// callers already in a transaction are responsible for rolling it back.
 pub fn reorder_tasks_in_column(
     conn: &Connection,
     project_ident: &str,
@@ -9972,7 +9954,6 @@ pub fn reorder_tasks_in_column(
         return Ok(());
     }
 
-    let now = now_ms();
     let tx = if conn.is_autocommit() {
         Some(conn.unchecked_transaction()?)
     } else {
@@ -9987,170 +9968,50 @@ pub fn reorder_tasks_in_column(
             )
             .into());
         }
-        // Fetch current status + owner for this row, scoped to the project.
-        let current: Option<TaskStateSnapshot> = {
-            let mut stmt = conn.prepare(
-                "SELECT status, owner_agent_id, started_at, done_at, owner_origin_json, labels
-                 FROM tasks WHERE id = ?1 AND project_ident = ?2",
+        let old_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM tasks WHERE id = ?1 AND project_ident = ?2",
+                params![task_id, project_ident.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let old_status = old_status
+            .with_context(|| format!("task '{task_id}' not found in project '{project_ident}'"))?;
+
+        if old_status == target_status {
+            // A same-column reorder is not a lifecycle request. In particular,
+            // sending status=todo would release an existing queued reservation.
+            crud(conn).update(
+                "tasks",
+                &[
+                    crud_col("rank", idx as i64),
+                    crud_col("updated_at", now_ms()),
+                ],
+                &[
+                    crud_eq("id", task_id.as_str()),
+                    crud_eq("project_ident", project_ident.as_str()),
+                ],
             )?;
-            let mut rows = stmt.query_map(params![task_id, project_ident.as_str()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    crate::task_events::read_origin(r, 4)?,
-                    r.get::<_, Option<String>>(5)?,
-                ))
-            })?;
-            rows.next().transpose()?
-        };
-
-        let (old_status, old_owner, old_started_at, old_done_at, old_origin, old_labels) =
-            match current {
-                Some(v) => v,
-                None => anyhow::bail!("task '{task_id}' not found in project '{project_ident}'"),
-            };
-        if old_status == "cancelled" && target_status != "done" {
-            return Err(crate::task_dispatch::Conflict("cancelled tasks are terminal").into());
+            continue;
         }
-        let old_labels = parse_labels(old_labels);
-        if target_status == "in_progress" && old_status != "in_progress" {
-            let task = get_task_detail(conn, &project_ident, task_id)?
-                .context("task disappeared")?
-                .task;
-            crate::task_reviews::ensure_reviewer(conn, &task, origin.as_ref(), actor_agent_id)?;
-        }
-
-        // Compute new timestamps + owner by mirroring the transition logic
-        // in `update_task`. Fields we do not change are preserved explicitly
-        // (not cleared) — this handler only touches status/rank/timestamps.
-        let mut new_started_at = old_started_at;
-        let mut new_done_at = old_done_at;
-        let mut new_owner = old_owner.clone();
-        let mut new_origin = old_origin.clone();
-
-        if old_status != target_status && target_status == "user_review" {
+        if target_status == "user_review" {
             return Err(crate::task_dispatch::Conflict(
                 "enter user review with PATCH status=user_review and a specific review_action before reordering",
             ).into());
         }
-        if old_status != target_status {
-            if old_status == "user_review"
-                && target_status != "done"
-                && (origin.is_some() || actor_agent_id.is_some())
-            {
-                return Err(crate::task_dispatch::Conflict(
-                    "tasks in user review require a user decision",
-                )
-                .into());
-            }
-            if target_status != "done"
-                && old_origin.is_none()
-                && (old_owner.is_some() || old_status == "in_progress")
-            {
-                return Err(crate::task_events::OwnershipConflict.into());
-            }
-            if let Some(owner) = old_origin.filter(|_| target_status != "done") {
-                if !origin.as_ref().is_some_and(|actor| {
-                    actor.session_id == owner.session_id && actor.instance_id == owner.instance_id
-                }) {
-                    return Err(crate::task_events::OwnershipConflict.into());
-                }
-            }
-            if target_status == "in_progress" {
-                new_origin = origin.clone();
-            }
-            if matches!(target_status, "todo" | "user_review") {
-                new_origin = None;
-            }
-            match (old_status.as_str(), target_status) {
-                (_, "user_review") | ("user_review", "todo") => {
-                    new_started_at = None;
-                    new_done_at = None;
-                    new_owner = None;
-                }
-                ("user_review", "done") => {
-                    new_done_at = Some(now);
-                }
-                ("todo" | "user_review", "in_progress") => {
-                    new_started_at = Some(now);
-                    new_done_at = None;
-                    if new_owner.is_none() {
-                        if let Some(aid) = actor_agent_id {
-                            new_owner = Some(aid.to_string());
-                        }
-                    }
-                }
-                ("in_progress", "todo") => {
-                    new_started_at = None;
-                    new_owner = None;
-                }
-                (_, "done") => {
-                    new_done_at = Some(now);
-                    // started_at stays put as a historical record of the
-                    // in_progress window; `update_task` behaves the same way
-                    // when transitioning directly to done.
-                }
-                ("done", "todo") => {
-                    new_done_at = None;
-                }
-                ("done", "in_progress") => {
-                    new_done_at = None;
-                    new_started_at = Some(now);
-                    if new_owner.is_none() {
-                        if let Some(aid) = actor_agent_id {
-                            new_owner = Some(aid.to_string());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
 
-        let approved_labels = resumed_finding_labels(
-            &old_status,
-            target_status,
-            origin.is_none() && actor_agent_id.is_none(),
-            &old_labels,
-            None,
-        );
-        let mut assignments = vec![
-            crud_col("status", target_status),
-            crud_col("rank", idx as i64),
-            crud_col("started_at", new_started_at),
-            crud_col("done_at", new_done_at),
-            crud_col("owner_agent_id", new_owner),
-            crud_col(
-                "owner_origin_json",
-                new_origin.as_ref().map(serde_json::to_string).transpose()?,
-            ),
-            crud_col("updated_at", now),
-        ];
-        if let Some(labels) = approved_labels {
-            assignments.push(crud_col("labels", serialize_string_array(&labels)));
-        }
-        if old_status == "user_review" && target_status != "user_review" {
-            assignments.push(crud_col("review_action", DbValue::null()));
-        }
-        if old_status == "user_review"
-            && target_status == "todo"
-            && origin.is_none()
-            && actor_agent_id.is_none()
-        {
-            assignments.push(crud_col(
-                "routing_json",
-                serde_json::to_string(&crate::task_targets::Routing::Auto)?,
-            ));
-        }
-        crud(conn).update(
-            "tasks",
-            &assignments,
-            &[
-                crud_eq("id", task_id.as_str()),
-                crud_eq("project_ident", project_ident.as_str()),
-            ],
-        )?;
+        let update = TaskUpdate {
+            status: Some(target_status),
+            rank: Some(idx as i64),
+            ..Default::default()
+        };
+        let updated = if origin.is_some() || actor_agent_id.is_some() {
+            update_task(conn, &project_ident, task_id, &update, actor_agent_id)?
+        } else {
+            update_task_from_user(conn, &project_ident, task_id, &update)?
+        };
+        updated
+            .with_context(|| format!("task '{task_id}' not found in project '{project_ident}'"))?;
     }
 
     if let Some(tx) = tx {

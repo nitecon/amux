@@ -4227,6 +4227,309 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reorder_crossings_share_claim_guards_and_rollback_inspection() {
+        let state = fixture(db::open(":memory:").unwrap());
+        let agent = Agent::new(&id(), "unused");
+        let (source, target, windows) = {
+            let conn = state.db.lock().unwrap();
+            let target = db::insert_task(
+                &conn,
+                "destination",
+                "Target",
+                None,
+                None,
+                &[],
+                None,
+                "user",
+            )
+            .unwrap();
+            let source = db::insert_delegated_task(
+                &conn,
+                &db::DelegatedTaskInsert {
+                    task_type: "general",
+                    project_ident: "example",
+                    title: "Inspect target",
+                    description: None,
+                    details: None,
+                    labels: &[],
+                    hostname: None,
+                    reporter: "user",
+                    target_project_ident: "destination",
+                    target_task_id: &target.id,
+                },
+            )
+            .unwrap();
+            db::insert_task_delegation(
+                &conn,
+                "example",
+                &source.id,
+                "destination",
+                &target.id,
+                None,
+                None,
+            )
+            .unwrap();
+            let windows = db::insert_task(
+                &conn,
+                "example",
+                "Windows only",
+                None,
+                None,
+                &["os:windows".into()],
+                None,
+                "user",
+            )
+            .unwrap();
+            (source, target, windows)
+        };
+        let source_path = format!("/v1/projects/example/tasks/{}", source.id);
+        let reorder = "/v1/projects/example/tasks/reorder?status=in_progress";
+        let snapshot = || {
+            let conn = state.db.lock().unwrap();
+            let tasks = [
+                ("example", &source.id),
+                ("destination", &target.id),
+                ("example", &windows.id),
+            ]
+            .map(|(project, id)| db::get_task_detail(&conn, project, id).unwrap().unwrap());
+            let events: i64 = conn
+                .query_row("SELECT COUNT(*) FROM router_task_outbox", [], |r| r.get(0))
+                .unwrap();
+            json!({"tasks": tasks, "events": events})
+        };
+        // Both entry points reject inspection before the target has finished.
+        let before = snapshot();
+        for (method, path, body) in [
+            (
+                "PATCH",
+                source_path.as_str(),
+                json!({"status":"in_progress"}),
+            ),
+            ("POST", reorder, json!({"order":[source.id]})),
+        ] {
+            let (status, result) =
+                desktop_http(&state, ordinary_headers(&agent), method, path, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert!(result.to_string().contains("target project"), "{result}");
+            assert_eq!(snapshot(), before);
+        }
+        state
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET status='done',done_at=1 WHERE id=?1",
+                [&target.id],
+            )
+            .unwrap();
+        let before = snapshot();
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "PATCH",
+            &format!("/v1/projects/example/tasks/{}", windows.id),
+            json!({"status":"in_progress"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{result}");
+        // The first row would claim the tracker and post an inspection comment.
+        // Rejecting the second row must roll back both effects and their events.
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "POST",
+            reorder,
+            json!({"order":[source.id, windows.id]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{result}");
+        assert!(result.to_string().contains("OS does not match"), "{result}");
+        assert_eq!(snapshot(), before);
+
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "POST",
+            reorder,
+            json!({"order":[source.id]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        let claimed = db::get_task_detail(&state.db.lock().unwrap(), "example", &source.id)
+            .unwrap()
+            .unwrap()
+            .task;
+        assert_eq!(claimed.owner_origin, Some(agent.target.origin.clone()));
+        assert!(claimed.started_at.is_some() && claimed.done_at.is_none());
+        assert_eq!(
+            db::get_task_detail(&state.db.lock().unwrap(), "destination", &target.id)
+                .unwrap()
+                .unwrap()
+                .comments
+                .len(),
+            1
+        );
+
+        // A human may release an agent-owned claim through either entry point.
+        let (status, result) = desktop_http(
+            &state,
+            human_headers(),
+            "POST",
+            "/v1/projects/example/tasks/reorder?status=todo",
+            json!({"order":[source.id]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        let released = db::get_task_detail(&state.db.lock().unwrap(), "example", &source.id)
+            .unwrap()
+            .unwrap()
+            .task;
+        assert!(released.owner_origin.is_none() && released.owner_agent_id.is_none());
+        assert!(released.started_at.is_none() && released.done_at.is_none());
+        let (status, patched) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "PATCH",
+            &source_path,
+            json!({"status":"in_progress"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{patched}");
+        assert_eq!(patched["owner_origin"], json!(claimed.owner_origin));
+        assert_eq!(patched["owner_agent_id"], json!(claimed.owner_agent_id));
+        assert!(patched["started_at"].is_i64() && patched["done_at"].is_null());
+        let comments = db::get_task_detail(&state.db.lock().unwrap(), "destination", &target.id)
+            .unwrap()
+            .unwrap()
+            .comments;
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].content, comments[1].content);
+        let (status, patched_release) = desktop_http(
+            &state,
+            human_headers(),
+            "PATCH",
+            &source_path,
+            json!({"status":"todo"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{patched_release}");
+        assert_eq!(
+            patched_release["owner_origin"],
+            json!(released.owner_origin)
+        );
+        assert_eq!(
+            patched_release["owner_agent_id"],
+            json!(released.owner_agent_id)
+        );
+        assert_eq!(patched_release["started_at"], json!(released.started_at));
+        assert_eq!(patched_release["done_at"], json!(released.done_at));
+    }
+
+    #[tokio::test]
+    async fn reorder_sorting_preserves_reservations_and_transition_fences() {
+        let state = fixture(db::open(":memory:").unwrap());
+        let agent = Agent::new(&id(), "unused");
+        let peer = Agent::new(&id(), "unused");
+        let task = db::insert_task(
+            &state.db.lock().unwrap(),
+            "example",
+            "Reserved",
+            None,
+            None,
+            &[],
+            None,
+            "user",
+        )
+        .unwrap();
+        let path = format!("/v1/projects/example/tasks/{}", task.id);
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "PATCH",
+            &path,
+            json!({"status":"in_progress"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        state
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET status='todo',started_at=NULL,rank=99,updated_at=1 WHERE id=?1",
+                [&task.id],
+            )
+            .unwrap();
+        let snapshot = || {
+            serde_json::to_value(
+                db::get_task_detail(&state.db.lock().unwrap(), "example", &task.id)
+                    .unwrap()
+                    .unwrap()
+                    .task,
+            )
+            .unwrap()
+        };
+        let mut expected = snapshot();
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&peer),
+            "POST",
+            "/v1/projects/example/tasks/reorder?status=todo",
+            json!({"order":[task.id]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        let sorted = snapshot();
+        expected["rank"] = json!(0);
+        expected["updated_at"] = sorted["updated_at"].clone();
+        assert_eq!(
+            sorted, expected,
+            "sorting must retain the queued reservation and lifecycle metadata"
+        );
+        assert!(sorted["updated_at"].as_i64().unwrap() > 1);
+
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "PATCH",
+            &path,
+            json!({"status":"in_progress"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        let before = snapshot();
+        for (destination, message) in [
+            ("done", "Did this task mutate any files"),
+            ("user_review", "specific review_action"),
+        ] {
+            let (status, result) = desktop_http(
+                &state,
+                ordinary_headers(&agent),
+                "POST",
+                &format!("/v1/projects/example/tasks/reorder?status={destination}"),
+                json!({"order":[task.id]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert!(result.to_string().contains(message), "{result}");
+            assert_eq!(snapshot(), before);
+        }
+        // Dispatch is fenced even when sorting within its existing column.
+        state.db.lock().unwrap().execute("INSERT INTO task_dispatches(task_id,project_ident,document_json) VALUES(?1,'example','{}')", [&task.id]).unwrap();
+        let (status, result) = desktop_http(
+            &state,
+            ordinary_headers(&agent),
+            "POST",
+            "/v1/projects/example/tasks/reorder?status=in_progress",
+            json!({"order":[task.id]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{result}");
+        assert!(result.to_string().contains("dispatch tasks"), "{result}");
+        assert_eq!(snapshot(), before);
+    }
+
+    #[tokio::test]
     async fn ordinary_task_os_labels_gate_creation_claims_assignment_and_set_os() {
         let state = fixture(db::open(":memory:").unwrap());
         let linux = agents(&state).await;
