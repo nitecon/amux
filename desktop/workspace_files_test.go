@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,9 @@ import (
 )
 
 func TestWorkspaceFilesSkipNamedPipe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a filesystem FIFO")
+	}
 	mkfifo, err := exec.LookPath("mkfifo")
 	if err != nil {
 		t.Skip("mkfifo is unavailable")

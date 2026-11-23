@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nitecon/amux/internal/testfixture"
 )
 
 func TestTasksReportOfflineUsesFixtureAndDoesNotWriteRepositoryState(t *testing.T) {
@@ -103,25 +104,8 @@ func TestTasksReportOnlineUsesSyntheticGatewayAndStubGitHub(t *testing.T) {
 		_, _ = w.Write([]byte("[]"))
 	}))
 	defer host.Close()
-	bin := filepath.Join(t.TempDir(), "bin")
-	if err := os.Mkdir(bin, 0700); err != nil {
-		t.Fatal(err)
-	}
-	gh := fmt.Sprintf(`#!/bin/sh
-if [ "$1 $2" = "repo view" ]; then
-  printf '%%s' '{"nameWithOwner":"fixture/project"}'
-  exit 0
-fi
-if [ "$1" = "api" ]; then
-  printf '%%s\n' '{"workflow_runs":[{"id":1,"run_attempt":1,"head_sha":"%s","status":"completed","conclusion":"success"}]}'
-  exit 0
-fi
-exit 2
-`, sha)
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(gh), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	pages := `{"workflow_runs":[{"id":1,"run_attempt":1,"head_sha":"` + sha + `","status":"completed","conclusion":"success"}]}`
+	testfixture.InstallGH(t, "fixture/project", pages, "repos/fixture/project/actions/runs?head_sha="+sha+"&per_page=100")
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -162,14 +146,7 @@ func TestTasksReportMarksMissingGatewayAndGitHubCoveragePartial(t *testing.T) {
 	}
 	gitReportFixture(t, root, "add", "fixture.txt")
 	gitReportFixture(t, root, "commit", "-m", "fixture")
-	bin := filepath.Join(t.TempDir(), "bin")
-	if err := os.Mkdir(bin, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	testfixture.InstallGH(t, "", "", "")
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

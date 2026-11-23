@@ -16,9 +16,12 @@ import (
 	"github.com/nitecon/amux/providers/acp"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
+
+	"github.com/nitecon/amux/internal/testfixture"
 )
 
 func TestMain(m *testing.M) {
+	testfixture.RunGH()
 	if os.Getenv("AMUX_BUNDLED_RUNNER_FIXTURE") == "1" {
 		switch filepath.Base(os.Args[0]) {
 		case "memory", "memory.exe", "agent-tools", "agent-tools.exe":

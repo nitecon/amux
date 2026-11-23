@@ -3,40 +3,22 @@ package worksubmission
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nitecon/amux/internal/testfixture"
 )
 
 const reportCITestSHA = "0123456789abcdef0123456789abcdef01234567"
 
+func TestMain(m *testing.M) {
+	testfixture.RunGH()
+	os.Exit(m.Run())
+}
+
 func installReportCIGH(t *testing.T, pages string) string {
 	t.Helper()
-	dir := t.TempDir()
-	gh := `#!/bin/sh
-printf '%s\n' "$*" >> "$GH_CALL_LOG"
-if [ "$1" = "repo" ]; then
-  printf '%s\n' '{"nameWithOwner":"owner/repo"}'
-  exit 0
-fi
-if [ "$1" != "api" ] || [ "$2" != "--paginate" ] || [ "$3" != "--method" ] || [ "$4" != "GET" ] || [ "$5" != "repos/owner/repo/actions/runs?head_sha=` + reportCITestSHA + `&per_page=100" ]; then
-  exit 41
-fi
-cat "$GH_PAGES"
-`
-	path := filepath.Join(dir, "gh")
-	if err := os.WriteFile(path, []byte(gh), 0700); err != nil {
-		t.Fatal(err)
-	}
-	pagePath := filepath.Join(dir, "pages.json")
-	if err := os.WriteFile(pagePath, []byte(pages), 0600); err != nil {
-		t.Fatal(err)
-	}
-	logPath := filepath.Join(dir, "calls.log")
-	t.Setenv("GH_PAGES", pagePath)
-	t.Setenv("GH_CALL_LOG", logPath)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return logPath
+	return testfixture.InstallGH(t, "owner/repo", pages, "repos/owner/repo/actions/runs?head_sha="+reportCITestSHA+"&per_page=100")
 }
 
 func TestReadReportCIPaginatesExactSHAAndPreservesAttemptsAndConclusions(t *testing.T) {
@@ -70,7 +52,8 @@ func TestReadReportCIRejectsInvalidAndEmptyReceipts(t *testing.T) {
 		{name: "missing attempt", pages: `{"workflow_runs":[{"id":1,"head_sha":"` + reportCITestSHA + `","status":"completed","conclusion":"success"}]}`},
 		{name: "missing completed conclusion", pages: `{"workflow_runs":[{"id":1,"run_attempt":1,"head_sha":"` + reportCITestSHA + `","status":"completed"}]}`},
 		{name: "invalid JSON", pages: `not json`},
-		{name: "malformed later page", pages: `{"workflow_runs":[` + valid + `]}\n{broken`},
+		{name: "malformed later page", pages: `{"workflow_runs":[` + valid + `]}
+{broken`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installReportCIGH(t, tc.pages)

@@ -188,10 +188,8 @@ func TestSecureProfileListenerRequiresEnrolledCertificate(t *testing.T) {
 		"--secure-instance-id", instance, "--listen", "127.0.0.1:0", "--discovery-bind", "127.0.0.1:0")
 	defer stop()
 	var local struct {
-		InstanceID  string `json:"instance_id"`
-		URL         string `json:"url"`
-		Certificate string `json:"certificate_pem_path"`
-		Key         string `json:"private_key_pem_path"`
+		InstanceID string `json:"instance_id"`
+		URL        string `json:"url"`
 	}
 	if err := json.Unmarshal(readProfileFile(t, filepath.Join(profile, "local-client.json")), &local); err != nil {
 		t.Fatal(err)
@@ -199,7 +197,7 @@ func TestSecureProfileListenerRequiresEnrolledCertificate(t *testing.T) {
 	if local.InstanceID != instance || local.URL != "https://"+address {
 		t.Fatalf("incorrect local endpoint identity: %+v", local)
 	}
-	certificate, err := tls.LoadX509KeyPair(local.Certificate, local.Key)
+	credentials, err := storage.LoadLocalClientCredentials(profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +212,7 @@ func TestSecureProfileListenerRequiresEnrolledCertificate(t *testing.T) {
 		want         int
 	}{
 		{name: "bearer alone", bearer: "profile-test-key", want: http.StatusUnauthorized},
-		{name: "enrolled administrator", certificates: []tls.Certificate{certificate}, want: http.StatusOK},
+		{name: "enrolled administrator", certificates: []tls.Certificate{credentials.Certificate}, want: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, Certificates: test.certificates, MinVersion: tls.VersionTLS12}}
@@ -248,14 +246,12 @@ func TestSecureStatusAndNonceFencedShutdown(t *testing.T) {
 		"--secure-instance-id", uuid.NewString(), "--listen", "127.0.0.1:0", "--discovery-bind", "127.0.0.1:0")
 	defer stop()
 	var local struct {
-		URL         string `json:"url"`
-		Certificate string `json:"certificate_pem_path"`
-		Key         string `json:"private_key_pem_path"`
+		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(readProfileFile(t, filepath.Join(profile, "local-client.json")), &local); err != nil {
 		t.Fatal(err)
 	}
-	certificate, err := tls.LoadX509KeyPair(local.Certificate, local.Key)
+	credentials, err := storage.LoadLocalClientCredentials(profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +259,7 @@ func TestSecureStatusAndNonceFencedShutdown(t *testing.T) {
 	if !roots.AppendCertsFromPEM(readProfileFile(t, filepath.Join(profile, "root.pem"))) {
 		t.Fatal("invalid profile trust root")
 	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{certificate}}}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{credentials.Certificate}}}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	type status struct {

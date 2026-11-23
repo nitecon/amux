@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/bundledtools"
+
+	"github.com/nitecon/amux/internal/testfixture"
 )
 
 func TestDurableMemoriesChildProcessContract(t *testing.T) {
@@ -40,7 +42,7 @@ func TestDurableMemoriesChildProcessContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if record.Directory != wantDirectory {
+		if !testfixture.SameDirectory(record.Directory, wantDirectory) {
 			t.Fatalf("child cwd = %q, want %q", record.Directory, wantDirectory)
 		}
 		if record.Stdin != "" {

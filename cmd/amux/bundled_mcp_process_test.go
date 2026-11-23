@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/mcpstdio"
+
+	"github.com/nitecon/amux/internal/testfixture"
 )
 
 func TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools(t *testing.T) {
@@ -88,7 +90,7 @@ func TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantArgs := []string{"search", "--", "-literal $(touch should-not-exist) λ"}
-	if !reflect.DeepEqual(record.Args, wantArgs) || record.Directory != canonicalWorkDirectory || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" || record.Inherited != "inherited" || !record.StdinEOF {
+	if !reflect.DeepEqual(record.Args, wantArgs) || !testfixture.SameDirectory(record.Directory, canonicalWorkDirectory) || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" || record.Inherited != "inherited" || !record.StdinEOF {
 		t.Fatalf("bundled child record=%+v, want args=%q cwd=%q with inherited env and EOF stdin", record, wantArgs, canonicalWorkDirectory)
 	}
 	if _, err := os.Stat(filepath.Join(workDirectory, "should-not-exist")); !os.IsNotExist(err) {
@@ -180,7 +182,7 @@ func TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Directory != canonicalWorkDirectory || !record.StdinEOF || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" {
+	if !testfixture.SameDirectory(record.Directory, canonicalWorkDirectory) || !record.StdinEOF || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" {
 		t.Fatalf("native bundled child context=%+v", record)
 	}
 }
@@ -268,7 +270,7 @@ func TestNativeMCPInitializeUsesMemoryOnlyRecallAndCapabilityHints(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Directory != canonicalDirectory || !record.StdinEOF || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" {
+	if !testfixture.SameDirectory(record.Directory, canonicalDirectory) || !record.StdinEOF || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" {
 		t.Fatalf("startup memory process context=%+v", record)
 	}
 }

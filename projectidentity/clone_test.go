@@ -309,11 +309,11 @@ func TestCloneRepositoryPopulatesEmptyDestinationAndHonorsReservation(t *testing
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
 		t.Fatalf("destination was unexpectedly recreated while locked: %v", err)
 	}
-	if content, err := os.ReadFile(reservation); err != nil || string(content) != "another clone" {
-		t.Fatalf("locked sidecar changed: %q, %v", content, err)
-	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(reservation); err != nil || string(content) != "another clone" {
+		t.Fatalf("locked sidecar changed: %q, %v", content, err)
 	}
 	if err := os.Remove(reservation); err != nil {
 		t.Fatal(err)

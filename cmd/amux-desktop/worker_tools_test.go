@@ -35,7 +35,11 @@ func TestDesktopTaskToolsMissingExplicitCommandDoesNotFallback(t *testing.T) {
 }
 
 func TestDesktopWorkerTaskToolsAcceptEnrolledProfileWithoutBearerEnvironment(t *testing.T) {
-	executable := filepath.Join(t.TempDir(), "amux")
+	name := "amux"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	executable := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(executable, []byte("placeholder"), 0700); err != nil {
 		t.Fatal(err)
 	}

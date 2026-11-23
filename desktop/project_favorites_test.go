@@ -35,9 +35,9 @@ func TestProjectFavoriteReconcilesLocalCheckoutAfterProjectResolution(t *testing
 }
 
 func TestProjectFavoriteKeysKeepEndpointScopeAndCanonicalCheckoutPath(t *testing.T) {
-	checkout := filepath.Join(string(filepath.Separator), "work", "repo", ".", "")
+	checkout := filepath.Join(t.TempDir(), "work", "repo")
 	keys := projectFavoriteKeys("https://one.example", checkout, "Demo")
-	if len(keys) != 2 || keys[0] != "local:"+filepath.Join(string(filepath.Separator), "work", "repo") {
+	if len(keys) != 2 || keys[0] != "local:"+checkout {
 		t.Fatalf("favorite keys = %v", keys)
 	}
 	favorites := map[string]bool{FavoriteKey("https://one.example", "demo"): true}

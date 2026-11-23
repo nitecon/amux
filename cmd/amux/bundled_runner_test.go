@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/mcpstdio"
+
+	"github.com/nitecon/amux/internal/testfixture"
 )
 
 func TestBundledRunnerAvailabilityUsesOnlySiblingOrOverrideFiles(t *testing.T) {
@@ -86,7 +88,7 @@ func TestBundledRunnerExecutesSiblingWithOwnedContextAndLiteralArgv(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Directory != canonicalWorkDirectory || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" || record.Inherited != "inherited" || !record.StdinEOF {
+	if !testfixture.SameDirectory(record.Directory, canonicalWorkDirectory) || record.MemoryNoUpdate != "1" || record.ToolsNoUpdate != "1" || record.Inherited != "inherited" || !record.StdinEOF {
 		t.Fatalf("child process context=%+v", record)
 	}
 	if _, err := os.Stat(filepath.Join(workDirectory, "should-not-exist")); !os.IsNotExist(err) {
