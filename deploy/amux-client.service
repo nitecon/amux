@@ -1,0 +1,20 @@
+[Unit]
+Description=Amux headless worker client
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=amux
+Group=amux
+EnvironmentFile=/etc/amux/client.env
+StateDirectory=amux-client
+ExecStart=/usr/local/bin/amux client run --state /var/lib/amux-client/workers.sqlite --enrolled-profile ${AMUX_CLIENT_PROFILE}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

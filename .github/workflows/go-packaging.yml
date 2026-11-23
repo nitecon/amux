@@ -1,0 +1,139 @@
+name: Go packaging candidate
+
+on:
+  pull_request:
+  push:
+    branches: [main, go-rebuild, 'mvp/**']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Upload validated Go packages to the existing GitHub Release for this tag
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            goos: linux
+            goarch: amd64
+            ext: ''
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            goos: windows
+            goarch: amd64
+            ext: .exe
+          - os: macos-15
+            target: aarch64-apple-darwin
+            goos: darwin
+            goarch: arm64
+            ext: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '1'
+      AMUX_BUNDLED_DIR: ${{ github.workspace }}/target/bundled
+      AMUX_BUNDLED_CONTRACT_DIR: ${{ github.workspace }}/target/bundled
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Windows C compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          update: false
+      - name: Add Windows C compiler to PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $mingw = 'C:\msys64\mingw64\bin'
+          if (-not (Test-Path "$mingw\gcc.exe")) { throw 'MinGW gcc was not installed' }
+          Add-Content -Path $env:GITHUB_PATH -Value $mingw
+          & "$mingw\gcc.exe" --version
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev libwayland-dev libxkbcommon-dev xorg-dev
+      - name: Fetch pinned bundled tools
+        run: go run ./cmd/amux-release tools --target ${{ matrix.target }} --output target/bundled
+      - name: Test Go packages
+        run: go test ./...
+      - name: Prepare build directory
+        shell: bash
+        run: mkdir -p bin
+      - name: Build CLI
+        run: go build -trimpath -o "bin/amux${{ matrix.ext }}" ./cmd/amux
+      - name: Build desktop
+        run: go build -tags desktop -trimpath -o "bin/amux-desktop${{ matrix.ext }}" ./cmd/amux-desktop
+      - name: Desktop CLI argument smoke
+        shell: bash
+        run: |
+          # --help validates argument parsing and binary startup only; it does
+          # not open the GUI or prove that a graphical session can render it.
+          bin/amux-desktop${{ matrix.ext }} --help
+      - name: Assemble and smoke test portable install
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/install
+          cp "bin/amux${{ matrix.ext }}" "bin/amux-desktop${{ matrix.ext }}" dist/install/
+          cp "target/bundled/agent-tools${{ matrix.ext }}" "target/bundled/memory${{ matrix.ext }}" dist/install/
+          cp LICENSE dist/install/
+          cp assets/models.json dist/install/models.json
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            package_name="amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-$GITHUB_REF_NAME.tar.gz"
+            version_args=(--version "$GITHUB_REF_NAME")
+          else
+            package_name="amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-$GITHUB_SHA.tar.gz"
+            version_args=(--candidate-only)
+          fi
+          go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output "dist/$package_name" "${version_args[@]}"
+          go run ./cmd/amux-release smoke --bundle "dist/$package_name" --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output dist/installed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ github.sha }}
+          path: dist/amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-go-assets:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Validate tag and upload Go assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          go run ./cmd/amux-release check-tag "$TAG"
+          mkdir -p dist
+          cp artifacts/amux-go-*/*.tar.gz dist/
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS-go)
+          test "$(gh release view "$TAG" --json tagName --jq .tagName)" = "$TAG"
+          gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS-go

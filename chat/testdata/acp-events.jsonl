@@ -1,0 +1,8 @@
+{"id":"acp-1","conversation_id":"conversation","sequence":1,"event":{"kind":"user_message","session_id":"session","message_id":"worker-prompt","text":"Run the check"}}
+{"id":"acp-2","conversation_id":"conversation","sequence":2,"event":{"kind":"text_delta","session_id":"session","message_id":"assistant-1","text":"Checking "}}
+{"id":"acp-3","conversation_id":"conversation","sequence":3,"event":{"kind":"text_delta","session_id":"session","message_id":"assistant-1","text":"the project"}}
+{"id":"acp-4","conversation_id":"conversation","sequence":4,"event":{"kind":"tool_call","session_id":"session","tool_call_id":"tool-1","title":"Inspect files","status":"running","data":{"sessionUpdate":"tool_call"}}}
+{"id":"acp-5","conversation_id":"conversation","sequence":5,"event":{"kind":"tool_update","session_id":"session","tool_call_id":"tool-1","title":"Inspect files","status":"completed","data":{"sessionUpdate":"tool_call_update"}}}
+{"id":"acp-6","conversation_id":"conversation","sequence":6,"event":{"kind":"tool_output_delta","session_id":"session","tool_call_id":"tool-1","text":"found files","data":{"chunk":1}}}
+{"id":"acp-7","conversation_id":"conversation","sequence":7,"event":{"kind":"permission","session_id":"session","request_id":"rpc-1","tool_call_id":"tool-1","title":"Allow inspection","options":[{"id":"allow","name":"Allow once","kind":"allow_once"}]}}
+{"id":"acp-8","conversation_id":"conversation","sequence":8,"event":{"kind":"permission_resolved","session_id":"session","request_id":"rpc-1"}}

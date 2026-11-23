@@ -1,0 +1,111 @@
+package server
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/storage"
+)
+
+type projectRegistration struct {
+	Ident        string  `json:"ident"`
+	Channel      string  `json:"channel_name"`
+	Room         string  `json:"room_id"`
+	Kind         string  `json:"kind"`
+	RepoFullName *string `json:"repo_full_name"`
+}
+
+func (a *api) registerProject(w http.ResponseWriter, r *http.Request) {
+	var req *struct {
+		Ident   string  `json:"ident"`
+		Channel *string `json:"channel"`
+		RepoURL *string `json:"repo_url"`
+	}
+	if !readTaskRequest(w, r, &req) {
+		return
+	}
+	if req == nil {
+		writeError(w, 400, "project must be an object")
+		return
+	}
+	ident := projects.SanitizeIdent(req.Ident)
+	channel := "internal"
+	if req.Channel != nil {
+		channel = *req.Channel
+	}
+	var repo *projects.RepoRef
+	if req.RepoURL != nil {
+		parsed, err := projects.ParseRemote(*req.RepoURL)
+		if err == nil {
+			repo = &parsed
+		}
+	}
+	if repo == nil {
+		parsed, err := projects.ParseRemote(req.Ident)
+		if err == nil {
+			repo = &parsed
+		}
+	}
+	existing, err := a.store.Project(r.Context(), ident)
+	if err != nil {
+		taskError(w, err)
+		return
+	}
+	if existing != nil {
+		if repo != nil {
+			if _, err := a.store.BackfillRepo(r.Context(), ident, *repo); err != nil {
+				taskError(w, err)
+				return
+			}
+			existing, err = a.store.Project(r.Context(), ident)
+			if err != nil {
+				taskError(w, err)
+				return
+			}
+		}
+	} else {
+		roomID := ""
+		kind := "adhoc"
+		if channel == "internal" {
+			roomID = ident
+		} else if repo != nil {
+			provider, ok := a.channels[channel]
+			if !ok {
+				writeError(w, http.StatusBadRequest, "unknown channel plugin: '"+channel+"'")
+				return
+			}
+			room, err := provider.EnsureRoom(r.Context(), ident)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "channel room creation failed")
+				return
+			}
+			roomID = room
+			kind = "repo"
+		}
+		p := storage.Project{Ident: ident, ChannelName: channel, RoomID: roomID, CreatedAt: time.Now().UnixMilli(), Kind: kind}
+		if repo != nil {
+			provider, namespace, name, full, canonical := repo.Provider, repo.Namespace, repo.Name, repo.FullName(), repo.Canonical
+			p.RepoProvider = &provider
+			p.RepoNamespace = &namespace
+			p.RepoName = &name
+			p.RepoFullName = &full
+			p.CanonicalRemote = &canonical
+			p.Kind = "repo"
+		}
+		if err := a.store.InsertProject(r.Context(), p); err != nil {
+			taskError(w, err)
+			return
+		}
+		existing, err = a.store.Project(r.Context(), ident)
+		if err != nil {
+			taskError(w, err)
+			return
+		}
+	}
+	if existing == nil {
+		writeError(w, 500, "project registration failed")
+		return
+	}
+	writeJSON(w, projectRegistration{existing.Ident, existing.ChannelName, existing.RoomID, existing.Kind, existing.RepoFullName})
+}

@@ -1,0 +1,29 @@
+[Unit]
+Description=Amux standalone server
+After=network.target
+
+[Service]
+Type=simple
+User=amux
+Group=amux
+EnvironmentFile=-/etc/amux/server.env
+StateDirectory=amux
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/local/bin/amux server run --database /var/lib/amux/amux.db --listen 127.0.0.1:7913
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=25s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

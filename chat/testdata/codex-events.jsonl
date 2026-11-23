@@ -1,0 +1,9 @@
+{"id":"codex-1","conversation_id":"conversation","sequence":1,"event":{"kind":"user_message","session_id":"thread","message_id":"worker-prompt","text":"Explain this change"}}
+{"id":"codex-2","conversation_id":"conversation","sequence":2,"event":{"kind":"user_snapshot","session_id":"thread","message_id":"native-user-1","text":"Explain this change","data":{"type":"userMessage"}}}
+{"id":"codex-3","conversation_id":"conversation","sequence":3,"event":{"kind":"text_delta","session_id":"thread","message_id":"assistant-1","text":"The change "}}
+{"id":"codex-4","conversation_id":"conversation","sequence":4,"event":{"kind":"text_delta","session_id":"thread","message_id":"assistant-1","text":"updates chat."}}
+{"id":"codex-5","conversation_id":"conversation","sequence":5,"event":{"kind":"message_snapshot","session_id":"thread","message_id":"assistant-1","text":"The change updates chat.","status":"completed"}}
+{"id":"codex-6","conversation_id":"conversation","sequence":6,"event":{"kind":"reasoning_delta","session_id":"thread","message_id":"reason-1","text":"Reviewing behavior","data":{"type":"reasoning"}}}
+{"id":"codex-7","conversation_id":"conversation","sequence":7,"event":{"kind":"tool_call","session_id":"thread","tool_call_id":"item-1","title":"go test ./...","status":"inProgress","data":{"type":"commandExecution"}}}
+{"id":"codex-8","conversation_id":"conversation","sequence":8,"event":{"kind":"tool_output_delta","session_id":"thread","tool_call_id":"item-1","text":"ok","data":{"stream":"stdout"}}}
+{"id":"codex-9","conversation_id":"conversation","sequence":9,"event":{"kind":"permission","session_id":"thread","request_id":"\"approval-1\"","tool_call_id":"item-1","title":"Approve command","options":[{"id":"accept","name":"Allow once","kind":"allow_once"},{"id":"decline","name":"Decline","kind":"reject_once"}],"data":{"threadId":"thread","turnId":"turn-1","itemId":"item-1","command":"go test ./..."}}}
