@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -146,7 +147,7 @@ func TestBrowserPluginSettingsWrappedStatusFitsProjectColumn(t *testing.T) {
 			t.Fatalf("plugin control %q needs %v width in %v project column", id, check.MinSize().Width, columnWidth)
 		}
 	}
-	preview, err := os.Create("/private/tmp/amux-plugin-settings-preview.png")
+	preview, err := os.Create(filepath.Join(t.TempDir(), "amux-plugin-settings-preview.png"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -69,7 +69,7 @@ func TestBrowserWorkerControlsResumeSavedScopeAndDrainOnClose(t *testing.T) {
 	if p.identity.Size().Height < p.identity.MinSize().Height || p.status.Position().Y < p.identity.Position().Y+p.identity.Size().Height {
 		t.Fatal("wrapped saved identity overlaps the worker status")
 	}
-	preview, err := os.Create("/private/tmp/amux-worker-panel-preview.png")
+	preview, err := os.Create(filepath.Join(t.TempDir(), "amux-worker-panel-preview.png"))
 	if err != nil {
 		t.Fatal(err)
 	}

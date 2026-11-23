@@ -107,7 +107,17 @@ func TestTasksReportOnlineUsesSyntheticGatewayAndStubGitHub(t *testing.T) {
 	if err := os.Mkdir(bin, 0700); err != nil {
 		t.Fatal(err)
 	}
-	gh := fmt.Sprintf("#!/bin/sh\nif [ \"$1 $2\" = \"repo view\" ]; then\n  printf '{\\\"nameWithOwner\\\":\\\"fixture/project\\\"}'\n  exit 0\nfi\nif [ \"$1\" = \"api\" ]; then\n  printf '{\\\"workflow_runs\\\":[{\\\"id\\\":1,\\\"run_attempt\\\":1,\\\"head_sha\\\":\\\"%s\\\",\\\"status\\\":\\\"completed\\\",\\\"conclusion\\\":\\\"success\\\"}]}\\n'\n  exit 0\nfi\nexit 2\n", sha)
+	gh := fmt.Sprintf(`#!/bin/sh
+if [ "$1 $2" = "repo view" ]; then
+  printf '%%s' '{"nameWithOwner":"fixture/project"}'
+  exit 0
+fi
+if [ "$1" = "api" ]; then
+  printf '%%s\n' '{"workflow_runs":[{"id":1,"run_attempt":1,"head_sha":"%s","status":"completed","conclusion":"success"}]}'
+  exit 0
+fi
+exit 2
+`, sha)
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(gh), 0700); err != nil {
 		t.Fatal(err)
 	}

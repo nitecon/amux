@@ -172,7 +172,7 @@ func TestChatUIRendersAndSendsCommands(t *testing.T) {
 	if !strings.Contains(markup, "Run the search?") || !strings.Contains(markup, "Allow once") || !strings.Contains(markup, "Find the config file") || !strings.Contains(markup, "Inspect request details") || strings.Contains(markup, `"directory": "/repo"`) {
 		t.Fatalf("transcript or permission controls missing: %s", markup)
 	}
-	if err := writeHUDPNG(window.Canvas(), "/private/tmp/amux-desktop-preview.png"); err != nil {
+	if err := writeHUDPNG(window.Canvas(), filepath.Join(t.TempDir(), "amux-desktop-preview.png")); err != nil {
 		t.Fatalf("write visual preview: %v", err)
 	}
 	captureHUDState(t, "tool-collapsed", window.Canvas())

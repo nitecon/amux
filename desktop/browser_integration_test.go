@@ -159,7 +159,7 @@ func TestBrowserKeepsChatDraftAcrossTasksAndDiscoversNewConversations(t *testing
 		t.Fatal("refresh discarded current chat selection or draft")
 	}
 	queue.pump()
-	if err := writeHUDPNG(window.Canvas(), "/private/tmp/amux-browser-integration-preview.png"); err != nil {
+	if err := writeHUDPNG(window.Canvas(), filepath.Join(t.TempDir(), "amux-browser-integration-preview.png")); err != nil {
 		t.Fatal(err)
 	}
 	standalone, err := s.CreateConversation(ctx, "demo", "", &owner)

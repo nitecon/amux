@@ -167,10 +167,7 @@ todoStarted:
 	if !browser.prefs.Favorites[FavoriteKey(client.Endpoint(), "alpha")] {
 		t.Fatal("favorite button did not record the selected project")
 	}
-	if err := os.MkdirAll(filepath.Dir("/private/tmp/amux-browser-preview.png"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Create("/private/tmp/amux-browser-preview.png")
+	file, err := os.Create(filepath.Join(t.TempDir(), "amux-browser-preview.png"))
 	if err != nil {
 		t.Fatal(err)
 	}

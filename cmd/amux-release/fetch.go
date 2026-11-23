@@ -33,6 +33,11 @@ func download(address, accept string) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", accept)
+	if req.URL.Scheme == "https" && req.URL.Host == "api.github.com" && strings.HasPrefix(req.URL.Path, "/repos/nitecon/amux/releases/") {
+		if token := os.Getenv("AMUX_RELEASE_GITHUB_TOKEN"); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, 0, err

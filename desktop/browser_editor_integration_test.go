@@ -171,7 +171,7 @@ func captureTaskEditor(t *testing.T, browser *Browser) {
 	accordion.Open(0)
 	window.Resize(fyne.NewSize(1280, 820))
 	browser.Content().Refresh()
-	file, err := os.Create("/private/tmp/amux-task-editor-preview.png")
+	file, err := os.Create(filepath.Join(t.TempDir(), "amux-task-editor-preview.png"))
 	if err != nil {
 		t.Fatal(err)
 	}

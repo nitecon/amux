@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -345,7 +346,7 @@ func TestBrowserComposerLayout(t *testing.T) {
 	}
 	window.Resize(fyne.NewSize(1280, 820))
 	b.Content().Refresh()
-	file, err := os.Create("/private/tmp/amux-task-composer-preview.png")
+	file, err := os.Create(filepath.Join(t.TempDir(), "amux-task-composer-preview.png"))
 	if err != nil {
 		t.Fatal(err)
 	}

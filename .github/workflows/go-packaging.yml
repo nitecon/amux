@@ -91,6 +91,8 @@ jobs:
           bin/amux-desktop${{ matrix.ext }} --help
       - name: Assemble and smoke test portable install
         shell: bash
+        env:
+          AMUX_RELEASE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p dist/install

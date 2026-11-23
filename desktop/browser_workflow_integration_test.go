@@ -503,7 +503,7 @@ func TestBrowserWorkflowLayout(t *testing.T) {
 	}
 	b.Content().Refresh()
 	captureHUDState(t, "user-review", window.Canvas())
-	if err := writeHUDPNG(window.Canvas(), "/private/tmp/amux-task-workflow-preview.png"); err != nil {
+	if err := writeHUDPNG(window.Canvas(), filepath.Join(t.TempDir(), "amux-task-workflow-preview.png")); err != nil {
 		t.Fatal(err)
 	}
 }
