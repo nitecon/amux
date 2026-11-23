@@ -349,9 +349,11 @@ func TestClockSourceOverflowWaitsForSubsequentTick(t *testing.T) {
 	defer cancel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	requests := make(chan struct{}, 3)
+	calls := 0
 	done := startClockSource(ctx, eventEmitterFunc(func(context.Context, *router.Registry, router.EmitRequest) (router.EmitResult, error) {
+		calls++
 		requests <- struct{}{}
-		if len(requests) == 1 {
+		if calls == 1 {
 			close(entered)
 			<-release
 		}
