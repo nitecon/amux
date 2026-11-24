@@ -29,17 +29,43 @@ import (
 var errRestartDesktop = errors.New("restart desktop")
 
 func main() {
-	for {
-		err := run(os.Args[1:])
-		if errors.Is(err, errRestartDesktop) {
-			continue
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "amux-desktop:", err)
-			os.Exit(1)
-		}
-		return
+	args := os.Args[1:]
+	err := run(args)
+	if errors.Is(err, errRestartDesktop) {
+		err = relaunchDesktop(args)
 	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "amux-desktop:", err)
+		os.Exit(1)
+	}
+}
+
+// GLFW's desktop driver runs once per process. Relaunch only after run has
+// released the previous gateway, worker journal, and other application state.
+func relaunchDesktop(args []string) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate desktop for restart: %w", err)
+	}
+	if runtime.GOOS == "darwin" {
+		macosDir := filepath.Dir(executable)
+		contentsDir := filepath.Dir(macosDir)
+		bundle := filepath.Dir(contentsDir)
+		if filepath.Base(macosDir) == "MacOS" && filepath.Base(contentsDir) == "Contents" && filepath.Ext(bundle) == ".app" {
+			launch := exec.Command("/usr/bin/open", append([]string{"-n", bundle, "--args"}, args...)...)
+			if err := launch.Run(); err != nil {
+				return fmt.Errorf("restart desktop bundle: %w", err)
+			}
+			return nil
+		}
+	}
+	command := exec.Command(executable, args...)
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("restart desktop: %w", err)
+	}
+	_ = command.Process.Release()
+	return nil
 }
 
 type desktopView interface {
@@ -261,6 +287,14 @@ func run(args []string) error {
 		}
 		defer local.Close()
 	}
+	var chatRoot string
+	if *conversationID == "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return fmt.Errorf("locate local conversation directory: %w", homeErr)
+		}
+		chatRoot = filepath.Join(home, ".amux", "conversations")
+	}
 	var manager *desktop.WorkerManager
 	if *conversationID == "" && local != nil {
 		conversationRoot := filepath.Dir(*state)
@@ -272,7 +306,7 @@ func run(args []string) error {
 			conversationRoot = filepath.Join(home, ".amux")
 		}
 		manager, err = desktop.NewWorkerManager(desktop.WorkerManagerConfig{
-			Store: local, Client: client, ConversationRoot: conversationRoot,
+			Store: local, Client: client, ConversationRoot: conversationRoot, TaskConversationRoot: chatRoot, UseTaskStream: true,
 			Open: desktopWorkerOpenWithEnrolledProfile(*toolsCommand, client.Endpoint(), *keyEnv, workPreferencesPath, *enrolledProfile),
 		})
 		if err != nil {
@@ -287,6 +321,7 @@ func run(args []string) error {
 	windowApp.Settings().SetTheme(desktop.WorkspaceTheme())
 	restartRequested := false
 	stagedUpdate := ""
+	var view desktopView
 	var generatePeeringKey func(context.Context, bool) (string, error)
 	if serverProfile != "" {
 		generatePeeringKey = func(keyCtx context.Context, copyCurrent bool) (string, error) {
@@ -299,10 +334,11 @@ func run(args []string) error {
 		GeneratePeeringKey: generatePeeringKey,
 		Restart: func() {
 			restartRequested = true
+			view.Close()
+			cancel()
 			windowApp.Quit()
 		},
 	}
-	var view desktopView
 	desktopExecutable, err := os.Executable()
 	if err != nil {
 		return err
@@ -315,7 +351,7 @@ func run(args []string) error {
 	if *conversationID != "" {
 		view, err = desktop.New(desktop.Config{Client: client, Project: *project, ConversationID: *conversationID})
 	} else {
-		view, err = desktop.NewBrowser(desktop.BrowserConfig{Client: client, Project: *project, PreferencesPath: *preferences, WorkPreferencesPath: workPreferencesPath, GatewaySetup: setupConfig, WorkerManager: manager, NewWindow: windowApp.NewWindow, AppControls: desktop.NewAppControlsPanel(cliExecutable, func(archive string) {
+		view, err = desktop.NewBrowser(desktop.BrowserConfig{Client: client, LocalConversationsDirectory: chatRoot, AutoTaskAgents: true, Project: *project, PreferencesPath: *preferences, WorkPreferencesPath: workPreferencesPath, GatewaySetup: setupConfig, WorkerManager: manager, NewWindow: windowApp.NewWindow, AppControls: desktop.NewAppControlsPanel(cliExecutable, func(archive string) {
 			stagedUpdate = archive
 			windowApp.Quit()
 		})})
@@ -352,8 +388,8 @@ func run(args []string) error {
 	view.Start(ctx)
 	window.ShowAndRun()
 	view.Close()
-	view.Wait()
 	cancel()
+	view.Wait()
 	if workerDone != nil {
 		timer := time.NewTimer(10 * time.Second)
 		defer timer.Stop()

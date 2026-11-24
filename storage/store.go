@@ -24,6 +24,7 @@ type Store struct {
 	eventMu             sync.Mutex
 	eventChanges        chan struct{}
 	conversationChanges chan struct{}
+	workerTaskChanges   chan struct{}
 	bus                 *eventbus.Bus
 	workerRuns          sync.Map
 	routerReviews       atomic.Bool
@@ -111,7 +112,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("upgrade optional conversation task binding: %w", err)
 	}
-	s := &Store{db: db, eventChanges: make(chan struct{}), conversationChanges: make(chan struct{}), bus: eventbus.New()}
+	s := &Store{db: db, eventChanges: make(chan struct{}), conversationChanges: make(chan struct{}), workerTaskChanges: make(chan struct{}), bus: eventbus.New()}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate SQLite: %w", err)
@@ -262,6 +263,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := migrateWorkerPool(ctx, tx); err != nil {
+		return err
+	}
+	if err := migrateWorkerTaskInbox(ctx, tx); err != nil {
 		return err
 	}
 	if err := migrateReviewPresence(ctx, tx); err != nil {

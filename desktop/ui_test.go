@@ -191,8 +191,14 @@ func TestChatUIRendersAndSendsCommands(t *testing.T) {
 
 	ui.Start(context.Background())
 	waitForUI(t, callbacks, 3*time.Second, func() bool { return ui.heading.Text == "Desktop chat task · conversa" })
+	ui.composer.SetText(" ")
+	ui.composer.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	ui.composer.typedKey(&fyne.KeyEvent{Name: fyne.KeyEnter}, fyne.KeyModifierShift)
+	if ui.Snapshot().Draft != "\n " {
+		t.Fatalf("Shift+Enter did not insert a newline: %q", ui.Snapshot().Draft)
+	}
 	ui.composer.SetText("  Please inspect the task  ")
-	fynetest.Tap(ui.sendButton)
+	ui.composer.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
 	waitForUI(t, callbacks, 4*time.Second, func() bool {
 		gateway.mu.Lock()
 		defer gateway.mu.Unlock()

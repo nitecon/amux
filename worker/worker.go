@@ -29,7 +29,12 @@ type Session interface {
 // Open transfers ownership only on success. On error it must clean up any
 // partial provider resources; Run will not call methods on the failed result.
 type Open func(context.Context, storage.WorkerRun, conversation.Sink) (Session, error)
+
+// EventArchive attaches a local transcript to a worker run.
+type EventArchive func(context.Context, storage.WorkerRun) (conversation.Sink, error)
+
 type Config struct {
+	Archive           EventArchive
 	Store             *storage.Store
 	Client            *gatewayclient.Client
 	RunID             string
@@ -184,18 +189,30 @@ func Run(parent context.Context, config Config) error {
 			}
 		}()
 	}
+	var archive conversation.Sink
+	if config.Archive != nil {
+		archive, err = config.Archive(ctx, *r)
+		if err != nil {
+			return err
+		}
+	}
 	var mu sync.Mutex
 	pending := map[string]string{}
 	sink := func(_ context.Context, event conversation.Event) error {
 		// Local commits remain available during network loss and bounded shutdown.
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
+		mu.Lock()
+		defer mu.Unlock()
 		id, err := config.Store.QueueWorkerEvent(saveCtx, r.ID, event)
 		if err != nil {
 			return err
 		}
-		mu.Lock()
-		defer mu.Unlock()
+		if archive != nil {
+			if err := archive(saveCtx, event); err != nil {
+				return err
+			}
+		}
 		switch event.Kind {
 		case "permission":
 			for key, request := range pending {

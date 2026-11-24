@@ -50,6 +50,10 @@ func migrateTasks(ctx context.Context, tx *sql.Tx) error {
  CREATE TRIGGER IF NOT EXISTS task_event_commented AFTER INSERT ON task_comments BEGIN
  INSERT INTO task_events(kind,project_ident,canonical_remote,task_json,comment_json,created_at,origin_json)
  SELECT 'task_commented',t.project_ident,p.canonical_remote,%s,%s,NEW.created_at,%s FROM tasks t JOIN projects p ON p.ident=t.project_ident WHERE t.id=NEW.task_id;END;
+ CREATE TRIGGER IF NOT EXISTS amux_task_event_assignment AFTER UPDATE OF owner_origin_json ON tasks
+ WHEN NEW.owner_origin_json IS NOT NULL AND NEW.owner_origin_json IS NOT OLD.owner_origin_json BEGIN
+ INSERT INTO task_events(kind,project_ident,canonical_remote,task_json,created_at,origin_json)
+ VALUES('task_assigned',NEW.project_ident,(SELECT canonical_remote FROM projects WHERE ident=NEW.project_ident),%s,NEW.updated_at,%s);END;
  CREATE TRIGGER IF NOT EXISTS amux_task_event_user_review AFTER UPDATE OF status ON tasks
  WHEN NEW.status='user_review' AND OLD.status!='user_review' BEGIN
  INSERT INTO task_events(kind,project_ident,canonical_remote,task_json,created_at,origin_json)
@@ -57,7 +61,7 @@ func migrateTasks(ctx context.Context, tx *sql.Tx) error {
  CREATE TRIGGER IF NOT EXISTS task_completion_owner_park BEFORE UPDATE OF status ON tasks
  WHEN NEW.status='user_review' AND OLD.status!='user_review' AND OLD.owner_origin_json IS NOT NULL BEGIN
  INSERT OR REPLACE INTO task_completion_owners(task_id,origin_json) VALUES(OLD.id,OLD.owner_origin_json);END;
- CREATE TRIGGER IF NOT EXISTS task_completion_owner_clear AFTER UPDATE OF status ON tasks WHEN NEW.status!='user_review' BEGIN DELETE FROM task_completion_owners WHERE task_id=NEW.id;END;`, taskSnapshotSQL("NEW"), actor, taskSnapshotSQL("t"), commentSnapshotSQL("NEW"), actor, taskSnapshotSQL("NEW"), actor)
+ CREATE TRIGGER IF NOT EXISTS task_completion_owner_clear AFTER UPDATE OF status ON tasks WHEN NEW.status!='user_review' BEGIN DELETE FROM task_completion_owners WHERE task_id=NEW.id;END;`, taskSnapshotSQL("NEW"), actor, taskSnapshotSQL("t"), commentSnapshotSQL("NEW"), actor, taskSnapshotSQL("NEW"), actor, taskSnapshotSQL("NEW"), actor)
 	if _, err := tx.ExecContext(ctx, sql); err != nil {
 		return err
 	}

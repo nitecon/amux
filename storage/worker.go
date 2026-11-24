@@ -21,6 +21,7 @@ type WorkerRun struct {
 	Server            string      `json:"server"`
 	Project           string      `json:"project"`
 	ConversationID    string      `json:"conversation_id"`
+	LocalTaskID       string      `json:"-"` // Task ID for a gateway without server-side conversations.
 	Directory         string      `json:"directory"`
 	Command           []string    `json:"command,omitempty"`
 	Owner             AgentOrigin `json:"owner"`

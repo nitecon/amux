@@ -10,26 +10,36 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/chat"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/storage"
 )
 
 // Config identifies a remote conversation. Dispatch is mainly useful to make
 // widget updates deterministic in tests; normal applications use fyne.Do.
+type conversationClient interface {
+	Conversation(context.Context, string, string) (*storage.Conversation, error)
+	Task(context.Context, string, string) (*storage.Task, error)
+	Stream(context.Context, string, string, gatewayclient.Cursor, func(gatewayclient.Frame) error) error
+	Enqueue(context.Context, string, string, string, conversation.Command) error
+}
+
 type Config struct {
-	Client         *gatewayclient.Client
+	Client         conversationClient
 	Project        string
 	ConversationID string
 	TaskTitle      string
+	ReadOnly       bool
 	Model          *chat.Model
 	Dispatch       func(func())
 }
 
 type UI struct {
-	client         *gatewayclient.Client
+	client         conversationClient
 	project        string
 	conversationID string
 	model          *chat.Model
@@ -40,7 +50,7 @@ type UI struct {
 	scroll                  *container.Scroll
 	connection              *widget.Label
 	heading                 *widget.Label
-	composer                *widget.Entry
+	composer                *conversationComposer
 	sendButton              *widget.Button
 	cancelButton            *widget.Button
 	status                  *widget.Label
@@ -76,13 +86,15 @@ func New(config Config) (*UI, error) {
 		client: config.Client, project: config.Project, conversationID: config.ConversationID,
 		model: config.Model, dispatch: dispatch, toolButtons: map[string]*widget.Button{}, permissionButtons: map[string]*widget.Button{}, permissionDetailButtons: map[string]*widget.Button{}, expandedPermissions: map[string]bool{},
 		heading: widget.NewLabel(config.TaskTitle), connection: widget.NewLabel("Ready to connect"),
-		transcript: container.NewVBox(), composer: widget.NewMultiLineEntry(), status: widget.NewLabel(""),
+		transcript: container.NewVBox(), status: widget.NewLabel(""),
 	}
 	if strings.TrimSpace(config.TaskTitle) == "" {
 		u.heading.SetText(config.Project + " · " + shortID(config.ConversationID))
 	}
 	u.ctx, u.cancel = context.WithCancel(context.Background())
 	u.heading.TextStyle = fyne.TextStyle{Bold: true}
+	u.composer = &conversationComposer{Entry: widget.Entry{MultiLine: true}, submit: u.Submit}
+	u.composer.ExtendBaseWidget(u.composer)
 	u.composer.SetPlaceHolder("Message the agent…")
 	u.composer.Wrapping = fyne.TextWrapWord
 	u.composer.OnChanged = func(text string) {
@@ -95,7 +107,10 @@ func New(config Config) (*UI, error) {
 	u.transcript.Add(widget.NewLabel("Conversation events will appear here."))
 	u.scroll = container.NewVScroll(u.transcript)
 	composerRow := container.NewBorder(nil, nil, nil, container.NewHBox(u.cancelButton, u.sendButton), u.composer)
-	footer := container.NewVBox(u.status, composerRow)
+	footer := container.NewVBox(u.status)
+	if !config.ReadOnly {
+		footer.Add(composerRow)
+	}
 	u.root = container.NewBorder(container.NewVBox(u.heading, u.connection, widget.NewSeparator()), footer, nil, nil, u.scroll)
 	u.refresh()
 	u.updateButtons()
@@ -169,6 +184,9 @@ func (u *UI) loadConversation(ctx context.Context) {
 		u.setStatus("Gateway returned a different conversation.")
 		return
 	}
+	if conversationInfo.TaskID == "" {
+		return
+	}
 	task, err := u.client.Task(ctx, u.project, conversationInfo.TaskID)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -219,6 +237,18 @@ func (u *UI) stream(ctx context.Context) {
 
 func (u *UI) consume(frame gatewayclient.Frame) error {
 	switch frame.Type {
+	case "local_transcript":
+		u.setConnection("Local task transcript")
+	case "local_connecting":
+		u.setConnection("Connecting to local provider…")
+	case "local_ready":
+		u.setConnection("Local provider connected")
+		u.setStatus("")
+	case "local_failed":
+		u.setConnection("Local provider unavailable")
+		if frame.Event != nil {
+			u.setStatus(frame.Event.Event.Text)
+		}
 	case "ready":
 		u.setConnection("Gateway connected")
 	case "owner":
@@ -232,11 +262,18 @@ func (u *UI) consume(frame gatewayclient.Frame) error {
 		if frame.Event == nil {
 			return fmt.Errorf("gateway sent an empty event frame")
 		}
+		if frame.Event.Event.Kind == "local_error" {
+			u.setStatus(frame.Event.Event.Text)
+		}
 		if err := u.model.Apply(*frame.Event); err != nil {
 			return err
 		}
 		u.mu.Lock()
 		u.cursor.Events = frame.Event.Sequence
+		if frame.Event.Event.Kind == "local_prompt_started" {
+			u.activePrompt = frame.Event.Event.MessageID
+			u.setConnection("Local provider connected")
+		}
 		if frame.Event.Event.Kind == "turn_completed" || frame.Event.Event.Kind == "owner_handoff" {
 			u.activePrompt = ""
 		}
@@ -259,6 +296,29 @@ func (u *UI) consume(frame gatewayclient.Frame) error {
 		u.dispatch(u.updateButtons)
 	}
 	return nil
+}
+
+type conversationComposer struct {
+	widget.Entry
+	submit func()
+}
+
+func (e *conversationComposer) TypedKey(key *fyne.KeyEvent) {
+	var modifiers fyne.KeyModifier
+	if driver, ok := fyne.CurrentApp().Driver().(desktop.Driver); ok {
+		modifiers = driver.CurrentKeyModifiers()
+	}
+	e.typedKey(key, modifiers)
+}
+
+func (e *conversationComposer) typedKey(key *fyne.KeyEvent, modifiers fyne.KeyModifier) {
+	if (key.Name == fyne.KeyReturn || key.Name == fyne.KeyEnter) && modifiers == 0 {
+		if !e.Disabled() {
+			e.submit()
+		}
+		return
+	}
+	e.Entry.TypedKey(key)
 }
 
 func (u *UI) Submit() {

@@ -108,9 +108,9 @@ func TestBrowserKeepsChatDraftAcrossTasksAndDiscoversNewConversations(t *testing
 	}
 	selectConversation := func(id string) {
 		t.Helper()
-		for i, c := range b.conversationItems {
+		for _, c := range b.conversationItems {
 			if c.ID == id {
-				b.conversations.Select(i)
+				b.openConversation(c)
 				return
 			}
 		}
@@ -166,28 +166,32 @@ func TestBrowserKeepsChatDraftAcrossTasksAndDiscoversNewConversations(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.setMainView("Conversations")
+	rail, offset := b.root.Leading, b.root.Offset
+	for i, conversation := range b.conversationItems {
+		if conversation.ID == c1.ID {
+			b.conversations.Select(i)
+			break
+		}
+	}
+	if b.mainView != "Conversations" || b.selection.ProjectConversation != c1.ID {
+		t.Fatal("task conversation link did not open Task Thread")
+	}
 	wait("list task conversations and discover the default chat", func() bool {
 		return len(b.projectConversationItems) == 3 && b.defaultChats["codex"].ID == standalone.ID
 	})
-	if b.root.Leading != b.compactProjectRail {
-		t.Fatal("Conversations did not collapse the project rail")
+	if b.root.Leading != rail || b.root.Offset != offset {
+		t.Fatal("Conversations changed the Projects rail or its width")
 	}
-	b.toggleConversationProjects()
-	if b.root.Leading != b.projectRail {
-		t.Fatal("the compact Projects switcher did not restore the project rail")
-	}
-	b.toggleConversationProjects()
-	for index, chat := range b.projectConversationItems {
+	for index, chat := range b.conversationHistory {
 		if chat.ID == c1.ID {
-			b.projectConversationList.Select(index + len(defaultChatProviders))
+			b.projectConversationList.Select(index)
 			break
 		}
 	}
 	if b.mainView != "Conversations" || b.standaloneChatHost.Objects[0] == firstChat.Content() {
 		t.Fatal("linked chat must stay in Conversations with a task link")
 	}
-	b.projectConversationList.Select(1)
+	fynetest.Tap(b.providerTabs["codex"])
 	if b.mainView != "Conversations" || b.chats[chatKey("demo", standalone.ID)] == nil {
 		t.Fatal("standalone chat did not open in the Conversations view")
 	}

@@ -25,7 +25,7 @@ func TestTaskDelegationHTTPAndToolLifecycle(t *testing.T) {
 	}
 
 	caps := taskRequest(handler, http.MethodGet, "/v1/tasks/capabilities", "", nil)
-	if caps.Code != http.StatusOK || strings.TrimSpace(caps.Body.String()) != `{"changeset_confirmation":1,"guided_confirmation":1,"requester_subscriptions":1,"task_hierarchy":1}` {
+	if caps.Code != http.StatusOK || strings.TrimSpace(caps.Body.String()) != `{"changeset_confirmation":1,"guided_confirmation":1,"native_worker_assignment":1,"requester_subscriptions":1,"task_hierarchy":1}` {
 		t.Fatalf("capabilities %d %s", caps.Code, caps.Body.String())
 	}
 	body, _ := json.Marshal(map[string]any{"target_project_ident": "target", "title": "Handoff", "parent_task_id": parent.ID, "specification": "literal $(text)"})

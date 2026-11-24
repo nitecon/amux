@@ -16,6 +16,8 @@ type NavigationPreferences struct {
 	Favorites           map[string]bool                          `json:"favorites"`
 	Selections          map[string]NavigationSelection           `json:"selections"`
 	WorkerPools         map[string]string                        `json:"worker_pools,omitempty"`
+	ProjectsDirectory   string                                   `json:"projects_directory,omitempty"`
+	ProjectCheckouts    map[string]localProjectBinding           `json:"project_checkouts,omitempty"`
 	ProjectsDirectories map[string]string                        `json:"projects_directories,omitempty"`
 	WorkspaceIDs        map[string][]string                      `json:"workspace_ids,omitempty"`
 	ActiveWorkspace     map[string]string                        `json:"active_workspace,omitempty"`
@@ -24,6 +26,7 @@ type NavigationPreferences struct {
 
 type ConversationLaunchPreferences struct {
 	Model   string `json:"model,omitempty"`
+	Effort  string `json:"effort,omitempty"`
 	Persona string `json:"persona,omitempty"`
 }
 
@@ -32,16 +35,17 @@ func workspaceSelectionKey(endpoint, workspaceID string) string {
 }
 
 type NavigationSelection struct {
-	Project        string  `json:"project"`
-	WorkspaceName  string  `json:"workspace_name,omitempty"`
-	CheckoutPath   string  `json:"checkout_path,omitempty"`
-	CheckoutOrigin *string `json:"checkout_origin,omitempty"`
-	Task           string  `json:"task"`
-	Conversation   string  `json:"conversation"`
-	ProjectFilter  string  `json:"project_filter"`
-	TaskFilter     string  `json:"task_filter"`
-	Status         string  `json:"status"`
-	MainView       string  `json:"main_view,omitempty"`
+	Project             string  `json:"project"`
+	WorkspaceName       string  `json:"workspace_name,omitempty"`
+	CheckoutPath        string  `json:"checkout_path,omitempty"`
+	CheckoutOrigin      *string `json:"checkout_origin,omitempty"`
+	Task                string  `json:"task"`
+	Conversation        string  `json:"conversation"`
+	ProjectConversation string  `json:"project_conversation,omitempty"`
+	ProjectFilter       string  `json:"project_filter"`
+	TaskFilter          string  `json:"task_filter"`
+	Status              string  `json:"status"`
+	MainView            string  `json:"main_view,omitempty"`
 }
 
 type navigationPreferencesFile struct {

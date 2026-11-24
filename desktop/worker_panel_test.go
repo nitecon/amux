@@ -387,8 +387,8 @@ func TestMissingCheckoutRecoveryClonesSelectedMachineOriginAndPersistsBinding(t 
 	p := b.workerPanel
 	p.discoveryParent.SetText(parent)
 	savedPrefs, err := LoadNavigationPreferences(b.prefsPath)
-	if err != nil || savedPrefs.ProjectsDirectories[b.prefKey] != parent {
-		t.Fatalf("projects directory was not saved: prefs=%+v err=%v", savedPrefs.ProjectsDirectories, err)
+	if err != nil || savedPrefs.ProjectsDirectory != parent {
+		t.Fatalf("projects directory was not saved: prefs=%+v err=%v", savedPrefs.ProjectsDirectory, err)
 	}
 	p = newWorkerPanel(b, manager)
 	b.workerPanel = p
@@ -421,7 +421,7 @@ func TestMissingCheckoutRecoveryClonesSelectedMachineOriginAndPersistsBinding(t 
 		t.Fatalf("recovered raw clone origin=%v, want %q", b.prefs.Selections[key].CheckoutOrigin, source)
 	}
 	reloaded, err := LoadNavigationPreferences(b.prefsPath)
-	if err != nil || reloaded.Selections[key].Project != "adhoc-project" || reloaded.Selections[key].CheckoutPath != cloned || reloaded.ProjectsDirectories[b.prefKey] != parent {
+	if err != nil || reloaded.Selections[key].Project != "adhoc-project" || reloaded.Selections[key].CheckoutPath != cloned || reloaded.ProjectsDirectory != parent {
 		t.Fatalf("recovery preferences did not round-trip: %+v err=%v", reloaded, err)
 	}
 	if snapshot := manager.Snapshot(); snapshot.State != WorkerManagerIdle || snapshot.Pool != nil {

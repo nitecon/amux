@@ -139,7 +139,7 @@ func (a *api) registerTaskRoutes(mux *http.ServeMux) {
 func taskCapabilities(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]int{
 		"task_hierarchy": 1, "requester_subscriptions": 1,
-		"changeset_confirmation": 1, "guided_confirmation": 1,
+		"changeset_confirmation": 1, "guided_confirmation": 1, "native_worker_assignment": 1,
 	})
 }
 

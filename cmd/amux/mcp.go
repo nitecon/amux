@@ -26,6 +26,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	enrolledProfile := flags.String("enrolled-profile", "", "enrolled gateway credential manifest")
 	project := flags.String("project", "", "bound project identifier")
 	conversationID := flags.String("conversation", "", "bound task conversation UUID")
+	localTask := flags.String("local-task", "", "bound task UUID for a gateway without server-side conversations")
 	session := flags.String("session", "", "bound agent session UUID")
 	instance := flags.String("instance", "", "bound agent instance UUID")
 	provider := flags.String("provider", "", "bound native provider")
@@ -46,7 +47,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	nativeRequested := false
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "server", "enrolled-profile", "project", "conversation", "session", "instance", "provider", "os", "goal":
+		case "server", "enrolled-profile", "project", "conversation", "local-task", "session", "instance", "provider", "os", "goal":
 			nativeRequested = true
 		}
 	})
@@ -107,6 +108,11 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 			return err
 		}
 	}
+	if *localTask != "" {
+		if _, err := canonicalTaskID(*localTask); err != nil {
+			return err
+		}
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		executable = ""
@@ -117,7 +123,11 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	listTools := func() []mcpstdio.Tool {
 		tools := make([]mcpstdio.Tool, 0, len(bundledToolCatalog)+len(server.AgentTaskTools())+1)
 		if nativeRequested {
-			tools = append(tools, server.AgentTaskTools()...)
+			for _, tool := range server.AgentTaskTools() {
+				if *localTask == "" || localGatewayTaskTool(tool.Name) {
+					tools = append(tools, tool)
+				}
+			}
 			tools = append(tools, submitWorkMCPTool())
 		}
 		return append(tools, runner.AvailableTools()...)
@@ -128,11 +138,21 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 			if err != nil {
 				return mcpstdio.Result{Content: []mcpstdio.TextContent{{Type: "text", Text: err.Error()}}, IsError: true}, nil
 			}
-			return callSubmitWorkMCP(callCtx, client, *project, id.String(), *directory, origin, selectedGoal, preferencesPath, args)
+			conversation := id.String()
+			if *localTask != "" {
+				if err := verifyLocalGatewayTaskWrite(callCtx, client, *project, *localTask, origin, args, "task_id"); err != nil {
+					return localGatewayToolResult(nil, err), nil
+				}
+				conversation = ""
+			}
+			return callSubmitWorkMCP(callCtx, client, *project, conversation, *directory, origin, selectedGoal, preferencesPath, args)
 		}
 		if nativeRequested {
+			if *localTask != "" && localGatewayTaskTool(name) {
+				return callLocalGatewayTaskTool(callCtx, client, *project, *localTask, origin, selectedGoal, name, args), nil
+			}
 			for _, tool := range server.AgentTaskTools() {
-				if name != tool.Name {
+				if *localTask != "" || name != tool.Name {
 					continue
 				}
 				if name == "task_delegate" {

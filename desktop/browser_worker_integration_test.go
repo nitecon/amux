@@ -46,7 +46,7 @@ func TestBrowserWorkerControlsResumeSavedScopeAndDrainOnClose(t *testing.T) {
 	window.Resize(fyne.NewSize(1280, 820))
 	window.Show()
 	t.Cleanup(window.Close)
-	b.setMainView("Settings")
+	openBrowserSettingsPage(t, b, "Workers")
 	p.accordion.Open(0)
 	waitBrowser(t, callbacks, func() bool { return b.selectedProject == "demo" && !p.start.Disabled() })
 	directory := t.TempDir()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -24,7 +25,7 @@ import (
 	"github.com/nitecon/amux/worker"
 )
 
-func workerManagerFixture(t *testing.T, open worker.Open) (*WorkerManager, *storage.Store, *storage.Store, *gatewayclient.Client, string) {
+func workerManagerFixture(t *testing.T, open worker.Open, observe ...func(http.ResponseWriter, *http.Request) bool) (*WorkerManager, *storage.Store, *storage.Store, *gatewayclient.Client, string) {
 	t.Helper()
 	ctx := context.Background()
 	local, err := storage.Open(ctx, filepath.Join(t.TempDir(), "local.db"))
@@ -44,7 +45,14 @@ func workerManagerFixture(t *testing.T, open worker.Open) (*WorkerManager, *stor
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := httptest.NewServer(handler)
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, observer := range observe {
+			if observer(w, r) {
+				return
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(host.Close)
 	client, err := gatewayclient.New(host.URL, "manager-secret", nil)
 	if err != nil {
@@ -249,11 +257,13 @@ func TestWorkerManagerLiveACPTasklessReply(t *testing.T) {
 func TestBrowserNewConversationKeepsWorkerForWindowLifetime(t *testing.T) {
 	app := fynetest.NewApp()
 	t.Cleanup(app.Quit)
-	deadlines := make(chan bool, 1)
-	manager, _, _, client, _ := workerManagerFixture(t, func(ctx context.Context, _ storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	deadlines := make(chan bool, 2)
+	stopped := make(chan string, 2)
+	manager, _, _, client, _ := workerManagerFixture(t, func(ctx context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
 		_, bounded := ctx.Deadline()
 		deadlines <- bounded
 		<-ctx.Done()
+		stopped <- run.ConversationID
 		return nil, ctx.Err()
 	})
 	manager.conversationRoot = t.TempDir()
@@ -267,7 +277,7 @@ func TestBrowserNewConversationKeepsWorkerForWindowLifetime(t *testing.T) {
 	waitBrowser(t, callbacks, func() bool { return browser.selectedProject == "demo" })
 	browser.setMainView("Conversations")
 	waitBrowser(t, callbacks, func() bool { return !browser.projectConversationsLoading })
-	browser.projectConversationList.Select(2)
+	fynetest.Tap(browser.providerTabs["antigravity"])
 	select {
 	case bounded := <-deadlines:
 		if bounded {
@@ -276,6 +286,23 @@ func TestBrowserNewConversationKeepsWorkerForWindowLifetime(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("New Conversation did not start the worker")
 	}
+	waitBrowser(t, callbacks, func() bool {
+		return len(browser.conversationHistory) == 1 && browser.selection.ProjectConversation != ""
+	})
+	previous := browser.selection.ProjectConversation
+	fynetest.Tap(browser.newChatButton)
+	waitBrowser(t, callbacks, func() bool {
+		return len(browser.conversationHistory) == 2 && browser.selection.ProjectConversation != previous
+	})
+	select {
+	case id := <-stopped:
+		if id != previous {
+			t.Fatalf("New Chat stopped %q, want %q", id, previous)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("New Chat left the previous provider worker running")
+	}
+
 }
 
 func waitForManagerPresence(t *testing.T, ctx context.Context, manager *WorkerManager, remote *storage.Store) {

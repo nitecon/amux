@@ -345,8 +345,8 @@ func TestBrowserRestoresConversationViewAndSelection(t *testing.T) {
 	defer func() { b.Close(); b.Wait(); callbacks.pump() }()
 	b.Start(ctx)
 	waitBrowser(t, callbacks, func() bool {
-		return b.mainView == "Conversations" && b.selectedConversation == chat.ID &&
-			len(b.standaloneChatHost.Objects) == 1 && b.prefs.Selections[workspaceSelectionKey(b.prefKey, b.activeWorkspaceID)].Conversation == chat.ID
+		return b.mainView == "Conversations" && b.selection.ProjectConversation == chat.ID &&
+			len(b.standaloneChatHost.Objects) == 1 && b.prefs.Selections[workspaceSelectionKey(b.prefKey, b.activeWorkspaceID)].ProjectConversation == chat.ID
 	})
 }
 

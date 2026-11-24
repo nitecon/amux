@@ -171,6 +171,9 @@ func nativeMCPArgs(config NativeToolsConfig, run storage.WorkerRun) []string {
 		"--conversation", run.ConversationID, "--session", run.Owner.SessionID,
 		"--instance", run.Owner.InstanceID, "--provider", run.Owner.Provider,
 		"--os", run.Owner.OS}
+	if run.LocalTaskID != "" {
+		args = append(args, "--local-task", run.LocalTaskID)
+	}
 	if config.EnrolledProfile != "" {
 		args = append(args, "--enrolled-profile", config.EnrolledProfile)
 	} else {

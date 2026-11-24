@@ -43,6 +43,7 @@ type workerPanel struct {
 	attachCheckout  *widget.Button
 	cloneCheckout   *widget.Button
 	discoveryStatus *widget.Label
+	automaticStatus *widget.Label
 	provider        *widget.Select
 	launchSummary   *widget.Label
 	slots           *widget.Select
@@ -81,14 +82,9 @@ func newWorkerPanel(browser *Browser, manager workerPanelController) *workerPane
 	p.cloneSource.SetPlaceHolder("Repository URL or local Git path")
 	p.discoveryParent = widget.NewEntry()
 	p.discoveryParent.SetPlaceHolder("Projects directory")
-	p.discoveryParent.SetText(browser.prefs.ProjectsDirectories[browser.prefKey])
-	p.discoveryParent.OnChanged = func(value string) {
-		if browser.prefs.ProjectsDirectories == nil {
-			browser.prefs.ProjectsDirectories = make(map[string]string)
-		}
-		browser.prefs.ProjectsDirectories[browser.prefKey] = value
-		browser.persist()
-	}
+	p.discoveryParent.SetText(browser.projectsDirectory())
+	p.discoveryParent.OnChanged = browser.setProjectsDirectory
+
 	p.discover = widget.NewButton("Discover local checkouts", func() {
 		p.discoverCheckouts(p.discoveryParent.Text)
 	})
@@ -100,6 +96,8 @@ func newWorkerPanel(browser *Browser, manager workerPanelController) *workerPane
 	p.recoveryOrigins.Disable()
 	p.attachCheckout = widget.NewButton("Attach checkout to workspace", p.attachCheckoutToWorkspace)
 	p.cloneCheckout = widget.NewButton("Clone checkout", p.cloneCheckoutForWorkspace)
+	p.automaticStatus = widget.NewLabel("")
+	p.automaticStatus.Wrapping = fyne.TextWrapWord
 	p.discoveryStatus = widget.NewLabel("")
 	p.discoveryStatus.Wrapping = fyne.TextWrapWord
 	p.provider = widget.NewSelect([]string{"antigravity", "claude", "codex"}, nil)
@@ -146,7 +144,7 @@ func newWorkerPanel(browser *Browser, manager workerPanelController) *workerPane
 		p.discoveryStatus,
 		p.status,
 	)
-	p.accordion = widget.NewAccordion(widget.NewAccordionItem("Native worker pool", content))
+	p.accordion = widget.NewAccordion(widget.NewAccordionItem("Native worker pool", container.NewVBox(p.automaticStatus, content)))
 	p.renderSnapshot(manager.Snapshot())
 	p.refreshLaunchSummary()
 	p.updateControls()

@@ -44,6 +44,11 @@ func (s *Store) AdoptWorkerAssignment(ctx context.Context, project string, origi
 // AdoptWorkerAssignmentWithGoal adopts the exact task owned by origin after
 // validating that a tagged task is selected in the same goal scope.
 func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project string, origin *AgentOrigin, goal *string) (*WorkerAssignment, error) {
+	return s.AdoptWorkerTask(ctx, project, "", origin, goal)
+}
+
+// AdoptWorkerTask fences streamed adoption to the offered task and exact owner.
+func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string) (*WorkerAssignment, error) {
 	selectedGoal, err := NormalizeTaskGoal(goal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid selected goal", ErrTaskConflict)
@@ -68,7 +73,7 @@ func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project strin
 	if !active {
 		return nil, fmt.Errorf("%w: project is missing or archived", ErrTaskNotFound)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM tasks WHERE project_ident=? AND status IN ('todo','in_progress') AND owner_origin_json IS NOT NULL ORDER BY id`, project)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM tasks WHERE project_ident=? AND status IN ('todo','in_progress') AND owner_origin_json IS NOT NULL AND (id=? OR ?='') ORDER BY id`, project, taskID, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +147,7 @@ func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project strin
 	if _, err = tx.ExecContext(ctx, `INSERT INTO amux_conversations(id,project_ident,task_id,provider,owner_json,created_at) VALUES(?,?,?,?,?,?)`, conversationID, project, task.ID, actor.Provider, string(owner), now); err != nil {
 		return nil, err
 	}
-	input := conversation.Command{Kind: "prompt", Text: assignmentPrompt(task)}
+	input := conversation.Command{Kind: "prompt", Text: AssignmentPrompt(task)}
 	if err = validateConversationCommand(input); err != nil {
 		return nil, err
 	}
@@ -189,7 +194,8 @@ func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project strin
 	return &WorkerAssignment{RunID: runID, Task: *task, Conversation: *c}, nil
 }
 
-func assignmentPrompt(task *Task) string {
+// AssignmentPrompt describes the work assigned to a task worker.
+func AssignmentPrompt(task *Task) string {
 	var prompt strings.Builder
 	if task.Kind == "delegated" && task.DelegationReady {
 		fmt.Fprintf(&prompt, "[Amux delegated completion inspection]\nTask ID: %s\nTitle: %s\nTarget project: %s\nTarget task ID: %s\n\nThe delegated project has completed the linked target task. Inspect that target task, its comments, and acceptance evidence before deciding whether this source tracking task is complete. Keep this source task open until inspection confirms completion. Do not redo the delegated implementation. If it is incomplete, comment with concrete clarification or request the specific user decision still needed.\n", task.ID, task.Title, valueOrEmpty(task.DelegatedToProjectIdent), valueOrEmpty(task.DelegatedToTaskID))

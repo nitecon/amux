@@ -20,15 +20,49 @@ const cloneMarker = ".git/amux-clone-complete"
 // CloneRepository clones repository below parent and reuses only a verified
 // checkout. It never removes or overwrites an existing directory.
 func CloneRepository(ctx context.Context, parent, repository string) (string, error) {
-	repository = strings.TrimSpace(repository)
-	name, err := cloneName(repository)
+	destination, err := CloneDestination(parent, repository)
 	if err != nil {
 		return "", err
+	}
+	return cloneRepositoryAt(ctx, filepath.Dir(destination), filepath.Base(destination), strings.TrimSpace(repository))
+}
+
+// CloneDestination returns the folder CloneRepository uses beneath parent.
+func CloneDestination(parent, repository string) (string, error) {
+	name, err := cloneName(strings.TrimSpace(repository))
+	if err != nil {
+		return "", err
+	}
+	parent, err = canonicalDirectory(parent)
+	if err != nil {
+		return "", fmt.Errorf("clone parent is not an available directory")
+	}
+	return filepath.Join(parent, name), nil
+}
+
+// CloneRepositoryAt clones into the exact destination, which may be an empty
+// directory or a new folder under an existing parent.
+func CloneRepositoryAt(ctx context.Context, destination, repository string) (string, error) {
+	destination = strings.TrimSpace(destination)
+	if !filepath.IsAbs(destination) {
+		return "", fmt.Errorf("enter an absolute clone destination")
+	}
+	destination = filepath.Clean(destination)
+	parent, name := filepath.Dir(destination), filepath.Base(destination)
+	if parent == destination || name == "." || strings.ContainsAny(name, "?#%\"<>|*") {
+		return "", fmt.Errorf("clone needs a usable destination folder")
+	}
+	return cloneRepositoryAt(ctx, parent, name, strings.TrimSpace(repository))
+}
+
+func cloneRepositoryAt(ctx context.Context, parent, name, repository string) (string, error) {
+	if repository == "" {
+		return "", fmt.Errorf("enter a repository URL or Git path")
 	}
 	if err := validateCloneSource(repository); err != nil {
 		return "", err
 	}
-	parent, err = canonicalDirectory(parent)
+	parent, err := canonicalDirectory(parent)
 	if err != nil {
 		return "", fmt.Errorf("clone parent is not an available directory")
 	}

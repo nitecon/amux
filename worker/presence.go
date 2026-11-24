@@ -14,18 +14,24 @@ import (
 )
 
 func registerAndReportPresence(ctx context.Context, client *gatewayclient.Client, project, directory string, origin storage.AgentOrigin, hostname *string, report storage.PresenceReport) error {
+	if err := RegisterTaskTarget(ctx, client, project, directory, origin, hostname); err != nil {
+		return err
+	}
+	_, err := client.ReportPresence(ctx, report)
+	return err
+}
+
+// RegisterTaskTarget refreshes the target directory supported by both gateways.
+func RegisterTaskTarget(ctx context.Context, client *gatewayclient.Client, project, directory string, origin storage.AgentOrigin, hostname *string) error {
 	identity, err := projectidentity.Resolve(ctx, directory)
 	if err != nil {
 		return err
 	}
-	registration := storage.TargetRegistration{
+	name := AgentDisplayName(origin)
+	_, err = client.RegisterTarget(ctx, project, storage.TargetRegistration{
 		Origin: origin, Generation: origin.InstanceID,
-		CanonicalRemote: optionalNonEmpty(identity.Upstream), Hostname: hostname,
-	}
-	if _, err := client.RegisterTarget(ctx, project, registration); err != nil {
-		return err
-	}
-	_, err = client.ReportPresence(ctx, report)
+		CanonicalRemote: optionalNonEmpty(identity.Upstream), Hostname: hostname, DisplayName: &name,
+	})
 	return err
 }
 

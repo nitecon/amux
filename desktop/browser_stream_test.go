@@ -123,3 +123,39 @@ func TestBrowserNavigationStreamRefreshesReconnectsAndCancels(t *testing.T) {
 		t.Fatal("closing the browser did not cancel the active stream")
 	}
 }
+
+func TestBrowserPollsProjectsWhenGatewayHasNoNavigationStream(t *testing.T) {
+	app := fynetest.NewApp()
+	t.Cleanup(app.Quit)
+	var projectRequests atomic.Int32
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer browser-test" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/projects":
+			projectRequests.Add(1)
+			_, _ = w.Write([]byte("[]"))
+		case "/v1/presence/summary":
+			_, _ = w.Write([]byte("{}"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer host.Close()
+	client, err := gatewayclient.New(host.URL, "browser-test", host.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbacks := newUICallbacks()
+	browser, err := NewBrowser(BrowserConfig{Client: client, Dispatch: callbacks.dispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser.Start(context.Background())
+	t.Cleanup(func() { browser.Close(); browser.Wait(); callbacks.pump() })
+	waitBrowser(t, callbacks, func() bool {
+		return projectRequests.Load() >= 2 && strings.Contains(browser.headerGateway.Text, "Gateway: connected")
+	})
+}

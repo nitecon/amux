@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -21,9 +22,10 @@ func (b *Browser) setMainView(name string) {
 		return
 	}
 	b.mainView = name
-	b.selection.MainView = name
-	b.persist()
-	b.updateProjectRail()
+	if name != "Checkout" {
+		b.selection.MainView = name
+		b.persist()
+	}
 	b.mainContent.Objects = []fyne.CanvasObject{page}
 	b.mainContent.Refresh()
 	for label, button := range b.mainViewButtons {
@@ -51,27 +53,6 @@ func (b *Browser) refreshMainView() {
 	}
 }
 
-func (b *Browser) toggleConversationProjects() {
-	b.conversationProjectsExpanded = !b.conversationProjectsExpanded
-	b.updateProjectRail()
-}
-
-func (b *Browser) updateProjectRail() {
-	if b.mainView == "Conversations" && !b.conversationProjectsExpanded {
-		b.root.Leading = b.compactProjectRail
-		b.root.SetOffset(0)
-	} else {
-		b.root.Leading = b.projectRail
-		b.root.SetOffset(.16)
-	}
-	if b.mainView == "Conversations" {
-		b.collapseConversationProjects.Show()
-	} else {
-		b.collapseConversationProjects.Hide()
-	}
-	b.root.Refresh()
-}
-
 func providerConversationLabel(provider string) string {
 	switch provider {
 	case "claude":
@@ -79,7 +60,7 @@ func providerConversationLabel(provider string) string {
 	case "codex":
 		return "Codex"
 	case "antigravity":
-		return "agy"
+		return "Agy"
 	default:
 		return provider
 	}
@@ -88,9 +69,21 @@ func providerConversationLabel(provider string) string {
 var defaultChatProviders = [...]string{"claude", "codex", "antigravity"}
 
 func (b *Browser) openProviderConversation(provider string) {
-	if b.projectConversationsLoading || b.selectedProject == "" || b.defaultChats == nil {
+	b.activeConversationProvider = provider
+	b.refreshConversationLaunchControls()
+	if b.selectedProject == "" {
 		return
 	}
+	if b.projectConversationsLoading {
+		b.pendingConversationProvider = provider
+		return
+	}
+	if b.defaultChats == nil {
+		b.pendingConversationProvider = provider
+		b.loadProjectConversations()
+		return
+	}
+	b.pendingConversationProvider = ""
 	if chat, ok := b.defaultChats[provider]; ok {
 		b.openStandaloneConversation(chat)
 		b.resumeDefaultConversation(chat)
@@ -130,7 +123,7 @@ func (b *Browser) applyHeaderPresence(summary storage.PresenceSummary, err error
 	if platforms != "" {
 		platforms = " · " + platforms
 	}
-	machine := "This machine: unavailable"
+	machine := "This machine: counts not reported by gateway"
 	if summary.ThisMachine != nil {
 		machine = fmt.Sprintf("This machine: %d agents · %d busy · %d idle", summary.ThisMachine.Agents, summary.ThisMachine.Active, summary.ThisMachine.Idle)
 	}
@@ -142,6 +135,7 @@ func (b *Browser) loadProjectConversations() {
 	b.projectConversationGeneration++
 	generation, project := b.projectConversationGeneration, b.selectedProject
 	b.projectConversationItems = nil
+	b.conversationHistory = nil
 	b.defaultChats = nil
 	b.projectConversationsLoading = false
 	b.projectConversationList.Refresh()
@@ -152,8 +146,10 @@ func (b *Browser) loadProjectConversations() {
 	if !b.launch(func(ctx context.Context) {
 		var items []storage.Conversation
 		var err error
-		after := ""
-		for {
+		if b.localConversationsDirectory != "" {
+			items, err = listMarkdownChats(b.localConversationsDirectory, project)
+		}
+		for after := ""; b.localConversationsDirectory == ""; {
 			var page []storage.Conversation
 			page, err = b.client.ProjectConversations(ctx, project, after, browserConversationPage)
 			items = append(items, page...)
@@ -168,12 +164,24 @@ func (b *Browser) loadProjectConversations() {
 			}
 			b.projectConversationsLoading = false
 			if err != nil {
-				b.newConversationStatus.SetText("Conversations unavailable: " + err.Error())
+				var response *gatewayclient.HTTPError
+				message := "Conversations unavailable: " + err.Error()
+				if errors.As(err, &response) && response.Status == http.StatusNotFound {
+					message = "This gateway does not expose the Conversations API."
+				}
+				if b.pendingConversationProvider != "" || b.selection.ProjectConversation == "" {
+					b.standaloneChatHost.Objects = []fyne.CanvasObject{widget.NewLabel(message)}
+					b.standaloneChatHost.Refresh()
+				} else {
+					b.newConversationStatus.SetText(message)
+				}
+				b.pendingConversationProvider = ""
 				return
 			}
 			sort.SliceStable(items, func(i, j int) bool {
 				return items[i].UpdatedAt > items[j].UpdatedAt
 			})
+			b.conversationHistory = items
 			b.defaultChats = make(map[string]storage.Conversation)
 			for _, chat := range items {
 				if chat.TaskID != "" {
@@ -186,9 +194,13 @@ func (b *Browser) loadProjectConversations() {
 				}
 			}
 			b.projectConversationList.Refresh()
-			if b.selection.Conversation != "" {
+			if provider := b.pendingConversationProvider; provider != "" {
+				b.openProviderConversation(provider)
+				return
+			}
+			if b.selection.ProjectConversation != "" {
 				for _, chat := range items {
-					if chat.ID == b.selection.Conversation {
+					if chat.ID == b.selection.ProjectConversation {
 						b.openStandaloneConversation(chat)
 						if chat.TaskID == "" {
 							b.resumeDefaultConversation(chat)
@@ -208,29 +220,30 @@ func (b *Browser) openStandaloneConversation(chat storage.Conversation) {
 		return
 	}
 	if child := b.chatForConversation(chat); child != nil {
-		b.selectedConversation = chat.ID
-		b.selection.Conversation = chat.ID
+		b.selection.ProjectConversation = chat.ID
 		b.persist()
 		content := child.Content()
 		if chat.TaskID != "" {
-			link := widget.NewButton("Go to task", func() {
-				b.setMainView("Tasks")
-				b.selectTask(chat.TaskID)
-			})
-			content = container.NewBorder(container.NewHBox(link), nil, nil, nil, content)
-		} else if b.workerPanel != nil {
-			clear := widget.NewButton("Clear", func() {
-				b.conversationSelection++
-				b.startStandaloneConversation(chat.ProjectIdent, b.selection.CheckoutPath, chat.Provider)
-			})
-			content = container.NewBorder(container.NewHBox(clear), nil, nil, nil, content)
+			content = container.NewBorder(b.taskThreadHeader(chat), nil, nil, nil, content)
+			b.activeConversationProvider = ""
+		} else {
+			b.activeConversationProvider = chat.Provider
 		}
+		b.refreshConversationLaunchControls()
 		b.standaloneChatHost.Objects = []fyne.CanvasObject{content}
 		b.standaloneChatHost.Refresh()
 	}
 }
 
 func (b *Browser) startStandaloneConversation(project, directory, provider string) {
+	b.launchStandaloneConversation(project, directory, provider, "")
+}
+
+func (b *Browser) launchStandaloneConversation(project, directory, provider, replace string) {
+	if b.localConversationsDirectory != "" {
+		b.createLocalConversation(project, directory, provider, replace)
+		return
+	}
 	if b.workerPanel == nil {
 		b.newConversationStatus.SetText("A local worker is required to start a default chat.")
 		return
@@ -252,28 +265,44 @@ func (b *Browser) startStandaloneConversation(project, directory, provider strin
 		b.openingDefaults = make(map[string]bool)
 	}
 	b.openingDefaults[key] = true
+	if b.resumingConversations == nil {
+		b.resumingConversations = make(map[string]context.CancelFunc)
+	}
 	selection := b.conversationSelection
 	b.newConversationStatus.SetText("Starting " + providerConversationLabel(provider) + "…")
 	if !b.launchWithTimeout(0, func(ctx context.Context) {
-		err := manager.RunConversationWithCommand(ctx, project, directory, provider, command, func(chat storage.Conversation) {
+		runContext, stop := context.WithCancel(ctx)
+		defer stop()
+		var createdID string
+		err := manager.RunConversationWithCommand(runContext, project, directory, provider, command, func(chat storage.Conversation) {
+			createdID = chat.ID
 			b.dispatch(func() {
+				b.resumingConversations[chatKey(project, chat.ID)] = stop
+				if replace != "" {
+					if stopPrevious := b.resumingConversations[chatKey(project, replace)]; stopPrevious != nil {
+						stopPrevious()
+					}
+				}
 				delete(b.openingDefaults, key)
 				if project != b.selectedProject {
 					return
 				}
 				b.newConversationStatus.SetText("")
-				b.loadProjectConversations()
 				if b.mainView == "Conversations" && selection == b.conversationSelection {
 					b.openStandaloneConversation(chat)
 				}
+				b.loadProjectConversations()
 			})
 		})
 		b.dispatch(func() {
-			if err != nil {
+			if createdID != "" {
+				delete(b.resumingConversations, chatKey(project, createdID))
+			} else {
 				delete(b.openingDefaults, key)
-				if ctx.Err() == nil && b.selectedProject == project {
-					b.newConversationStatus.SetText("Conversation worker stopped: " + err.Error())
-				}
+			}
+			if err != nil && ctx.Err() == nil && b.selectedProject == project && b.activeConversationProvider == provider &&
+				(createdID == "" || b.selection.ProjectConversation == createdID) {
+				b.newConversationStatus.SetText("Conversation worker stopped: " + err.Error())
 			}
 		})
 	}) {
@@ -283,23 +312,36 @@ func (b *Browser) startStandaloneConversation(project, directory, provider strin
 }
 
 func (b *Browser) resumeDefaultConversation(chat storage.Conversation) {
-	if b.workerPanel == nil {
+	if b.localConversationsDirectory != "" || b.workerPanel == nil || b.ctx == nil {
 		return
 	}
 	manager, ok := b.workerPanel.manager.(*WorkerManager)
 	if !ok {
 		return
 	}
-	b.launchWithTimeout(0, func(ctx context.Context) {
-		err := manager.ResumeConversation(ctx, chat)
-		if err != nil && !errors.Is(err, storage.ErrConversationConflict) && ctx.Err() == nil {
-			b.dispatch(func() {
-				if b.selectedProject == chat.ProjectIdent {
-					b.newConversationStatus.SetText("Conversation worker stopped: " + err.Error())
-				}
-			})
-		}
-	})
+	key := chatKey(chat.ProjectIdent, chat.ID)
+	if b.resumingConversations == nil {
+		b.resumingConversations = make(map[string]context.CancelFunc)
+	}
+	if b.resumingConversations[key] != nil {
+		return
+	}
+	runContext, stop := context.WithCancel(b.ctx)
+	b.resumingConversations[key] = stop
+	if !b.launchWithTimeout(0, func(ctx context.Context) {
+		defer stop()
+		err := manager.ResumeConversation(runContext, chat)
+		b.dispatch(func() {
+			delete(b.resumingConversations, key)
+			if err != nil && !errors.Is(err, storage.ErrConversationConflict) && ctx.Err() == nil &&
+				b.selectedProject == chat.ProjectIdent && b.selection.ProjectConversation == chat.ID {
+				b.newConversationStatus.SetText("Conversation worker stopped: " + err.Error())
+			}
+		})
+	}) {
+		stop()
+		delete(b.resumingConversations, key)
+	}
 }
 
 func (b *Browser) loadEventView() {

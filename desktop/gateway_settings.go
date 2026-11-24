@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/nitecon/amux/storage"
 )
@@ -25,9 +26,11 @@ type GatewaySetupConfig struct {
 }
 
 type gatewaySettingsPanel struct {
-	accordion           *widget.Accordion
+	body                fyne.CanvasObject
 	config              GatewaySetupConfig
-	mode                *widget.RadioGroup
+	mode                GatewayMode
+	serverMode          *widget.Button
+	clientMode          *widget.Button
 	endpoint            *widget.Entry
 	invitation          *widget.Entry
 	key                 *widget.Entry
@@ -47,24 +50,17 @@ type gatewaySettingsPanel struct {
 
 func newGatewaySettingsPanel(config GatewaySetupConfig) *gatewaySettingsPanel {
 	p := &gatewaySettingsPanel{config: config}
-	p.mode = widget.NewRadioGroup([]string{"Server", "Client"}, func(string) { p.updateModeSections() })
-	p.mode.Horizontal = true
-	mode := config.Preferences.Mode
-	if config.ConnectionOverride && (config.ActiveMode == GatewayModeServer || config.ActiveMode == GatewayModeClient) {
-		mode = config.ActiveMode
+	p.mode = GatewayModeServer
+	if config.Preferences.Mode == GatewayModeClient {
+		p.mode = GatewayModeClient
 	}
-	if mode == GatewayModeClient {
-		p.mode.SetSelected("Client")
-	} else {
-		p.mode.SetSelected("Server")
-	}
-	if config.ConnectionOverride {
-		p.mode.Disable()
+	if config.ConnectionOverride && config.ActiveMode != "" {
+		p.mode = config.ActiveMode
 	}
 	p.endpoint = widget.NewEntry()
-	p.endpoint.SetPlaceHolder("https://gateway.example:7913")
+	p.endpoint.SetPlaceHolder("https://gateway.example:24182")
 	p.endpoint.SetText(config.Preferences.Endpoint)
-	p.invitation = widget.NewMultiLineEntry()
+	p.invitation = widget.NewPasswordEntry()
 	p.invitation.SetPlaceHolder("Paste the peering key provided by the server")
 	p.key = widget.NewMultiLineEntry()
 	p.key.Disable()
@@ -76,7 +72,7 @@ func newGatewaySettingsPanel(config GatewaySetupConfig) *gatewaySettingsPanel {
 	p.advertisedHost.OnChanged = func(string) { p.updateServerEndpoint() }
 	p.status = widget.NewLabel("")
 	p.status.Wrapping = fyne.TextWrapWord
-	p.accordion = widget.NewAccordion(widget.NewAccordionItem("Gateway", p.content()))
+	p.body = p.content()
 	if config.ConnectionOverride {
 		p.status.SetText("Command-line connection settings override the saved mode for this launch.")
 	}
@@ -89,16 +85,32 @@ func (p *gatewaySettingsPanel) content() fyne.CanvasObject {
 	generate := widget.NewButton("Generate peering key", func() { p.copyPeeringKey(false) })
 	copyKey := widget.NewButton("Copy current key", func() { p.copyPeeringKey(true) })
 	p.keyActions = []*widget.Button{generate, copyKey}
-	clientEnroll := widget.NewButton("Enroll with peering key", p.enroll)
+	clientEnroll := widget.NewButtonWithIcon("Connect", theme.LoginIcon(), p.enroll)
+	clientEnroll.Importance = widget.HighImportance
+	p.invitation.OnSubmitted = func(string) { p.enroll() }
 	p.saveButton = widget.NewButton("Save mode and restart", p.saveMode)
 	p.remoteDetails = container.NewVBox(widget.NewLabel("Advertised hostname or IP"), p.advertisedHost, container.NewHBox(generate, copyKey, layout.NewSpacer()), widget.NewLabel("Peering key"), p.key)
-	p.serverSection = container.NewVBox(widget.NewLabel("Server mode"), p.endpointLabel, p.remoteHosting, p.remoteDetails)
-	p.clientForm = container.NewVBox(widget.NewLabel("Gateway endpoint"), p.endpoint, widget.NewLabel("Peering key"), p.invitation, container.NewHBox(clientEnroll, layout.NewSpacer()))
-	p.clientEndpointLabel = widget.NewLabel("Active gateway endpoint: " + p.config.ServerEndpoint)
+	p.serverSection = settingsCard(container.NewVBox(p.endpointLabel, p.remoteHosting, p.remoteDetails, container.NewHBox(p.saveButton, layout.NewSpacer())))
+	p.clientForm = container.NewVBox(widget.NewLabel("Server address"), p.endpoint, widget.NewLabel("Peering key"), p.invitation, container.NewHBox(clientEnroll, layout.NewSpacer()))
+	p.clientEndpointLabel = widget.NewLabel("")
 	p.clientEndpointLabel.Wrapping = fyne.TextWrapWord
-	p.clientSection = container.NewVBox(widget.NewLabel("Client mode · enroll with a gateway"), p.clientEndpointLabel, p.clientForm)
-	modeControls := container.NewVBox(widget.NewLabel("Gateway mode"), p.mode, container.NewHBox(p.saveButton, layout.NewSpacer()))
+	if p.config.ActiveMode == GatewayModeClient && p.config.ServerEndpoint != "" {
+		p.clientEndpointLabel.SetText("Current gateway · " + p.config.ServerEndpoint)
+	} else {
+		p.clientEndpointLabel.Hide()
+	}
+	p.clientSection = settingsCard(container.New(layout.NewCustomPaddedVBoxLayout(10),
+		widget.NewLabel("Join an existing gateway with its address and a temporary peering key."), p.clientForm, p.clientEndpointLabel))
+	p.serverMode = widget.NewButtonWithIcon("Server", theme.StorageIcon(), func() { p.selectMode(GatewayModeServer) })
+	p.clientMode = widget.NewButtonWithIcon("Client", theme.ComputerIcon(), func() { p.selectMode(GatewayModeClient) })
+	modeControls := container.NewGridWithColumns(2,
+		settingsCard(container.NewVBox(p.serverMode, widget.NewLabel("Host projects and tasks on this device."))),
+		settingsCard(container.NewVBox(p.clientMode, widget.NewLabel("Join a gateway on another machine."))),
+	)
+
 	if p.config.ConnectionOverride {
+		p.serverMode.Disable()
+		p.clientMode.Disable()
 		p.saveButton.Hide()
 		p.remoteHosting.Hide()
 		p.remoteDetails.Hide()
@@ -106,7 +118,7 @@ func (p *gatewaySettingsPanel) content() fyne.CanvasObject {
 	}
 	p.updateServerEndpoint()
 	p.updateModeSections()
-	return container.NewVBox(modeControls, widget.NewSeparator(), p.serverSection, p.clientSection, p.status)
+	return container.New(layout.NewCustomPaddedVBoxLayout(14), browserSectionHeading("OPERATING MODE"), container.NewThemeOverride(modeControls, toolbarTheme{Theme: fyne.CurrentApp().Settings().Theme()}), p.serverSection, p.clientSection, p.status)
 }
 
 func (p *gatewaySettingsPanel) updateServerEndpoint() {
@@ -132,17 +144,29 @@ func (p *gatewaySettingsPanel) updateServerEndpoint() {
 	}
 }
 
-func (p *gatewaySettingsPanel) updateModeSections() {
-	if p.serverSection == nil || p.clientSection == nil {
+func (p *gatewaySettingsPanel) selectMode(mode GatewayMode) {
+	if p.busy || p.config.ConnectionOverride {
 		return
 	}
-	if p.mode.Selected == "Client" {
+	p.mode = mode
+	p.status.SetText("")
+	p.updateModeSections()
+}
+
+func (p *gatewaySettingsPanel) updateModeSections() {
+	p.serverMode.Importance = widget.MediumImportance
+	p.clientMode.Importance = widget.MediumImportance
+	if p.mode == GatewayModeClient {
+		p.clientMode.Importance = widget.HighImportance
 		p.serverSection.Hide()
 		p.clientSection.Show()
 	} else {
+		p.serverMode.Importance = widget.HighImportance
 		p.clientSection.Hide()
 		p.serverSection.Show()
 	}
+	p.serverMode.Refresh()
+	p.clientMode.Refresh()
 }
 
 func (p *gatewaySettingsPanel) saveMode() {
@@ -154,27 +178,19 @@ func (p *gatewaySettingsPanel) saveMode() {
 		return
 	}
 	prefs := p.config.Preferences
-	if p.mode.Selected == "Client" {
-		if prefs.Endpoint == "" || prefs.EnrolledProfile == "" {
-			p.status.SetText("Enroll with a peering key before switching to client mode.")
+	prefs.Mode = GatewayModeServer
+	prefs.Endpoint = ""
+	prefs.EnrolledProfile = ""
+	prefs.RemoteHosting = p.remoteHosting.Checked
+	if prefs.RemoteHosting {
+		host, err := NormalizeAdvertisedHost(p.advertisedHost.Text)
+		if err != nil {
+			p.status.SetText(err.Error())
 			return
 		}
-		prefs.Mode = GatewayModeClient
-		prefs.RemoteHosting = false
-	} else {
-		prefs.Mode = GatewayModeServer
-		prefs.Endpoint = ""
-		prefs.EnrolledProfile = ""
-		prefs.RemoteHosting = p.remoteHosting.Checked
-		if prefs.RemoteHosting {
-			host, err := NormalizeAdvertisedHost(p.advertisedHost.Text)
-			if err != nil {
-				p.status.SetText(err.Error())
-				return
-			}
-			prefs.AdvertisedHost = host
-		}
+		prefs.AdvertisedHost = host
 	}
+
 	if err := SaveGatewayPreferences(p.config.PreferencesPath, prefs); err != nil {
 		p.status.SetText(err.Error())
 		return

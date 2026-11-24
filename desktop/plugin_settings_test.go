@@ -127,7 +127,7 @@ func TestBrowserPluginSettingsWrappedStatusFitsProjectColumn(t *testing.T) {
 	defer window.Close()
 	window.Resize(fyne.NewSize(1280, 820))
 	window.Show()
-	b.setMainView("Settings")
+	openBrowserSettingsPage(t, b, "Automation")
 	p.accordion.Open(0)
 	p.loaded = true
 	p.confirmed["review"] = false

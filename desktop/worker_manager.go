@@ -18,10 +18,12 @@ import (
 )
 
 type WorkerManagerConfig struct {
-	Store            *storage.Store
-	Client           *gatewayclient.Client
-	Open             worker.Open
-	ConversationRoot string
+	Store                *storage.Store
+	Client               *gatewayclient.Client
+	Open                 worker.Open
+	ConversationRoot     string
+	TaskConversationRoot string
+	UseTaskStream        bool
 }
 
 type WorkerManagerState string
@@ -51,11 +53,15 @@ type workerManagerRun struct {
 // WorkerManager owns one RunPool lifetime. The caller owns the profile lock and
 // Store lifetime and must wait for Close before closing the Store.
 type WorkerManager struct {
-	mu               sync.Mutex
-	store            *storage.Store
-	client           *gatewayclient.Client
-	open             worker.Open
-	conversationRoot string
+	mu                   sync.Mutex
+	store                *storage.Store
+	client               *gatewayclient.Client
+	open                 worker.Open
+	archive              worker.EventArchive
+	useTaskStream        bool
+	taskStreamDone       chan struct{}
+	conversationRoot     string
+	taskConversationRoot string
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -72,8 +78,12 @@ func NewWorkerManager(config WorkerManagerConfig) (*WorkerManager, error) {
 	if config.Store == nil || config.Client == nil {
 		return nil, fmt.Errorf("worker manager requires a local store and gateway client")
 	}
+	var archive worker.EventArchive
+	if config.TaskConversationRoot != "" {
+		archive = archiveTaskWorker(config.TaskConversationRoot, config.Client)
+	}
 	return &WorkerManager{
-		store: config.Store, client: config.Client, open: config.Open, conversationRoot: config.ConversationRoot,
+		store: config.Store, client: config.Client, open: config.Open, archive: archive, useTaskStream: config.UseTaskStream, conversationRoot: config.ConversationRoot, taskConversationRoot: config.TaskConversationRoot,
 		snapshot: WorkerManagerSnapshot{State: WorkerManagerIdle},
 	}, nil
 }
@@ -97,6 +107,13 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	}
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.started = true
+	if m.useTaskStream {
+		m.taskStreamDone = make(chan struct{})
+		go func() {
+			defer close(m.taskStreamDone)
+			worker.WatchAssignments(m.ctx, m.store, m.client)
+		}()
+	}
 	return nil
 }
 
@@ -298,7 +315,7 @@ func (m *WorkerManager) launch(gen uint64, pool *storage.WorkerPool, ctx context
 	m.snapshot.Pool = cloneWorkerPool(pool)
 	m.mu.Unlock()
 	go func() {
-		err := worker.RunPool(ctx, worker.PoolConfig{Store: m.store, Client: m.client, PoolID: pool.ID, Open: m.open})
+		err := worker.RunPool(ctx, worker.PoolConfig{Store: m.store, Client: m.client, PoolID: pool.ID, Open: m.open, Archive: m.archive, StreamAssignments: m.useTaskStream})
 		lifetimeErr := ctx.Err()
 		cancel()
 		m.finish(gen, lifetimeErr, err)
@@ -413,7 +430,7 @@ func (m *WorkerManager) Close() error {
 			m.poolStop()
 		}
 	}
-	cancel := m.cancel
+	cancel, streamDone := m.cancel, m.taskStreamDone
 	var done <-chan struct{}
 	if m.current != nil {
 		done = m.current.done
@@ -427,6 +444,9 @@ func (m *WorkerManager) Close() error {
 	}
 	if done != nil {
 		<-done
+	}
+	if streamDone != nil {
+		<-streamDone
 	}
 	return m.Wait()
 }

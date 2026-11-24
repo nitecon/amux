@@ -29,7 +29,16 @@ func (c *Client) PresenceSummary(ctx context.Context, hostname string) (storage.
 	if hostname != "" {
 		path += "?" + url.Values{"hostname": {hostname}}.Encode()
 	}
-	var summary storage.PresenceSummary
-	err := c.do(ctx, http.MethodGet, path, nil, nil, &summary)
-	return summary, err
+	var response struct {
+		storage.PresenceSummary
+		Idle *int `json:"idle"`
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, nil, &response)
+	if response.Idle != nil {
+		response.PresenceSummary.Idle = *response.Idle
+	} else if err == nil {
+		// Rust reports total agents and active agents, and omits idle.
+		response.PresenceSummary.Idle = max(0, response.Agents-response.Active)
+	}
+	return response.PresenceSummary, err
 }

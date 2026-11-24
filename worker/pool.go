@@ -15,6 +15,9 @@ import (
 // PoolConfig connects a saved native worker pool to its gateway and local
 // provider runtime. The caller holds the host profile lock for RunPool's life.
 type PoolConfig struct {
+	Archive           EventArchive
+	Drain             <-chan struct{}
+	StreamAssignments bool
 	Store             *storage.Store
 	Client            *gatewayclient.Client
 	PoolID            string
@@ -66,6 +69,7 @@ func RunPool(parent context.Context, config PoolConfig) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var group sync.WaitGroup
+	poolDone := make(chan struct{})
 	results := make(chan error, len(slots))
 	for _, slot := range slots {
 		slot := slot
@@ -81,20 +85,20 @@ func RunPool(parent context.Context, config PoolConfig) error {
 			}
 		}()
 	}
+	go func() { group.Wait(); close(poolDone) }()
 	var result error
 	select {
 	case result = <-results:
 	case <-parent.Done():
+	case <-poolDone:
+		select {
+		case result = <-results:
+		default:
+		}
 	}
 	cancel()
 	group.Wait()
-	if result != nil {
-		return result
-	}
-	if parent.Err() != nil {
-		return nil
-	}
-	return nil
+	return result
 }
 
 func poolPresence(ctx context.Context, config PoolConfig, pool storage.WorkerPool, slot storage.WorkerPoolSlot, busy bool) error {
@@ -143,10 +147,31 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 	defer poll.Stop()
 	heartbeat := time.NewTicker(config.HeartbeatInterval)
 	defer heartbeat.Stop()
+	ready := make(chan struct{})
+	close(ready)
+	var scan, changes <-chan struct{}
+	if config.StreamAssignments {
+		scan = ready
+		changes = config.Store.WorkerTaskChanges()
+	}
+	drain := config.Drain
 	for {
+		var polling <-chan time.Time
+		if !config.StreamAssignments || activeCancel != nil {
+			polling = poll.C
+		}
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-scan:
+			scan = nil
+		case <-drain:
+			drain = nil
+		case <-changes:
+			changes = config.Store.WorkerTaskChanges()
+			if activeCancel != nil {
+				continue
+			}
 		case err := <-activeDone:
 			activeDone = nil
 			activeCancel = nil
@@ -169,7 +194,10 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				}
 				return err
 			}
-		case <-poll.C:
+			continue
+		case <-polling:
+		}
+		{
 			fresh, err := poolSlot(ctx, config.Store, pool.ID, slot.ID)
 			if err != nil {
 				return err
@@ -190,6 +218,9 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 							return err
 						}
 						slot.RunID = ""
+						if config.StreamAssignments {
+							scan = ready
+						}
 						activeTask = ""
 						if err = poolPresence(ctx, config, pool, slot, false); err != nil {
 							return err
@@ -221,6 +252,9 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 							return err
 						}
 						slot.RunID, activeTask = "", ""
+						if config.StreamAssignments {
+							scan = ready
+						}
 						if err = poolPresence(ctx, config, pool, slot, false); err != nil {
 							return err
 						}
@@ -232,11 +266,34 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				activeCancel = stop
 				activeDone = make(chan error, 1)
 				go func() {
-					activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open})
+					activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open, Archive: config.Archive})
 				}()
 				continue
 			}
-			assignment, err := config.Client.AdoptWorkerAssignmentWithGoal(ctx, pool.Project, slot.Owner, pool.Goal)
+			select {
+			case <-config.Drain:
+				return nil
+			default:
+			}
+			var pending storage.PendingWorkerTask
+			if config.StreamAssignments {
+				pending, err = config.Store.PendingWorkerTask(ctx, pool.Server, pool.Project, slot.Owner)
+				if err != nil {
+					return err
+				}
+				if pending.TaskID == "" {
+					continue
+				}
+			}
+			adopt := func() (*storage.WorkerAssignment, error) {
+				return config.Client.AdoptWorkerTask(ctx, pool.Project, pending.TaskID, slot.Owner, pool.Goal)
+			}
+			var assignment *storage.WorkerAssignment
+			if config.StreamAssignments {
+				assignment, err = retryValue(ctx, adopt)
+			} else {
+				assignment, err = adopt()
+			}
 			if err != nil {
 				if gatewayclient.Retryable(err) {
 					continue
@@ -244,11 +301,22 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				return err
 			}
 			if assignment == nil {
+				if pending.TaskID != "" {
+					if err := config.Store.ForgetWorkerTask(ctx, pool.Server, pool.Project, pending); err != nil {
+						return err
+					}
+					scan = ready
+				}
 				continue
 			}
 			run := storage.WorkerRun{ID: assignment.RunID, Server: config.Client.Endpoint(), Project: pool.Project, ConversationID: assignment.Conversation.ID, Directory: pool.Directory, Command: append([]string(nil), pool.Command...), Owner: assignment.Conversation.Owner, Goal: pool.Goal}
 			if err = config.Store.AttachWorkerPoolRun(ctx, pool.ID, slot.ID, run); err != nil {
 				return err
+			}
+			if pending.TaskID != "" {
+				if err := config.Store.ForgetWorkerTask(ctx, pool.Server, pool.Project, pending); err != nil {
+					return err
+				}
 			}
 			slot.RunID = run.ID
 			if err = poolPresence(ctx, config, pool, slot, true); err != nil {
@@ -259,7 +327,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 			activeCancel = stop
 			activeDone = make(chan error, 1)
 			go func() {
-				activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open})
+				activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open, Archive: config.Archive})
 			}()
 		}
 	}

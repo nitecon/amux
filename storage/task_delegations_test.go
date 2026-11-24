@@ -60,7 +60,7 @@ func TestDelegationReadinessGatesEveryNativeClaimAndPromptsForInspection(t *test
 	if err != nil || !eligible {
 		t.Fatalf("completed target did not make source tracker assignable: eligible=%t err=%v", eligible, err)
 	}
-	prompt := assignmentPrompt(&source.Task)
+	prompt := AssignmentPrompt(&source.Task)
 	if !strings.Contains(prompt, "Inspect that target task") || !strings.Contains(prompt, result.TargetTask.ID) || strings.Contains(prompt, "perform it") || strings.Contains(prompt, "Do not redo the delegated implementation") == false {
 		t.Fatalf("delegated adoption prompt would redo work or omit inspection: %s", prompt)
 	}

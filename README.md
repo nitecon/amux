@@ -499,6 +499,11 @@ make build
 # Add --task-tools-command /absolute/path/to/bin/amux to enable its task tools.
 ```
 
+On supported release platforms, `make desktop` stages the pinned tool
+executables beside `bin/amux` so assigned agents can call the code,
+documentation, and memory tools through the `amux` MCP server. Use
+`make tools` to stage them for an existing build.
+
 Fyne requires the platform graphics/C toolchain. Local checkout discovery,
 cluster-scoped favorite migration, settings,
 notifications, complete workspace launch behavior and full desktop parity

@@ -90,7 +90,7 @@ func TestExactTaskClaimAndRelease(t *testing.T) {
 		t.Fatalf("release %+v, %v", released, err)
 	}
 	events, err := s.TaskEvents(ctx, EventQuery{})
-	if err != nil || len(events) != 2 || events[0].Kind != "task_unclaimed" {
+	if err != nil || len(events) != 3 || events[0].Kind != "task_unclaimed" || events[1].Kind != "task_assigned" {
 		t.Fatalf("release event %+v, %v", events, err)
 	}
 }

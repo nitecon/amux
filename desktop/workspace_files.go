@@ -126,8 +126,12 @@ func (b *Browser) syncWorkspaceFiles() {
 		return
 	}
 	pane := b.workspaceFiles
-	if pane.workspace != b.activeWorkspaceID || pane.rootPath != b.selection.CheckoutPath {
-		pane.Bind(b.activeWorkspaceID, b.selection.CheckoutPath)
+	path := b.selection.CheckoutPath
+	if local := b.localRailProjects[b.localRailSelection]; local != "" {
+		path = local
+	}
+	if pane.workspace != b.activeWorkspaceID || pane.rootPath != path {
+		pane.Bind(b.activeWorkspaceID, path)
 	}
 }
 

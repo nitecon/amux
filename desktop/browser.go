@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/worker"
 	"github.com/nitecon/amux/worksubmission"
 )
 
@@ -30,15 +33,17 @@ const (
 
 // BrowserConfig configures the existing-project/task/conversation browser.
 type BrowserConfig struct {
-	Client              *gatewayclient.Client
-	Project             string
-	PreferencesPath     string
-	WorkPreferencesPath string
-	GatewaySetup        *GatewaySetupConfig
-	AppControls         fyne.CanvasObject
-	Dispatch            func(func())
-	WorkerManager       *WorkerManager
-	NewWindow           func(string) fyne.Window
+	LocalConversationsDirectory string
+	AutoTaskAgents              bool
+	Client                      *gatewayclient.Client
+	Project                     string
+	PreferencesPath             string
+	WorkPreferencesPath         string
+	GatewaySetup                *GatewaySetupConfig
+	AppControls                 fyne.CanvasObject
+	Dispatch                    func(func())
+	WorkerManager               *WorkerManager
+	NewWindow                   func(string) fyne.Window
 }
 
 type Browser struct {
@@ -81,13 +86,18 @@ type Browser struct {
 	taskMeta                                                 *widget.Label
 	conversations                                            *widget.List
 	projectConversationList                                  *widget.List
-	conversationProvider                                     *widget.Select
-	conversationModel, conversationPersona                   *widget.Entry
-	conversationStart                                        *widget.Button
-	conversationLaunchNote                                   *widget.Label
-	updatingConversationLaunch                               bool
+	localConversationsDirectory                              string
+	automaticWorkerScopes                                    chan []automaticWorkerScope
+	localChatSessions                                        map[string]*localChat
+	pendingConversationProvider                              string
+	activeConversationProvider                               string
+	providerTabs                                             map[string]*widget.Button
+	conversationOptions                                      []*widget.Button
+	newChatButton                                            *widget.Button
+	conversationHistory                                      []storage.Conversation
 	projectConversationItems                                 []storage.Conversation
 	defaultChats                                             map[string]storage.Conversation
+	resumingConversations                                    map[string]context.CancelFunc
 	openingDefaults                                          map[string]bool
 	conversationSelection                                    uint64
 
@@ -95,10 +105,7 @@ type Browser struct {
 	projectConversationGeneration uint64
 	standaloneChatHost            *fyne.Container
 
-	projectRail, compactProjectRail fyne.CanvasObject
-	conversationProjectsExpanded    bool
-	collapseConversationProjects    *widget.Button
-	newConversationStatus           *widget.Label
+	newConversationStatus *widget.Label
 
 	alertList                                           *widget.List
 	alertStatus                                         *widget.Label
@@ -118,6 +125,11 @@ type Browser struct {
 	gatewaySettings                                     *gatewaySettingsPanel
 	projectItems                                        []storage.ProjectOverview
 	checkoutItems                                       []storage.CheckoutOverview
+	localCheckouts                                      []projectidentity.LocalCheckout
+	checkoutScan                                        uint64
+	projectsDirectoryEntry                              *widget.Entry
+	localCheckoutSummary                                *widget.Label
+	checkoutPage                                        *fyne.Container
 	workspaceIDs                                        []string
 	activeWorkspaceID                                   string
 	workspaceBindingGeneration                          map[string]uint64
@@ -126,6 +138,10 @@ type Browser struct {
 	updatingPeerWorkspaceSelect                         bool
 	updatingNavigationWidgets                           bool
 	visibleProjects                                     []storage.ProjectOverview
+	localRailProjects                                   map[string]string
+	discoveredRailProjects                              map[string]bool
+	localRailSelection                                  string
+	selectedProjectStatus                               *widget.Label
 	taskItems                                           []storage.TaskSummary
 	visibleTasks                                        []storage.TaskSummary
 	conversationItems                                   []storage.Conversation
@@ -270,19 +286,26 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 			return nil, err
 		}
 	}
-	b := &Browser{client: config.Client, appControls: config.AppControls, projectOverride: strings.TrimSpace(config.Project), prefsPath: config.PreferencesPath, endpoint: config.Client.Endpoint(), dispatch: config.Dispatch, taskWindowFactory: config.NewWindow, prefs: prefs, chats: map[string]*UI{}, chatStarted: map[string]bool{}, browserStatus: widget.NewLabel("Loading projects…")}
+	b := &Browser{client: config.Client, localConversationsDirectory: config.LocalConversationsDirectory, localChatSessions: make(map[string]*localChat), appControls: config.AppControls, projectOverride: strings.TrimSpace(config.Project), prefsPath: config.PreferencesPath, endpoint: config.Client.Endpoint(), dispatch: config.Dispatch, taskWindowFactory: config.NewWindow, prefs: prefs, chats: map[string]*UI{}, chatStarted: map[string]bool{}, browserStatus: widget.NewLabel("Loading projects…")}
 	b.taskComposer = newTaskComposer(b)
 	b.worktreeStatus = newWorktreeStatusView(func() { b.refreshWorktreeStatus() })
 	if b.dispatch == nil {
 		b.dispatch = fyne.Do
 	}
 	b.prefKey = b.endpoint
+	if legacy := prefs.ProjectsDirectories[b.prefKey]; prefs.ProjectsDirectory == "" && legacy != "" {
+		b.prefs.ProjectsDirectory = legacy
+		b.prefs.ProjectsDirectories = nil
+	}
 	b.clusterID = config.Client.ClusterID()
 	migrateEndpointFavorites(prefs.Favorites, b.endpoint, b.clusterID)
 	b.pluginSettings = newPluginSettingsPanel(b)
 	b.workSubmissionSettings = newWorkSubmissionSettingsPanel(workPreferencesPath, b)
 	if config.GatewaySetup != nil {
 		b.gatewaySettings = newGatewaySettingsPanel(*config.GatewaySetup)
+	}
+	if config.AutoTaskAgents && config.WorkerManager != nil {
+		b.automaticWorkerScopes = make(chan []automaticWorkerScope, 1)
 	}
 	if config.WorkerManager != nil {
 		b.workerPanel = newWorkerPanel(b, config.WorkerManager)
@@ -316,6 +339,7 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 		if b.selection.Project != "" && b.selection.Project != b.projectOverride {
 			b.selection.Task = ""
 			b.selection.Conversation = ""
+			b.selection.ProjectConversation = ""
 			b.selection.CheckoutPath = ""
 			b.selection.CheckoutOrigin = nil
 		}
@@ -541,13 +565,16 @@ func (b *Browser) buildUI() {
 		headingBlock.Hide()
 		// Keep the native overlay scrollbar outside the card and star hit area.
 		scrollGutter := container.NewGridWrap(fyne.NewSize(2, 0))
-		return container.NewBorder(headingBlock, nil, nil, scrollGutter, browserListCard(content))
+		return newProjectMenuRow(container.NewBorder(headingBlock, nil, nil, scrollGutter, browserListCard(content)))
 	}, func(i widget.ListItemID, obj fyne.CanvasObject) {
 		if i < 0 || i >= len(b.visibleProjects) {
 			return
 		}
 		p := b.visibleProjects[i]
-		item := obj.(*fyne.Container)
+		row := obj.(*projectMenuRow)
+		row.onMenu = func(event *fyne.PointEvent) { b.showProjectMenu(row, event, p) }
+		row.onSelect = func() { b.projects.Select(i) }
+		item := row.content
 		headingBlock := item.Objects[1].(*fyne.Container)
 		heading := headingBlock.Objects[1].(*canvas.Text)
 		heading.Text = b.projectGroupAt(i)
@@ -557,14 +584,24 @@ func (b *Browser) buildUI() {
 			headingBlock.Show()
 			heading.Refresh()
 		}
-		card := updateBrowserListCard(item.Objects[0], p.Ident == b.selectedProject)
+		card := updateBrowserListCard(item.Objects[0], p.Ident == b.selectedRailProject())
 		content := browserCardObject(card, 0).(*fyne.Container)
 		labels := content.Objects[0].(*fyne.Container)
-		labels.Objects[0].(*widget.Label).SetText(p.Ident)
+		directory := b.localRailProjects[p.Ident]
+		name := p.Ident
+		if directory != "" {
+			name = filepath.Base(directory)
+		}
+		labels.Objects[0].(*widget.Label).SetText(name)
 		summary := labels.Objects[1].(*fyne.Container).Objects[0].(*canvas.Text)
 		summary.Text = fmt.Sprintf("%d active agents", p.Agents)
 		if p.PendingTasks != nil {
 			summary.Text = fmt.Sprintf("%d queued · %d agents", *p.PendingTasks, p.Agents)
+		}
+		if directory != "" {
+			summary.Text = "Local checkout"
+		} else if b.projectCheckout(p).Directory != "" {
+			summary.Text = "Local · " + summary.Text
 		}
 		summary.Refresh()
 		dotBox := content.Objects[1].(*fyne.Container)
@@ -577,7 +614,7 @@ func (b *Browser) buildUI() {
 		star := content.Objects[2].(*fyne.Container).Objects[0].(*widget.Button)
 		symbol := "☆"
 		star.Importance = widget.LowImportance
-		if projectRemoteFavorite(b.prefs.Favorites, b.endpoint, b.clusterID, p.Ident) || (p.Ident == b.selectedProject && b.projectFavoriteIsSet(p.Ident)) {
+		if b.railProjectFavorite(p.Ident) {
 			symbol = "★"
 		}
 		star.SetText(symbol)
@@ -590,9 +627,7 @@ func (b *Browser) buildUI() {
 			return
 		}
 		project := b.visibleProjects[id].Ident
-		if project != b.selectedProject {
-			b.selectProject(project)
-		}
+		b.selectRailProject(project)
 		b.projects.Refresh()
 	}
 	b.tasks = widget.NewList(func() int { return len(b.visibleTasks) }, func() fyne.CanvasObject {
@@ -669,9 +704,8 @@ func (b *Browser) buildUI() {
 		if id < 0 || id >= len(b.conversationItems) {
 			return
 		}
-		if b.conversationItems[id].ID != b.selectedConversation {
-			b.openConversation(b.conversationItems[id])
-		}
+		b.conversations.UnselectAll()
+		b.openTaskThread(b.conversationItems[id])
 	}
 	b.projectSearch.OnChanged = func(value string) {
 		if b.updatingNavigationWidgets {
@@ -681,60 +715,38 @@ func (b *Browser) buildUI() {
 		b.applyProjectFilter()
 		b.persist()
 	}
-	b.projectConversationList = widget.NewList(func() int { return len(defaultChatProviders) + len(b.projectConversationItems) }, func() fyne.CanvasObject {
-		title := widget.NewLabelWithStyle("Conversation", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	b.projectConversationList = widget.NewList(func() int { return len(b.conversationHistory) }, func() fyne.CanvasObject {
+		title := widget.NewLabel("Conversation")
 		title.Truncation = fyne.TextTruncateEllipsis
-		subtitle := widget.NewLabel("")
-		subtitle.Truncation = fyne.TextTruncateEllipsis
-		return container.NewVBox(title, subtitle)
+		return title
 	}, func(i widget.ListItemID, obj fyne.CanvasObject) {
-		var title, subtitle string
-		if i < len(defaultChatProviders) {
-			title, subtitle = providerConversationLabel(defaultChatProviders[i]), "Default Chat"
-		} else {
-			chat := b.projectConversationItems[i-len(defaultChatProviders)]
-			title, subtitle = chat.TaskTitle, chat.TaskID
-			if title == "" {
-				title = "Task conversation"
+		if i >= len(b.conversationHistory) {
+			return
+		}
+		chat := b.conversationHistory[i]
+		title := chat.TaskTitle
+		if title == "" {
+			title = providerConversationLabel(chat.Provider)
+			if chat.TaskID != "" {
+				title += " · Task"
 			}
 		}
-		row := obj.(*fyne.Container)
-		row.Objects[0].(*widget.Label).SetText(title)
-		row.Objects[1].(*widget.Label).SetText(subtitle)
+		obj.(*widget.Label).SetText(title + " · " + time.UnixMilli(chat.CreatedAt).Format("Jan 2, 15:04"))
 	})
 	b.projectConversationList.OnSelected = func(i widget.ListItemID) {
-		if i < 0 || i >= len(defaultChatProviders)+len(b.projectConversationItems) {
+		if i < 0 || i >= len(b.conversationHistory) {
 			return
 		}
 		b.projectConversationList.UnselectAll()
 		b.conversationSelection++
-		if i < len(defaultChatProviders) {
-			b.openProviderConversation(defaultChatProviders[i])
-			return
+		chat := b.conversationHistory[i]
+		b.openStandaloneConversation(chat)
+		if chat.TaskID == "" {
+			b.resumeDefaultConversation(chat)
 		}
-		b.openStandaloneConversation(b.projectConversationItems[i-len(defaultChatProviders)])
 	}
 	b.newConversationStatus = widget.NewLabel("")
-	b.conversationProvider = widget.NewSelect(defaultChatProviders[:], func(string) { b.refreshConversationLaunchControls() })
-	b.conversationProvider.SetSelected("claude")
-	b.conversationModel = widget.NewEntry()
-	b.conversationModel.SetPlaceHolder("Model override (optional)")
-	b.conversationPersona = widget.NewEntry()
-	b.conversationPersona.SetPlaceHolder("Persona / agent (optional)")
-	b.conversationLaunchNote = widget.NewLabel("")
-	b.conversationLaunchNote.Wrapping = fyne.TextWrapWord
-	b.conversationModel.OnChanged = func(value string) {
-		b.saveCurrentConversationLaunchPreferences(value, b.conversationPersona.Text)
-	}
-	b.conversationPersona.OnChanged = func(value string) {
-		b.saveCurrentConversationLaunchPreferences(b.conversationModel.Text, value)
-	}
-	b.conversationStart = widget.NewButton("Start new conversation", func() {
-		if b.selectedProject != "" {
-			b.startStandaloneConversation(b.selectedProject, b.selection.CheckoutPath, b.conversationProvider.Selected)
-		}
-	})
-	b.refreshConversationLaunchControls()
+	b.newConversationStatus.Wrapping = fyne.TextWrapWord
 	b.standaloneChatHost = container.NewMax(widget.NewLabel("Select a conversation or start a new one."))
 	b.alertList = widget.NewList(func() int { return len(b.alertItems) }, func() fyne.CanvasObject { return widget.NewLabel("Alert") }, func(i widget.ListItemID, obj fyne.CanvasObject) {
 		if i >= 0 && i < len(b.alertItems) {
@@ -757,36 +769,19 @@ func (b *Browser) buildUI() {
 		}
 		b.changeTaskSearch(value)
 	}
-	workspaceBar := container.NewBorder(nil, nil, nil, b.workspaceClose, b.workspaceSelect)
 	workspaceStyle := fyne.CurrentApp().Settings().Theme()
 	controls := toolbarTheme{Theme: workspaceStyle}
 	cardLists := cardListTheme{Theme: workspaceStyle}
 	projectHeading := browserSectionHeading("PROJECTS")
-	b.collapseConversationProjects = widget.NewButton("Collapse projects", b.toggleConversationProjects)
 	b.selectedProjectFavorite.Importance = widget.LowImportance
-	projectHeader := container.NewVBox(container.NewBorder(nil, nil, projectHeading, container.NewThemeOverride(b.workspaceAdd, controls)), b.collapseConversationProjects, b.projectSearch, workspaceBar)
+	projectHeader := container.NewVBox(projectHeading, b.projectSearch)
 	b.workspaceFiles = newWorkspaceFilesPane(b.dispatch)
 	b.taskWindowToggle = widget.NewButton("Open tasks separately", b.toggleTaskWindow)
-	secondary := container.NewVBox(b.workspaceName, b.pluginSettings.accordion, container.NewHScroll(b.workSubmissionSettings.accordion))
-	if b.gatewaySettings != nil {
-		secondary.Add(b.gatewaySettings.accordion)
-	}
-	if b.appControls != nil {
-		secondary.Add(b.appControls)
-	}
-	if b.workerPanel != nil {
-		secondary.Add(container.NewHScroll(b.workerPanel.accordion))
-	}
-	secondary.Add(container.NewHScroll(b.worktreeStatus.accordion))
 	railWidth := canvas.NewRectangle(theme.InputBackgroundColor())
 	railWidth.SetMinSize(fyne.NewSize(208, 0))
 	projectPane := container.NewStack(railWidth, browserPanel(container.NewBorder(
 		projectHeader, nil, nil, nil, container.NewThemeOverride(b.projects, cardLists),
 	)))
-	b.projectRail = projectPane
-	b.compactProjectRail = container.NewVBox(widget.NewButton("Projects", b.toggleConversationProjects))
-	secondary.Add(b.taskWindowToggle)
-	settingsPane := container.NewVScroll(secondary)
 	tasksHeading := browserSectionHeading("TASKS")
 	var newTaskButton *widget.Button
 	newTaskButton = widget.NewButton("New Task", func() {
@@ -869,19 +864,7 @@ func (b *Browser) buildUI() {
 	b.taskPane = right
 	b.taskPaneHost = container.NewHSplit(taskPane, right)
 	b.taskPaneHost.Offset = .28
-	conversationControls := container.NewVBox(
-		widget.NewForm(
-			widget.NewFormItem("Provider", b.conversationProvider),
-			widget.NewFormItem("Model", b.conversationModel),
-			widget.NewFormItem("Persona / agent", b.conversationPersona),
-		),
-		b.conversationLaunchNote,
-		b.conversationStart,
-		widget.NewSeparator(),
-	)
-	conversationRail := container.NewBorder(conversationControls, b.newConversationStatus, nil, nil, b.projectConversationList)
-	conversationView := container.NewHSplit(conversationRail, b.standaloneChatHost)
-	conversationView.Offset = .29
+	conversationView := b.buildConversationView(controls)
 	b.mainViews = map[string]fyne.CanvasObject{
 		"Tasks": container.NewBorder(
 			browserPanel(container.NewThemeOverride(container.NewHBox(newTaskButton, b.taskComposer.releasePrepare), controls)), nil, nil, nil, b.taskPaneHost,
@@ -893,7 +876,9 @@ func (b *Browser) buildUI() {
 	b.taskBoard = newTaskBoard(b)
 	b.mainViews["Board"] = b.taskBoard.content
 	b.mainViews["Alerts"] = container.NewBorder(container.NewVBox(browserSectionHeading("ALERTS"), b.checkoutAlert, b.alertStatus), nil, nil, nil, b.alertList)
-	b.mainViews["Settings"] = settingsPane
+	b.mainViews["Settings"] = b.settingsView()
+	b.checkoutPage = container.NewStack()
+	b.mainViews["Checkout"] = b.checkoutPage
 	b.mainViews["Events"] = container.NewStack()
 	b.mainContent = container.NewStack(b.mainViews["Tasks"])
 	b.mainViewButtons = make(map[string]*widget.Button)
@@ -917,7 +902,12 @@ func (b *Browser) buildUI() {
 	mainPanel := container.NewBorder(toolbar, nil, nil, nil, b.mainContent)
 	b.root = container.NewHSplit(projectPane, mainPanel)
 	b.root.Offset = .19
-	b.shell = container.NewBorder(container.NewVBox(header, widget.NewSeparator()), nil, nil, nil, b.root)
+	b.selectedProjectStatus = widget.NewLabel("")
+	b.selectedProjectStatus.Truncation = fyne.TextTruncateEllipsis
+	b.selectedProjectStatus.Importance = widget.LowImportance
+	statusBar := container.NewVBox(widget.NewSeparator(), b.selectedProjectStatus)
+	b.shell = container.NewBorder(container.NewVBox(header, widget.NewSeparator()), statusBar, nil, nil, b.root)
+	b.updateSelectedProjectStatus()
 	b.pluginSettings.setRoot(b.root)
 	b.workSubmissionSettings.setRoot(b.root)
 	b.refreshWorkspaceSelector()
@@ -945,6 +935,7 @@ func (b *Browser) Start(parent context.Context) {
 	b.mu.Unlock()
 	b.dispatch(func() {
 		b.pluginSettings.reload(false)
+		b.scanProjectCheckouts()
 		b.syncWorkspaceFiles()
 		b.refreshWorktreeStatus()
 		b.refreshOnUI()
@@ -953,11 +944,26 @@ func (b *Browser) Start(parent context.Context) {
 		startErr := b.workerPanel.manager.Start(ctx)
 		b.dispatch(func() { b.workerPanel.lifetimeStarted(ctx, startErr) })
 	}
+	if b.automaticWorkerScopes != nil {
+		manager := b.workerPanel.manager.(*WorkerManager)
+		b.launchWithTimeout(0, func(ctx context.Context) {
+			manager.runAutomaticWorkers(ctx, b.automaticWorkerScopes, func(status string) {
+				b.dispatch(func() { b.workerPanel.automaticStatus.SetText(status) })
+			}, providerAvailable)
+		})
+	}
 	go b.runNavigationRefreshes(ctx)
 	go func() {
 		defer b.wg.Done()
 		defer close(b.navigationInvalidations)
 		backoff := 250 * time.Millisecond
+		polling := false
+		invalidate := func() {
+			select {
+			case b.navigationInvalidations <- struct{}{}:
+			default:
+			}
+		}
 		for {
 			ready := false
 			err := b.client.WatchNavigation(ctx, func() error {
@@ -966,15 +972,32 @@ func (b *Browser) Start(parent context.Context) {
 					backoff = 250 * time.Millisecond
 					b.dispatch(func() { b.setGatewayReconnecting(false) })
 				}
-				select {
-				case b.navigationInvalidations <- struct{}{}:
-				default:
-				}
+				invalidate()
 				return nil
 			})
 			if ctx.Err() != nil {
 				return
 			}
+			var response *gatewayclient.HTTPError
+			if errors.As(err, &response) && response.Status == http.StatusNotFound {
+				// Rust gateways offer authenticated REST refreshes without this stream.
+				b.dispatch(func() { b.setGatewayReconnecting(false) })
+				delay := 10 * time.Second
+				if !polling {
+					delay = browserRefreshCoalesceWindow
+				}
+				polling = true
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+					invalidate()
+				}
+				continue
+			}
+			polling = false
 			if !gatewayclient.Retryable(err) {
 				b.dispatch(func() { b.showNavigationError(err) })
 				return
@@ -1247,6 +1270,7 @@ func (b *Browser) applyProjects(items []storage.ProjectOverview, err error) {
 		return
 	}
 	b.projectItems = items
+	b.updateAutomaticWorkerScopes()
 	if b.reconcileWorkspaceProjectFavorites() {
 		b.persist()
 	}
@@ -1254,6 +1278,10 @@ func (b *Browser) applyProjects(items []storage.ProjectOverview, err error) {
 		b.workerPanel.refreshRecoverySources()
 	}
 	b.applyProjectFilter()
+	b.updateSelectedProjectStatus()
+	if b.localRailSelection != "" {
+		return
+	}
 	if len(items) == 0 {
 		b.selectProject("")
 		b.browserStatus.SetText("No active projects are available.")
@@ -1287,6 +1315,12 @@ func (b *Browser) selectProject(project string) {
 	if b.closing {
 		b.mu.Unlock()
 		return
+	}
+	b.localRailSelection = ""
+	if b.selection.Project != project {
+		b.selection.ProjectConversation = ""
+	} else if b.selection.MainView == "Conversations" && b.selection.ProjectConversation == "" {
+		b.selection.ProjectConversation = b.selection.Conversation
 	}
 	preserveSaved := b.selectedProject == "" && project != "" && b.selection.Project == project
 	checkoutBindingChanged := b.selection.Project != "" && b.selection.Project != project && b.selection.CheckoutPath != ""
@@ -1328,6 +1362,9 @@ func (b *Browser) selectProject(project string) {
 	b.taskWorkflow.selectTask(project, "")
 	b.taskEditor.selectTask(project, "")
 	b.selection.Project = project
+	if b.selection.CheckoutPath == "" {
+		b.restoreProjectCheckout(project)
+	}
 	if b.reconcileWorkspaceProjectFavorites() {
 		b.persist()
 		b.applyProjectFilter()
@@ -1342,6 +1379,7 @@ func (b *Browser) selectProject(project string) {
 		b.selection.Task = ""
 		b.selection.Conversation = ""
 	}
+	b.updateSelectedProjectStatus()
 	b.projectLabel.SetText(project)
 	if project == "" {
 		b.headerProject.SetText("Gateway project: —")
@@ -1352,8 +1390,9 @@ func (b *Browser) selectProject(project string) {
 	b.standaloneChatHost.Refresh()
 	b.newConversationStatus.SetText("")
 	b.conversationSelection++
-	b.conversationProjectsExpanded = false
-	b.updateProjectRail()
+	b.activeConversationProvider = ""
+	b.pendingConversationProvider = ""
+	b.refreshConversationLaunchControls()
 	b.refreshMainView()
 	b.selectedProjectFavorite.SetText(b.favoriteText(project))
 	b.syncProjectSelection()
@@ -1532,12 +1571,17 @@ func (b *Browser) bindWorkspaceCheckoutWithOrigin(workspaceID string, bindingRev
 		return false
 	}
 	b.selection.CheckoutPath = directory
+	b.updateSelectedProjectStatus()
 	if origin == nil {
 		b.selection.CheckoutOrigin = nil
 	} else {
 		value := *origin
 		b.selection.CheckoutOrigin = &value
 	}
+	if b.prefs.ProjectCheckouts == nil {
+		b.prefs.ProjectCheckouts = make(map[string]localProjectBinding)
+	}
+	b.prefs.ProjectCheckouts[FavoriteKey(b.prefKey, project)] = localProjectBinding{directory, b.selection.CheckoutOrigin}
 	b.persist()
 	b.syncWorkspaceFiles()
 	b.refreshWorktreeStatus()
@@ -1822,7 +1866,12 @@ func (b *Browser) refreshTaskDetail() {
 		detail, detailErr := b.client.TaskDetail(ctx, project, task)
 		conversations, after, more, convErr := loadConversationWindow(ctx, b.client, project, task, conversationWindow)
 		if detailErr == nil && convErr != nil {
-			detailErr = convErr
+			var response *gatewayclient.HTTPError
+			if errors.As(convErr, &response) && response.Status == 404 && b.localConversationsDirectory != "" {
+				conversations, detailErr = listLocalTaskThreads(b.localConversationsDirectory, project, task)
+			} else {
+				detailErr = convErr
+			}
 		}
 		var children []storage.Task
 		var subtaskErr error
@@ -2100,8 +2149,27 @@ func (b *Browser) chatForConversation(c storage.Conversation) *UI {
 		if b.selectedTaskDetail != nil && b.selectedTaskDetail.Task.ID == c.TaskID && b.selectedTaskDetail.Task.Title != "" {
 			title = b.selectedTaskDetail.Task.Title + " · " + title
 		}
+		var transport conversationClient = b.client
+		readOnly := b.localConversationsDirectory != "" && c.TaskID != "" && c.ID == legacyTaskConversationID(c.TaskID, c.Owner.SessionID)
+		if readOnly {
+			dir, err := taskTranscriptDirectory(b.localConversationsDirectory, c.ProjectIdent, c.TaskID)
+			if err != nil || !canonicalTaskUUID(c.Owner.SessionID) {
+				b.browserStatus.SetText("Task transcript has an invalid task or agent identity.")
+				return nil
+			}
+			transport = localTaskThread{info: c, path: filepath.Join(dir, c.Owner.SessionID+".md")}
+		}
+		if b.localConversationsDirectory != "" && c.TaskID == "" {
+			local, err := openMarkdownChat(b.localConversationsDirectory, c, worker.OpenNative)
+			if err != nil {
+				b.showLocalChatOpenError("Conversation could not be opened: " + err.Error())
+				return nil
+			}
+			b.localChatSessions[key] = local
+			transport = local
+		}
 		var err error
-		child, err = New(Config{Client: b.client, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch})
+		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly})
 		if err != nil {
 			b.browserStatus.SetText("Conversation could not be opened: " + err.Error())
 			return nil
@@ -2221,21 +2289,8 @@ func (b *Browser) changeTaskSearch(query string) {
 	b.persist()
 }
 
-func (b *Browser) projectGroupAt(index int) string {
-	isFavorite := func(i int) bool {
-		return projectRemoteFavorite(b.prefs.Favorites, b.endpoint, b.clusterID, b.visibleProjects[i].Ident)
-	}
-	if index == 0 && isFavorite(index) {
-		return "FAVORITES"
-	}
-	if !isFavorite(index) && (index == 0 || isFavorite(index-1)) {
-		return "GATEWAY PROJECTS"
-	}
-	return ""
-}
-
 func (b *Browser) applyProjectFilter() {
-	b.visibleProjects = filterProjectsWithCluster(b.projectItems, b.prefs.Favorites, b.endpoint, b.clusterID, b.selection.ProjectFilter, b.projectSearchAliases())
+	b.visibleProjects = b.filteredProjectRail()
 	rowHeight := b.projects.CreateItem().MinSize().Height
 	for i := range b.visibleProjects {
 		height := rowHeight
@@ -2259,6 +2314,12 @@ func (b *Browser) toggleFavorite() {
 }
 
 func (b *Browser) toggleFavoriteFor(project string) {
+	if directory := b.localRailProjects[project]; directory != "" {
+		toggleProjectFavorite(b.prefs.Favorites, projectFavoriteKeys("", directory, ""))
+		b.applyProjectFilter()
+		b.persist()
+		return
+	}
 	keys := projectFavoriteKeys(b.endpoint, "", project, b.clusterID)
 	if project == b.selectedProject {
 		keys = b.activeProjectFavoriteKeys(project)
@@ -2267,12 +2328,13 @@ func (b *Browser) toggleFavoriteFor(project string) {
 		return
 	}
 	toggleProjectFavorite(b.prefs.Favorites, keys)
+	b.updateAutomaticWorkerScopes()
 	b.selectedProjectFavorite.SetText(b.favoriteText(b.selectedProject))
 	b.applyProjectFilter()
 	b.persist()
 }
 func (b *Browser) favoriteText(project string) string {
-	if b.projectFavoriteIsSet(project) {
+	if b.railProjectFavorite(project) {
 		return "Unfavorite"
 	}
 	return "Favorite"
@@ -2280,7 +2342,7 @@ func (b *Browser) favoriteText(project string) string {
 
 func (b *Browser) syncProjectSelection() {
 	for i, item := range b.visibleProjects {
-		if item.Ident == b.selectedProject {
+		if item.Ident == b.selectedRailProject() {
 			b.projects.Select(i)
 			return
 		}
