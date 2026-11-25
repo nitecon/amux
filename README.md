@@ -373,7 +373,11 @@ or the remaining MCP catalog. Headless worker capability parity is still incompl
 Native worker pools advertise stable slots and consume ordinary and review assignments.
 The server allocates eligible FIFO work on its 30-second tick; explicit native
 busy state keeps an active slot unavailable. Each assignment atomically creates
-one task conversation and initial prompt, and retries retain their IDs.
+one task conversation and initial prompt. Successful retries retain the run,
+conversation, and initial prompt IDs. When the conversation has a recorded
+principal, only the same enrolled client can replay the assignment. Legacy
+conversations without a recorded principal can still be replayed by the exact
+owner origin.
 
 ```sh
 ./bin/amux worker pool --state /path/to/pool.db --server https://gateway.example \
