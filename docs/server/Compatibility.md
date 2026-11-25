@@ -41,6 +41,18 @@ Operational traffic uses mTLS on 24182; public discovery on 24181 carries no
 enrollment secret. Retired URL/API-key settings require explicit Server selection
 or Client pairing; they cannot establish a connection.
 
+When a desktop in Client mode connects to a gateway hosted on the same machine,
+Settings → Gateway → Client shows **This machine is the server** with
+**Generate peering key** and **Copy current key**. They appear only when the
+client's server address is on this machine (loopback, the exact system hostname,
+or an address on a local interface, including DNS aliases resolving there) and
+the desktop's configured gateway state directory holds loadable local
+administrator credentials. The desktop stays in Client mode; these buttons only
+issue keys and do not change server settings. Generate copies a replacement key;
+Copy current key copies the active key without extending it. If the controls
+are absent because the server profile lives elsewhere, use the
+`amux server peering-key --profile` commands below.
+
 To run a headless secure host, supply a persistent profile and installation UUID:
 
 ```sh
