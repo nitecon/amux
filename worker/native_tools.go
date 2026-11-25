@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,22 +56,67 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 		args := nativeMCPArgs(config, run)
 		env := nativeProviderEnv(os.Environ(), run, config.APIKeyEnv, config.EnrolledProfile != "")
 		mcp := providerprocess.MCPConfig{Command: config.Executable, Args: args, Env: nativeMCPEnvironment()}
+		var session Session
 		switch run.Owner.Provider {
 		case "antigravity":
-			return acp.Start(ctx, acp.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
+			session, err = acp.Start(ctx, acp.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
 				Command: run.Command, Env: env,
-				MCPServers: []acp.MCPServer{{Name: "amux", Command: config.Executable, Args: args, Env: nativeACPEnvironment()}}}, sink)
+				MCPServers:      []acp.MCPServer{{Name: "amux", Command: config.Executable, Args: args, Env: nativeACPEnvironment()}},
+				AutoApproveTool: antigravityAmuxTool}, sink)
 		case "codex":
 			mcp.EnvVars = nativeMCPEnvVars(nativeMCPAPIKeyEnv(config))
-			return codex.Start(ctx, codex.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
+			session, err = codex.Start(ctx, codex.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
 				Command: run.Command, Env: env, MCP: &mcp,
 				DeveloperInstructions: nativeCodexDeveloperInstructions(run.Directory)}, sink)
 		case "claude":
-			return claude.Start(ctx, claude.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
+			session, err = claude.Start(ctx, claude.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
 				Command: run.Command, Env: env, MCP: &mcp}, sink)
 		default:
 			return nil, fmt.Errorf("provider %q is not implemented", run.Owner.Provider)
 		}
+		if err != nil {
+			return nil, err
+		}
+		identity, _ := json.Marshal(CurrentAgentIdentity(run.Owner))
+		return &identitySession{Session: session, identity: string(identity)}, nil
+	}
+}
+
+type identitySession struct {
+	Session
+	identity string
+}
+
+// Attach current host facts to the first assignment or reminder handled by this provider process.
+func (s *identitySession) Prompt(ctx context.Context, text string) (string, error) {
+	if s.identity != "" && (strings.HasPrefix(text, storage.AssignmentMCPIntro) ||
+		strings.HasPrefix(text, "Please evaluate this task and perform it") ||
+		strings.HasPrefix(text, "[Amux delegated completion inspection]") ||
+		strings.HasPrefix(text, "[amux notification]")) {
+		text = "[Current Amux worker identity]\n" + s.identity +
+			"\nUse these values when reporting your identity. The amux MCP agent_identity tool returns the same facts.\n\n" + text
+		s.identity = ""
+	}
+	return s.Session.Prompt(ctx, text)
+}
+
+// Antigravity qualifies tool names in ACP requests as mcp_<server>_<tool>.
+func antigravityAmuxTool(name string) bool {
+	tool, ok := strings.CutPrefix(name, "mcp_amux_")
+	if !ok || tool == "" {
+		return false
+	}
+	switch tool {
+	case "submit_work", "project_message_thread", "task_agents", "task_reassign", "agent_identity",
+		"task_get", "task_list", "task_create", "task_delegate", "task_update_delegation", "task_set_requester",
+		"task_claim", "task_started", "task_comment", "task_release", "task_user_review", "task_done",
+		"task_finish_review", "task_confirm_mutation", "task_set_changeset",
+		"memory_search", "memory_store", "memory_get", "memory_update",
+		"code_read", "code_symbols", "code_symbol", "code_search",
+		"doc_outline", "doc_section", "knowledge_get", "knowledge_graph":
+		return true
+	default:
+		return false
 	}
 }
 

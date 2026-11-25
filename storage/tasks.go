@@ -594,6 +594,15 @@ func (s *Store) AddTaskComment(ctx context.Context, project, id, author, authorT
 		if t == nil {
 			return ErrTaskNotFound
 		}
+		if t.Status == "user_review" && authorType == "user" && actor == nil && strings.TrimSpace(content) != "" {
+			if err := ordinaryWorkflowTask(ctx, tx, t); err == nil {
+				if err := resumeTaskOnUserComment(ctx, tx, t); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, ErrTaskUnsupported) {
+				return err
+			}
+		}
 		result, err = insertTaskComment(ctx, tx, id, author, authorType, content, hostname, actor)
 		if err != nil || authorType == "system" {
 			return err

@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -33,7 +34,11 @@ type Open func(context.Context, storage.WorkerRun, conversation.Sink) (Session, 
 // EventArchive attaches a local transcript to a worker run.
 type EventArchive func(context.Context, storage.WorkerRun) (conversation.Sink, error)
 
+// EventObserver receives journal events after the gateway acknowledges them.
+type EventObserver func(storage.WorkerRun, string, conversation.Event)
+
 type Config struct {
+	Observe           EventObserver
 	Archive           EventArchive
 	Store             *storage.Store
 	Client            *gatewayclient.Client
@@ -67,6 +72,10 @@ func OpenNative(ctx context.Context, r storage.WorkerRun, sink conversation.Sink
 // Flush publishes the local ordered outbox using the persisted origin. Call
 // before instance takeover so previously recorded output cannot become stale.
 func Flush(ctx context.Context, store *storage.Store, client *gatewayclient.Client, runID string) error {
+	return flush(ctx, store, client, runID, nil)
+}
+
+func flush(ctx context.Context, store *storage.Store, client *gatewayclient.Client, runID string, observe EventObserver) error {
 	for {
 		r, err := store.WorkerRun(ctx, runID)
 		if err != nil {
@@ -89,6 +98,12 @@ func Flush(ctx context.Context, store *storage.Store, client *gatewayclient.Clie
 			}
 			if err = store.AckWorkerOutbox(ctx, runID, entry.Sequence, sequence); err != nil {
 				return err
+			}
+			if observe != nil && entry.Kind == "event" {
+				var event conversation.Event
+				if err := json.Unmarshal(entry.Payload, &event); err == nil {
+					observe(*r, entry.ID, event)
+				}
 			}
 		}
 	}
@@ -151,6 +166,9 @@ func Run(parent context.Context, config Config) error {
 	r, err := config.Store.WorkerRun(parent, config.RunID)
 	if err != nil {
 		return err
+	}
+	if config.Observe != nil {
+		defer config.Observe(*r, "", conversation.Event{Kind: "closed"})
 	}
 	clientRun := ""
 	if config.AdvertisePresence {
@@ -234,7 +252,7 @@ func Run(parent context.Context, config Config) error {
 	launch(func() error {
 		for {
 			changed := config.Store.ConversationChanges()
-			if err := retry(ctx, func() error { return Flush(ctx, config.Store, config.Client, r.ID) }); err != nil {
+			if err := retry(ctx, func() error { return flush(ctx, config.Store, config.Client, r.ID, config.Observe) }); err != nil {
 				return err
 			}
 			select {

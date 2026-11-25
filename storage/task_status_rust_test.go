@@ -90,6 +90,17 @@ func TestOpenMigratesFullRustTaskStatusProfiles(t *testing.T) {
 			assertEqual(t, store.db, "SELECT COUNT(*) FROM router_task_outbox WHERE kind='cancelled' AND json_extract(task_json,'$.id')='rust-source' AND actor_json IS NOT NULL", int64(1))
 			assertEqual(t, store.db, "SELECT json_extract(actor_json,'$.session_id') FROM router_task_outbox WHERE kind='cancelled' AND json_extract(task_json,'$.id')='rust-source'", actor.SessionID)
 			assertEqual(t, store.db, "SELECT COUNT(*) FROM pragma_foreign_key_check", int64(0))
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO task_dispatches(task_id,project_ident,document_json)
+				VALUES('rust-source','rust-project','{}')`); err != nil {
+				t.Fatal(err)
+			}
+			if deleted, err := store.DeleteProject(ctx, "rust-project", "rust-project"); err != nil || !deleted {
+				t.Fatalf("delete migrated Rust project: deleted=%v err=%v", deleted, err)
+			}
+			assertEqual(t, store.db, "SELECT COUNT(*) FROM task_dispatches", int64(0))
+			assertEqual(t, store.db, "SELECT COUNT(*) FROM execution_attempts", int64(0))
+			assertEqual(t, store.db, "SELECT COUNT(*) FROM router_events WHERE uid='rust-router-event'", int64(0))
+			assertEqual(t, store.db, "SELECT COUNT(*) FROM pragma_foreign_key_check", int64(0))
 		})
 	}
 }

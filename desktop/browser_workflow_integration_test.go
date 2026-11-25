@@ -262,6 +262,63 @@ func TestBrowserDisplaysRequestedReviewWithoutReplacingLocalDraft(t *testing.T) 
 	}
 }
 
+func TestBrowserOpensProjectParentWithoutFollowingUpstream(t *testing.T) {
+	fixture := startEditorBrowser(t, withoutComposerNavigationStream)
+	b := fixture.browser
+	ctx := context.Background()
+	if err := fixture.store.InsertProject(ctx, storage.Project{Ident: "sre", ChannelName: "sre", Kind: "adhoc"}); err != nil {
+		t.Fatal(err)
+	}
+	root, err := fixture.store.InsertTask(ctx, storage.TaskInsert{Project: "sre", Title: "Fleet rollout", Reporter: "fixture"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := "demo"
+	parent, err := fixture.store.CreateTaskSubtask(ctx, storage.TaskSubtaskInsert{
+		ParentProject: "sre", ParentID: root.ID, TargetProject: &project, Title: "Project rollout", Reporter: "fixture",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := fixture.store.InsertTask(ctx, storage.TaskInsert{
+		Project: project, ParentID: &parent.ID, Title: "Project validation", Reporter: "fixture",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.selectTask(child.ID)
+	waitBrowser(t, fixture.callbacks, func() bool { return len(b.taskParent.Objects) == 1 })
+	button := b.taskParent.Objects[0].(*widget.Button)
+	if button.Text != "Parent · Project rollout" {
+		t.Fatalf("unexpected parent action %q", button.Text)
+	}
+	fynetest.Tap(button)
+	waitBrowser(t, fixture.callbacks, func() bool {
+		return b.selectedTaskDetail != nil && b.selectedTaskDetail.Task.ID == parent.ID
+	})
+	if b.selectedProject != project || b.taskTitle.Text != parent.Title {
+		t.Fatalf("opening parent selected %s/%s", b.selectedProject, b.taskTitle.Text)
+	}
+	if label, ok := b.taskParent.Objects[0].(*widget.Label); !ok || label.Text != "Upstream parent (sre) · Fleet rollout" {
+		t.Fatalf("expected upstream task shown as context, got %v", b.taskParent.Objects)
+	}
+	b.setMainView("Board")
+	lane := b.taskBoard.lanes[0]
+	waitBrowser(t, fixture.callbacks, func() bool { return taskExists(lane.items, parent.ID) })
+	for i, row := range lane.items {
+		if row.ID == parent.ID {
+			lane.list.Select(i)
+			break
+		}
+	}
+	waitBrowser(t, fixture.callbacks, func() bool {
+		return b.mainView == "Tasks" && b.selectedTaskDetail != nil && b.selectedTaskDetail.Task.ID == parent.ID
+	})
+	if b.selectedProject != project {
+		t.Fatalf("board card changed project to %q", b.selectedProject)
+	}
+}
+
 func TestBrowserBoardMovesSubtaskAndOpensItsDetails(t *testing.T) {
 	fixture := startEditorBrowser(t, withoutComposerNavigationStream)
 	b := fixture.browser

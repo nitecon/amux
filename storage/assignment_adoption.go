@@ -194,9 +194,12 @@ func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, ori
 	return &WorkerAssignment{RunID: runID, Task: *task, Conversation: *c}, nil
 }
 
+const AssignmentMCPIntro = "Use the configured amux MCP server for task work."
+
 // AssignmentPrompt describes the work assigned to a task worker.
 func AssignmentPrompt(task *Task) string {
 	var prompt strings.Builder
+	prompt.WriteString(AssignmentMCPIntro + " Start with task_get to read this task and its comments. Use agent_identity for your current name, hostname, and provider. For a handoff, use task_agents to find the recipient and task_reassign to transfer this task. If amux MCP is unavailable, report that in this conversation.\n\n")
 	if task.Kind == "delegated" && task.DelegationReady {
 		fmt.Fprintf(&prompt, "[Amux delegated completion inspection]\nTask ID: %s\nTitle: %s\nTarget project: %s\nTarget task ID: %s\n\nThe delegated project has completed the linked target task. Inspect that target task, its comments, and acceptance evidence before deciding whether this source tracking task is complete. Keep this source task open until inspection confirms completion. Do not redo the delegated implementation. If it is incomplete, comment with concrete clarification or request the specific user decision still needed.\n", task.ID, task.Title, valueOrEmpty(task.DelegatedToProjectIdent), valueOrEmpty(task.DelegatedToTaskID))
 	} else {

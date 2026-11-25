@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nitecon/amux/internal/localconversation"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,11 +25,7 @@ type NavigationPreferences struct {
 	ConversationLaunch  map[string]ConversationLaunchPreferences `json:"conversation_launch,omitempty"`
 }
 
-type ConversationLaunchPreferences struct {
-	Model   string `json:"model,omitempty"`
-	Effort  string `json:"effort,omitempty"`
-	Persona string `json:"persona,omitempty"`
-}
+type ConversationLaunchPreferences = localconversation.Preferences
 
 func workspaceSelectionKey(endpoint, workspaceID string) string {
 	return endpoint + "\x00workspace\x00" + workspaceID

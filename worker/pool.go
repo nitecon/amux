@@ -15,6 +15,7 @@ import (
 // PoolConfig connects a saved native worker pool to its gateway and local
 // provider runtime. The caller holds the host profile lock for RunPool's life.
 type PoolConfig struct {
+	Observe           EventObserver
 	Archive           EventArchive
 	Drain             <-chan struct{}
 	StreamAssignments bool
@@ -222,6 +223,11 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 							scan = ready
 						}
 						activeTask = ""
+						select {
+						case <-config.Drain:
+							return nil
+						default:
+						}
 						if err = poolPresence(ctx, config, pool, slot, false); err != nil {
 							return err
 						}
@@ -255,6 +261,11 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 						if config.StreamAssignments {
 							scan = ready
 						}
+						select {
+						case <-config.Drain:
+							return nil
+						default:
+						}
 						if err = poolPresence(ctx, config, pool, slot, false); err != nil {
 							return err
 						}
@@ -266,7 +277,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				activeCancel = stop
 				activeDone = make(chan error, 1)
 				go func() {
-					activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open, Archive: config.Archive})
+					activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open, Archive: config.Archive, Observe: config.Observe})
 				}()
 				continue
 			}
@@ -327,7 +338,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 			activeCancel = stop
 			activeDone = make(chan error, 1)
 			go func() {
-				activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open, Archive: config.Archive})
+				activeDone <- Run(activeCtx, Config{Store: config.Store, Client: config.Client, RunID: run.ID, Open: config.Open, Archive: config.Archive, Observe: config.Observe})
 			}()
 		}
 	}

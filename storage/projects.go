@@ -111,6 +111,10 @@ func mappingAvailable(ctx context.Context, q queryer, ident string, provider, fu
 // InsertProject atomically inserts its normalized identity and initial cursor.
 // Re-registering an existing identity does not overwrite its stored data.
 func (s *Store) InsertProject(ctx context.Context, p Project) error {
+	return s.RegisterProject(ctx, p, false)
+}
+
+func (s *Store) RegisterProject(ctx context.Context, p Project, recreate bool) error {
 	p.Ident = projects.NormalizeIdent(p.Ident)
 	p.RepoProvider = normalizeOptional(p.RepoProvider)
 	p.RepoNamespace = normalizeOptional(p.RepoNamespace)
@@ -127,6 +131,19 @@ func (s *Store) InsertProject(ctx context.Context, p Project) error {
 		return err
 	}
 	defer tx.Rollback()
+	if recreate {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM amux_deleted_projects WHERE ident=?", p.Ident); err != nil {
+			return err
+		}
+	} else {
+		var deleted bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM amux_deleted_projects WHERE ident=?)", p.Ident).Scan(&deleted); err != nil {
+			return err
+		}
+		if deleted {
+			return ErrProjectDeleted
+		}
+	}
 	if err := mappingAvailable(ctx, tx, p.Ident, p.RepoProvider, p.RepoFullName); err != nil {
 		return err
 	}

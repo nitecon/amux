@@ -151,6 +151,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS amux_go_migrations(version INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS projects(ident TEXT PRIMARY KEY,channel_name TEXT NOT NULL,room_id TEXT NOT NULL,last_msg_id TEXT,created_at INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS amux_deleted_projects(ident TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS cursors(project_ident TEXT PRIMARY KEY REFERENCES projects(ident),last_read_id INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);`); err != nil {
 		return err
@@ -245,6 +246,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := recordConversationTaskOptionalMigration(ctx, tx); err != nil {
+		return err
+	}
+	if err := migrateFleetConversations(ctx, tx); err != nil {
 		return err
 	}
 	if err := migrateConversationCommands(ctx, tx); err != nil {

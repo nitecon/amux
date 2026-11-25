@@ -24,6 +24,7 @@ var (
 // Conversation binds one task to one provider session. An instance change fences
 // the previous worker's writes without changing the native session or transcript.
 type Conversation struct {
+	FleetHostname   *string     `json:"fleet_hostname,omitempty"`
 	ID              string      `json:"id"`
 	ProjectIdent    string      `json:"project_ident"`
 	TaskID          string      `json:"task_id"`
@@ -84,7 +85,18 @@ func scanConversation(row interface{ Scan(...any) error }, withTitle bool) (*Con
 	return &c, nil
 }
 func (s *Store) Conversation(ctx context.Context, project, id string) (*Conversation, error) {
-	return readConversation(ctx, s.db, project, id)
+	info, err := readConversation(ctx, s.db, project, id)
+	if err != nil {
+		return nil, err
+	}
+	var hostname string
+	err = s.db.QueryRowContext(ctx, "SELECT hostname FROM amux_fleet_conversations WHERE conversation_id=?", id).Scan(&hostname)
+	if err == nil {
+		info.FleetHostname = &hostname
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return info, nil
 }
 
 // TaskConversations pages in stable ID order. Use the last returned ID as afterID.
@@ -276,7 +288,19 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 			if _, err = tx.ExecContext(ctx, "UPDATE task_mutation_context SET origin_json=? WHERE id=1", string(ownerJSON)); err != nil {
 				return err
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE tasks SET owner_origin_json=?,updated_at=? WHERE id=? AND project_ident=? AND status='in_progress'`, string(ownerJSON), time.Now().UnixMilli(), c.TaskID, c.ProjectIdent); err != nil {
+			routing := task.Routing
+			var route TaskRouting
+			if err := json.Unmarshal(routing, &route); err == nil && route.Mode == "session" && route.Target != nil && route.Target.Origin == c.Owner {
+				route.Target = &RegisteredTargetIdentity{Origin: actor, Generation: actor.InstanceID}
+				routing, err = json.Marshal(route)
+				if err != nil {
+					return err
+				}
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE tasks SET owner_origin_json=?,routing_json=?,updated_at=? WHERE id=? AND project_ident=? AND status='in_progress'`, string(ownerJSON), string(routing), time.Now().UnixMilli(), c.TaskID, c.ProjectIdent); err != nil {
+				return err
+			}
+			if err = transferTargetRegistration(ctx, tx, c.ProjectIdent, c.Owner, actor, string(ownerJSON)); err != nil {
 				return err
 			}
 			if _, err = tx.ExecContext(ctx, "UPDATE task_mutation_context SET origin_json=NULL WHERE id=1"); err != nil {

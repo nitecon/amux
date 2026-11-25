@@ -52,7 +52,7 @@ func (s *Store) GetUnconfirmedProjectMessages(ctx context.Context, project, agen
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO agents(project_ident,agent_id,registered_at) VALUES(?,?,?)`, project, agentID, time.Now().UnixMilli()); err != nil {
 		return nil, fmt.Errorf("register project agent: %w", err)
 	}
-	messages, err := readUnconfirmedProjectMessages(ctx, tx, project, agentID, -1)
+	messages, err := readUnconfirmedProjectMessages(ctx, tx, project, agentID, -1, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -69,12 +69,13 @@ const projectMessageProjection = `m.id,m.project_ident,m.source,m.external_messa
 // readUnconfirmedProjectMessages is shared by the public inbox API and native
 // prompt delivery so both use the same unread predicate and row projection.
 // A negative limit means unbounded (SQLite's LIMIT -1 behavior).
-func readUnconfirmedProjectMessages(ctx context.Context, q queryer, project, agentID string, limit int) ([]ProjectMessage, error) {
+func readUnconfirmedProjectMessages(ctx context.Context, q queryer, project, agentID string, limit int, since *int64) ([]ProjectMessage, error) {
 	rows, err := q.QueryContext(ctx, `SELECT `+projectMessageProjection+` FROM messages m
 		WHERE m.project_ident=? AND (m.source='user' OR m.deliver_to_agents=1)
+		AND (? IS NULL OR COALESCE(m.event_at,m.sent_at)>=?)
 		AND NOT EXISTS(SELECT 1 FROM agent_confirmations c
 			WHERE c.agent_id=? AND c.project_ident=m.project_ident AND c.message_id=m.id)
-		ORDER BY m.id ASC LIMIT ?`, project, agentID, limit)
+		ORDER BY m.id ASC LIMIT ?`, project, since, since, agentID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query unconfirmed project messages: %w", err)
 	}

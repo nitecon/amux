@@ -84,10 +84,8 @@ func TestMarkdownConversationRunsAndRestoresWithoutGateway(t *testing.T) {
 	}()
 	select {
 	case <-ready:
-		local.mu.Lock()
-		connected := local.session != nil
-		local.mu.Unlock()
-		if !connected {
+		metadata, err := local.Conversation(ctx, "demo", info.ID)
+		if err != nil || metadata.NativeSessionID != "fixture-native" {
 			t.Fatal("provider must connect before the first prompt")
 		}
 	case err := <-done:
@@ -116,8 +114,9 @@ func TestMarkdownConversationRunsAndRestoresWithoutGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.file.Info.NativeSessionID != "fixture-native" || reopened.file.Preferences.Model != "fixture" || len(reopened.events) == 0 {
-		t.Fatalf("resume metadata not restored: %+v", reopened.file)
+	header, events := reopened.Snapshot()
+	if header.Info.NativeSessionID != "fixture-native" || header.Preferences.Model != "fixture" || len(events) == 0 {
+		t.Fatalf("resume metadata not restored: %+v", header)
 	}
 }
 

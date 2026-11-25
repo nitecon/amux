@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	fynetest "fyne.io/fyne/v2/test"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/server"
@@ -236,7 +237,23 @@ func TestGatewaySettingsEnrollmentPersistsAuthenticatingPeerAcrossRestart(t *tes
 	if status != http.StatusOK || copied.Invitation != first.Invitation {
 		t.Fatalf("copy invitation status=%d got=%v want same active key", status, copied)
 	}
-	prefs, err := completeGatewayEnrollment(context.Background(), stateDir, prefsPath, DefaultGatewayPreferences(), host.endpoint, copied.Invitation)
+	application := fynetest.NewApp()
+	defer application.Quit()
+	wizardDone := make(chan struct{}, 1)
+	panel := newGatewaySettingsPanel(GatewaySetupConfig{
+		FirstLaunch: true, Preferences: DefaultGatewayPreferences(), PreferencesPath: prefsPath,
+		StateDirectory: stateDir, Restart: func() { wizardDone <- struct{}{} },
+	})
+	fynetest.Tap(panel.clientMode)
+	panel.endpoint.SetText(host.endpoint)
+	panel.invitation.SetText(copied.Invitation)
+	panel.enroll()
+	select {
+	case <-wizardDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first-launch enrollment did not restart the desktop")
+	}
+	prefs, err := LoadGatewayPreferences(prefsPath)
 	if err != nil {
 		t.Fatal(err)
 	}

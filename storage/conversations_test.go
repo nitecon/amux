@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
@@ -296,6 +297,17 @@ func TestResumeConversationRecoversExactTaskOwner(t *testing.T) {
 	s := taskStore(t)
 	previous := taskActor()
 	task := makeTask(t, s, previous)
+	if _, err := s.db.ExecContext(ctx, "UPDATE projects SET kind='adhoc' WHERE ident='tasks'"); err != nil {
+		t.Fatal(err)
+	}
+	display := "Routing identity fixture"
+	target, err := s.RegisterTarget(ctx, "tasks", TargetRegistration{Origin: *previous, Generation: previous.InstanceID, DisplayName: &display}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AssignTaskFromUser(ctx, "tasks", task.ID, target.Target, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.TransitionTask(ctx, "tasks", task.ID, "in_progress", previous); err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +329,14 @@ func TestResumeConversationRecoversExactTaskOwner(t *testing.T) {
 	recovered, err := s.Task(ctx, "tasks", task.ID)
 	if err != nil || recovered.Task.OwnerOrigin == nil || *recovered.Task.OwnerOrigin != next {
 		t.Fatalf("recovered task owner %+v: %v", recovered, err)
+	}
+	var route TaskRouting
+	if err := json.Unmarshal(recovered.Task.Routing, &route); err != nil || route.Target == nil || route.Target.Origin != next || route.Target.Generation != next.InstanceID {
+		t.Fatalf("recovered routing does not match task owner: %s, %v", recovered.Task.Routing, err)
+	}
+	registered, err := s.Targets(ctx, "tasks", time.Now())
+	if err != nil || len(registered) != 1 || registered[0].Target != *route.Target || registered[0].DisplayName == nil || *registered[0].DisplayName != display {
+		t.Fatalf("target directory did not replace predecessor: %+v, %v", registered, err)
 	}
 	// The winner may retry, but cannot transfer the task owner a second time.
 	third := next

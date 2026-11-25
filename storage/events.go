@@ -245,7 +245,9 @@ func validStreamIdentity(s string) bool {
 }
 func eventTail(ctx context.Context, q queryer) (int64, error) {
 	var tail int64
-	err := q.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),0) FROM task_events").Scan(&tail)
+	// Deleting a project can remove the newest event while consumers still
+	// hold its cursor. AUTOINCREMENT retains the highest allocated ID.
+	err := q.QueryRowContext(ctx, "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='task_events'),0)").Scan(&tail)
 	return tail, err
 }
 

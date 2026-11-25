@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
@@ -31,6 +33,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer, get
 	prompt := flags.String("prompt", "", "initial prompt for a new run; further commands arrive from the gateway")
 	goalFlag := flags.String("goal", "", "select the conversation task goal for this run")
 	keyEnv := flags.String("api-key-env", "GATEWAY_API_KEY", "environment variable containing the gateway API credential")
+	taskTools := flags.String("task-tools-command", "", "optional Amux MCP executable override")
 	noTaskTools := flags.Bool("no-task-tools", false, "disable native amux task tools for this launch")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -128,7 +131,15 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer, get
 	}
 	var open worker.Open
 	if !*noTaskTools {
-		executable, err := os.Executable()
+		executable := *taskTools
+		if executable == "" {
+			executable, err = os.Executable()
+		} else {
+			executable, err = exec.LookPath(executable)
+			if err == nil {
+				executable, err = filepath.Abs(executable)
+			}
+		}
 		if err != nil {
 			return err
 		}

@@ -214,6 +214,22 @@ func (s *Store) RegisterTarget(ctx context.Context, project string, request Targ
 		DisplayName: request.DisplayName, Hostname: request.Hostname}, nil
 }
 
+// transferTargetRegistration replaces a known predecessor after an exact
+// conversation takeover. The existing lease remains bounded by its old expiry.
+func transferTargetRegistration(ctx context.Context, tx *sql.Tx, project string, previous, current AgentOrigin, originJSON string) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO task_target_presence
+		(project_ident,instance_id,session_id,origin_json,generation,seen_at,canonical_remote,display_name,hostname,advertised)
+		SELECT project_ident,?,session_id,?,?,seen_at,canonical_remote,display_name,hostname,1
+		FROM task_target_presence WHERE project_ident=? AND session_id=? AND instance_id=? AND advertised=1
+		ON CONFLICT(project_ident,instance_id,session_id) DO NOTHING`,
+		current.InstanceID, originJSON, current.InstanceID, project, previous.SessionID, previous.InstanceID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE task_target_presence SET advertised=0
+		WHERE project_ident=? AND session_id=? AND instance_id=?`, project, previous.SessionID, previous.InstanceID)
+	return err
+}
+
 func (s *Store) Targets(ctx context.Context, project string, now time.Time) ([]RegisteredTarget, error) {
 	directory, err := s.TargetDirectory(ctx, project, now)
 	if err != nil {
@@ -229,6 +245,14 @@ func (s *Store) TargetDirectory(ctx context.Context, project string, now time.Ti
 		return TargetDirectory{}, err
 	}
 	defer tx.Rollback()
+	directory, err := readTargetDirectory(ctx, tx, project, now)
+	if err != nil {
+		return TargetDirectory{}, err
+	}
+	return directory, tx.Commit()
+}
+
+func readTargetDirectory(ctx context.Context, tx *sql.Tx, project string, now time.Time) (TargetDirectory, error) {
 	p, err := getProject(ctx, tx, project)
 	if err != nil {
 		return TargetDirectory{}, err
@@ -277,9 +301,6 @@ func (s *Store) TargetDirectory(ctx context.Context, project string, now time.Ti
 		return TargetDirectory{}, err
 	}
 	if err := rows.Close(); err != nil {
-		return TargetDirectory{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return TargetDirectory{}, err
 	}
 	return TargetDirectory{Targets: targets, CanonicalRemote: p.CanonicalRemote}, nil

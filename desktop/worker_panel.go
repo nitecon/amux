@@ -406,23 +406,7 @@ func (p *workerPanel) finishCheckoutBinding(operation uint64, workspaceID string
 }
 
 func validateWorkspaceCheckoutProject(item storage.ProjectOverview, identity projectidentity.Identity) error {
-	if item.CanonicalRemote == nil {
-		if item.Kind == "adhoc" && identity.Upstream == "" {
-			return nil
-		}
-		return fmt.Errorf("selected project has no repository binding; attach an unbound checkout only to an ad-hoc project")
-	}
-	if identity.Upstream == "" {
-		return fmt.Errorf("checkout has no Git origin for this repository-backed project")
-	}
-	matches, err := checkoutMatchesProjectRemote(identity.Upstream, item.CanonicalRemote)
-	if err != nil {
-		return fmt.Errorf("selected project has an invalid repository binding")
-	}
-	if !matches {
-		return fmt.Errorf("checkout origin does not match the selected project")
-	}
-	return nil
+	return projectidentity.ValidateBinding(item.Kind, item.CanonicalRemote, identity)
 }
 
 func (p *workerPanel) discoverCheckouts(parent string) {

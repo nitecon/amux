@@ -13,7 +13,9 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/worker"
 )
 
 func (b *Browser) setMainView(name string) {
@@ -53,18 +55,7 @@ func (b *Browser) refreshMainView() {
 	}
 }
 
-func providerConversationLabel(provider string) string {
-	switch provider {
-	case "claude":
-		return "Claude"
-	case "codex":
-		return "Codex"
-	case "antigravity":
-		return "Agy"
-	default:
-		return provider
-	}
-}
+var providerConversationLabel = localconversation.ProviderLabel
 
 var defaultChatProviders = [...]string{"claude", "codex", "antigravity"}
 
@@ -134,6 +125,11 @@ func (b *Browser) applyHeaderPresence(summary storage.PresenceSummary, err error
 func (b *Browser) loadProjectConversations() {
 	b.projectConversationGeneration++
 	generation, project := b.projectConversationGeneration, b.selectedProject
+	selected := b.selection.ProjectConversation
+	if b.conversationAgents != nil {
+		b.conversationAgents.RemoveAll()
+	}
+	b.loadConversationAgents(project, generation)
 	b.projectConversationItems = nil
 	b.conversationHistory = nil
 	b.defaultChats = nil
@@ -148,6 +144,18 @@ func (b *Browser) loadProjectConversations() {
 		var err error
 		if b.localConversationsDirectory != "" {
 			items, err = listMarkdownChats(b.localConversationsDirectory, project)
+			found := false
+			for _, chat := range items {
+				if chat.ID == selected {
+					found = true
+					break
+				}
+			}
+			if err == nil && selected != "" && !found {
+				if chat, readErr := b.client.Conversation(ctx, project, selected); readErr == nil && chat.FleetHostname != nil {
+					items = append(items, *chat)
+				}
+			}
 		}
 		for after := ""; b.localConversationsDirectory == ""; {
 			var page []storage.Conversation
@@ -184,7 +192,7 @@ func (b *Browser) loadProjectConversations() {
 			b.conversationHistory = items
 			b.defaultChats = make(map[string]storage.Conversation)
 			for _, chat := range items {
-				if chat.TaskID != "" {
+				if chat.TaskID != "" || chat.FleetHostname != nil {
 					b.projectConversationItems = append(b.projectConversationItems, chat)
 					continue
 				}
@@ -202,7 +210,7 @@ func (b *Browser) loadProjectConversations() {
 				for _, chat := range items {
 					if chat.ID == b.selection.ProjectConversation {
 						b.openStandaloneConversation(chat)
-						if chat.TaskID == "" {
+						if chat.TaskID == "" && chat.FleetHostname == nil {
 							b.resumeDefaultConversation(chat)
 						}
 						break
@@ -223,7 +231,14 @@ func (b *Browser) openStandaloneConversation(chat storage.Conversation) {
 		b.selection.ProjectConversation = chat.ID
 		b.persist()
 		content := child.Content()
-		if chat.TaskID != "" {
+		if chat.FleetHostname != nil {
+			identity := worker.AgentDisplayName(chat.Owner) + " · " + providerConversationLabel(chat.Provider)
+			if *chat.FleetHostname != "" {
+				identity += " · " + *chat.FleetHostname
+			}
+			content = container.NewBorder(widget.NewLabel(identity), nil, nil, nil, content)
+			b.activeConversationProvider = ""
+		} else if chat.TaskID != "" {
 			content = container.NewBorder(b.taskThreadHeader(chat), nil, nil, nil, content)
 			b.activeConversationProvider = ""
 		} else {
@@ -347,7 +362,9 @@ func (b *Browser) resumeDefaultConversation(chat storage.Conversation) {
 func (b *Browser) loadEventView() {
 	project := b.selectedProject
 	host := b.mainViews["Events"].(*fyne.Container)
-	host.Objects = []fyne.CanvasObject{widget.NewLabel("Loading events…")}
+	b.approvalRows = container.NewVBox()
+	b.refreshApprovalNotices()
+	host.Objects = []fyne.CanvasObject{container.NewVScroll(container.NewVBox(b.approvalRows, widget.NewLabel("Loading events…")))}
 	host.Refresh()
 	b.launch(func(ctx context.Context) {
 		events, err := b.client.TaskEvents(ctx, project)
@@ -355,7 +372,7 @@ func (b *Browser) loadEventView() {
 			if project != b.selectedProject || b.mainView != "Events" {
 				return
 			}
-			rows := container.NewVBox(browserSectionHeading("EVENTS"))
+			rows := container.NewVBox(b.approvalRows, browserSectionHeading("EVENTS"))
 			if err != nil {
 				rows.Add(widget.NewLabel("Events unavailable: " + err.Error()))
 			} else if len(events) == 0 {

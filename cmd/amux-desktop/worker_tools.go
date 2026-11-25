@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"debug/elf"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,8 +46,22 @@ func resolveTaskTools(command string) (string, error) {
 		name += ".exe"
 	}
 	if executable, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(executable), name)
-		if resolved, err := exec.LookPath(candidate); err == nil {
+		dir := filepath.Dir(executable)
+		candidates := []string{filepath.Join(dir, name)}
+		if runtime.GOOS == "darwin" {
+			candidates = append(candidates, filepath.Join(dir, "amux-macos-"+runtime.GOARCH))
+		}
+		for _, candidate := range candidates {
+			resolved, err := exec.LookPath(candidate)
+			if err != nil {
+				continue
+			}
+			if runtime.GOOS == "darwin" {
+				if linuxBinary, err := elf.Open(resolved); err == nil {
+					_ = linuxBinary.Close()
+					continue
+				}
+			}
 			return resolved, nil
 		}
 	}

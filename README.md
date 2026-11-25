@@ -402,9 +402,9 @@ in `docs/go-parity.json`.
 
 CLI workers now register an `amux` MCP stdio server with their native provider.
 The standalone bundled catalog has 12 non-task tools. With a complete native
-configuration and the bundled executables available, those join the 16 native
-task/submit tools for 28 total. The native tools are 15 server tools (14 task
-operations plus `project_message_thread`) and local `submit_work`.
+configuration and the bundled executables available, those join the 19 native
+task and submission tools for 31 total. The native tools include the 15 server
+tools, local `submit_work`, `agent_identity`, and the `task_agents` and `task_reassign` handoff tools.
 `project_message_thread` reads the full original message and its replies after
 inbox acknowledgement. The bundled tools use the pinned `agent-tools` and
 `memory` executables. `AMUX_BUNDLED_DIR` is included in the runtime native
@@ -498,6 +498,15 @@ make build
 # Add --state /path/to/worker.db --run-id RUN_UUID to host the saved worker.
 # Add --task-tools-command /absolute/path/to/bin/amux to enable its task tools.
 ```
+
+Run `make binaries` (or `./scripts/build-binaries.sh`) from macOS with Go,
+Docker, and MinGW-w64 or Zig installed. It builds `amux` and `amux-desktop` for
+macOS Apple Silicon, Linux x86-64, and Windows x86-64 into `bin/`. The Linux
+pair uses `.bin` and the Windows pair uses `.exe`. Keep each pair together.
+Start a standalone gateway with the platform's `amux` executable and
+`server run --config /path/to/amux-server.yml`. Set `WINDOWS_CC` to choose a
+different Windows cross-compiler.
+
 
 On supported release platforms, `make desktop` stages the pinned tool
 executables beside `bin/amux` so assigned agents can call the code,

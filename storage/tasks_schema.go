@@ -50,7 +50,8 @@ func migrateTasks(ctx context.Context, tx *sql.Tx) error {
  CREATE TRIGGER IF NOT EXISTS task_event_commented AFTER INSERT ON task_comments BEGIN
  INSERT INTO task_events(kind,project_ident,canonical_remote,task_json,comment_json,created_at,origin_json)
  SELECT 'task_commented',t.project_ident,p.canonical_remote,%s,%s,NEW.created_at,%s FROM tasks t JOIN projects p ON p.ident=t.project_ident WHERE t.id=NEW.task_id;END;
- CREATE TRIGGER IF NOT EXISTS amux_task_event_assignment AFTER UPDATE OF owner_origin_json ON tasks
+ DROP TRIGGER IF EXISTS amux_task_event_assignment;
+ CREATE TRIGGER amux_task_event_assignment AFTER UPDATE OF owner_origin_json ON tasks
  WHEN NEW.owner_origin_json IS NOT NULL AND NEW.owner_origin_json IS NOT OLD.owner_origin_json BEGIN
  INSERT INTO task_events(kind,project_ident,canonical_remote,task_json,created_at,origin_json)
  VALUES('task_assigned',NEW.project_ident,(SELECT canonical_remote FROM projects WHERE ident=NEW.project_ident),%s,NEW.updated_at,%s);END;
@@ -89,7 +90,7 @@ func taskSnapshotSQL(alias string) string {
 	}
 	pairs = append(pairs, "'labels',json(CASE WHEN json_valid("+alias+".labels) THEN "+alias+".labels ELSE '[]' END)")
 	pairs = append(pairs, "'delegation_ready',json(CASE WHEN "+alias+".kind='delegated' AND EXISTS(SELECT 1 FROM task_delegations d JOIN tasks target ON target.id=d.target_task_id AND target.project_ident=d.target_project_ident WHERE d.source_project_ident="+alias+".project_ident AND d.source_task_id="+alias+".id AND target.status='done') THEN 'true' ELSE 'false' END)")
-	pairs = append(pairs, "'parent',(SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id="+alias+".id)")
+	pairs = append(pairs, "'parent',json((SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id="+alias+".id))")
 	return "json_object(" + strings.Join(pairs, ",") + ")"
 }
 func commentSnapshotSQL(alias string) string {

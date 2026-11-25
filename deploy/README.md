@@ -2,6 +2,19 @@
 
 The `amux server run` command runs the Go server without the desktop application or an interactive login. It defaults to `127.0.0.1:7913`. Bearer mode requires a nonempty API key in `GATEWAY_API_KEY` and TLS for a non-loopback listener. Choose `--database PATH` for a standalone SQLite database or `--profile DIR` to keep `application.sqlite` and the installation identity in `security.sqlite` under one directory. Profile mode retains an existing Rust installation ID and valid root certificate and key, creates a root pair for a fresh profile, and holds the security owner lock for the lifetime of the process. Incomplete or mismatched root material prevents startup.
 
+Run `amux --generate-server-config` to create `amux-server.yml` in the
+current directory. Choose an absolute `database` or `profile` path and
+edit the listener, TLS, and retention settings as needed. The template
+references credential environment variables. It does not contain the
+credentials themselves.
+
+Start the server with `amux server run --config /absolute/path/to/amux-server.yml`.
+For systemd, use that command as `ExecStart` and keep the existing
+`EnvironmentFile`. The same command works as the service program and
+arguments for Windows or macOS. Explicit CLI flags override the matching YAML
+settings. For the repeatable `profile-tls-name` setting, YAML takes a list and
+explicit CLI names replace that list.
+
 The Go server currently provides the server API and its server-owned workers. Native provider workers are a separate `amux worker pool` process; this deployment does not start a provider pool or claim full desktop or gateway deployment parity.
 
 With `--profile`, supply `--profile-tls-name NAME` once per DNS name or IP address to serve HTTPS with a server certificate signed by the profile root. Clients must trust the public `root.pem` and connect using a configured name. Configure profile TLS names or a manual certificate/key pair. Keep all private keys in the profile directory.
@@ -115,51 +128,41 @@ Ensure the `amux` account can read both TLS files through ownership, a restricte
 
 ## Headless Linux clients
 
-Use a dedicated service account with access to each existing Git checkout and
-the chosen agent provider executable. Enroll that account with an expiring
-peering key and place the returned manifest path in `/etc/amux/client.env` as
-`AMUX_CLIENT_PROFILE=/absolute/path/to/client-profile.json`. Keep the manifest
-and its private key readable by the service account.
-
-Create the state directory before enrollment or the first registration. If
-the service has already started, stop it before running these commands.
+Use a dedicated service account with access to the Git checkouts and provider
+executables. Enroll that account with an expiring peering key. Keep the
+enrollment manifest and its private key readable only by the service account.
 
 ```sh
-sudo install -d -m 0755 /etc/amux
-sudo install -d -m 0700 -o amux -g amux /var/lib/amux-client
+sudo install -d -m 0700 -o amux -g amux /var/lib/amux-client /var/lib/amux-client/.amux
 sudo -u amux /usr/local/bin/amux client enroll --server https://GATEWAY:PORT \
   --state-dir /var/lib/amux-client
 ```
 
-Supply the key on stdin. Set `client_manifest` to the manifest path printed
-by enrollment and use that path in `/etc/amux/client.env`. Register each
-existing checkout as the same service account:
+Supply the peering key on stdin. Save the following configuration as
+`/var/lib/amux-client/.amux/config.yml`, owned by the `amux` account. Replace
+the enrollment path with the manifest path printed by enrollment.
 
-```sh
-sudo -u amux /usr/local/bin/amux -add-project /srv/repos/example \
-  --state /var/lib/amux-client/workers.sqlite \
-  --enrolled-profile "$client_manifest" --provider codex --slots 2
+```yaml
+enrolled_profile: '/var/lib/amux-client/client-profile.json'
+worker_journal: '/var/lib/amux-client/workers.sqlite'
+projects_directory: '/srv/repos'
+projects:
+  example: '/srv/repos/example'
+providers: [codex]
 ```
 
-Registration matches the checkout's Git origin to an existing gateway project.
-Use `--project` to choose among matching gateway projects or bind a Git checkout
-without an origin to an existing ad-hoc project. The command prints the saved
-pool ID and does not clone a repository or start an agent.
+If upgrading an existing service, keep its journal path and enter the existing
+gateway project IDs and checkout paths. The client reuses matching saved pools
+and their worker identities.
 
 Install [amux-client.service](amux-client.service) under
-`/etc/systemd/system`, then run `systemctl daemon-reload` and
-`systemctl enable --now amux-client`. The client starts the saved pools for
-its enrolled gateway. Each worker slot advertises its project and machine
-through the existing gateway presence protocol. Check unavailable paths and
-worker errors with `journalctl -u amux-client`. The project’s Alerts tab
-shows which hosts last reported their checkout unavailable. The client rechecks registered
-paths every 30 seconds. It withdraws the worker pool when its checkout becomes
-unavailable and resumes it when the registered path is restored. Manual
-assignment targets age out on the two-minute registration lease.
-
-Stop the service before adding more checkouts to its journal, then restart it
-to pick up the new pools. Use one headless client per machine for checkout
-reporting. Manage checkout ownership and cloning outside amux.
+`/etc/systemd/system`, run `systemctl daemon-reload`, then run
+`systemctl enable --now amux-client`. Edit the YAML and use
+`systemctl reload amux-client` to reload without restarting. Use
+`journalctl -u amux-client` for the reload result, or request it directly with
+`sudo -u amux env HOME=/var/lib/amux-client /usr/local/bin/amux --reload-config`.
+The project’s Alerts tab shows which hosts last reported an unavailable checkout.
+Keep one client per service account and machine for checkout reporting.
 
 ### Agent tools on desktop and headless hosts
 
@@ -177,3 +180,49 @@ memory search and writes. Keep transient checkout indexes and the worker
 recovery journal on the execution host. Before replacing the bundled memory
 commands, account for local-only memories, updates, tombstones, and the search
 behavior agents rely on.
+
+## YAML-configured headless client
+
+After enrolling with the gateway, create `~/.amux/config.yml` with native,
+absolute paths. Use single quotes around Windows paths so YAML preserves
+backslashes.
+
+```yaml
+enrolled_profile: '/home/user/.amux/cluster/client-profile.json'
+projects_directory: '/home/user/projects'
+projects:
+  amux: '/home/user/projects/amux'
+providers: [codex, antigravity]
+```
+
+Point `enrolled_profile` at the manifest from your actual enrollment.
+Run `amux --generate-client-config` to create the default file without
+replacing one that already exists. For an existing enrollment in another
+directory, pass `--enrolled-profile /absolute/path/to/client-profile.json`.
+The client reads the gateway endpoint from that manifest unless you set
+`gateway_endpoint`. To use a bearer gateway, generate with
+`--server URL --api-key-env ENV_NAME`.
+
+The client matches Git origins directly under `projects_directory` to
+active gateway projects. If multiple checkouts share an origin, it uses the
+first path in alphabetical order. Use `projects` to select a specific path
+for a gateway project ID. Explicit entries in `project_urls` or `projects`
+can register missing gateway projects. Discovery alone does not create them.
+A project needs a local checkout before this client can run its tasks.
+
+Start the client with `amux client run`. It keeps its worker journal alongside
+the YAML as `workers.db`. Set `worker_journal` to the absolute path of an
+existing journal to reuse it across desktop and service starts.
+After editing projects or providers, use `amux --reload-config` or send the
+client `SIGHUP` on Unix. Invalid configurations leave the last accepted bindings
+in effect. Removed or moved workers drain their current runs before a replacement
+can take work. Changing the enrollment manifest path requires a client restart.
+
+When the desktop hosts a gateway, it writes a `hosted_gateway` section for its
+local enrollment and starts the client. The client starts the gateway as a
+separate `amux server run` process. Closing the desktop leaves the client and
+gateway running. Reopening the desktop reuses the services.
+
+Use `amux client run --config PATH` and `amux --reload-config --config PATH`
+for a separate client profile. Explicit desktop gateway overrides use their
+own profile and journal, so they can coexist with the default client.

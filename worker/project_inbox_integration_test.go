@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	"github.com/nitecon/amux/storage"
 )
 
-func TestProjectInboxSharedTickDeliversNudgeThroughNativeWorkerFIFO(t *testing.T) {
+func TestProjectInboxSharedTickKeepsNudgesOutOfTaskWorker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	remote, local, client, host, pool, slot := poolRegistrationFixture(t, ctx, "", false, http.DefaultTransport)
@@ -147,77 +146,39 @@ func TestProjectInboxSharedTickDeliversNudgeThroughNativeWorkerFIFO(t *testing.T
 	}
 	pendingTick := tick()
 	for {
-		unread, err := remote.GetUnconfirmedProjectMessages(ctx, pool.Project, run.Owner.SessionID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, message := range unread {
-			if message.ID == delegated.MessageID {
-				found = true
-			}
-		}
-		if !found {
-			break
-		}
-		// Heartbeats may advance the receiver sequence between the inbox
-		// snapshot and its transaction. Model the server's next shared tick
-		// after a completed reconciliation leaves the message unread.
 		deliveries, err := remote.RouterDeliveries(ctx, pendingTick.Seq)
 		if err != nil {
 			t.Fatal(err)
 		}
+		complete := false
 		for _, delivery := range deliveries {
 			if delivery.Plugin == "project-inbox" && delivery.State == "completed" {
-				pendingTick = tick()
+				complete = true
 				break
 			}
 		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("tick did not durably accept inbox message")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	commands, err := remote.ConversationCommands(ctx, pool.Project, run.ConversationID, 0, 100)
-	if err != nil || len(commands) != 2 || session.promptCount.Load() != 1 {
-		t.Fatalf("inbox did not queue behind initial turn: commands=%+v count=%d err=%v", commands, session.promptCount.Load(), err)
-	}
-	close(release)
-	select {
-	case text := <-session.started:
-		if !strings.Contains(text, "Delegated task created") || !strings.Contains(text, "inbox-sender") {
-			t.Fatalf("provider prompt omitted project nudge context: %s", text)
-		}
-	case <-ctx.Done():
-		t.Fatal("queued inbox message did not reach provider")
-	}
-	if session.promptCount.Load() != 2 {
-		t.Fatalf("provider received %d prompts, want one initial prompt and one inbox prompt", session.promptCount.Load())
-	}
-	repeated := tick()
-	for {
-		deliveries, err := remote.RouterDeliveries(ctx, repeated.Seq)
-		if err != nil {
-			t.Fatal(err)
-		}
-		done := false
-		for _, delivery := range deliveries {
-			if delivery.Plugin == "project-inbox" && delivery.State == "completed" {
-				done = true
-			}
-		}
-		if done {
+		if complete {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("repeated inbox tick did not complete")
+			t.Fatal("project inbox tick did not complete")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	commands, err = remote.ConversationCommands(ctx, pool.Project, run.ConversationID, 0, 100)
-	if err != nil || len(commands) != 2 {
-		t.Fatalf("repeated tick duplicated inbox command: %+v %v", commands, err)
+	commands, err := remote.ConversationCommands(ctx, pool.Project, run.ConversationID, 0, 100)
+	if err != nil || len(commands) != 1 || session.promptCount.Load() != 1 {
+		t.Fatalf("task worker should receive only the assigned prompt: commands=%+v count=%d err=%v", commands, session.promptCount.Load(), err)
 	}
+	unread, err := remote.GetUnconfirmedProjectMessages(ctx, pool.Project, run.Owner.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range unread {
+		if message.ID == delegated.MessageID {
+			close(release)
+			return
+		}
+	}
+	t.Fatal("delegated task message did not remain in the project inbox")
 }

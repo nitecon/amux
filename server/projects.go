@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -18,9 +19,10 @@ type projectRegistration struct {
 
 func (a *api) registerProject(w http.ResponseWriter, r *http.Request) {
 	var req *struct {
-		Ident   string  `json:"ident"`
-		Channel *string `json:"channel"`
-		RepoURL *string `json:"repo_url"`
+		Ident    string  `json:"ident"`
+		Channel  *string `json:"channel"`
+		RepoURL  *string `json:"repo_url"`
+		Recreate bool    `json:"recreate,omitempty"`
 	}
 	if !readTaskRequest(w, r, &req) {
 		return
@@ -93,7 +95,11 @@ func (a *api) registerProject(w http.ResponseWriter, r *http.Request) {
 			p.CanonicalRemote = &canonical
 			p.Kind = "repo"
 		}
-		if err := a.store.InsertProject(r.Context(), p); err != nil {
+		if err := a.store.RegisterProject(r.Context(), p, req.Recreate); err != nil {
+			if errors.Is(err, storage.ErrProjectDeleted) {
+				writeError(w, http.StatusGone, err.Error())
+				return
+			}
 			taskError(w, err)
 			return
 		}
@@ -108,4 +114,32 @@ func (a *api) registerProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, projectRegistration{existing.Ident, existing.ChannelName, existing.RoomID, existing.Kind, existing.RepoFullName})
+}
+
+func (a *api) deleteProject(w http.ResponseWriter, r *http.Request) {
+	actor, ok := requestActor(w, r)
+	if !ok {
+		return
+	}
+	if actor != nil {
+		writeError(w, http.StatusForbidden, "project deletion requires a human request")
+		return
+	}
+	var req struct {
+		Confirmation string `json:"confirmation"`
+	}
+	if !readJSONRequest(w, r, &req, 4096) {
+		return
+	}
+	deleted, err := a.store.DeleteProject(r.Context(), r.PathValue("ident"), req.Confirmation)
+	switch {
+	case errors.Is(err, storage.ErrProjectDeleteInput):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "project deletion failed")
+	case !deleted:
+		writeError(w, http.StatusNotFound, "project not found")
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }

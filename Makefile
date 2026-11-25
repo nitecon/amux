@@ -11,9 +11,12 @@ TOOL_TARGET = $(TOOL_TARGET_$(shell $(GO) env GOOS)_$(shell $(GO) env GOARCH))
 
 .DEFAULT_GOAL := build
 
-.PHONY: build cli desktop tools
+.PHONY: build cli desktop tools binaries
 
 build: cli desktop
+
+binaries:
+	GO="$(GO)" ./scripts/build-binaries.sh
 
 cli: | bin
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/amux$(EXE) ./cmd/amux

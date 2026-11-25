@@ -129,6 +129,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 				}
 			}
 			tools = append(tools, submitWorkMCPTool())
+			tools = append(tools, taskRoutingMCPTools...)
 		}
 		return append(tools, runner.AvailableTools()...)
 	}
@@ -148,6 +149,9 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 			return callSubmitWorkMCP(callCtx, client, *project, conversation, *directory, origin, selectedGoal, preferencesPath, args)
 		}
 		if nativeRequested {
+			if name == "agent_identity" || name == "task_agents" || name == "task_reassign" {
+				return callTaskRoutingMCP(callCtx, client, *project, id.String(), *localTask, workingDirectory, origin, name, args), nil
+			}
 			if *localTask != "" && localGatewayTaskTool(name) {
 				return callLocalGatewayTaskTool(callCtx, client, *project, *localTask, origin, selectedGoal, name, args), nil
 			}

@@ -65,7 +65,17 @@ func (b *Browser) buildConversationView(controls fyne.Theme) fyne.CanvasObject {
 	options.Add(b.newChatButton)
 	toolbar := browserPanel(container.NewThemeOverride(container.NewHBox(tabs, layout.NewSpacer(), options), controls))
 	b.refreshConversationLaunchControls()
-	return container.NewBorder(toolbar, b.newConversationStatus, historyPane, nil, b.standaloneChatHost)
+	b.conversationAgents = container.NewVBox()
+	agentWidth := container.NewGridWrap(fyne.NewSize(200, 0))
+	agents := container.NewStack(agentWidth, browserPanel(container.NewBorder(browserSectionHeading("AGENTS"), nil, nil, nil, container.NewVScroll(b.conversationAgents))))
+	tabs.Add(widget.NewButton("Agents", func() {
+		if agents.Visible() {
+			agents.Hide()
+		} else {
+			agents.Show()
+		}
+	}))
+	return container.NewBorder(toolbar, b.newConversationStatus, historyPane, agents, b.standaloneChatHost)
 }
 
 func (b *Browser) refreshConversationLaunchControls() {

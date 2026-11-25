@@ -28,11 +28,7 @@ func reportProjectInboxNative(t *testing.T, s *Store, project string, origin Age
 
 func createInboxConversation(t *testing.T, s *Store, project string, origin *AgentOrigin) *Conversation {
 	t.Helper()
-	task, err := s.InsertTask(context.Background(), TaskInsert{Project: project, Title: "Inbox receiver", Reporter: "fixture"}, origin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := s.CreateConversation(context.Background(), project, task.ID, origin)
+	created, err := s.CreateConversation(context.Background(), project, "", origin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,4 +277,67 @@ func TestProjectInboxBacklogDrainsAcrossTicksAndFullRecipientDoesNotStarvePeer(t
 			t.Fatalf("recipient isolation firstAcks=%d secondAcks=%d secondCommands=%d err=%v", firstAcks, secondAcks, secondCommands, err)
 		}
 	})
+}
+
+func TestProjectInboxDoesNotInjectHistoryIntoNewConversation(t *testing.T) {
+	ctx := context.Background()
+	s := taskStore(t)
+	actor := taskActor()
+	old := insertProjectMessageFixture(t, s, "tasks", "system", "old assignment", true)
+	conv := createInboxConversation(t, s, "tasks", actor)
+	if _, err := s.db.ExecContext(ctx, "UPDATE messages SET event_at=? WHERE id=?", conv.CreatedAt-1, old); err != nil {
+		t.Fatal(err)
+	}
+	fresh := insertProjectMessageFixture(t, s, "tasks", "user", "current message", false)
+	now := time.Now()
+	reportProjectInboxNative(t, s, "tasks", *actor, "native:live-inbox", 1, false, now)
+	if err := s.ReconcileProjectInbox(ctx, projectInboxTick(now)); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := s.ConversationCommands(ctx, "tasks", conv.ID, 0, 10)
+	if err != nil || len(commands) != 1 || !strings.Contains(commands[0].Command.Text, fmt.Sprintf("message_id: %d", fresh)) {
+		t.Fatalf("expected only the live message, got %+v, %v", commands, err)
+	}
+	unread, err := s.GetUnconfirmedProjectMessages(ctx, "tasks", actor.SessionID)
+	if err != nil || len(unread) != 1 || unread[0].ID != old {
+		t.Fatalf("expected historical message in explicit inbox, got %+v, %v", unread, err)
+	}
+}
+
+func TestProjectInboxKeepsProjectMessagesOutOfTaskThreads(t *testing.T) {
+	ctx := context.Background()
+	s := taskStore(t)
+	actor := taskActor()
+	task, err := s.InsertTask(ctx, TaskInsert{Project: "tasks", Title: "Assigned task", Reporter: "fixture"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := s.CreateConversation(ctx, "tasks", task.ID, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	reportProjectInboxNative(t, s, "tasks", *actor, "native:task-thread", 1, false, now)
+	insertProjectMessageFixture(t, s, "tasks", "system", "another task was assigned", true)
+	if err := s.ReconcileProjectInbox(ctx, projectInboxTick(now)); err != nil {
+		t.Fatal(err)
+	}
+	unread, err := s.GetUnconfirmedProjectMessages(ctx, "tasks", actor.SessionID)
+	if err != nil || len(unread) != 1 {
+		t.Fatalf("project message must stay in the inbox, got %+v, %v", unread, err)
+	}
+
+	projectChat := createInboxConversation(t, s, "tasks", actor)
+	fresh := insertProjectMessageFixture(t, s, "tasks", "user", "new project message", false)
+	if err := s.ReconcileProjectInbox(ctx, projectInboxTick(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := s.ConversationCommands(ctx, "tasks", projectChat.ID, 0, 10)
+	if err != nil || len(commands) == 0 || !strings.Contains(commands[len(commands)-1].Command.Text, fmt.Sprintf("message_id: %d", fresh)) {
+		t.Fatalf("expected fresh message in the standalone project chat, got %+v, %v", commands, err)
+	}
+	commands, err = s.ConversationCommands(ctx, "tasks", thread.ID, 0, 10)
+	if err != nil || len(commands) != 0 {
+		t.Fatalf("project inbox contaminated the task thread: %+v, %v", commands, err)
+	}
 }

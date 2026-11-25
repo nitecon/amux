@@ -47,9 +47,15 @@ func (s *Store) WorkerTaskConsumer(ctx context.Context, server string) (string, 
 // RecordWorkerTaskEvent atomically advances the durable inbox cursor and saves
 // work only for an exact, locally journaled worker identity.
 func (s *Store) RecordWorkerTaskEvent(ctx context.Context, server string, event TaskEvent) (bool, error) {
-	var task Task
+	// Historical events may encode unrelated task fields differently. Decode
+	// only the routing fields. The gateway checks live ownership before work.
+	var task struct {
+		ID           string       `json:"id"`
+		ProjectIdent string       `json:"project_ident"`
+		Status       string       `json:"status"`
+		OwnerOrigin  *AgentOrigin `json:"owner_origin"`
+	}
 	if len(event.Task) > 0 {
-		// Execution still requires an exact ownership check on the gateway.
 		if err := json.Unmarshal(event.Task, &task); err != nil {
 			return false, err
 		}
@@ -73,7 +79,7 @@ func (s *Store) RecordWorkerTaskEvent(ctx context.Context, server string, event 
 			return false, err
 		}
 		if task.OwnerOrigin != nil && (task.Status == "todo" || task.Status == "in_progress") {
-			queued, err = queueWorkerTask(ctx, tx, server, task, event.ID)
+			queued, err = queueWorkerTask(ctx, tx, server, task.ProjectIdent, task.ID, task.OwnerOrigin, event.ID)
 			if err != nil {
 				return false, err
 			}
@@ -119,8 +125,8 @@ func (s *Store) WorkerTaskChanges() <-chan struct{} {
 	return s.workerTaskChanges
 }
 
-func queueWorkerTask(ctx context.Context, tx *sql.Tx, server string, task Task, cursor int64) (bool, error) {
-	owner, err := json.Marshal(task.OwnerOrigin)
+func queueWorkerTask(ctx context.Context, tx *sql.Tx, server string, project, id string, origin *AgentOrigin, cursor int64) (bool, error) {
+	owner, err := json.Marshal(origin)
 	if err != nil {
 		return false, err
 	}
@@ -129,7 +135,7 @@ func queueWorkerTask(ctx context.Context, tx *sql.Tx, server string, task Task, 
 			SELECT 1 FROM amux_worker_pool_slots slot JOIN amux_worker_pools pool ON pool.id=slot.pool_id
 			WHERE pool.server=? AND pool.project=? AND slot.owner_json=?)
 		ON CONFLICT(server,project,task) DO UPDATE SET owner=excluded.owner,event_id=excluded.event_id`,
-		server, task.ProjectIdent, task.ID, string(owner), cursor, server, task.ProjectIdent, string(owner))
+		server, project, id, string(owner), cursor, server, project, string(owner))
 	if err != nil {
 		return false, err
 	}
@@ -156,7 +162,7 @@ func (s *Store) BootstrapWorkerTasks(ctx context.Context, server string, cursor 
 		return err
 	}
 	for _, task := range tasks {
-		if _, err := queueWorkerTask(ctx, tx, server, task, cursor); err != nil {
+		if _, err := queueWorkerTask(ctx, tx, server, task.ProjectIdent, task.ID, task.OwnerOrigin, cursor); err != nil {
 			return err
 		}
 	}

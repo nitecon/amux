@@ -150,7 +150,7 @@ func TestHumanAssignTaskHTTPRequiresLiveCompatibleTargetAndAuditsUser(t *testing
 		t.Fatal(err)
 	}
 	comment := detail.Comments[0]
-	if comment.Author != "user" || comment.AuthorType != "user" || !strings.Contains(comment.Content, "Previous assignment:") {
+	if comment.Author != "user" || comment.AuthorType != "user" || !strings.Contains(comment.Content, "Previous assignment:") || !strings.Contains(comment.Content, "Instance at handoff:") {
 		t.Fatalf("assignment audit comment=%+v", comment)
 	}
 }

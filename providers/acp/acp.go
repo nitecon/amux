@@ -27,29 +27,31 @@ type MCPServer struct {
 	Env     []EnvVar `json:"env"`
 }
 type Config struct {
-	Command       []string
-	Directory     string
-	ResumeID      string
-	Env           []string
-	MCPServers    []MCPServer
-	OpenTimeout   time.Duration
-	CancelTimeout time.Duration
+	Command         []string
+	Directory       string
+	ResumeID        string
+	Env             []string
+	MCPServers      []MCPServer
+	AutoApproveTool func(name string) bool
+	OpenTimeout     time.Duration
+	CancelTimeout   time.Duration
 }
 type permission struct {
 	id      json.RawMessage
 	options map[string]bool
 }
 type Session struct {
-	ctx           context.Context
-	peer          *providerrpc.Peer
-	sink          conversation.Sink
-	mu            sync.Mutex
-	id            string
-	pending       map[string]permission
-	busy          bool
-	canceling     bool
-	closed        bool
-	cancelTimeout time.Duration
+	ctx             context.Context
+	peer            *providerrpc.Peer
+	sink            conversation.Sink
+	mu              sync.Mutex
+	id              string
+	pending         map[string]permission
+	autoApproveTool func(name string) bool
+	busy            bool
+	canceling       bool
+	closed          bool
+	cancelTimeout   time.Duration
 }
 
 // Start owns a native process and session for the lifetime of ctx. A supplied
@@ -74,7 +76,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	if cancelTimeout <= 0 {
 		cancelTimeout = 5 * time.Second
 	}
-	session := &Session{ctx: ctx, sink: sink, id: config.ResumeID, pending: map[string]permission{}, cancelTimeout: cancelTimeout}
+	session := &Session{ctx: ctx, sink: sink, id: config.ResumeID, pending: map[string]permission{}, cancelTimeout: cancelTimeout, autoApproveTool: config.AutoApproveTool}
 	session.peer = providerrpc.New(ctx, process, providerrpc.Options{}, session.handle)
 	fail := func(err error) (*Session, error) { session.Close(); return nil, err }
 	timeout := config.OpenTimeout
@@ -326,6 +328,7 @@ func (s *Session) handle(ctx context.Context, p *providerrpc.Peer, message provi
 			SessionID string `json:"sessionId"`
 			ToolCall  struct {
 				ID    string `json:"toolCallId"`
+				Name  string `json:"name"`
 				Title string `json:"title"`
 			} `json:"toolCall"`
 			Options []struct {
@@ -359,6 +362,14 @@ func (s *Session) handle(ctx context.Context, p *providerrpc.Peer, message provi
 		if _, exists := s.pending[key]; exists {
 			s.mu.Unlock()
 			return fmt.Errorf("duplicate ACP permission request ID")
+		}
+		if s.autoApproveTool != nil && s.autoApproveTool(params.ToolCall.Name) {
+			for _, option := range choices {
+				if option.Kind == "allow_once" {
+					s.mu.Unlock()
+					return p.Respond(ctx, message.ID, map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": option.ID}}, nil)
+				}
+			}
 		}
 		s.pending[key] = permission{id: message.ID, options: options}
 		s.mu.Unlock()

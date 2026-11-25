@@ -11,12 +11,13 @@ import (
 type Topic string
 
 const (
-	ProjectChanged      Topic = "project_changed"
-	TaskChanged         Topic = "task_changed"
-	ConversationChanged Topic = "conversation_changed"
-	PresenceChanged     Topic = "presence_changed"
-	RouterChanged       Topic = "router_changed"
-	Tick                Topic = "tick"
+	ProjectChanged           Topic = "project_changed"
+	TaskChanged              Topic = "task_changed"
+	ConversationChanged      Topic = "conversation_changed"
+	FleetConversationChanged Topic = "fleet_conversation_changed"
+	PresenceChanged          Topic = "presence_changed"
+	RouterChanged            Topic = "router_changed"
+	Tick                     Topic = "tick"
 )
 
 // Event is intentionally small and extensible. Current consumers use Topic as

@@ -1,4 +1,4 @@
-package desktop
+package localconversation
 
 import (
 	"context"
@@ -11,13 +11,13 @@ import (
 	"github.com/nitecon/amux/gatewayclient"
 )
 
-type rustPresence struct {
+type RustPresence struct {
 	mu      sync.Mutex
 	agents  map[string]gatewayclient.RustPresenceAgent
 	changed chan struct{}
 }
 
-func (p *rustPresence) set(agent gatewayclient.RustPresenceAgent, present bool) {
+func (p *RustPresence) set(agent gatewayclient.RustPresenceAgent, present bool) {
 	p.mu.Lock()
 	if present {
 		p.agents[agent.SessionID] = agent
@@ -31,7 +31,7 @@ func (p *rustPresence) set(agent gatewayclient.RustPresenceAgent, present bool) 
 	}
 }
 
-func (p *rustPresence) run(ctx context.Context, client *gatewayclient.Client) {
+func (p *RustPresence) Run(ctx context.Context, client *gatewayclient.Client) {
 	host, _ := os.Hostname()
 	platform := runtime.GOOS
 	if platform == "darwin" {
@@ -60,4 +60,8 @@ func (p *rustPresence) run(ctx context.Context, client *gatewayclient.Client) {
 		}
 		publish(ctx)
 	}
+}
+
+func NewRustPresence() *RustPresence {
+	return &RustPresence{agents: make(map[string]gatewayclient.RustPresenceAgent), changed: make(chan struct{}, 1)}
 }

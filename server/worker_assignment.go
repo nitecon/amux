@@ -6,7 +6,7 @@ import (
 
 func (a *api) registerWorkerAssignmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{ident}/worker-assignment", func(w http.ResponseWriter, r *http.Request) {
-		actor, ok := conversationActor(w, r)
+		actor, ok := a.conversationActor(w, r)
 		if !ok {
 			return
 		}

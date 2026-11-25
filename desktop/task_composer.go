@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -871,6 +870,7 @@ func (c *taskComposer) finishComment(project, task string, projectGeneration, ta
 		if currentNavigation {
 			c.appendComment(comment)
 			b.refreshTaskAfterMutation(project, task)
+			b.refreshTasksAfterMutation(project)
 		}
 	}
 	if c.activeProject == project && c.activeTask == task {
@@ -979,12 +979,13 @@ func (b *Browser) showTaskComments(comments []storage.TaskComment) {
 		return
 	}
 	for _, comment := range comments {
-		author := widget.NewLabelWithStyle(comment.Author, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+		author := selectableLabel(comment.Author)
+		author.TextStyle = fyne.TextStyle{Bold: true}
 		author.Truncation = fyne.TextTruncateEllipsis
-		date := canvas.NewText(time.UnixMilli(comment.CreatedAt).Format("Jan 2, 2006 · 15:04"), theme.PlaceHolderColor())
-		date.TextSize = 10
+		date := selectableLabel(time.UnixMilli(comment.CreatedAt).Format("Jan 2, 2006 · 15:04"))
+		date.SizeName = theme.SizeNameCaptionText
 		header := container.NewBorder(nil, nil, nil, container.NewCenter(date), author)
-		body := widget.NewLabel(comment.Content)
+		body := selectableLabel(comment.Content)
 		body.Wrapping = fyne.TextWrapWord
 		b.taskComments.Add(browserListCard(header, body))
 	}

@@ -184,7 +184,11 @@ func TestACPProcessFixture(t *testing.T) {
 			send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": params.ID, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "message-1", "content": map[string]any{"type": "text", "text": "Checking the task"}}}})
 			send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": params.ID, "update": map[string]any{"sessionUpdate": "tool_call", "toolCallId": "tool-1", "title": "Inspect files", "status": "pending"}}})
 			permissionPending = true
-			send(map[string]any{"jsonrpc": "2.0", "id": "permission-1", "method": "session/request_permission", "params": map[string]any{"sessionId": params.ID, "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}, map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}}}})
+			name := "terminal_exec"
+			if os.Getenv("AMUX_ACP_ALLOW_FIXTURE") == "1" {
+				name = "mcp_amux_task_get"
+			}
+			send(map[string]any{"jsonrpc": "2.0", "id": "permission-1", "method": "session/request_permission", "params": map[string]any{"sessionId": params.ID, "toolCall": map[string]any{"toolCallId": "tool-1", "name": name}, "options": []any{map[string]any{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}, map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}}}})
 		case "session/cancel":
 			cancelling = true
 			if !permissionPending {
@@ -207,7 +211,11 @@ func TestACPProcessFixture(t *testing.T) {
 					send(map[string]any{"jsonrpc": "2.0", "id": promptID, "result": map[string]any{"stopReason": "cancelled"}})
 					continue
 				}
-				if permission.Outcome.Outcome != "selected" || permission.Outcome.Option != "reject-once" {
+				expected := "reject-once"
+				if os.Getenv("AMUX_ACP_ALLOW_FIXTURE") == "1" {
+					expected = "allow-once"
+				}
+				if permission.Outcome.Outcome != "selected" || permission.Outcome.Option != expected {
 					os.Exit(18)
 				}
 				send(map[string]any{"jsonrpc": "2.0", "id": promptID, "result": map[string]any{"stopReason": "end_turn"}})
@@ -301,12 +309,15 @@ func TestACPConfiguredMCPServerReachesSessionNew(t *testing.T) {
 	}
 }
 
-func fixtureSession(t *testing.T, resume string) (*Session, <-chan conversation.Event) {
+func fixtureSession(t *testing.T, resume string, approve ...func(string) bool) (*Session, <-chan conversation.Event) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	events := make(chan conversation.Event, 32)
 	config := Config{Command: []string{os.Args[0], "-test.run=^TestACPProcessFixture$"}, Directory: t.TempDir(), ResumeID: resume, Env: append(os.Environ(), "AMUX_ACP_FIXTURE=1")}
+	if len(approve) > 0 {
+		config.AutoApproveTool = approve[0]
+	}
 	session, err := Start(ctx, config, func(ctx context.Context, event conversation.Event) error {
 		select {
 		case events <- event:
@@ -435,5 +446,20 @@ func TestACPUnsupportedResumeDoesNotStartFresh(t *testing.T) {
 	}
 	if emitted {
 		t.Fatal("unsupported resume emitted a ready conversation")
+	}
+}
+
+func TestACPSelectsOnlyOfferedAllowOnceForApprovedTool(t *testing.T) {
+	t.Setenv("AMUX_ACP_ALLOW_FIXTURE", "1")
+	session, events := fixtureSession(t, "", func(name string) bool { return name == "mcp_amux_task_get" })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := session.Prompt(ctx, "Read the assigned task"); err != nil {
+		t.Fatal(err)
+	}
+	for len(events) > 0 {
+		if event := <-events; event.Kind == "permission" {
+			t.Fatal("approved tool emitted a manual permission challenge")
+		}
 	}
 }

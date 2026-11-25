@@ -29,7 +29,7 @@ type projectInboxRecipient struct {
 }
 
 // ReconcileProjectInbox turns unread project messages into durable prompts
-// for the exact live native session that owns a project conversation. The
+// for the exact live native session that owns a taskless project conversation. The
 // message confirmation and command are committed together, so replayed ticks
 // cannot lose or duplicate an inbox item.
 func (s *Store) ReconcileProjectInbox(ctx context.Context, event router.Event) error {
@@ -84,6 +84,10 @@ func (s *Store) projectInboxRecipients(ctx context.Context, now int64) ([]projec
 		WHERE a.report_kind='native' AND a.state!='gone' AND ?-a.seen_at<?
 		AND EXISTS(SELECT 1 FROM messages m WHERE m.project_ident=a.project_ident
 		 AND (m.source='user' OR m.deliver_to_agents=1)
+		 AND EXISTS(SELECT 1 FROM amux_conversations c WHERE c.project_ident=a.project_ident AND c.task_id IS NULL
+		   AND json_extract(c.owner_json,'$.session_id')=a.session_id
+		   AND json_extract(c.owner_json,'$.instance_id')=a.instance_id
+		   AND COALESCE(m.event_at,m.sent_at)>=c.created_at)
 		 AND NOT EXISTS(SELECT 1 FROM agent_confirmations c WHERE c.agent_id=a.session_id AND c.project_ident=m.project_ident AND c.message_id=m.id))
 		ORDER BY a.project_ident,a.session_id,a.instance_id`, now, presenceGoneAfter)
 	if err != nil {
@@ -171,7 +175,7 @@ func (s *Store) deliverProjectInboxRecipient(ctx context.Context, r projectInbox
 	if !validPresencePrincipal(principal) {
 		return false, nil
 	}
-	conversationID, ok, err := uniqueProjectInboxConversation(ctx, tx, r)
+	conversationID, createdAt, ok, err := uniqueProjectInboxConversation(ctx, tx, r)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -192,7 +196,7 @@ func (s *Store) deliverProjectInboxRecipient(ctx context.Context, r projectInbox
 	if limit > capacity {
 		limit = capacity
 	}
-	messages, err := readUnconfirmedProjectMessages(ctx, tx, r.project, r.session, limit)
+	messages, err := readUnconfirmedProjectMessages(ctx, tx, r.project, r.session, limit, &createdAt)
 	if err != nil {
 		return false, err
 	}
@@ -216,34 +220,27 @@ func (s *Store) deliverProjectInboxRecipient(ctx context.Context, r projectInbox
 	return len(messages) != 0, nil
 }
 
-func uniqueProjectInboxConversation(ctx context.Context, q queryer, r projectInboxRecipient) (string, bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id FROM amux_conversations WHERE project_ident=? AND
+func uniqueProjectInboxConversation(ctx context.Context, q queryer, r projectInboxRecipient) (string, int64, bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id,created_at FROM amux_conversations WHERE project_ident=? AND task_id IS NULL AND
 		json_extract(owner_json,'$.session_id')=? AND json_extract(owner_json,'$.instance_id')=? AND
 		json_extract(owner_json,'$.provider')=? AND json_extract(owner_json,'$.os')=? ORDER BY id LIMIT 2`,
 		r.project, r.session, r.instance, r.provider, r.os)
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return "", false, err
-		}
-		ids = append(ids, id)
+	defer rows.Close()
+	if !rows.Next() {
+		return "", 0, false, rows.Err()
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return "", false, err
+	var id string
+	var createdAt int64
+	if err := rows.Scan(&id, &createdAt); err != nil {
+		return "", 0, false, err
 	}
-	if err := rows.Close(); err != nil {
-		return "", false, err
+	if rows.Next() {
+		return "", 0, false, nil
 	}
-	if len(ids) != 1 {
-		return "", false, nil
-	}
-	return ids[0], true, nil
+	return id, createdAt, true, rows.Err()
 }
 
 func projectInboxCommandID(project, session string, messageID int64) string {

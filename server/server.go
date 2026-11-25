@@ -104,12 +104,14 @@ func NewHandlerWithConfig(store *storage.Store, apiKey string, config HandlerCon
 	api.discoveryBind = config.DiscoveryBind
 	api.shutdown = config.Shutdown
 	mux.HandleFunc("POST /v1/projects", api.registerProject)
+	mux.HandleFunc("DELETE /v1/projects/{ident}", api.deleteProject)
 	mux.HandleFunc("GET /v1/projects", api.projectInventory)
 	mux.HandleFunc("GET /v1/navigation/stream", api.navigationStream)
 	api.registerTaskRoutes(mux)
 	api.registerExecutionHistoryRoutes(mux)
 	api.registerTaskCancellationRoutes(mux)
 	api.registerConversationRoutes(mux)
+	api.registerFleetConversationRoutes(mux)
 	api.registerConversationCommandRoutes(mux)
 	api.registerPresenceRoutes(mux)
 	api.registerCheckoutRoutes(mux)

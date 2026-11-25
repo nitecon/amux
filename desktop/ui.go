@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -58,6 +59,8 @@ type UI struct {
 	permissionButtons       map[string]*widget.Button
 	permissionDetailButtons map[string]*widget.Button
 	expandedPermissions     map[string]bool
+	transcriptEnd           int
+	refreshPending          atomic.Bool
 
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -84,8 +87,8 @@ func New(config Config) (*UI, error) {
 	}
 	u := &UI{
 		client: config.Client, project: config.Project, conversationID: config.ConversationID,
-		model: config.Model, dispatch: dispatch, toolButtons: map[string]*widget.Button{}, permissionButtons: map[string]*widget.Button{}, permissionDetailButtons: map[string]*widget.Button{}, expandedPermissions: map[string]bool{},
-		heading: widget.NewLabel(config.TaskTitle), connection: widget.NewLabel("Ready to connect"),
+		model: config.Model, dispatch: dispatch, transcriptEnd: -1, toolButtons: map[string]*widget.Button{}, permissionButtons: map[string]*widget.Button{}, permissionDetailButtons: map[string]*widget.Button{}, expandedPermissions: map[string]bool{},
+		heading: selectableLabel(config.TaskTitle), connection: widget.NewLabel("Ready to connect"),
 		transcript: container.NewVBox(), status: widget.NewLabel(""),
 	}
 	if strings.TrimSpace(config.TaskTitle) == "" {
@@ -207,10 +210,10 @@ func (u *UI) loadConversation(ctx context.Context) {
 func (u *UI) stream(ctx context.Context) {
 	delay := 200 * time.Millisecond
 	for ctx.Err() == nil {
-		snapshot := u.model.Snapshot()
+		sequence := u.model.Sequence()
 		u.mu.Lock()
 		cursor := u.cursor
-		cursor.Events = snapshot.Sequence
+		cursor.Events = sequence
 		u.mu.Unlock()
 		u.setConnection("Connecting…")
 		err := u.client.Stream(ctx, u.project, u.conversationID, cursor, u.consume)
@@ -278,7 +281,7 @@ func (u *UI) consume(frame gatewayclient.Frame) error {
 			u.activePrompt = ""
 		}
 		u.mu.Unlock()
-		u.dispatch(func() { u.refresh(); u.updateButtons() })
+		u.queueTranscriptRefresh()
 	case "command":
 		if frame.Command == nil {
 			return fmt.Errorf("gateway sent an empty command frame")
@@ -331,7 +334,7 @@ func (u *UI) Submit() {
 		u.mu.Unlock()
 		return
 	}
-	draftText := u.model.Snapshot().Draft
+	draftText := u.model.Draft()
 	draft := strings.TrimSpace(draftText)
 	if draft == "" {
 		u.mu.Unlock()
@@ -386,7 +389,7 @@ func (u *UI) enqueue(ctx context.Context, id string, command conversation.Comman
 				text := u.pendingText
 				u.pendingPrompt, u.pendingText = "", ""
 				u.mu.Unlock()
-				if u.model.Snapshot().Draft == text {
+				if u.model.Draft() == text {
 					u.model.SetDraft("")
 					u.dispatch(func() { u.composer.SetText(""); u.refresh(); u.updateButtons() })
 				} else {
@@ -431,20 +434,49 @@ func wait(ctx context.Context, duration time.Duration) bool {
 	}
 }
 
+func (u *UI) queueTranscriptRefresh() {
+	if u.refreshPending.Swap(true) {
+		return
+	}
+	u.dispatch(func() {
+		u.refreshPending.Store(false)
+		u.refresh()
+		u.updateButtons()
+	})
+}
+
+const conversationPageSize = 40
+
 func (u *UI) refresh() {
 	u.refreshTranscript(true)
 }
 
 func (u *UI) refreshTranscript(follow bool) {
-	snapshot := u.model.Snapshot()
+	snapshot, start, total := u.model.TranscriptWindow(u.transcriptEnd, conversationPageSize)
 	u.toolButtons = map[string]*widget.Button{}
 	u.permissionButtons = map[string]*widget.Button{}
 	u.permissionDetailButtons = map[string]*widget.Button{}
 	objects := make([]fyne.CanvasObject, 0, len(snapshot.Items)+len(snapshot.Permissions)+1)
+	if start > 0 {
+		objects = append(objects, widget.NewButton("Older messages", func() {
+			u.transcriptEnd = start
+			u.refreshTranscript(false)
+			u.scroll.ScrollToTop()
+		}))
+	}
 	for _, item := range snapshot.Items {
 		if rendered := u.renderItem(item); rendered != nil {
 			objects = append(objects, rendered)
 		}
+	}
+	if end := start + len(snapshot.Items); end < total {
+		objects = append(objects, widget.NewButton("Newer messages", func() {
+			u.transcriptEnd = end + conversationPageSize
+			if u.transcriptEnd >= u.modelItemCount() {
+				u.transcriptEnd = -1
+			}
+			u.refreshTranscript(true)
+		}))
 	}
 	for _, permission := range snapshot.Permissions {
 		objects = append(objects, u.renderPermission(permission))
@@ -455,9 +487,14 @@ func (u *UI) refreshTranscript(follow bool) {
 	u.transcript.Objects = objects
 	u.transcript.Refresh()
 	u.scroll.Refresh()
-	if follow {
+	if follow && u.transcriptEnd < 0 {
 		u.scroll.ScrollToBottom()
 	}
+}
+
+func (u *UI) modelItemCount() int {
+	_, _, total := u.model.TranscriptWindow(0, 0)
+	return total
 }
 
 func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
@@ -484,12 +521,12 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 		})
 		button.Importance = widget.LowImportance
 		u.toolButtons[item.ToolCallID] = button
-		preview := widget.NewLabel(label)
+		preview := selectableLabel(label)
 		preview.Truncation = fyne.TextTruncateEllipsis
 		if item.Command != "" {
 			preview.TextStyle = fyne.TextStyle{Monospace: true}
 		}
-		row := container.NewBorder(nil, nil, widget.NewLabel("Tool"), button, preview)
+		row := container.NewBorder(nil, nil, selectableLabel("Tool"), button, preview)
 		if item.Expanded {
 			var details any
 			text := string(item.Details)
@@ -498,18 +535,18 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 					text = string(pretty)
 				}
 			}
-			detail := widget.NewLabel(text)
+			detail := selectableLabel(text)
 			detail.Wrapping = fyne.TextWrapWord
 			detail.TextStyle = fyne.TextStyle{Monospace: true}
 			expanded := container.NewVBox(row)
 			if item.Command != "" {
-				command := widget.NewLabel(item.Command)
+				command := selectableLabel(item.Command)
 				command.Wrapping = fyne.TextWrapWord
 				command.TextStyle = fyne.TextStyle{Monospace: true}
 				expanded.Add(command)
 			}
 			if item.Text != "" {
-				output := widget.NewLabel(item.Text)
+				output := selectableLabel(item.Text)
 				output.Wrapping = fyne.TextWrapWord
 				output.TextStyle = fyne.TextStyle{Monospace: true}
 				expanded.Add(output)
@@ -538,7 +575,7 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return widget.NewLabel("•  " + text)
+		return selectableLabel("•  " + text)
 	default:
 		if strings.TrimSpace(item.Text) == "" {
 			return nil
@@ -549,15 +586,15 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 		} else {
 			role = strings.ToUpper(role[:1]) + role[1:]
 		}
-		header := widget.NewLabel(role)
+		header := selectableLabel(role)
 		header.TextStyle = fyne.TextStyle{Bold: true}
-		body := widget.NewLabel(item.Text)
+		body := selectableLabel(item.Text)
 		body.Wrapping = fyne.TextWrapWord
 		if item.Kind == "reasoning" {
 			body.TextStyle = fyne.TextStyle{Italic: true}
 		}
 		if item.Status != "" {
-			return container.NewVBox(header, body, widget.NewLabel(item.Status))
+			return container.NewVBox(header, body, selectableLabel(item.Status))
 		}
 		return container.NewVBox(header, body)
 	}
@@ -610,7 +647,7 @@ func (u *UI) renderPermission(permission chat.Permission) fyne.CanvasObject {
 				text = string(pretty)
 			}
 		}
-		detail := widget.NewLabel(text)
+		detail := selectableLabel(text)
 		detail.Wrapping = fyne.TextWrapWord
 		detail.TextStyle = fyne.TextStyle{Monospace: true}
 		content = append(content, detail)
@@ -623,7 +660,7 @@ func (u *UI) updateButtons() {
 	pending, active, started := u.pendingPrompt != "", u.activePrompt != "", u.started
 	u.mu.Unlock()
 	u.sendButton.Disable()
-	if started && !pending && strings.TrimSpace(u.model.Snapshot().Draft) != "" {
+	if started && !pending && strings.TrimSpace(u.model.Draft()) != "" {
 		u.sendButton.Enable()
 	}
 	if started && active {

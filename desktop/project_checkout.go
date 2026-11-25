@@ -2,7 +2,9 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 )
@@ -61,13 +64,19 @@ func (b *Browser) showProjectMenu(row *projectMenuRow, event *fyne.PointEvent, p
 		return button
 	}
 	checkout := action("Check out…", theme.FolderOpenIcon(), func() { b.openProjectCheckout(project) })
-	if b.localRailProjects[project.Ident] != "" {
+	localDirectory := b.localRailProjects[project.Ident]
+	if localDirectory != "" {
 		checkout = action("Open local files", theme.FolderOpenIcon(), func() { b.selectRailProject(project.Ident) })
 	}
 	options := container.NewVBox(
 		checkout,
 		action("☆  "+b.favoriteText(project.Ident), nil, func() { b.toggleFavoriteFor(project.Ident) }),
 	)
+	if localDirectory != "" && b.clientConfigPath != "" {
+		options.Add(action("Register with server", nil, func() { b.registerLocalProject(localDirectory) }))
+	} else if localDirectory == "" && project.Ident != "" {
+		options.Add(action("Delete project…", theme.DeleteIcon(), func() { b.confirmDeleteProject(project.Ident) }))
+	}
 	surface := browserCardSurface()
 	surface.StrokeColor = theme.PrimaryColor()
 	surface.SetMinSize(fyne.NewSize(144, 0))
@@ -104,6 +113,13 @@ func (b *Browser) saveProjectsDirectory(value string) error {
 		}
 		value = filepath.Clean(value)
 	}
+	if b.clientConfigPath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), browserRequestTimeout)
+		defer cancel()
+		if err := b.updateClientCheckout(ctx, clientcontrol.CheckoutChange{ProjectsDirectory: &value}); err != nil {
+			return err
+		}
+	}
 	if value == b.prefs.ProjectsDirectory && len(b.prefs.ProjectsDirectories) == 0 {
 		b.scanProjectCheckouts()
 	} else {
@@ -132,12 +148,24 @@ func (b *Browser) scanProjectCheckouts() {
 	b.checkoutScan++
 	generation := b.checkoutScan
 	parent := b.projectsDirectory()
-	if parent == "" {
+	managed := b.clientConfigPath != ""
+	if parent == "" && !managed {
 		b.showLocalCheckouts(nil)
 		return
 	}
 	b.launch(func(ctx context.Context) {
-		found := projectidentity.DiscoverLocalCheckouts(ctx, parent)
+		var found []projectidentity.LocalCheckout
+		var workspace clientcontrol.Workspace
+		if managed {
+			var err error
+			workspace, err = clientcontrol.LoadWorkspace(ctx, b.clientConfigPath)
+			if err != nil {
+				return
+			}
+			found = workspace.LocalCheckouts
+		} else {
+			found = projectidentity.DiscoverLocalCheckouts(ctx, parent)
+		}
 		b.dispatch(func() {
 			b.mu.Lock()
 			closing := b.closing
@@ -145,9 +173,38 @@ func (b *Browser) scanProjectCheckouts() {
 			if closing || b.checkoutScan != generation {
 				return
 			}
+			if managed {
+				b.applyClientWorkspace(workspace)
+			}
 			b.showLocalCheckouts(found)
 		})
 	})
+}
+
+func (b *Browser) applyClientWorkspace(workspace clientcontrol.Workspace) {
+	previous := b.prefs.ProjectCheckouts
+	previousDirectory := b.projectsDirectory()
+	b.prefs.ProjectsDirectory = workspace.ProjectsDirectory
+	b.prefs.ProjectsDirectories = nil
+	b.prefs.ProjectCheckouts = make(map[string]localProjectBinding, len(workspace.Projects))
+	for id, path := range workspace.Projects {
+		key := FavoriteKey(b.prefKey, id)
+		binding := previous[key]
+		if binding.Directory != path {
+			binding = localProjectBinding{Directory: path}
+		}
+		b.prefs.ProjectCheckouts[key] = binding
+	}
+	if b.projectsDirectoryEntry != nil && b.projectsDirectoryEntry.Text == previousDirectory && previousDirectory != workspace.ProjectsDirectory {
+		b.projectsDirectoryEntry.SetText(workspace.ProjectsDirectory)
+	}
+	binding := b.prefs.ProjectCheckouts[FavoriteKey(b.prefKey, b.selectedProject)]
+	if b.selection.CheckoutPath != binding.Directory {
+		b.selection.CheckoutPath = binding.Directory
+		b.selection.CheckoutOrigin = binding.Origin
+		b.syncWorkspaceFiles()
+		b.refreshWorktreeStatus()
+	}
 }
 
 func (b *Browser) showLocalCheckouts(found []projectidentity.LocalCheckout) {
@@ -177,6 +234,9 @@ func (b *Browser) projectCheckout(project storage.ProjectOverview) localProjectB
 	binding := b.prefs.ProjectCheckouts[FavoriteKey(b.prefKey, project.Ident)]
 	if binding.Directory != "" && localCheckoutAvailable(binding.Directory) {
 		return binding
+	}
+	if b.clientConfigPath != "" {
+		return localProjectBinding{}
 	}
 	for _, checkout := range b.localCheckouts {
 		if checkout.CanonicalRemote == nil || project.CanonicalRemote == nil {
@@ -314,7 +374,17 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 					}
 				})
 			}
-			identity, origin, err := prepareProjectCheckout(ctx, project, method, parent, destination, repository)
+			var identity projectidentity.Identity
+			var origin *string
+			var err error
+			if b.clientConfigPath != "" {
+				result, checkoutErr := clientcontrol.PrepareCheckout(ctx, b.clientConfigPath, clientcontrol.CheckoutRequest{
+					Project: project.Ident, Method: method, Destination: destination, Source: repository,
+				})
+				identity, origin, err = result.Identity, result.Origin, checkoutErr
+			} else {
+				identity, origin, err = prepareProjectCheckout(ctx, project, method, parent, destination, repository)
+			}
 			b.dispatch(func() {
 				if ctx.Err() != nil {
 					return
@@ -331,7 +401,9 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 				if b.workerPanel != nil {
 					b.workerPanel.restoreWorkspaceCheckout()
 				}
-				b.scanProjectCheckouts()
+				if b.clientConfigPath == "" {
+					b.scanProjectCheckouts()
+				}
 				b.applyProjectFilter()
 				b.Refresh()
 				status.SetText("Checkout ready at " + identity.Directory)
@@ -368,38 +440,44 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 }
 
 const (
-	openInFolder    = "Open in Folder"
-	cloneInProjects = "Clone in Projects Directory"
-	cloneAtLocation = "Clone at Location"
+	openInFolder    = projectidentity.OpenInFolder
+	cloneInProjects = projectidentity.CloneInProjects
+	cloneAtLocation = projectidentity.CloneAtLocation
 )
 
 func prepareProjectCheckout(ctx context.Context, project storage.ProjectOverview, method, parent, location, source string) (projectidentity.Identity, *string, error) {
-	if method != openInFolder && project.CanonicalRemote != nil {
-		matches, _ := checkoutMatchesProjectRemote(source, project.CanonicalRemote)
-		if !matches {
-			return projectidentity.Identity{}, nil, fmt.Errorf("repository URL does not match the selected project")
+	return projectidentity.PrepareCheckout(ctx, project.Kind, project.CanonicalRemote, method, parent, location, source)
+}
+
+func (b *Browser) updateClientCheckout(ctx context.Context, change clientcontrol.CheckoutChange) error {
+	payload, err := json.Marshal(change)
+	if err != nil {
+		return err
+	}
+	_, err = clientcontrol.Request(ctx, b.clientConfigPath, http.MethodPatch, "/checkout", payload)
+	return err
+}
+
+func (b *Browser) registerLocalProject(directory string) {
+	b.browserStatus.SetText("Registering checkout…")
+	b.launchWithTimeout(0, func(ctx context.Context) {
+		checkout, err := projectidentity.ResolveCheckout(ctx, directory)
+		if err == nil && checkout.GatewayProject == "" {
+			err = fmt.Errorf("the checkout needs a Git origin before it can be registered")
 		}
-	}
-	var err error
-	switch method {
-	case cloneInProjects:
-		location, err = projectidentity.CloneRepository(ctx, parent, source)
-	case cloneAtLocation:
-		location, err = projectidentity.CloneRepositoryAt(ctx, location, source)
-	case openInFolder:
-	default:
-		return projectidentity.Identity{}, nil, fmt.Errorf("choose a checkout option")
-	}
-	if err != nil {
-		return projectidentity.Identity{}, nil, err
-	}
-	identity, err := projectidentity.ResolveCheckout(ctx, location)
-	if err != nil {
-		return identity, nil, err
-	}
-	if err := validateWorkspaceCheckoutProject(project, identity); err != nil {
-		return identity, nil, err
-	}
-	origin, err := projectidentity.CloneOrigin(ctx, identity.Directory)
-	return identity, origin, err
+		if err == nil {
+			err = b.updateClientCheckout(ctx, clientcontrol.CheckoutChange{Project: checkout.GatewayProject, Checkout: checkout.Directory, Recreate: true})
+		}
+		b.dispatch(func() {
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				b.browserStatus.SetText("Register checkout: " + err.Error())
+				return
+			}
+			b.browserStatus.SetText("Registered " + checkout.GatewayProject)
+			b.Refresh()
+		})
+	})
 }

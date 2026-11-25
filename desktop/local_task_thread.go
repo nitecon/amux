@@ -9,31 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/fsnotify/fsnotify"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/storage"
 )
 
-func legacyTaskConversationID(task, agent string) string {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(task+"/"+agent)).String()
-}
+var legacyTaskConversationID = localconversation.LegacyTaskID
 
-func taskTranscriptDirectory(root, project, task string) (string, error) {
-	dir, err := projectChatDirectory(root, project)
-	if err != nil {
-		return "", err
-	}
-	if !canonicalTaskUUID(task) {
-		return "", fmt.Errorf("invalid task identity")
-	}
-	return filepath.Join(dir, "tasks", task), nil
-}
-
-func canonicalTaskUUID(id string) bool {
-	parsed, err := uuid.Parse(id)
-	return err == nil && parsed.String() == id
-}
+var taskTranscriptDirectory = localconversation.TaskDirectory
+var canonicalTaskUUID = localconversation.CanonicalUUID
 
 func listLocalTaskThreads(root, project, task string) ([]storage.Conversation, error) {
 	dir, err := taskTranscriptDirectory(root, project, task)
@@ -83,7 +69,17 @@ func (c localTaskThread) Stream(ctx context.Context, _, _ string, cursor gateway
 	if err := consume(gatewayclient.Frame{Type: "local_transcript"}); err != nil {
 		return err
 	}
-	ticker := time.NewTicker(500 * time.Millisecond)
+	interval := 500 * time.Millisecond
+	var notifications <-chan fsnotify.Event
+	var watcherErrors <-chan error
+	if watcher, err := fsnotify.NewWatcher(); err == nil {
+		defer watcher.Close()
+		if err := watcher.Add(filepath.Dir(c.path)); err == nil {
+			notifications, watcherErrors = watcher.Events, watcher.Errors
+			interval = 5 * time.Second
+		}
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var modified time.Time
 	var size int64 = -1
@@ -119,6 +115,19 @@ func (c localTaskThread) Stream(ctx context.Context, _, _ string, cursor gateway
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+		case event, ok := <-notifications:
+			if !ok {
+				notifications = nil
+				ticker.Reset(500 * time.Millisecond)
+			} else if filepath.Clean(event.Name) == filepath.Clean(c.path) {
+				size = -1
+			}
+		case _, ok := <-watcherErrors:
+			if !ok {
+				watcherErrors = nil
+			}
+			size = -1
+			ticker.Reset(500 * time.Millisecond)
 		}
 	}
 }

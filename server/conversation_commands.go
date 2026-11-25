@@ -57,7 +57,7 @@ func (a *api) conversationCommandChanges(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, changes)
 }
 func (a *api) claimConversationCommand(w http.ResponseWriter, r *http.Request) {
-	actor, ok := conversationActor(w, r)
+	actor, ok := a.conversationActor(w, r)
 	if !ok {
 		return
 	}
@@ -69,7 +69,7 @@ func (a *api) claimConversationCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, c)
 }
 func (a *api) finishConversationCommand(w http.ResponseWriter, r *http.Request) {
-	actor, ok := conversationActor(w, r)
+	actor, ok := a.conversationActor(w, r)
 	if !ok {
 		return
 	}

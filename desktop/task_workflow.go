@@ -55,14 +55,14 @@ func newTaskWorkflow(browser *Browser) *taskWorkflow {
 		}
 		w.refreshWidgets()
 	}
-	w.reviewPrompt = widget.NewLabel("")
+	w.reviewPrompt = selectableLabel("")
 	w.reviewPrompt.Wrapping = fyne.TextWrapWord
 	w.reviewPrompt.Hide()
 	w.status = widget.NewLabel("Select a task to change its workflow status.")
 	w.status.Wrapping = fyne.TextWrapWord
 	w.refresh = widget.NewButton("Refresh task state", w.refreshUnknown)
 	w.refresh.Hide()
-	w.cancellation = widget.NewLabel("")
+	w.cancellation = selectableLabel("")
 	w.cancellation.Wrapping = fyne.TextWrapWord
 	w.cancellation.Hide()
 	w.refreshWidgets()

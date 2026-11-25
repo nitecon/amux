@@ -20,6 +20,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -33,6 +34,7 @@ const (
 
 // BrowserConfig configures the existing-project/task/conversation browser.
 type BrowserConfig struct {
+	ClientConfigPath            string
 	LocalConversationsDirectory string
 	AutoTaskAgents              bool
 	Client                      *gatewayclient.Client
@@ -47,6 +49,7 @@ type BrowserConfig struct {
 }
 
 type Browser struct {
+	clientConfigPath                                         string
 	client                                                   *gatewayclient.Client
 	appControls                                              fyne.CanvasObject
 	projectOverride, prefsPath, endpoint, prefKey, clusterID string
@@ -59,6 +62,7 @@ type Browser struct {
 	mainView                                                 string
 	taskBoard                                                *taskBoard
 	taskSubtasks                                             *fyne.Container
+	taskParent                                               *fyne.Container
 	taskDetailScroll                                         *container.Scroll
 	taskPane                                                 fyne.CanvasObject
 	taskPaneHost                                             *container.Split
@@ -89,9 +93,12 @@ type Browser struct {
 	localConversationsDirectory                              string
 	automaticWorkerScopes                                    chan []automaticWorkerScope
 	localChatSessions                                        map[string]*localChat
+	approvalNotices                                          map[approvalKey]approvalNotice
+	approvalRows                                             *fyne.Container
 	pendingConversationProvider                              string
 	activeConversationProvider                               string
 	providerTabs                                             map[string]*widget.Button
+	conversationAgents                                       *fyne.Container
 	conversationOptions                                      []*widget.Button
 	newChatButton                                            *widget.Button
 	conversationHistory                                      []storage.Conversation
@@ -286,7 +293,7 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 			return nil, err
 		}
 	}
-	b := &Browser{client: config.Client, localConversationsDirectory: config.LocalConversationsDirectory, localChatSessions: make(map[string]*localChat), appControls: config.AppControls, projectOverride: strings.TrimSpace(config.Project), prefsPath: config.PreferencesPath, endpoint: config.Client.Endpoint(), dispatch: config.Dispatch, taskWindowFactory: config.NewWindow, prefs: prefs, chats: map[string]*UI{}, chatStarted: map[string]bool{}, browserStatus: widget.NewLabel("Loading projects…")}
+	b := &Browser{clientConfigPath: config.ClientConfigPath, client: config.Client, localConversationsDirectory: config.LocalConversationsDirectory, localChatSessions: make(map[string]*localChat), appControls: config.AppControls, projectOverride: strings.TrimSpace(config.Project), prefsPath: config.PreferencesPath, endpoint: config.Client.Endpoint(), dispatch: config.Dispatch, taskWindowFactory: config.NewWindow, prefs: prefs, chats: map[string]*UI{}, chatStarted: map[string]bool{}, browserStatus: widget.NewLabel("Loading projects…")}
 	b.taskComposer = newTaskComposer(b)
 	b.worktreeStatus = newWorktreeStatusView(func() { b.refreshWorktreeStatus() })
 	if b.dispatch == nil {
@@ -297,6 +304,7 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 		b.prefs.ProjectsDirectory = legacy
 		b.prefs.ProjectsDirectories = nil
 	}
+
 	b.clusterID = config.Client.ClusterID()
 	migrateEndpointFavorites(prefs.Favorites, b.endpoint, b.clusterID)
 	b.pluginSettings = newPluginSettingsPanel(b)
@@ -490,13 +498,13 @@ func (b *Browser) buildUI() {
 	b.taskSearch.SetPlaceHolder("Filter by title, ID or label")
 	b.projectLabel = widget.NewLabel("Select a project")
 	b.projectLabel.TextStyle = fyne.TextStyle{Bold: true}
-	b.taskTitle = widget.NewLabel("Select a task")
+	b.taskTitle = selectableLabel("Select a task")
 	b.taskTitle.SizeName = theme.SizeNameSubHeadingText
-	b.taskMeta = widget.NewLabel("")
+	b.taskMeta = selectableLabel("")
 	b.taskMeta.Wrapping = fyne.TextWrapWord
 	b.taskMeta.Hide()
 	b.taskTitle.Wrapping = fyne.TextWrapWord
-	b.taskSpec = widget.NewLabel("Task details will appear here.")
+	b.taskSpec = selectableLabel("Task details will appear here.")
 	b.taskSpec.Wrapping = fyne.TextWrapWord
 	b.taskComments = container.NewVBox()
 	b.taskEditor = newTaskEditor(b)
@@ -666,6 +674,9 @@ func (b *Browser) buildUI() {
 		id.Refresh()
 		title.SetText(t.Title)
 		status.Text = browserStatusLabel(t.Status)
+		if t.Status == "" {
+			status.Text = "Parent"
+		}
 		status.Color = taskStatusColor(t.Status)
 		tint := color.NRGBAModel.Convert(status.Color).(color.NRGBA)
 		tint.A = 100
@@ -838,8 +849,10 @@ func (b *Browser) buildUI() {
 	b.emptyDetailPrompt = container.NewCenter(emptyDetailLabel)
 	taskPane := browserPanel(container.NewBorder(taskHeader, b.newTaskAccordion, nil, nil, container.NewThemeOverride(b.tasks, cardLists)))
 	b.taskSubtasks = container.NewVBox()
+	b.taskParent = container.NewVBox()
 	settings := widget.NewAccordion(widget.NewAccordionItem("Task settings", container.NewVBox(b.taskAssignment.panel(), widget.NewSeparator(), b.taskEditor.form)))
-	detailsBody := container.NewVBox(container.NewThemeOverride(b.taskWorkflow.panel(), controls), b.taskSubtasks, widget.NewSeparator(), browserSectionHeading("SPECIFICATION"), b.taskSpec, settings, widget.NewSeparator(), browserSectionHeading("COMMENTS"), b.taskComments)
+	copyTask := copyTaskIDButton(func() string { return b.selectedTask })
+	detailsBody := container.NewVBox(container.NewThemeOverride(container.NewBorder(nil, nil, nil, copyTask, b.taskWorkflow.panel()), controls), b.taskParent, b.taskSubtasks, widget.NewSeparator(), browserSectionHeading("SPECIFICATION"), b.taskSpec, settings, widget.NewSeparator(), browserSectionHeading("COMMENTS"), b.taskComments)
 	b.taskDetailScroll = container.NewVScroll(detailsBody)
 	b.chatHost = container.NewMax(widget.NewLabel("Select an existing conversation to open its live chat."))
 	conversationHeading := browserSectionHeading("CONVERSATIONS")
@@ -858,7 +871,7 @@ func (b *Browser) buildUI() {
 	refresh.Importance = widget.LowImportance
 	b.taskDetailPage = container.NewPadded(container.NewBorder(container.NewVBox(container.NewBorder(nil, nil, detailHeading, container.NewThemeOverride(refresh, controls), b.projectLabel), b.taskTitle, b.taskMeta), container.NewVBox(widget.NewSeparator(), b.browserStatus), nil, nil, detailContent))
 	back := widget.NewButton("Back to task details", b.backToTaskDetail)
-	b.taskChatPage = container.NewBorder(container.NewHBox(container.NewThemeOverride(back, controls)), nil, nil, nil, b.chatHost)
+	b.taskChatPage = container.NewBorder(container.NewThemeOverride(container.NewHBox(back, copyTaskIDButton(func() string { return b.selectedTask })), controls), nil, nil, nil, b.chatHost)
 	b.taskChatPage.Hide()
 	right := container.NewStack(b.taskDetailPage, b.taskChatPage)
 	b.taskPane = right
@@ -941,6 +954,9 @@ func (b *Browser) Start(parent context.Context) {
 		b.refreshOnUI()
 	})
 	if b.workerPanel != nil {
+		if manager, ok := b.workerPanel.manager.(*WorkerManager); ok {
+			manager.open = b.watchApprovals(manager.open, nil)
+		}
 		startErr := b.workerPanel.manager.Start(ctx)
 		b.dispatch(func() { b.workerPanel.lifetimeStarted(ctx, startErr) })
 	}
@@ -951,6 +967,9 @@ func (b *Browser) Start(parent context.Context) {
 				b.dispatch(func() { b.workerPanel.automaticStatus.SetText(status) })
 			}, providerAvailable)
 		})
+	}
+	if b.clientConfigPath != "" {
+		b.launchWithTimeout(0, b.watchManagedApprovals)
 	}
 	go b.runNavigationRefreshes(ctx)
 	go func() {
@@ -1171,6 +1190,9 @@ func (b *Browser) launchWithTimeout(timeout time.Duration, run func(context.Cont
 func (b *Browser) Refresh() {
 	b.dispatch(func() {
 		b.pluginSettings.reload(true)
+		if b.clientConfigPath != "" {
+			b.scanProjectCheckouts()
+		}
 		b.refreshOnUI()
 	})
 }
@@ -1220,6 +1242,9 @@ func (b *Browser) refreshOnUI() {
 	b.mu.Unlock()
 	if hasProject {
 		b.refreshTasks()
+		if b.mainView == "Conversations" {
+			b.loadConversationAgents(b.selectedProject, b.projectConversationGeneration)
+		}
 	}
 }
 
@@ -1716,6 +1741,9 @@ func (b *Browser) refreshWorkspaceTasks(workspaceID, project string) {
 	}
 	started := b.launch(func(ctx context.Context) {
 		items, err := b.client.Tasks(ctx, project, statuses)
+		if err == nil {
+			items = loadTaskParents(ctx, project, items, b.client.TaskDetail)
+		}
 		b.dispatch(func() {
 			b.applyWorkspaceTasks(workspaceID, project, bindingGeneration, queryGeneration, status, allStates, items, err)
 		})
@@ -1836,6 +1864,7 @@ func (b *Browser) selectTask(task string) {
 	b.taskMeta.Hide()
 	b.taskSpec.SetText("")
 	b.taskComments.RemoveAll()
+	b.taskParent.RemoveAll()
 	b.taskSubtasks.RemoveAll()
 	b.taskDetailScroll.ScrollToTop()
 	b.showEmptyChat("Select an existing conversation to open its live chat.")
@@ -1989,9 +2018,7 @@ func (b *Browser) applyTaskDetail(project, task string, generation uint64, detai
 	if detail.Task.TaskType != "" {
 		meta += " · " + detail.Task.TaskType
 	}
-	if parent := detail.Task.Parent; parent != nil {
-		meta += "\nParent · " + parent.Title
-	}
+	b.showTaskParent(project, task, detail.Task.Parent)
 	b.taskTitle.SetText(detail.Task.Title)
 	b.taskMeta.SetText(meta)
 	b.taskMeta.Show()
@@ -2159,8 +2186,11 @@ func (b *Browser) chatForConversation(c storage.Conversation) *UI {
 			}
 			transport = localTaskThread{info: c, path: filepath.Join(dir, c.Owner.SessionID+".md")}
 		}
-		if b.localConversationsDirectory != "" && c.TaskID == "" {
-			local, err := openMarkdownChat(b.localConversationsDirectory, c, worker.OpenNative)
+		fleet := c.FleetHostname != nil
+		if !fleet && b.clientConfigPath != "" && c.TaskID == "" {
+			transport = localconversation.Remote{ConfigPath: b.clientConfigPath}
+		} else if !fleet && b.localConversationsDirectory != "" && c.TaskID == "" {
+			local, err := openMarkdownChat(b.localConversationsDirectory, c, b.watchApprovals(worker.OpenNative, &c))
 			if err != nil {
 				b.showLocalChatOpenError("Conversation could not be opened: " + err.Error())
 				return nil
@@ -2303,7 +2333,7 @@ func (b *Browser) applyProjectFilter() {
 	b.syncProjectSelection()
 }
 func (b *Browser) applyTaskFilter() {
-	b.visibleTasks = FilterTasks(b.taskItems, b.selection.TaskFilter)
+	b.visibleTasks = includeTaskParents(FilterTasks(b.taskItems, b.selection.TaskFilter), b.taskItems)
 	sortVisibleTasks(b.visibleTasks)
 	b.visibleTasks = groupTaskRows(b.visibleTasks)
 	b.tasks.Refresh()

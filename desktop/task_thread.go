@@ -30,19 +30,29 @@ func (b *Browser) taskThreadHeader(current storage.Conversation) fyne.CanvasObje
 	controls := toolbarTheme{Theme: fyne.CurrentApp().Settings().Theme()}
 	tabs := container.NewHBox()
 	seen := make(map[string]bool)
+	runsPerAgent := make(map[string]int)
+	var runs []storage.Conversation
 	for _, chat := range append([]storage.Conversation{current}, b.conversationItems...) {
 		if chat.TaskID != current.TaskID || chat.ProjectIdent != current.ProjectIdent {
 			continue
 		}
+		if seen[chat.ID] {
+			continue
+		}
+		seen[chat.ID] = true
+		runsPerAgent[chat.Owner.SessionID]++
+		runs = append(runs, chat)
+	}
+	for _, chat := range runs {
 		agent := chat.Owner.SessionID
 		if agent == "" {
 			agent = chat.ID
 		}
-		if seen[agent] {
-			continue
+		label := providerConversationLabel(chat.Provider) + " · " + shortID(agent)
+		if runsPerAgent[chat.Owner.SessionID] > 1 && chat.Owner.SessionID != "" {
+			label += " · " + shortID(chat.ID)
 		}
-		seen[agent] = true
-		button := widget.NewButton(providerConversationLabel(chat.Provider)+" · "+shortID(agent), func() {
+		button := widget.NewButton(label, func() {
 			b.conversationSelection++
 			b.openStandaloneConversation(chat)
 		})
@@ -51,6 +61,6 @@ func (b *Browser) taskThreadHeader(current storage.Conversation) fyne.CanvasObje
 		}
 		tabs.Add(button)
 	}
-	header := container.NewVBox(container.NewHBox(title, layout.NewSpacer(), back), container.NewHScroll(tabs))
+	header := container.NewVBox(container.NewHBox(title, layout.NewSpacer(), copyTaskIDButton(func() string { return current.TaskID }), back), container.NewHScroll(tabs))
 	return browserPanel(container.NewThemeOverride(header, controls))
 }

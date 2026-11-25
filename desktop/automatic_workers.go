@@ -2,18 +2,15 @@ package desktop
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -53,7 +50,7 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 	providers := make(map[string]bool)
 	var scopes []automaticWorkerScope
 	var workers sync.WaitGroup
-	var presence *rustPresence
+	var presence *localconversation.RustPresence
 	defer workers.Wait()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -80,11 +77,11 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 			}
 			capabilitiesKnown, native = true, available
 			if !native {
-				presence = &rustPresence{agents: make(map[string]gatewayclient.RustPresenceAgent), changed: make(chan struct{}, 1)}
+				presence = localconversation.NewRustPresence()
 				workers.Add(1)
 				go func() {
 					defer workers.Done()
-					presence.run(ctx, m.client)
+					presence.Run(ctx, m.client)
 				}()
 			}
 		}
@@ -132,7 +129,7 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 				go func() {
 					defer workers.Done()
 					if !native {
-						run.done <- m.runLegacyTaskWorker(ctx, *pool, run.drain, presence)
+						run.done <- (localconversation.LegacyTaskWorker{Store: m.store, Client: m.client, TranscriptRoot: m.taskConversationRoot, Open: m.open}).Run(ctx, *pool, run.drain, presence)
 						return
 					}
 					run.done <- worker.RunPool(ctx, worker.PoolConfig{
@@ -180,29 +177,4 @@ func (m *WorkerManager) automaticPool(ctx context.Context, id, project, director
 	return pool, err
 }
 
-func providerAvailable(parent context.Context, provider, directory string) bool {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-	switch provider {
-	case "claude":
-		data, err := exec.CommandContext(ctx, localProviderExecutable("claude"), "auth", "status", "--json").Output()
-		var status struct {
-			LoggedIn bool `json:"loggedIn"`
-		}
-		return err == nil && json.Unmarshal(data, &status) == nil && status.LoggedIn
-	case "codex":
-		return exec.CommandContext(ctx, localProviderExecutable("codex"), "login", "status").Run() == nil
-	case "antigravity":
-		session, err := worker.OpenNative(ctx, storage.WorkerRun{
-			Directory: directory, Owner: storage.AgentOrigin{Provider: provider},
-			Command: []string{localProviderExecutable("agy"), "acp", "--stdio"},
-		}, func(context.Context, conversation.Event) error { return nil })
-		if err != nil {
-			return false
-		}
-		_ = session.Close()
-		return true
-	default:
-		return false
-	}
-}
+var providerAvailable = localconversation.ProviderAvailable

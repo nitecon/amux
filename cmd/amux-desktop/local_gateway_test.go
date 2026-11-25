@@ -2,15 +2,23 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/gatewayprocess"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestLocalGatewayServesProjectsAndPersistsTasks(t *testing.T) {
-	ctx := context.Background()
+	cli := os.Getenv("AMUX_GO_TEST_BINARY")
+	if cli == "" {
+		t.Skip("set AMUX_GO_TEST_BINARY to the built amux executable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	db := filepath.Join(t.TempDir(), "application.sqlite")
 	store, err := storage.Open(ctx, db)
 	if err != nil {
@@ -25,7 +33,8 @@ func TestLocalGatewayServesProjectsAndPersistsTasks(t *testing.T) {
 	start := func() (*gatewayclient.Client, func()) {
 		t.Helper()
 		const key = "synthetic-desktop-local-key"
-		endpoint, stop, err := startLocalGateway(ctx, db, "127.0.0.1:0", key)
+		t.Setenv("AMUX_GO_TEST_GATEWAY_KEY", key)
+		endpoint, stop, err := gatewayprocess.StartHTTP(ctx, cli, db, "127.0.0.1:0", "AMUX_GO_TEST_GATEWAY_KEY", os.Stderr)
 		if err != nil {
 			t.Fatal(err)
 		}

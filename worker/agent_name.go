@@ -3,6 +3,7 @@ package worker
 import (
 	_ "embed"
 	"hash/fnv"
+	"runtime"
 	"strings"
 
 	"github.com/nitecon/amux/storage"
@@ -29,4 +30,24 @@ func AgentDisplayName(origin storage.AgentOrigin) string {
 	default:
 		return name
 	}
+}
+
+// AgentIdentity combines the saved worker origin with facts from its host.
+type AgentIdentity struct {
+	storage.AgentOrigin
+	DisplayName string `json:"display_name"`
+	Hostname    string `json:"hostname"`
+	Arch        string `json:"arch"`
+}
+
+func CurrentAgentIdentity(origin storage.AgentOrigin) AgentIdentity {
+	platform, hostname := workerMachineMetadata()
+	if origin.OS == "" {
+		origin.OS = platform
+	}
+	identity := AgentIdentity{AgentOrigin: origin, DisplayName: AgentDisplayName(origin), Arch: runtime.GOARCH}
+	if hostname != nil {
+		identity.Hostname = *hostname
+	}
+	return identity
 }

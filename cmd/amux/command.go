@@ -26,6 +26,18 @@ import (
 )
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
+	if len(args) > 0 && args[0] == "--generate-client-config" {
+		return generateClientConfig(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "--reload-config" {
+		if len(args) == 3 && args[1] == "--config" {
+			return requestClientReloadAt(ctx, args[2], stdout)
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("usage: amux --reload-config [--config PATH]")
+		}
+		return requestClientReload(ctx, stdout)
+	}
 	if len(args) > 0 && args[0] == "--update" {
 		if len(args) != 1 {
 			return fmt.Errorf("usage: amux --update")
@@ -121,8 +133,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	if len(args) >= 2 && args[0] == "worker" && args[1] == "run" {
 		return runWorker(ctx, args[2:], stdout, stderr, getenv)
 	}
-	if len(args) < 2 || args[0] != "server" || args[1] != "run" {
-		return fmt.Errorf("usage: amux server run (--database PATH | --profile DIR) [--listen 127.0.0.1:7913] | amux server peering-key --profile DIR [--copy] | amux worker run --state PATH --server URL --project IDENT --task UUID --directory PATH | amux worker pool --state PATH --server URL --project IDENT --directory PATH | amux tasks --server URL --project IDENT [actor options] OPERATION | amux messages [--gateway-url URL] [--project IDENT] list|get|send | amux submit-work [common task options] --directory PATH TASK MESSAGE PATHS... | amux work-submission show|set")
+	generateServerConfig := len(args) > 0 && args[0] == "--generate-server-config"
+	if generateServerConfig && len(args) != 1 {
+		return fmt.Errorf("usage: amux --generate-server-config")
+	}
+	if !generateServerConfig && (len(args) < 2 || args[0] != "server" || args[1] != "run") {
+		return fmt.Errorf("usage: amux --generate-server-config | amux server run (--config PATH | --database PATH | --profile DIR) [--listen 127.0.0.1:7913] | amux server peering-key --profile DIR [--copy] | amux worker run --state PATH --server URL --project IDENT --task UUID --directory PATH | amux worker pool --state PATH --server URL --project IDENT --directory PATH | amux tasks --server URL --project IDENT [actor options] OPERATION | amux messages [--gateway-url URL] [--project IDENT] list|get|send | amux submit-work [common task options] --directory PATH TASK MESSAGE PATHS... | amux work-submission show|set")
 	}
 	flags := flag.NewFlagSet("amux server run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -144,6 +160,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	discordTokenEnv := flags.String("discord-token-env", "", "enable Discord messaging and inbound room ingestion using the token in this environment variable")
 	discordGuildID := flags.String("discord-guild-id", "", "Discord guild ID (required with --discord-token-env)")
 	discordCategoryID := flags.String("discord-category-id", "", "optional Discord category ID for newly created rooms")
+	if generateServerConfig {
+		return writeServerConfig(flags, stdout)
+	}
+	configPath := flags.String("config", "", "YAML server configuration file")
 	if err := flags.Parse(args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -153,11 +173,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected server arguments")
 	}
-	artifactAuthEnforced, err := readServerBool(getenv, "GATEWAY_ARTIFACT_AUTH_ENFORCED", false)
+	if *configPath != "" {
+		configuredEnv, err := applyServerConfig(flags, *configPath)
+		if err != nil {
+			return err
+		}
+		originalEnv := getenv
+		getenv = func(key string) string {
+			if value, ok := configuredEnv[key]; ok {
+				return value
+			}
+			return originalEnv(key)
+		}
+	}
+	artifactAuthEnforced, err := readServerBool(getenv, "GATEWAY_ARTIFACT_AUTH_ENFORCED", defaultArtifactAuthEnforced)
 	if err != nil {
 		return err
 	}
-	artifactBodySchemaEnabled, err := readServerBool(getenv, "GATEWAY_ARTIFACT_BODY_SCHEMA_ENABLED", true)
+	artifactBodySchemaEnabled, err := readServerBool(getenv, "GATEWAY_ARTIFACT_BODY_SCHEMA_ENABLED", defaultArtifactBodySchemaEnabled)
 	if err != nil {
 		return err
 	}

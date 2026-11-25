@@ -36,7 +36,7 @@ func conversationError(w http.ResponseWriter, err error) {
 		writeError(w, 500, "conversation operation failed")
 	}
 }
-func conversationActor(w http.ResponseWriter, r *http.Request) (*storage.AgentOrigin, bool) {
+func (a *api) conversationActor(w http.ResponseWriter, r *http.Request) (*storage.AgentOrigin, bool) {
 	actor, ok := requestActor(w, r)
 	if !ok {
 		return nil, false
@@ -45,10 +45,21 @@ func conversationActor(w http.ResponseWriter, r *http.Request) (*storage.AgentOr
 		writeError(w, 400, "conversation writes require complete agent origin headers")
 		return nil, false
 	}
+	if id := r.PathValue("conversation"); id != "" {
+		allowed, err := a.store.FleetConversationWriteAllowed(r.Context(), id, authenticatedPrincipal(r.Context()))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "check conversation owner")
+			return nil, false
+		}
+		if !allowed {
+			writeError(w, http.StatusForbidden, "conversation belongs to a different enrolled client")
+			return nil, false
+		}
+	}
 	return actor, true
 }
 func (a *api) createConversation(w http.ResponseWriter, r *http.Request) {
-	actor, ok := conversationActor(w, r)
+	actor, ok := a.conversationActor(w, r)
 	if !ok {
 		return
 	}
@@ -116,7 +127,7 @@ func (a *api) listConversations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, items)
 }
 func (a *api) bindConversation(w http.ResponseWriter, r *http.Request) {
-	actor, ok := conversationActor(w, r)
+	actor, ok := a.conversationActor(w, r)
 	if !ok {
 		return
 	}
@@ -138,7 +149,7 @@ func (a *api) bindConversation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, c)
 }
 func (a *api) resumeConversation(w http.ResponseWriter, r *http.Request) {
-	actor, ok := conversationActor(w, r)
+	actor, ok := a.conversationActor(w, r)
 	if !ok {
 		return
 	}
@@ -160,7 +171,7 @@ func (a *api) resumeConversation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, c)
 }
 func (a *api) appendConversationEvent(w http.ResponseWriter, r *http.Request) {
-	actor, ok := conversationActor(w, r)
+	actor, ok := a.conversationActor(w, r)
 	if !ok {
 		return
 	}

@@ -111,10 +111,25 @@ func (m *Model) Apply(e storage.ConversationEvent) error {
 }
 
 func (m *Model) Snapshot() Snapshot {
+	snapshot, _, _ := m.TranscriptWindow(-1, -1)
+	return snapshot
+}
+
+// TranscriptWindow returns at most limit items before end, plus their starting
+// index and the total item count. A negative bound selects the full history.
+func (m *Model) TranscriptWindow(end, limit int) (Snapshot, int, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := Snapshot{Sequence: m.sequence, Draft: m.draft, Items: make([]Item, len(m.items)), Permissions: make([]Permission, len(m.permissions))}
-	for i, item := range m.items {
+	count := len(m.items)
+	if end < 0 || end > count {
+		end = count
+	}
+	start := 0
+	if limit >= 0 {
+		start = max(0, end-limit)
+	}
+	s := Snapshot{Sequence: m.sequence, Draft: m.draft, Items: make([]Item, end-start), Permissions: make([]Permission, len(m.permissions))}
+	for i, item := range m.items[start:end] {
 		s.Items[i] = item
 		s.Items[i].Details = append(json.RawMessage(nil), item.Details...)
 		s.Items[i].Expanded = item.Kind == "tool" && m.expanded[item.ToolCallID]
@@ -124,7 +139,19 @@ func (m *Model) Snapshot() Snapshot {
 		s.Permissions[i].Options = append([]conversation.PermissionOption(nil), permission.Options...)
 		s.Permissions[i].Details = cloneRaw(permission.Details)
 	}
-	return s
+	return s, start, count
+}
+
+func (m *Model) Draft() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.draft
+}
+
+func (m *Model) Sequence() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sequence
 }
 
 func (m *Model) SetExpanded(toolID string, expanded bool) error {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	fynetest "fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/nitecon/amux/chat"
@@ -328,5 +330,44 @@ func waitForUI(t *testing.T, callbacks *uiCallbacks, timeout time.Duration, cond
 	callbacks.pump()
 	if !condition() {
 		t.Fatal("timed out waiting for asynchronous UI action")
+	}
+}
+
+func TestTranscriptReplayCoalescesUpdatesAndKeepsHistoryPageable(t *testing.T) {
+	app := fynetest.NewApp()
+	defer app.Quit()
+	gateway := newFakeGateway(t)
+	client, err := gatewayclient.New(gateway.server.URL, "fixture-token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := newUICallbacks()
+	view, err := New(Config{Client: client, Project: testProject, ConversationID: testConv, Dispatch: queue.dispatch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= conversationPageSize*3; i++ {
+		event := storage.ConversationEvent{
+			ID: strconv.Itoa(i), ConversationID: testConv, Sequence: int64(i),
+			Event: conversation.Event{Kind: "user_message", SessionID: testSession, Text: strconv.Itoa(i)},
+		}
+		if err := view.consume(gatewayclient.Frame{Type: "event", Event: &event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(queue.pending); got != 1 {
+		t.Fatalf("replay scheduled %d UI refreshes, want one", got)
+	}
+	queue.pump()
+	if got := len(view.transcript.Objects); got != conversationPageSize+1 {
+		t.Fatalf("rendered %d transcript objects, want one page and navigation", got)
+	}
+	view.transcript.Objects[0].(*widget.Button).OnTapped()
+	if view.transcriptEnd != 2*conversationPageSize {
+		t.Fatal("older message page was not selected")
+	}
+	view.transcript.Objects[len(view.transcript.Objects)-1].(*widget.Button).OnTapped()
+	if view.transcriptEnd != -1 || len(view.Snapshot().Items) != 3*conversationPageSize {
+		t.Fatal("returning to the latest page lost history")
 	}
 }

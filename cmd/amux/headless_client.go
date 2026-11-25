@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/nitecon/amux/internal/clientconfig"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
@@ -18,6 +19,7 @@ import (
 func runHeadlessClient(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("amux client run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	configPath := flags.String("config", "", "client configuration YAML (default ~/.amux/config.yml)")
 	state := flags.String("state", "", "durable worker journal")
 	profile := flags.String("enrolled-profile", "", "enrolled gateway manifest")
 	if err := flags.Parse(args); err != nil {
@@ -26,7 +28,18 @@ func runHeadlessClient(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 		return err
 	}
-	if flags.NArg() != 0 || *state == "" || *profile == "" {
+	if flags.NArg() == 0 && *profile == "" {
+		path := *configPath
+		if path == "" {
+			var err error
+			path, err = clientconfig.DefaultPath()
+			if err != nil {
+				return err
+			}
+		}
+		return runConfiguredClient(ctx, path, *state, stdout, stderr)
+	}
+	if flags.NArg() != 0 || *state == "" || *configPath != "" {
 		return fmt.Errorf("usage: amux client run --state PATH --enrolled-profile PATH")
 	}
 	manifest, err := absoluteEnrolledManifest(*profile)

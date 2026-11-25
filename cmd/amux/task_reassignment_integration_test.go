@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -160,4 +163,40 @@ func TestTasksReassignCLITransfersTaskToRegisteredRecipient(t *testing.T) {
 	if err != nil || final.Task.OwnerOrigin != nil || final.Task.OwnerAgentID != nil || final.Task.StartedAt != nil || final.Task.Status != "todo" {
 		t.Fatalf("stored OS retag state=%+v err=%v", final, err)
 	}
+	t.Run("MCP discovery and scoped reassignment", func(t *testing.T) {
+		task, err := store.InsertTask(ctx, storage.TaskInsert{Project: "demo", Title: "MCP handoff", Reporter: "fixture"}, &actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chat, err := store.CreateConversation(ctx, "demo", task.ID, &actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := strings.Join([]string{
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+			`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_agents","arguments":{"os":"linux"}}}`,
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"task_reassign","arguments":{"id":%q,"recipient_session_id":%q}}}`, final.Task.ID, recipient.SessionID),
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"task_reassign","arguments":{"id":%q,"recipient_session_id":%q}}}`, task.ID, recipient.SessionID),
+			`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"agent_identity","arguments":{}}}`, "",
+		}, "\n")
+		var output bytes.Buffer
+		err = runMCP(ctx, []string{"--server", host.URL, "--project", "demo", "--conversation", chat.ID, "--directory", checkout, "--session", actor.SessionID, "--instance", actor.InstanceID, "--provider", actor.Provider, "--os", actor.OS},
+			io.NopCloser(strings.NewReader(input)), &output, io.Discard, func(string) string { return "reassign-e2e-key" })
+		if err != nil {
+			t.Fatal(err)
+		}
+		replies := strings.Split(strings.TrimSpace(output.String()), "\n")
+		if len(replies) != 5 || !strings.Contains(replies[1], recipient.SessionID) || !strings.Contains(replies[2], "bound to this conversation") || strings.Contains(replies[3], `"isError":true`) {
+			t.Fatalf("unexpected MCP responses: %s", output.String())
+		}
+		if !strings.Contains(replies[4], actor.SessionID) || !strings.Contains(replies[4], actor.InstanceID) || !strings.Contains(replies[4], "hostname") || !strings.Contains(replies[4], "display_name") || !strings.Contains(replies[4], "arch") {
+			t.Fatalf("MCP did not report current worker identity: %s", replies[4])
+		}
+		current, err := store.Task(ctx, "demo", task.ID)
+		if err != nil || current.Task.OwnerOrigin == nil || *current.Task.OwnerOrigin != recipient {
+			t.Fatalf("MCP did not reassign task: %+v, %v", current, err)
+		}
+	})
+
 }

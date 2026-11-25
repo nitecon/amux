@@ -3,6 +3,7 @@ package gatewayclient
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -136,4 +137,19 @@ func (c *Client) listConversations(ctx context.Context, path, afterID string, li
 	var result []storage.Conversation
 	err := c.do(ctx, "GET", path+"?"+query.Encode(), nil, nil, &result)
 	return result, err
+}
+
+// RegisterRepository registers an explicitly configured project through the
+// gateway's project registration API.
+func (c *Client) RegisterRepository(ctx context.Context, ident, remote string, recreate bool) error {
+	return c.do(ctx, "POST", "/v1/projects", struct {
+		Ident    string `json:"ident"`
+		Remote   string `json:"repo_url"`
+		Recreate bool   `json:"recreate,omitempty"`
+	}{ident, remote, recreate}, nil, nil)
+}
+
+func (c *Client) DeleteProject(ctx context.Context, ident, confirmation string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/projects/"+url.PathEscape(ident),
+		map[string]string{"confirmation": confirmation}, nil, nil)
 }

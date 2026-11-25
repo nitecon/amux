@@ -15,6 +15,7 @@ import (
 )
 
 type GatewaySetupConfig struct {
+	FirstLaunch        bool
 	Preferences        GatewayPreferences
 	ActiveMode         GatewayMode
 	PreferencesPath    string
@@ -22,6 +23,7 @@ type GatewaySetupConfig struct {
 	ServerEndpoint     string
 	ConnectionOverride bool
 	GeneratePeeringKey func(context.Context, bool) (string, error)
+	Apply              func(context.Context, GatewayPreferences) (GatewayPreferences, error)
 	Restart            func()
 }
 
@@ -48,11 +50,20 @@ type gatewaySettingsPanel struct {
 	busy                bool
 }
 
+// GatewayOnboarding renders the gateway choices before a connection exists.
+func GatewayOnboarding(config GatewaySetupConfig) fyne.CanvasObject {
+	config.FirstLaunch = true
+	return newGatewaySettingsPanel(config).body
+}
+
 func newGatewaySettingsPanel(config GatewaySetupConfig) *gatewaySettingsPanel {
 	p := &gatewaySettingsPanel{config: config}
 	p.mode = GatewayModeServer
 	if config.Preferences.Mode == GatewayModeClient {
 		p.mode = GatewayModeClient
+	}
+	if config.FirstLaunch {
+		p.mode = ""
 	}
 	if config.ConnectionOverride && config.ActiveMode != "" {
 		p.mode = config.ActiveMode
@@ -116,16 +127,29 @@ func (p *gatewaySettingsPanel) content() fyne.CanvasObject {
 		p.remoteDetails.Hide()
 		p.clientForm.Hide()
 	}
+	heading := browserSectionHeading("OPERATING MODE")
+	if p.config.FirstLaunch {
+		heading.Text = "SET UP AMUX"
+		p.serverMode.SetText("Host a gateway")
+		p.clientMode.SetText("Join an existing gateway")
+		p.saveButton.SetText("Start gateway and connect")
+		guidance := widget.NewLabel("For one machine, leave remote hosting off. Amux starts a local gateway and connects this client automatically. To enroll other machines later, generate a peering key in Settings.")
+		guidance.Wrapping = fyne.TextWrapWord
+		p.serverSection.Add(guidance)
+		p.remoteDetails.Objects = []fyne.CanvasObject{widget.NewLabel("Advertised hostname or IP"), p.advertisedHost}
+	}
 	p.updateServerEndpoint()
 	p.updateModeSections()
-	return container.New(layout.NewCustomPaddedVBoxLayout(14), browserSectionHeading("OPERATING MODE"), container.NewThemeOverride(modeControls, toolbarTheme{Theme: fyne.CurrentApp().Settings().Theme()}), p.serverSection, p.clientSection, p.status)
+	return container.New(layout.NewCustomPaddedVBoxLayout(14), heading, container.NewThemeOverride(modeControls, toolbarTheme{Theme: fyne.CurrentApp().Settings().Theme()}), p.serverSection, p.clientSection, p.status)
 }
 
 func (p *gatewaySettingsPanel) updateServerEndpoint() {
 	if p.endpointLabel == nil {
 		return
 	}
-	if p.config.ServerEndpoint != "" {
+	if p.config.FirstLaunch {
+		p.endpointLabel.SetText("This client will connect to the local gateway at https://127.0.0.1:7913.")
+	} else if p.config.ServerEndpoint != "" {
 		p.endpointLabel.SetText("Active gateway endpoint: " + p.config.ServerEndpoint)
 	} else {
 		p.endpointLabel.SetText("Active gateway endpoint: http://127.0.0.1:7913 (local only)")
@@ -156,7 +180,10 @@ func (p *gatewaySettingsPanel) selectMode(mode GatewayMode) {
 func (p *gatewaySettingsPanel) updateModeSections() {
 	p.serverMode.Importance = widget.MediumImportance
 	p.clientMode.Importance = widget.MediumImportance
-	if p.mode == GatewayModeClient {
+	if p.mode == "" {
+		p.serverSection.Hide()
+		p.clientSection.Hide()
+	} else if p.mode == GatewayModeClient {
 		p.clientMode.Importance = widget.HighImportance
 		p.serverSection.Hide()
 		p.clientSection.Show()
@@ -191,11 +218,30 @@ func (p *gatewaySettingsPanel) saveMode() {
 		prefs.AdvertisedHost = host
 	}
 
-	if err := SaveGatewayPreferences(p.config.PreferencesPath, prefs); err != nil {
+	if p.config.Apply == nil {
+		p.finishGatewayChange(prefs, SaveGatewayPreferences(p.config.PreferencesPath, prefs))
+		return
+	}
+	p.busy = true
+	p.status.SetText("Updating local client configuration…")
+	go func() {
+		updated, err := p.config.Apply(context.Background(), prefs)
+		if err == nil {
+			err = SaveGatewayPreferences(p.config.PreferencesPath, updated)
+		}
+		fyne.Do(func() { p.finishGatewayChange(updated, err) })
+	}()
+}
+
+func (p *gatewaySettingsPanel) finishGatewayChange(prefs GatewayPreferences, err error) {
+	p.busy = false
+	if err != nil {
 		p.status.SetText(err.Error())
 		return
 	}
 	p.config.Preferences = prefs
+	p.invitation.SetText("")
+	p.key.SetText("")
 	p.status.SetText("Saved. Restarting gateway connection…")
 	if p.config.Restart != nil {
 		p.config.Restart()
@@ -241,20 +287,10 @@ func (p *gatewaySettingsPanel) enroll() {
 	p.status.SetText("Enrolling this device…")
 	go func() {
 		prefs, err := completeGatewayEnrollment(context.Background(), p.config.StateDirectory, p.config.PreferencesPath, p.config.Preferences, endpoint, invitation)
-		fyne.Do(func() {
-			p.busy = false
-			if err != nil {
-				p.status.SetText(err.Error())
-				return
-			}
-			p.config.Preferences = prefs
-			p.invitation.SetText("")
-			p.key.SetText("")
-			p.status.SetText("Enrolled securely. Restarting with the new connection…")
-			if p.config.Restart != nil {
-				p.config.Restart()
-			}
-		})
+		if err == nil && p.config.Apply != nil {
+			prefs, err = p.config.Apply(context.Background(), prefs)
+		}
+		fyne.Do(func() { p.finishGatewayChange(prefs, err) })
 	}()
 }
 
