@@ -39,6 +39,16 @@ func migrateConversationCommands(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
+	// principal records the enrolled client that bound the worker session, so
+	// pending follow-up discovery is not decided by caller-supplied headers.
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('amux_conversations') WHERE name='principal')").Scan(&present); err != nil {
+		return err
+	}
+	if !present {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE amux_conversations ADD COLUMN principal TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
 	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS amux_conversation_commands(
  conversation_id TEXT NOT NULL REFERENCES amux_conversations(id),id TEXT NOT NULL,
  sequence INTEGER NOT NULL,kind TEXT NOT NULL,request_json TEXT NOT NULL,
@@ -217,23 +227,19 @@ const pendingTaskConversationsQuery = `SELECT c.id
 		WHERE c.project_ident=? AND c.task_id IS NOT NULL AND c.native_session_id!=''
 		  AND c.id=q.conversation_id
 		  AND json_extract(c.owner_json,'$.session_id')=?
-		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=?
-		  AND EXISTS (SELECT 1 FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source
-			WHERE a.project_ident=c.project_ident AND a.session_id=? AND a.state!='gone'
-			  AND a.report_kind='native' AND a.sequence=s.sequence AND a.sequence=s.principal_sequence
-			  AND s.principal=?)
+		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=? AND c.principal=?
 		ORDER BY c.created_at,c.id`
 
 // PendingTaskConversations finds task threads with unfinished prompts for a
 // stable worker session. The worker still needs its local recovery journal.
-// PendingTaskConversations lists follow-up work for a session only while that
-// session is in current native presence reported under the caller's principal,
-// so origin headers alone cannot reveal another enrolled client's conversations.
+// Only conversations whose session was bound under the caller's authenticated
+// principal are listed; origin headers alone reveal nothing, and conversations
+// without a recorded principal are withheld.
 func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner AgentOrigin, principal string) ([]string, error) {
 	if principal == "" {
 		return []string{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, pendingTaskConversationsQuery, project, owner.SessionID, owner.Provider, owner.OS, owner.SessionID, principal)
+	rows, err := s.db.QueryContext(ctx, pendingTaskConversationsQuery, project, owner.SessionID, owner.Provider, owner.OS, principal)
 	if err != nil {
 		return nil, err
 	}

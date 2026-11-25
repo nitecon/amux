@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
@@ -30,11 +29,10 @@ func commandConversation(t *testing.T) (*Store, *Conversation, *AgentOrigin) {
 func TestPendingTaskConversationsUsesPendingPromptIndex(t *testing.T) {
 	ctx := context.Background()
 	s, c, actor := commandConversation(t)
-	if accepted, err := s.ReportPresenceWithPrincipal(ctx, PresenceReport{Source: "pending-prompts", Sequence: 1,
-		Agents: []PresenceAgent{{ProjectIdent: "tasks", Origin: *actor}}}, time.Now(), "api-key"); err != nil || !accepted {
-		t.Fatalf("report presence: accepted=%v err=%v", accepted, err)
+	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "native", actor, "api-key"); err != nil {
+		t.Fatal(err)
 	}
-	rows, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+pendingTaskConversationsQuery, "tasks", actor.SessionID, actor.Provider, actor.OS, actor.SessionID, "api-key")
+	rows, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+pendingTaskConversationsQuery, "tasks", actor.SessionID, actor.Provider, actor.OS, "api-key")
 	if err != nil {
 		t.Fatal(err)
 	}

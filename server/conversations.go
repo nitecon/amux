@@ -141,7 +141,7 @@ func (a *api) bindConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "session binding is required")
 		return
 	}
-	c, err := a.store.BindConversationSession(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), req.NativeSessionID, actor)
+	c, err := a.store.BindConversationSessionWithPrincipal(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), req.NativeSessionID, actor, authenticatedPrincipal(r.Context()))
 	if err != nil {
 		conversationError(w, err)
 		return

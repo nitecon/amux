@@ -238,6 +238,12 @@ func (s *Store) mutateConversation(ctx context.Context, project, id string, orig
 	return c, nil
 }
 func (s *Store) BindConversationSession(ctx context.Context, project, id, nativeID string, origin *AgentOrigin) (*Conversation, error) {
+	return s.BindConversationSessionWithPrincipal(ctx, project, id, nativeID, origin, "")
+}
+
+// BindConversationSessionWithPrincipal also records the authenticated enrolled
+// client on first bind. A different principal may not rebind the session.
+func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, project, id, nativeID string, origin *AgentOrigin, principal string) (*Conversation, error) {
 	if nativeID == "" || len(nativeID) > 4096 || !utf8.ValidString(nativeID) || strings.ContainsRune(nativeID, 0) {
 		return nil, fmt.Errorf("%w: native session ID must be a nonempty bounded string", ErrConversationInput)
 	}
@@ -248,7 +254,17 @@ func (s *Store) BindConversationSession(ctx context.Context, project, id, native
 		if c.NativeSessionID != "" && c.NativeSessionID != nativeID {
 			return ErrConversationConflict
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE amux_conversations SET native_session_id=? WHERE id=?", nativeID, id)
+		var bound string
+		if err := tx.QueryRowContext(ctx, "SELECT principal FROM amux_conversations WHERE id=?", id).Scan(&bound); err != nil {
+			return err
+		}
+		if bound != "" && bound != principal {
+			return ErrTaskOwnership
+		}
+		if bound == "" {
+			bound = principal
+		}
+		_, err := tx.ExecContext(ctx, "UPDATE amux_conversations SET native_session_id=?,principal=? WHERE id=?", nativeID, bound, id)
 		if err == nil {
 			c.NativeSessionID = nativeID
 		}

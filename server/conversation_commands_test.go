@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -154,14 +155,19 @@ func TestPendingTaskConversationsAreScopedToAuthenticatedPrincipal(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindConversationSession(ctx, "tasks", c.ID, "provider-session", actor); err != nil {
+	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "provider-session", actor, "node-a"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "provider-session", actor, "node-b"); !errors.Is(err, storage.ErrTaskOwnership) {
+		t.Fatalf("foreign principal rebind err=%v", err)
 	}
 	if _, err := s.EnqueueConversationCommand(ctx, "tasks", c.ID, uuid.NewString(), conversation.Command{Kind: "prompt", Text: "Again"}); err != nil {
 		t.Fatal(err)
 	}
-	report := storage.PresenceReport{Source: "native:node-a", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: *actor}}}
-	if accepted, err := s.ReportPresenceWithPrincipal(ctx, report, time.Now(), "node-a"); err != nil || !accepted {
+	// Live presence ownership of the session moving to another enrolled client
+	// must not transfer access to conversations bound under the first one.
+	report := storage.PresenceReport{Source: "native:node-b", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: *actor}}}
+	if accepted, err := s.ReportPresenceWithPrincipal(ctx, report, time.Now(), "node-b"); err != nil || !accepted {
 		t.Fatalf("presence accepted=%v err=%v", accepted, err)
 	}
 	a := newAPI(s, "task-key")
