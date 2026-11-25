@@ -17,7 +17,10 @@ import (
 	"time"
 )
 
-func TestStagedRustToGoUpdateRunsHelperAndRestartsDesktop(t *testing.T) {
+func TestStagedFlatUpdateRunsHelperAndRestartsDesktop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fixture uses a flat Linux release")
+	}
 	_, cliName, guiName, _, err := target()
 	if err != nil {
 		t.Skip(err)
@@ -53,8 +56,7 @@ func TestStagedRustToGoUpdateRunsHelperAndRestartsDesktop(t *testing.T) {
 	oldToolsHash := mustHash(t, oldTools)
 	oldMemoryHash := mustHash(t, oldMemory)
 	oldBuild := map[string]any{
-		"revision": strings.Repeat("a", 40), "version": "1.0.0", "tag": "v1.0.0", "target": targetTriple(),
-		"goos": runtime.GOOS, "goarch": runtime.GOARCH,
+		"revision": strings.Repeat("a", 40), "version": "1.0.0", "target": targetTriple(),
 		"gui_binary": guiName, "binary_sha256": oldCLIHash, "gui_binary_sha256": oldGUIHash,
 		"bundled_sha256":       map[string]string{toolName("agent-tools"): oldToolsHash, toolName("memory"): oldMemoryHash},
 		"model_catalog_sha256": hashBytes(models), "candidate_only": false,

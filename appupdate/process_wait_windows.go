@@ -4,10 +4,15 @@ package appupdate
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+func lockUpdateFile(file *os.File) error {
+	return windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
+}
 
 func waitForProcessExit(pid int) error {
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))

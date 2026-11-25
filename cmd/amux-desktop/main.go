@@ -12,12 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"github.com/nitecon/amux/appupdate"
 	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/internal/clientconfig"
@@ -50,24 +50,9 @@ func relaunchDesktop(args []string) error {
 	if err != nil {
 		return fmt.Errorf("locate desktop for restart: %w", err)
 	}
-	if runtime.GOOS == "darwin" {
-		macosDir := filepath.Dir(executable)
-		contentsDir := filepath.Dir(macosDir)
-		bundle := filepath.Dir(contentsDir)
-		if filepath.Base(macosDir) == "MacOS" && filepath.Base(contentsDir) == "Contents" && filepath.Ext(bundle) == ".app" {
-			launch := exec.Command("/usr/bin/open", append([]string{"-n", bundle, "--args"}, args...)...)
-			if err := launch.Run(); err != nil {
-				return fmt.Errorf("restart desktop bundle: %w", err)
-			}
-			return nil
-		}
-	}
-	command := exec.Command(executable, args...)
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	if err := command.Start(); err != nil {
+	if err := appupdate.RelaunchDesktop(executable, args); err != nil {
 		return fmt.Errorf("restart desktop: %w", err)
 	}
-	_ = command.Process.Release()
 	return nil
 }
 
@@ -94,6 +79,7 @@ func run(args []string) error {
 	serverURL := flags.String("server", "", "connect to a gateway instead of starting the local server")
 	database := flags.String("database", "", "local gateway database (OS config directory by default)")
 	project := flags.String("project", "", "initial browser project, or project for a direct conversation")
+	projectDir := flags.String("project-dir", "", "launch working directory")
 	conversationID := flags.String("conversation", "", "open a conversation directly instead of browsing projects and tasks")
 	preferences := flags.String("preferences", "", "navigation preferences file (OS config directory by default; --preferences= uses memory only)")
 	workPreferences := flags.String("work-preferences", "", "work submission preferences file (OS config directory by default)")
@@ -112,6 +98,11 @@ func run(args []string) error {
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments")
+	}
+	if *projectDir != "" {
+		if err := os.Chdir(*projectDir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("set launch working directory: %w", err)
+		}
 	}
 	if (*serverURL != "" || *enrolledProfile != "") && *database != "" {
 		return fmt.Errorf("--database cannot be combined with --server or --enrolled-profile")

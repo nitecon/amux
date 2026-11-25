@@ -13,7 +13,7 @@ import (
 var tagPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 var revisionPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
-type platform struct{ os, arch, suffix, rustName string }
+type platform struct{ os, arch, suffix, releaseName string }
 
 var platforms = map[string]platform{
 	"x86_64-unknown-linux-gnu": {"linux", "amd64", "", "linux-x86_64"},
@@ -23,6 +23,17 @@ var platforms = map[string]platform{
 
 func (p platform) binaries() []string {
 	return []string{"amux" + p.suffix, "amux-desktop" + p.suffix, "agent-tools" + p.suffix, "memory" + p.suffix}
+}
+
+func (p platform) archiveExtension() string {
+	if p.os == "linux" {
+		return ".tar.gz"
+	}
+	return ".zip"
+}
+
+func (p platform) archiveName(id string) string {
+	return "amux-" + p.releaseName + "-" + id + p.archiveExtension()
 }
 
 func main() {
@@ -87,11 +98,15 @@ func writeFiles(dir string, files map[string][]byte) error {
 	}
 	for name, data := range files {
 		mode := os.FileMode(0644)
-		switch strings.TrimSuffix(name, ".exe") {
+		switch strings.TrimSuffix(filepath.Base(name), ".exe") {
 		case "amux", "amux-desktop", "agent-tools", "memory":
 			mode = 0755
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), data, mode); err != nil {
+		filename := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filename, data, mode); err != nil {
 			return err
 		}
 	}

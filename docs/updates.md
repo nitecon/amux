@@ -1,96 +1,46 @@
 # App updates
 
-The bell at the top-right of the desktop opens **App updates**. A dot indicates
-an applicable newer release or an installed update waiting for restart. Checks
-run at startup and hourly; **Check for updates** refreshes manually. A failed
-check shows an error and preserves any update already reported.
+Use the complete portable bundle from [GitHub Releases](https://github.com/nitecon/amux/releases/latest).
+Keep the bundled files together. On Apple Silicon, move the whole `amux.app`
+and keep its parent directory writable.
 
-## Direct downloads
+## Update and restart
 
-Keep the CLI, desktop, `models.json` and `BUILD.json` from the downloaded bundle together.
-Open the top-right bell, or **Preferences → Updates**, and click **Update now**.
-The app downloads the release, verifies archive checksums, build metadata and both
-executables, then installs the pair. It stays open and keeps your terminals
-running. Click **Restart amux** when ready to use the installed version.
+In the desktop app, open **Settings → Updates** and choose **Check and download
+update**. When a verified update is ready, choose **Install and restart**.
+Save any work in running sessions before restarting.
 
-There is no command-copy step. The CLI `amux --update` remains available for
-scripts and for upgrading older versions that predate the button. On Windows,
-files still in use can remain as backup images until a later update can remove
-them. Failures report whether restoration was complete; retain any reported
-backup files if manual recovery is necessary.
+If you are still running the previous desktop, use its update bell, choose
+**Update now**, then choose **Restart amux**. The first release built from the
+rebuild uses the same public release channel and package layout.
 
-Updaters shipped before bundled agent-tools and memory skip those two files.
-After such an upgrade, starting an MCP-enabled agent restores missing or mismatched
-helpers from the exact installed release. New releases also restore a missing
-`models.json` catalog this way; after upgrading through an older updater that
-skips the catalog, run the new `amux --update` or extract the complete bundle. Archive checksums, executable hashes and
-the installed build's helper pins are verified before installation; the application
-revision stays unchanged. If recovery cannot finish (for example while offline),
-the agent still starts with available tools and reports the failure. Run
-`amux --update` to retry recovery; an otherwise up-to-date installation can repair
-its bundled helpers without replacing either amux executable. A release that is
-no longer discoverable requires downloading its complete bundle manually.
+From a portable CLI installation, run `amux --update`. When it prints an
+`amux --apply-update` command, close the desktop and use that command to
+install the verified download. An older CLI may install the update directly.
+Restart the desktop to use the installed version.
 
-On macOS the app replaces the whole `amux.app` (Apple Silicon releases from
-v0.0.28 on). It verifies the archive checksums, `Contents/Resources/BUILD.json`
-and the app's code signature seal, then renames the new app into place beside
-the old one, so the folder holding `amux.app` (for example `/Applications`)
-must be writable. Earlier macOS downloads have no `BUILD.json`; install
-v0.0.28 manually once.
+Use your package manager to upgrade installations it manages. To switch from
+a CI candidate to the stable channel, download and install the complete public
+bundle. For a same-host gateway migration, follow the
+[gateway cutover procedure](../deploy/README.md).
 
-Existing review candidates can update to the first later published stable release,
-`v0.0.1`. Its installed bundle switches to the stable channel, which follows
-increasing `vMAJOR.MINOR.PATCH` tags and ignores previews. A modified or incomplete bundle is not overwritten;
-download and extract a complete bundle instead. If the installed preview cannot
-be matched to published release metadata, the app reports that limitation
-rather than guessing an update order from commit hashes.
+## Release packages
 
-## Package managers
+Each stable tag publishes these assets together after all three platform jobs pass:
 
-Homebrew installs show the Homebrew upgrade command. Other installations show
-manual guidance to use the tool that installed amux. `amux --update` does not
-overwrite package-manager files. Installing a package update and restarting the
-running app are separate steps.
+| Platform | Asset |
+| --- | --- |
+| Linux x86-64 | `amux-linux-x86_64-vMAJOR.MINOR.PATCH.tar.gz` |
+| Windows x86-64 | `amux-windows-x86_64-vMAJOR.MINOR.PATCH.zip` |
+| macOS Apple Silicon | `amux-macos-aarch64-vMAJOR.MINOR.PATCH.zip` |
+| All platforms | `SHA256SUMS` |
 
-## Restart
+Linux and Windows bundles contain the CLI, desktop, bundled tools, model
+catalog and build metadata at the archive root. On macOS they are inside
+`amux.app`, which is sealed with an ad-hoc code signature. The updater verifies
+the download and package integrity before replacing the installation.
 
-The desktop checks for an installed replacement. When one is ready, the update
-panel offers **Restart amux**, including the number of running sessions it will
-close. Restart is explicit: it saves the layout, starts the updated desktop and
-closes the current app. Previously running terminal tabs reopen in their saved
-directories. Agent tabs retain their saved model/thinking profiles and use their
-recorded native conversation IDs, independently of other personas in the same
-directory. Codex requires trusting its session-only binding hook; a missing binding
-starts fresh rather than choosing another persona's history. See [model profiles](models.md). Tabs whose processes had
-already exited remain stopped. Gateway claims and queued terminal input are not
-restored, and initialization scripts are not automatically rerun. If saving or starting the replacement
-fails, the current app remains open. Some installation methods may require
-closing and reopening amux manually.
-
-## Release metadata
-
-Official portable bundles are published at
-[GitHub Releases](https://github.com/nitecon/amux/releases/latest) for Linux and
-Windows x86_64. Keep every file in the extracted bundle together. For example,
-an existing candidate extracted into `~/bin/amux` can be upgraded with:
-
-```sh
-cd ~/bin/amux
-./amux --update
-```
-
-Then use the desktop bell to restart when ready. On Windows, run
-`.\amux.exe --update` in PowerShell from the extracted directory.
-
-To publish the next release, bump the package version in `Cargo.toml` and
-`Cargo.lock`, commit and push to `main`, then push the matching `vMAJOR.MINOR.PATCH` tag. The native
-workflow checks that tag against Cargo, tests and builds both platforms, verifies
-the bundles, and publishes both archives and their `SHA256SUMS` only after both
-jobs pass. Tagged bundles have `candidate_only: false` in `BUILD.json`.
-
-Update checks read the public
-[GitHub releases API](https://docs.github.com/en/rest/releases/releases).
-Build identity and platform selection come from the installed bundle metadata;
-the update mechanism does not use gateway credentials or agent identities.
-Windows running-CLI replacement uses the
-[self-replace library](https://docs.rs/self-replace/latest/self_replace/).
+To release, set [VERSION](../VERSION) to the next stable version and push the
+matching tag from the validated release commit. The
+[packaging workflow](../.github/workflows/go-packaging.yml) checks that the tag
+matches `VERSION`, then builds, validates, and publishes a single GitHub release.

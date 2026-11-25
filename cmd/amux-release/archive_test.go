@@ -20,7 +20,10 @@ func TestCandidateBundleRoundTripAndTamper(t *testing.T) {
 	if err := writeFiles(input, files); err != nil {
 		t.Fatal(err)
 	}
-	output := filepath.Join(root, "candidate.tar.gz")
+	output := filepath.Join(root, p.archiveName("v1.2.3"))
+	if filepath.Base(output) != "amux-windows-x86_64-v1.2.3.zip" {
+		t.Fatalf("unexpected archive name %s", output)
+	}
 	revision := strings.Repeat("a", 40)
 	if err := seal(input, target, p, "v1.2.3", revision, true, output); err != nil {
 		t.Fatal(err)
@@ -29,7 +32,7 @@ func TestCandidateBundleRoundTripAndTamper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staged, err := selectArchive(archive, false, flatName)
+	staged, err := selectArchive(archive, true, flatName)
 	if err != nil {
 		t.Fatal(err)
 	}

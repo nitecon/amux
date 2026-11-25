@@ -176,19 +176,9 @@ func previousBundle(target string, p platform) (map[string][]byte, appupdate.Bui
 	if !tagPattern.MatchString(r.Tag) {
 		return nil, empty, fmt.Errorf("invalid baseline release tag")
 	}
-	name := "amux-go-" + p.os + "-" + p.arch + "-" + r.Tag + ".tar.gz"
-	a, isGo := namedAsset(r, name)
-	sumsName := "SHA256SUMS-go"
-	if !isGo {
-		extension := ".zip"
-		if p.os == "linux" {
-			extension = ".tar.gz"
-		}
-		name = "amux-" + p.rustName + "-" + r.Tag + extension
-		a, _ = namedAsset(r, name)
-		sumsName = "SHA256SUMS"
-	}
-	sums, ok := namedAsset(r, sumsName)
+	name := p.archiveName(r.Tag)
+	a, _ := namedAsset(r, name)
+	sums, ok := namedAsset(r, "SHA256SUMS")
 	if a.Name == "" || !ok {
 		return nil, empty, fmt.Errorf("missing baseline assets for %s", target)
 	}
@@ -204,34 +194,23 @@ func previousBundle(target string, p platform) (map[string][]byte, appupdate.Bui
 		return nil, empty, fmt.Errorf("baseline archive checksum mismatch")
 	}
 	selector := flatName
-	if !isGo && p.os == "darwin" {
-		selector = func(name string) string {
-			for _, binary := range p.binaries() {
-				if name == "amux.app/Contents/MacOS/"+binary {
-					return binary
-				}
-			}
-			for _, resource := range []string{"LICENSE", "models.json", "BUILD.json"} {
-				if name == "amux.app/Contents/Resources/"+resource {
-					return resource
-				}
-			}
-			return ""
-		}
+	if p.os == "darwin" {
+		selector = macMemberName
 	}
-	files, err := selectArchive(archive, strings.HasSuffix(name, ".zip"), selector)
+	files, err := selectArchive(archive, p.archiveExtension() == ".zip", selector)
 	if err != nil {
 		return nil, empty, err
 	}
 	var build appupdate.Build
-	if err = json.Unmarshal(files["BUILD.json"], &build); err != nil {
+	payload := bundlePayload(files, p)
+	if err = json.Unmarshal(payload["BUILD.json"], &build); err != nil {
 		return nil, empty, err
 	}
-	if isGo {
+	if build.GoOS != "" {
 		if build.Tag != r.Tag || build.CandidateOnly {
 			return nil, empty, fmt.Errorf("invalid Go baseline metadata")
 		}
-		if _, err = verifyBundle(files, target, p); err != nil {
+		if _, err = verifyBundle(payload, target, p); err != nil {
 			return nil, empty, err
 		}
 	}

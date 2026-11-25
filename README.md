@@ -585,4 +585,4 @@ needed for these milestones.
 The full desktop package suite passed after these UI changes. The last
 repository-wide suite result predates later changes and is not final acceptance.
 
-See the [deployment guide](deploy/README.md) for gateway and headless worker setup. The [Go packaging workflow](.github/workflows/go-packaging.yml) builds portable bundles with pinned tools. Candidate builds use the repository [VERSION](VERSION), and release builds use their Git tag.
+See the [deployment guide](deploy/README.md) for gateway and headless worker setup, and the [app updates guide](docs/updates.md) for portable bundles and release instructions. Candidate builds use the repository [VERSION](VERSION), and stable releases use their matching Git tag.

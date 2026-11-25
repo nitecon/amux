@@ -1,4 +1,4 @@
-name: Go packaging candidate
+name: amux packaging
 
 on:
   pull_request:
@@ -6,12 +6,6 @@ on:
     branches: [main, go-rebuild, 'mvp/**']
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: Upload validated Go packages to the existing GitHub Release for this tag
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: read
@@ -24,18 +18,18 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            goos: linux
-            goarch: amd64
+            platform: linux-x86_64
+            archive: tar.gz
             ext: ''
           - os: windows-2025
             target: x86_64-pc-windows-msvc
-            goos: windows
-            goarch: amd64
+            platform: windows-x86_64
+            archive: zip
             ext: .exe
           - os: macos-15
             target: aarch64-apple-darwin
-            goos: darwin
-            goarch: arm64
+            platform: macos-aarch64
+            archive: zip
             ext: ''
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -51,6 +45,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install Windows C compiler
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -82,13 +79,17 @@ jobs:
       - name: Build CLI
         run: go build -trimpath -o "bin/amux${{ matrix.ext }}" ./cmd/amux
       - name: Build desktop
+        if: runner.os != 'Windows'
         run: go build -tags desktop -trimpath -o "bin/amux-desktop${{ matrix.ext }}" ./cmd/amux-desktop
+      - name: Build Windows desktop
+        if: runner.os == 'Windows'
+        run: go build -tags desktop -trimpath -ldflags "-H=windowsgui" -o bin/amux-desktop.exe ./cmd/amux-desktop
       - name: Desktop CLI argument smoke
         shell: bash
         run: |
           # --help validates argument parsing and binary startup only; it does
           # not open the GUI or prove that a graphical session can render it.
-          bin/amux-desktop${{ matrix.ext }} --help
+          bin/amux-desktop${{ matrix.ext }} --project-dir "$GITHUB_WORKSPACE" --help
       - name: Assemble and smoke test portable install
         shell: bash
         env:
@@ -101,23 +102,37 @@ jobs:
           cp LICENSE dist/install/
           cp assets/models.json dist/install/models.json
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            package_name="amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-$GITHUB_REF_NAME.tar.gz"
+            go run ./cmd/amux-release check-tag "$GITHUB_REF_NAME"
+            package_name="amux-${{ matrix.platform }}-$GITHUB_REF_NAME.${{ matrix.archive }}"
             version_args=(--version "$GITHUB_REF_NAME")
           else
-            package_name="amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-$GITHUB_SHA.tar.gz"
+            package_name="amux-${{ matrix.platform }}-$GITHUB_SHA.${{ matrix.archive }}"
             version_args=(--candidate-only)
           fi
           go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output "dist/$package_name" "${version_args[@]}"
           go run ./cmd/amux-release smoke --bundle "dist/$package_name" --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output dist/installed
+      - name: Verify upgrade with the shipped updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          directory=dist
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            tag=v0.0.83
+            directory=dist/handoff
+            go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" \
+              --version "$tag" --output "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}"
+          fi
+          python scripts/test_release_handoff.py "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ github.sha }}
-          path: dist/amux-go-${{ matrix.goos }}-${{ matrix.goarch }}-*.tar.gz
+          name: amux-${{ matrix.platform }}-${{ github.sha }}
+          path: dist/amux-${{ matrix.platform }}-*.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 14
 
-  publish-go-assets:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && startsWith(github.ref, 'refs/tags/v')
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: package
     runs-on: ubuntu-24.04
     permissions:
@@ -130,7 +145,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Validate tag and upload Go assets
+      - name: Publish amux release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -138,7 +153,8 @@ jobs:
           set -euo pipefail
           go run ./cmd/amux-release check-tag "$TAG"
           mkdir -p dist
-          cp artifacts/amux-go-*/*.tar.gz dist/
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS-go)
-          test "$(gh release view "$TAG" --json tagName --jq .tagName)" = "$TAG"
-          gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS-go
+          for asset in "amux-linux-x86_64-$TAG.tar.gz" "amux-windows-x86_64-$TAG.zip" "amux-macos-aarch64-$TAG.zip"; do
+            cp "artifacts/amux-"*/"$asset" dist/
+          done
+          (cd dist && sha256sum amux-* > SHA256SUMS)
+          gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "amux $TAG" --generate-notes

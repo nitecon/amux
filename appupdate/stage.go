@@ -1,18 +1,14 @@
 package appupdate
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -48,6 +44,9 @@ func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
 	if err != nil {
 		return "", UpdateInfo{}, fmt.Errorf("release package verification failed: %w", err)
 	}
+	if revisionPattern.MatchString(latest.TargetCommitish) && build.Revision != latest.TargetCommitish {
+		return "", UpdateInfo{}, errors.New("package revision differs from the GitHub release commit")
+	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
 		return "", UpdateInfo{}, err
@@ -56,7 +55,7 @@ func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
 	if err := privateDirectory(stageDir); err != nil {
 		return "", UpdateInfo{}, err
 	}
-	archivePath := filepath.Join(stageDir, "bundle.tar.gz")
+	archivePath := filepath.Join(stageDir, "bundle"+archiveExtension(triple))
 	if err := writePrivateFile(archivePath, archiveBytes); err != nil {
 		return "", UpdateInfo{}, err
 	}
@@ -69,129 +68,62 @@ func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
 
 func verifyArchive(data []byte, expectedTag, expectedTarget string) (Build, error) {
 	var build Build
-	if int64(len(data)) > maxReleaseBody || !versionPattern.MatchString(expectedTag) {
-		return build, errors.New("invalid archive size or release tag")
-	}
 	root, err := os.MkdirTemp("", "amux-verify-")
 	if err != nil {
 		return build, err
 	}
 	defer os.RemoveAll(root)
+	return verifyArchiveAt(data, root, expectedTag, expectedTarget)
+}
+
+func verifyArchiveAt(data []byte, root, expectedTag, expectedTarget string) (Build, error) {
+	var build Build
+	if int64(len(data)) > maxReleaseBody || !versionPattern.MatchString(expectedTag) {
+		return build, errors.New("invalid archive size or release tag")
+	}
 	triple, cli, gui, _, err := target()
 	if err != nil || triple != expectedTarget {
 		return build, errors.New("unsupported package target for this computer")
 	}
-	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err := extractArchive(data, root, triple); err != nil {
+		return build, err
+	}
+	binaries := root
+	if triple == "aarch64-apple-darwin" {
+		binaries = filepath.Join(root, "amux.app", "Contents", "MacOS")
+	}
+	build, err = readInstalled(binaries)
 	if err != nil {
-		return build, err
+		return build, fmt.Errorf("invalid BUILD.json: %w", err)
 	}
-	archive := tar.NewReader(reader)
-	expected := map[string]bool{"LICENSE": true, "models.json": true, "BUILD.json": true, "SHA256SUMS": true}
-	switch expectedTarget {
-	case "x86_64-unknown-linux-gnu":
-		expected["amux"], expected["amux-desktop"], expected["agent-tools"], expected["memory"] = true, true, true, true
-	case "x86_64-pc-windows-msvc":
-		expected["amux.exe"], expected["amux-desktop.exe"], expected["agent-tools.exe"], expected["memory.exe"] = true, true, true, true
-	case "aarch64-apple-darwin":
-		expected["amux"], expected["amux-desktop"], expected["agent-tools"], expected["memory"] = true, true, true, true
-	default:
-		return build, errors.New("unsupported package target")
-	}
-	seen := make(map[string]bool, len(expected))
-	total := int64(0)
-	for {
-		header, err := archive.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return build, err
-		}
-		name := path.Clean(header.Name)
-		if name != header.Name || strings.Contains(name, "\\") || name == "." || strings.HasPrefix(name, "../") || strings.Contains(name, "/") || !expected[name] || seen[name] || header.Typeflag != tar.TypeReg || header.Size < 0 {
-			return build, fmt.Errorf("archive contains invalid member %q", header.Name)
-		}
-		total += header.Size
-		if total > maxReleaseBody {
-			return build, errors.New("archive expands beyond the allowed size")
-		}
-		mode := os.FileMode(0o600)
-		if strings.HasPrefix(name, "amux") || strings.HasPrefix(name, "agent-tools") || name == "memory" || name == "memory.exe" {
-			mode = 0o700
-		}
-		file, err := os.OpenFile(filepath.Join(root, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-		if err != nil {
-			return build, err
-		}
-		_, copyErr := io.CopyN(file, archive, header.Size)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return build, copyErr
-		}
-		if closeErr != nil {
-			return build, closeErr
-		}
-		seen[name] = true
-	}
-	if err := reader.Close(); err != nil {
-		return build, err
-	}
-	if len(seen) != len(expected) {
-		return build, errors.New("archive is missing required files")
-	}
-	buildData, err := os.ReadFile(filepath.Join(root, "BUILD.json"))
-	if err != nil || json.Unmarshal(buildData, &build) != nil {
-		return build, errors.New("invalid BUILD.json")
-	}
-	if build.Tag != expectedTag || build.Version != strings.TrimPrefix(expectedTag, "v") || build.Target != expectedTarget || build.CandidateOnly || !revisionPattern.MatchString(build.Revision) {
+	if build.Tag != expectedTag || build.CandidateOnly {
 		return build, errors.New("BUILD.json does not match stable release metadata")
 	}
 	if (build.GoOS + "/" + build.GoArch) != runtime.GOOS+"/"+runtime.GOARCH {
 		return build, errors.New("BUILD.json runtime differs from this computer")
 	}
+	if err := verifyInstalled(binaries, build, cli, gui); err != nil {
+		return build, err
+	}
+	if triple == "aarch64-apple-darwin" {
+		return build, nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "LICENSE")); err != nil {
+		return build, err
+	}
 	checksums, err := readChecksums(filepath.Join(root, "SHA256SUMS"))
 	if err != nil {
 		return build, err
 	}
-	for name, expectedDigest := range checksums {
-		actual, err := fileSHA256(filepath.Join(root, name))
-		if err != nil || actual != expectedDigest {
-			return build, fmt.Errorf("%s does not match SHA256SUMS", name)
-		}
+	if checksums[cli] != build.BinarySHA256 || checksums[gui] != build.GUIBinarySHA256 {
+		return build, errors.New("executable hashes in SHA256SUMS differ from BUILD.json")
 	}
-	modelHash, modelErr := fileSHA256(filepath.Join(root, "models.json"))
-	tools := []string{"agent-tools", "memory"}
-	if runtime.GOOS == "windows" {
-		tools = []string{"agent-tools.exe", "memory.exe"}
-	}
-	if build.GUIBinary != gui || checksums[cli] != build.BinarySHA256 || checksums[gui] != build.GUIBinarySHA256 || modelErr != nil || modelHash != build.ModelCatalogSHA256 || len(build.BundledSHA256) != len(tools) {
-		return build, errors.New("package hashes differ from BUILD.json")
-	}
-	checksumNames := map[string]bool{cli: true, gui: true}
-	for name, digest := range build.BundledSHA256 {
-		if !isBundledTool(tools, name) || checksums[name] != digest {
-			return build, fmt.Errorf("%s hash differs from BUILD.json", name)
-		}
-		checksumNames[name] = true
-	}
-	if len(checksums) != len(checksumNames) {
-		return build, errors.New("SHA256SUMS has an unexpected file set")
-	}
-	for name := range checksumNames {
-		if _, ok := checksums[name]; !ok {
-			return build, errors.New("SHA256SUMS is missing a required executable")
+	for _, name := range bundledToolNames(triple) {
+		if checksums[name] != build.BundledSHA256[name] {
+			return build, fmt.Errorf("%s hash in SHA256SUMS differs from BUILD.json", name)
 		}
 	}
 	return build, nil
-}
-
-func isBundledTool(names []string, candidate string) bool {
-	for _, name := range names {
-		if name == candidate {
-			return true
-		}
-	}
-	return false
 }
 
 func readChecksums(file string) (map[string]string, error) {
@@ -200,7 +132,7 @@ func readChecksums(file string) (map[string]string, error) {
 		return nil, err
 	}
 	checksums := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(content)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(string(bytes.TrimPrefix(content, []byte("\xef\xbb\xbf")))), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) != 2 || len(parts[0]) != sha256.Size*2 {
 			return nil, errors.New("invalid SHA256SUMS entry")
@@ -220,14 +152,21 @@ func readChecksums(file string) (map[string]string, error) {
 }
 
 func listedDigest(content, name string) (string, error) {
-	for _, line := range strings.Split(content, "\n") {
+	var digest string
+	for _, line := range strings.Split(strings.TrimPrefix(content, "\ufeff"), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) == 2 && parts[1] == name && len(parts[0]) == sha256.Size*2 {
 			if _, err := hex.DecodeString(parts[0]); err != nil {
 				return "", err
 			}
-			return strings.ToLower(parts[0]), nil
+			if digest != "" {
+				return "", fmt.Errorf("SHA256SUMS lists %s more than once", name)
+			}
+			digest = strings.ToLower(parts[0])
 		}
+	}
+	if digest != "" {
+		return digest, nil
 	}
 	return "", fmt.Errorf("SHA256SUMS does not list %s", name)
 }

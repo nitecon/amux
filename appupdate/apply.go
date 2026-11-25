@@ -1,9 +1,6 @@
 package appupdate
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -138,14 +135,12 @@ func finishHelper(args []string) error {
 			return err
 		}
 	}
-	build, err := applyStagedAt(executable, archivePath, args[6])
+	_, err = applyStagedAt(executable, archivePath, args[6])
 	if err != nil {
 		return err
 	}
 	if restartArgs != nil {
-		gui := filepath.Join(filepath.Dir(executable), build.GUIBinary)
-		command := exec.Command(gui, restartArgs...)
-		if err := command.Start(); err != nil {
+		if err := launchDesktop(executable, restartArgs); err != nil {
 			return fmt.Errorf("update installed, but desktop restart failed: %w", err)
 		}
 	}
@@ -247,17 +242,26 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 	if err != nil {
 		return empty, err
 	}
-	build, err := verifyArchive(data, metadata.Tag, triple)
+	dir := filepath.Dir(executable)
+	app := appBundle(dir)
+	stageParent := dir
+	if app != "" {
+		stageParent = filepath.Dir(app)
+	}
+	lock, err := acquireUpdateLock(stageParent)
 	if err != nil {
 		return empty, err
 	}
-	dir := filepath.Dir(executable)
-	lockPath := filepath.Join(dir, ".amux-update.lock")
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	defer lock.Close()
+	stageDir, err := os.MkdirTemp(stageParent, ".amux-update-stage-")
 	if err != nil {
-		return empty, fmt.Errorf("another update is in progress or the update lock needs cleanup: %w", err)
+		return empty, err
 	}
-	defer func() { _ = lock.Close(); _ = os.Remove(lockPath) }()
+	defer os.RemoveAll(stageDir)
+	build, err := verifyArchiveAt(data, stageDir, metadata.Tag, triple)
+	if err != nil {
+		return empty, err
+	}
 	installed, err := readInstalled(dir)
 	if err != nil {
 		return empty, err
@@ -268,25 +272,33 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 	if err := verifyInstalled(dir, installed, cli, gui); err != nil {
 		return empty, fmt.Errorf("installed bundle failed verification: %w", err)
 	}
-	stageDir, err := os.MkdirTemp(dir, ".amux-update-stage-")
-	if err != nil {
-		return empty, err
+	if app != "" {
+		return build, replaceApp(app, filepath.Join(stageDir, "amux.app"))
 	}
-	defer os.RemoveAll(stageDir)
-	if err := extractVerified(data, stageDir); err != nil {
-		return empty, err
-	}
-	files := []string{cli, gui}
-	if runtime.GOOS == "windows" {
-		files = append(files, "agent-tools.exe", "memory.exe")
-	} else {
-		files = append(files, "agent-tools", "memory")
-	}
+	files := append([]string{cli, gui}, bundledToolNames(triple)...)
 	files = append(files, "models.json", "LICENSE", "BUILD.json", "SHA256SUMS")
 	if err := installFiles(dir, stageDir, files, func() error { return verifyInstalled(dir, build, cli, gui) }, os.Rename); err != nil {
 		return empty, err
 	}
 	return build, nil
+}
+
+func acquireUpdateLock(dir string) (*os.File, error) {
+	path := filepath.Join(dir, ".amux-update.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open update lock: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, errors.New("update lock must be a regular file")
+	}
+	if err := lockUpdateFile(file); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("cannot acquire update lock: %w", err)
+	}
+	return file, nil
 }
 
 func installFiles(dir, stageDir string, files []string, verify func() error, rename func(string, string) error) error {
@@ -368,40 +380,6 @@ func readBoundedArchive(path string) ([]byte, error) {
 	return data, nil
 }
 
-func extractVerified(data []byte, destination string) error {
-	reader, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-	archive := tar.NewReader(reader)
-	for {
-		header, err := archive.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		mode := os.FileMode(header.Mode) & 0o755
-		if mode == 0 {
-			mode = 0o600
-		}
-		file, err := os.OpenFile(filepath.Join(destination, header.Name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.CopyN(file, archive, header.Size)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-}
-
 func copyHelper(executable string) (string, error) {
 	input, err := os.Open(executable)
 	if err != nil {
@@ -444,6 +422,24 @@ func launchDesktop(executable string, args []string) error {
 	if err != nil {
 		return err
 	}
-	command := exec.Command(filepath.Join(filepath.Dir(executable), gui), args...)
-	return command.Start()
+	return RelaunchDesktop(filepath.Join(filepath.Dir(executable), gui), args)
+}
+
+// RelaunchDesktop starts the desktop as a new application instance.
+func RelaunchDesktop(executable string, args []string) error {
+	if bundle := appBundle(filepath.Dir(executable)); bundle != "" {
+		openArgs := []string{"-n", bundle}
+		if len(args) > 0 {
+			openArgs = append(openArgs, "--args")
+			openArgs = append(openArgs, args...)
+		}
+		return exec.Command("/usr/bin/open", openArgs...).Run()
+	}
+	command := exec.Command(executable, args...)
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if err := command.Start(); err != nil {
+		return err
+	}
+	_ = command.Process.Release()
+	return nil
 }

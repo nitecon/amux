@@ -1,6 +1,7 @@
 package appupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,10 +47,11 @@ type UpdateInfo struct {
 }
 
 type release struct {
-	TagName    string         `json:"tag_name"`
-	Draft      bool           `json:"draft"`
-	Prerelease bool           `json:"prerelease"`
-	Assets     []releaseAsset `json:"assets"`
+	TagName         string         `json:"tag_name"`
+	TargetCommitish string         `json:"target_commitish"`
+	Draft           bool           `json:"draft"`
+	Prerelease      bool           `json:"prerelease"`
+	Assets          []releaseAsset `json:"assets"`
 }
 
 type releaseAsset struct {
@@ -77,9 +78,21 @@ func target() (string, string, string, string, error) {
 		"darwin/arm64":  "aarch64-apple-darwin",
 	}[runtime.GOOS+"/"+runtime.GOARCH]
 	if triple == "" {
-		return "", "", "", "", fmt.Errorf("Go updates are not available for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", "", "", "", fmt.Errorf("amux updates are not available for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	return triple, cli, gui, fmt.Sprintf("amux-go-%s-%s", runtime.GOOS, runtime.GOARCH), nil
+	prefix := map[string]string{
+		"x86_64-unknown-linux-gnu": "amux-linux-x86_64",
+		"x86_64-pc-windows-msvc":   "amux-windows-x86_64",
+		"aarch64-apple-darwin":     "amux-macos-aarch64",
+	}[triple]
+	return triple, cli, gui, prefix, nil
+}
+
+func archiveExtension(triple string) string {
+	if triple == "x86_64-unknown-linux-gnu" {
+		return ".tar.gz"
+	}
+	return ".zip"
 }
 
 func check(ctx context.Context, executable string) (Build, release, releaseAsset, releaseAsset, string, error) {
@@ -90,7 +103,7 @@ func check(ctx context.Context, executable string) (Build, release, releaseAsset
 	}
 	installed, err := readInstalled(dir)
 	if err != nil {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", fmt.Errorf("not a verified Go portable install: %w", err)
+		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", fmt.Errorf("not a verified amux install: %w", err)
 	}
 	if installed.CandidateOnly {
 		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", errors.New("candidate installs cannot update from stable releases")
@@ -115,38 +128,50 @@ func check(ctx context.Context, executable string) (Build, release, releaseAsset
 	if compareVersions(latest.TagName, installed.Tag) <= 0 {
 		return installed, latest, releaseAsset{}, releaseAsset{}, "", nil
 	}
-	archiveName := prefix + "-" + latest.TagName + ".tar.gz"
+	archive, sums, err := findReleaseAssets(latest, prefix, triple)
+	return installed, latest, archive, sums, triple, err
+}
+
+func findReleaseAssets(latest release, prefix, triple string) (releaseAsset, releaseAsset, error) {
+	archiveName := prefix + "-" + latest.TagName + archiveExtension(triple)
 	var archive, sums releaseAsset
 	for _, asset := range latest.Assets {
 		switch asset.Name {
 		case archiveName:
 			archive = asset
-		case "SHA256SUMS-go":
+		case "SHA256SUMS":
 			sums = asset
 		}
 	}
 	if archive.Name == "" || sums.Name == "" {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", fmt.Errorf("release %s has no Go package for %s", latest.TagName, triple)
+		return releaseAsset{}, releaseAsset{}, fmt.Errorf("release %s has no package for %s", latest.TagName, triple)
 	}
 	for _, asset := range []releaseAsset{archive, sums} {
-		if asset.Size <= 0 || asset.Size > maxReleaseBody || !validDigest(asset.Digest) || !safeGitHubAssetURL(asset.BrowserDownloadURL) {
-			return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", fmt.Errorf("release asset %s lacks valid size, SHA-256 provenance, or GitHub URL", asset.Name)
+		if asset.Size <= 0 || asset.Size > maxReleaseBody || !validDigest(asset.Digest) ||
+			asset.BrowserDownloadURL != "https://github.com/"+repository+"/releases/download/"+latest.TagName+"/"+asset.Name {
+			return releaseAsset{}, releaseAsset{}, fmt.Errorf("release asset %s lacks valid size, SHA-256 provenance, or GitHub URL", asset.Name)
 		}
 	}
-	return installed, latest, archive, sums, triple, nil
+	return archive, sums, nil
 }
 
 func readInstalled(dir string) (Build, error) {
+	if app := appBundle(dir); app != "" {
+		dir = filepath.Join(app, "Contents", "Resources")
+	}
+	return readBuild(dir)
+}
+
+func readBuild(dir string) (Build, error) {
 	var build Build
 	data, err := os.ReadFile(filepath.Join(dir, "BUILD.json"))
 	if err != nil {
 		return build, err
 	}
-	if err := json.Unmarshal(data, &build); err != nil {
+	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &build); err != nil {
 		return build, err
 	}
-	// Existing Rust portable bundles use the same integrity fields but predate
-	// Go package metadata. They are valid migration bases for Linux and Windows.
+	// Earlier releases omit the explicit tag and runtime fields.
 	if build.Tag == "" && versionPattern.MatchString("v"+build.Version) {
 		build.Tag = "v" + build.Version
 	}
@@ -167,13 +192,27 @@ func readInstalled(dir string) (Build, error) {
 }
 
 func verifyInstalled(dir string, build Build, cli, gui string) error {
+	triple, _, _, _, err := target()
+	if err != nil {
+		return err
+	}
+	if build.Target != triple || build.GUIBinary != gui || !revisionPattern.MatchString(build.Revision) {
+		return errors.New("installed build platform or revision metadata differs")
+	}
+	if app := appBundle(dir); app != "" {
+		return verifyApp(app, cli, gui)
+	}
+	if triple == "aarch64-apple-darwin" {
+		return errors.New("macOS updates require an amux app bundle")
+	}
 	files := map[string]string{cli: build.BinarySHA256, gui: build.GUIBinarySHA256,
 		"models.json": build.ModelCatalogSHA256}
-	for name, digest := range build.BundledSHA256 {
-		files[name] = digest
-	}
-	if len(build.BundledSHA256) != 2 {
+	tools := bundledToolNames(triple)
+	if len(build.BundledSHA256) != len(tools) {
 		return errors.New("BUILD.json does not include both bundled tools")
+	}
+	for _, name := range tools {
+		files[name] = build.BundledSHA256[name]
 	}
 	for name, digest := range files {
 		actual, err := fileSHA256(filepath.Join(dir, name))
@@ -212,7 +251,7 @@ func downloadAsset(ctx context.Context, asset releaseAsset) ([]byte, error) {
 		Timeout: 2 * time.Minute,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			host := request.URL.Hostname()
-			if host != "github.com" && host != "release-assets.githubusercontent.com" && host != "objects.githubusercontent.com" {
+			if request.URL.Scheme != "https" || (host != "github.com" && host != "release-assets.githubusercontent.com" && host != "objects.githubusercontent.com") {
 				return fmt.Errorf("release download redirected to an untrusted host")
 			}
 			return nil
@@ -242,11 +281,6 @@ func validDigest(value string) bool {
 	}
 	decoded, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
 	return err == nil && len(decoded) == sha256.Size
-}
-
-func safeGitHubAssetURL(value string) bool {
-	u, err := url.Parse(value)
-	return err == nil && u.Scheme == "https" && u.Hostname() == "github.com" && strings.HasPrefix(u.Path, "/nitecon/amux/releases/download/")
 }
 
 func fileSHA256(path string) (string, error) {
