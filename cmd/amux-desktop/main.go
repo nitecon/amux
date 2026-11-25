@@ -445,10 +445,21 @@ func run(args []string) error {
 			return requestServerPeeringKey(keyCtx, serverProfile, copyCurrent)
 		}
 	}
+	hostedOnThisMachine := false
+	if activeGatewayMode == desktop.GatewayModeClient && serverProfile == "" && gatewayStateDirectory != "" && endpointIsThisHost(ctx, serverEndpoint) {
+		// This desktop is a client of a gateway on this machine, so treat it as the host
+		// when the default server profile holds the loopback administrator credentials.
+		if _, err := storage.LoadLocalClientCredentials(gatewayStateDirectory); err == nil {
+			hostedOnThisMachine = true
+			generatePeeringKey = func(keyCtx context.Context, copyCurrent bool) (string, error) {
+				return requestServerPeeringKey(keyCtx, gatewayStateDirectory, copyCurrent)
+			}
+		}
+	}
 	setupConfig := &desktop.GatewaySetupConfig{
 		Preferences: gatewayPrefs, ActiveMode: activeGatewayMode, PreferencesPath: *gatewayPreferencesPath,
 		StateDirectory: gatewayStateDirectory, ServerEndpoint: serverEndpoint, ConnectionOverride: connectionExplicit,
-		GeneratePeeringKey: generatePeeringKey,
+		GeneratePeeringKey: generatePeeringKey, HostedOnThisMachine: hostedOnThisMachine,
 		Restart: func() {
 			restartRequested = true
 			view.Close()

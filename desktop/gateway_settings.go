@@ -23,8 +23,11 @@ type GatewaySetupConfig struct {
 	ServerEndpoint     string
 	ConnectionOverride bool
 	GeneratePeeringKey func(context.Context, bool) (string, error)
-	Apply              func(context.Context, GatewayPreferences) (GatewayPreferences, error)
-	Restart            func()
+	// HostedOnThisMachine marks a client whose gateway runs on this machine,
+	// so the client view offers host-only actions such as peering keys.
+	HostedOnThisMachine bool
+	Apply               func(context.Context, GatewayPreferences) (GatewayPreferences, error)
+	Restart             func()
 }
 
 type gatewaySettingsPanel struct {
@@ -36,6 +39,8 @@ type gatewaySettingsPanel struct {
 	endpoint            *widget.Entry
 	invitation          *widget.Entry
 	key                 *widget.Entry
+	hostKey             *widget.Entry
+	hostActions         *fyne.Container
 	status              *widget.Label
 	serverSection       *fyne.Container
 	clientSection       *fyne.Container
@@ -75,6 +80,8 @@ func newGatewaySettingsPanel(config GatewaySetupConfig) *gatewaySettingsPanel {
 	p.invitation.SetPlaceHolder("Paste the peering key provided by the server")
 	p.key = widget.NewMultiLineEntry()
 	p.key.Disable()
+	p.hostKey = widget.NewMultiLineEntry()
+	p.hostKey.Disable()
 	p.remoteHosting = widget.NewCheck("Enable remote hosting with secure mTLS", func(bool) { p.updateServerEndpoint() })
 	p.remoteHosting.SetChecked(config.Preferences.RemoteHosting)
 	p.advertisedHost = widget.NewEntry()
@@ -112,8 +119,17 @@ func (p *gatewaySettingsPanel) content() fyne.CanvasObject {
 	} else {
 		p.clientEndpointLabel.Hide()
 	}
-	p.clientSection = settingsCard(container.New(layout.NewCustomPaddedVBoxLayout(10),
-		widget.NewLabel("Join an existing gateway with its address and a temporary peering key."), p.clientForm, p.clientEndpointLabel))
+	clientContent := container.New(layout.NewCustomPaddedVBoxLayout(10),
+		widget.NewLabel("Join an existing gateway with its address and a temporary peering key."), p.clientForm, p.clientEndpointLabel)
+	if p.config.HostedOnThisMachine && p.config.ActiveMode == GatewayModeClient && p.config.GeneratePeeringKey != nil {
+		hostGenerate := widget.NewButton("Generate peering key", func() { p.copyPeeringKey(false) })
+		hostCopy := widget.NewButton("Copy current key", func() { p.copyPeeringKey(true) })
+		hostHelp := widget.NewLabel("This machine hosts the gateway. Generate a peering key here to enroll other machines. Server profile: " + p.config.StateDirectory)
+		hostHelp.Wrapping = fyne.TextWrapWord
+		p.hostActions = container.NewVBox(browserSectionHeading("THIS MACHINE IS THE SERVER"), hostHelp, container.NewHBox(hostGenerate, hostCopy, layout.NewSpacer()), widget.NewLabel("Peering key"), p.hostKey)
+		clientContent.Add(p.hostActions)
+	}
+	p.clientSection = settingsCard(clientContent)
 	p.serverMode = widget.NewButtonWithIcon("Server", theme.StorageIcon(), func() { p.selectMode(GatewayModeServer) })
 	p.clientMode = widget.NewButtonWithIcon("Client", theme.ComputerIcon(), func() { p.selectMode(GatewayModeClient) })
 	modeControls := container.NewGridWithColumns(2,
@@ -265,6 +281,7 @@ func (p *gatewaySettingsPanel) copyPeeringKey(copyCurrent bool) {
 				return
 			}
 			p.key.SetText(key)
+			p.hostKey.SetText(key)
 			fyne.CurrentApp().Clipboard().SetContent(key)
 			p.status.SetText("Peering key copied to clipboard. Share it with the client once.")
 		})
