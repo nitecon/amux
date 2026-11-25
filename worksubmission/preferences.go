@@ -106,8 +106,11 @@ func SavePreferences(path string, preferences Preferences) error {
 	if err := validateMode(preferences.Mode); err != nil {
 		return err
 	}
-	preferencesMu.Lock()
-	defer preferencesMu.Unlock()
+	unlock, err := lockPreferences(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if _, err := LoadPreferences(path); err != nil {
 		return fmt.Errorf("refusing to overwrite invalid work preferences: %w", err)
 	}
@@ -116,6 +119,24 @@ func SavePreferences(path string, preferences Preferences) error {
 		return err
 	}
 	return writePreferencesKey(path, "work_submission", encoded)
+}
+
+// lockPreferences takes an exclusive lock on a sibling lock file so CLI,
+// desktop and worker processes serialize read-modify-write updates of the
+// shared document. The rename-replaced document itself cannot carry the lock.
+func lockPreferences(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create work preference directory: %w", err)
+	}
+	file, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open work preference lock: %w", err)
+	}
+	if err := lockPreferencesFile(file); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("lock work preferences: %w", err)
+	}
+	return func() { file.Close() }, nil
 }
 
 // writePreferencesFile atomically replaces the shared preferences document.

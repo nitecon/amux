@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/nitecon/amux/conversation"
 )
@@ -21,10 +20,6 @@ const toolApprovalsKey = "tool_approvals"
 // commands. A request containing any of them never matches a rule, so
 // "git grep *" cannot approve "git grep x; rm -rf ~".
 const shellControl = ";&|<>`$\n\r"
-
-// preferencesMu serializes read-modify-write updates of the shared preferences
-// document within this process so concurrent saves do not discard each other.
-var preferencesMu sync.Mutex
 
 // LoadToolApprovals reads the saved tool approval rules. A missing file or key
 // means no rules.
@@ -64,8 +59,11 @@ func AddToolApproval(path, rule string) error {
 	if strings.ContainsAny(rule, shellControl) {
 		return errors.New("tool approval rule cannot contain shell control characters")
 	}
-	preferencesMu.Lock()
-	defer preferencesMu.Unlock()
+	unlock, err := lockPreferences(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	rules, err := LoadToolApprovals(path)
 	if err != nil {
 		return fmt.Errorf("refusing to overwrite invalid tool approvals: %w", err)
@@ -149,7 +147,7 @@ func stringValue(raw json.RawMessage) string {
 }
 
 // writePreferencesKey atomically replaces one root key in the shared
-// preferences document. Callers hold preferencesMu across their full
+// preferences document. Callers hold lockPreferences across their full
 // read-modify-write.
 func writePreferencesKey(path, key string, value json.RawMessage) error {
 	root, err := readPreferencesRoot(path)
