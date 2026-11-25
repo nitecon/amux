@@ -143,8 +143,8 @@ func TestRestartLaunchSupportsNoDesktopArguments(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "restarted")
 	t.Setenv("AMUX_RESTART_MARKER", marker)
-	writeExecutable(t, dir, guiName, "#!/bin/sh\n: > \"$AMUX_RESTART_MARKER\"\n")
-	if err := launchDesktop(filepath.Join(dir, "amux"), []string{}); err != nil {
+	desktop := writeExecutable(t, dir, guiName, "#!/bin/sh\n: > \"$AMUX_RESTART_MARKER\"\n")
+	if err := RelaunchDesktop(desktop, []string{}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
