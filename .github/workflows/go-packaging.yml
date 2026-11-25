@@ -118,7 +118,7 @@ jobs:
           tag="$GITHUB_REF_NAME"
           directory=dist
           if [ "$GITHUB_REF_TYPE" != tag ]; then
-            tag=v0.0.83
+            tag="$(cat VERSION | tr -d '\r')"
             directory=dist/handoff
             go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" \
               --version "$tag" --output "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}"
