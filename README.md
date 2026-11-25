@@ -213,16 +213,20 @@ file for both the panel and hosted workers; saving does not publish work.
 
 ### Tool approval rules
 
-A permission card in a desktop conversation offers **Always allow…** when the
-request names a shell command or tool. It opens an editable rule prefilled with
-the exact request, for example `git grep -i foo`; widen it to `git grep *`, then
-**Save rule and allow** approves this request and stores the rule under
-`tool_approvals` in the same `work-preferences.json`. Native Claude, Codex and
-Antigravity workers then approve matching requests on the user's behalf without
-showing them. In a rule `*` matches any text and every other character is
-literal. Requests containing `; & | < > $` backticks or line breaks never match,
-so a rule cannot approve a chained or redirected command. To revoke a rule,
-remove it from the `tool_approvals` list in the file.
+A permission card offers **Always allow…** when the request names a shell
+command or tool and the conversation runs on a worker hosted by this desktop,
+which reads the same `work-preferences.json`. Conversations on other fleet hosts
+and local chats do not offer it, because their worker would never see the rule.
+It opens an editable rule prefilled with the exact request, for example
+`git grep -i foo`; widen it to `git grep *`, then **Save rule and allow**
+approves this request and stores the rule under `tool_approvals`. Native Claude,
+Codex and Antigravity workers then approve matching requests on the user's
+behalf without showing them. In a rule an unescaped `*` matches any text, `\*`
+and `\\` match a literal `*` and `\`, and every other character is literal.
+The prefill escapes any `*` or `\` from the request, so an unedited rule
+approves only that exact command. Requests containing `; & | < > $` backticks
+or line breaks never match, so a rule cannot approve a chained or redirected
+command. To revoke a rule, remove it from the `tool_approvals` list in the file.
 
 If publication fails after committing, the error retains the local task commit
 and recovery instructions. After resolving the checkout, use

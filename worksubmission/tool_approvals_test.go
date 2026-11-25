@@ -162,3 +162,33 @@ func TestAddToolApprovalPreservesWorkSubmissionAndDeduplicates(t *testing.T) {
 		t.Fatal("invalid existing rules were overwritten")
 	}
 }
+
+func TestToolApprovalRuleDraftKeepsRequestAsteriskLiteral(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work-preferences.json")
+	subject := `git grep 'a*b' C:\\x\*`
+	draft := ToolApprovalRuleDraft(subject)
+	if err := AddToolApproval(path, draft); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddToolApproval(path, "git log *"); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := LoadToolApprovals(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for subject, want := range map[string]bool{
+		subject:                   true,  // unchanged draft approves exactly this request
+		`git grep 'acb' C:\\x\*`:  false, // request "*" stays literal
+		`git grep 'a*b' C:\\x\yz`: false,
+		"git log -3 --oneline":    true, // user-typed "*" widens
+		"git log":                 false,
+	} {
+		if got := MatchToolApproval(rules, subject); got != want {
+			t.Errorf("match %q = %v, want %v", subject, got, want)
+		}
+	}
+	if !MatchToolApproval([]string{`a\\*`}, `a\anything`) {
+		t.Error(`"\\" followed by "*" must be a literal backslash then a wildcard`)
+	}
+}

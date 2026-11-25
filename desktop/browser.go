@@ -2200,8 +2200,14 @@ func (b *Browser) chatForConversation(c storage.Conversation) *UI {
 			b.localChatSessions[key] = local
 			transport = local
 		}
+		// Only this host's hosted worker reads workPreferencesPath, so a saved
+		// rule could not take effect for a remote fleet worker or a local chat.
+		approvalsPath := ""
+		if host, hostErr := os.Hostname(); fleet && hostErr == nil && strings.TrimSpace(host) == *c.FleetHostname {
+			approvalsPath = b.workPreferencesPath
+		}
 		var err error
-		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly, ToolApprovalsPath: b.workPreferencesPath})
+		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly, ToolApprovalsPath: approvalsPath})
 		if err != nil {
 			b.browserStatus.SetText("Conversation could not be opened: " + err.Error())
 			return nil

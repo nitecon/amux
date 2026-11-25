@@ -681,7 +681,7 @@ func (u *UI) renderApprovalRule(permission chat.Permission) []fyne.CanvasObject 
 	draft, editing := u.approvalRuleDrafts[permission.EventID]
 	if !editing {
 		return []fyne.CanvasObject{widget.NewButton("Always allow…", func() {
-			u.approvalRuleDrafts[permission.EventID] = subject
+			u.approvalRuleDrafts[permission.EventID] = worksubmission.ToolApprovalRuleDraft(subject)
 			u.dispatch(u.refresh)
 		})}
 	}
@@ -705,7 +705,7 @@ func (u *UI) renderApprovalRule(permission chat.Permission) []fyne.CanvasObject 
 		delete(u.approvalRuleDrafts, permission.EventID)
 		u.dispatch(u.refresh)
 	})
-	hint := widget.NewLabel("Future requests matching this rule are approved automatically. * matches any text.")
+	hint := widget.NewLabel("Future requests matching this rule are approved automatically. * matches any text; \\* is a literal *.")
 	hint.Wrapping = fyne.TextWrapWord
 	return []fyne.CanvasObject{hint, container.NewBorder(nil, nil, nil, container.NewHBox(save, cancel), entry)}
 }

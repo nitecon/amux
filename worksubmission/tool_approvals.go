@@ -120,8 +120,16 @@ func ToolApprovalOption(rules []string, event conversation.Event) string {
 	return ""
 }
 
-// MatchToolApproval reports whether subject matches any rule. "*" matches any
-// text and every other character, including whitespace, is literal.
+// ToolApprovalRuleDraft returns subject as a rule that matches only itself.
+// Request text such as "git grep 'a*b'" keeps its "*" literal by escaping it
+// as "\*" (and "\" as "\\"), so only a "*" the user types becomes a wildcard.
+func ToolApprovalRuleDraft(subject string) string {
+	return strings.NewReplacer(`\`, `\\`, `*`, `\*`).Replace(subject)
+}
+
+// MatchToolApproval reports whether subject matches any rule. An unescaped "*"
+// matches any text, "\*" and "\\" match a literal "*" and "\", and every
+// other character, including whitespace, is literal.
 func MatchToolApproval(rules []string, subject string) bool {
 	if strings.TrimSpace(subject) == "" || strings.ContainsAny(subject, shellControl) {
 		return false
@@ -130,12 +138,29 @@ func MatchToolApproval(rules []string, subject string) bool {
 		if strings.TrimSpace(rule) == "" || strings.ContainsAny(rule, shellControl) {
 			continue
 		}
-		pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(rule), `\*`, ".*") + "$"
-		if regexp.MustCompile(pattern).MatchString(subject) {
+		if regexp.MustCompile(rulePattern(rule)).MatchString(subject) {
 			return true
 		}
 	}
 	return false
+}
+
+func rulePattern(rule string) string {
+	var pattern strings.Builder
+	pattern.WriteString("^")
+	for i := 0; i < len(rule); i++ {
+		switch {
+		case rule[i] == '\\' && i+1 < len(rule) && (rule[i+1] == '\\' || rule[i+1] == '*'):
+			i++
+			pattern.WriteString(regexp.QuoteMeta(rule[i : i+1]))
+		case rule[i] == '*':
+			pattern.WriteString(".*")
+		default:
+			pattern.WriteString(regexp.QuoteMeta(rule[i : i+1]))
+		}
+	}
+	pattern.WriteString("$")
+	return pattern.String()
 }
 
 func stringValue(raw json.RawMessage) string {
