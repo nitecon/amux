@@ -6,7 +6,7 @@ This guide defines the Go rebuild of amux. Preserve existing amux behavior unles
 
 YAGNI, DRY, and KISS are requirements of the entire rebuild and every implementation wave, not optional cleanup after completion.
 
-- **YAGNI:** Implement source parity or an explicit user requirement. Do not add speculative features, extension points, dependencies, or frameworks. Fundamental security, core data structures, and structural boundaries that are hard to change later still require appropriate design.
+- **YAGNI:** Implement exactly what is required, and only that. Do not add speculative features, extension points, dependencies, or frameworks. Fundamental security, core data structures to ensure functionality is in scope though YAGNI does not mean stubbing in lorem ipsum...
 - **DRY:** Inspect existing implementations before adding another path. Reuse established logic where behavior and ownership match. File a focused review task for confirmed repetition and consolidate it when validated; do not expand unrelated work into a broad rewrite.
 - **KISS:** Choose the simplest implementation that preserves the required behavior. Remove redundant state and indirection. Do not remove necessary correctness, identity, durability, or recovery behavior merely to make code shorter.
 
