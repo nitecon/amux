@@ -387,7 +387,10 @@ the original slot is idle. With a gateway that supports follow-up discovery,
 the slot uses its saved run to resume the original provider session in the same
 checkout for one turn. The reply leaves the task status as it was. If the pool
 is stopped, use the restart command above with its original `--state` journal
-and `--pool-id` so the slot can pick up the queued prompt.
+and `--pool-id` so the slot can pick up the queued prompt. Follow-up discovery
+only resumes task conversations created by the same enrolled client (the same
+authenticated principal). Task conversations created before the gateway recorded
+principals are not resumed automatically.
 
 Pools share the same native engine as selected conversations. Turn completion
 does not complete a task: its slot remains busy until the task workflow moves it
@@ -482,7 +485,8 @@ original gateway, project, checkout, provider, slot count and goal; edits to the
 new-pool form do not replace that configuration. **Stop pool** preserves active
 run journals for recovery, and closing the desktop cancels and joins its workers.
 Use **Resume saved pool** with the original journal to let the original slot
-pick up queued task conversation prompts.
+pick up queued task conversation prompts. The same-client and pre-upgrade
+limits of worker pool follow-up discovery described above apply.
 
 Browser mode keeps its worker journal at `amux/workers.db` in the OS user
 configuration directory. Use `--state PATH` for another journal or `--state=` to
