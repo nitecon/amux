@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,9 +131,31 @@ func TestLegacyDatabaseModeDoesNotInferSecurityProfile(t *testing.T) {
 }
 
 func TestProfileTLSListenerServesPersistentChainAndSANs(t *testing.T) {
+	names := []string{"localhost", "127.0.0.1", "::1", "gateway.example.test"}
+	if runtime.GOOS != "windows" {
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "hostname"), []byte("#!/bin/sh\n[ \"$1\" = -f ] && echo node.example.test\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		names = append(names, "node.example.test")
+	}
 	profile := t.TempDir()
-	args := []string{"--profile", profile, "--profile-tls-name", "localhost", "--profile-tls-name", "127.0.0.1", "--listen", "127.0.0.1:0"}
+	clusterID, err := storage.EnsureSecurityInstallation(context.Background(), profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLeaf, err := storage.EnsureProfileServerTLS(profile, clusterID, []string{"localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "amux-server.yml")
+	if err := os.WriteFile(config, []byte("profile-tls-name: [gateway.example.test, gateway.example.test]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--profile", profile, "--config", config, "--listen", "127.0.0.1:0"}
 	address, stop := startServerCommand(t, args...)
+	t.Cleanup(stop)
 	rootPEM := readProfileFile(t, filepath.Join(profile, "root.pem"))
 	rootBlock, _ := pem.Decode(rootPEM)
 	if rootBlock == nil {
@@ -145,7 +168,7 @@ func TestProfileTLSListenerServesPersistentChainAndSANs(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(root)
 	var firstLeaf []byte
-	for _, name := range []string{"localhost", "127.0.0.1"} {
+	for _, name := range names {
 		if unauthenticated := requestProfileTLS(t, address, name, pool, false); unauthenticated == nil {
 			t.Fatalf("unauthenticated TLS request did not complete for %q", name)
 		}
@@ -154,8 +177,18 @@ func TestProfileTLSListenerServesPersistentChainAndSANs(t *testing.T) {
 			t.Fatalf("leaf SAN does not match %q: %v", name, err)
 		}
 		if firstLeaf == nil {
+			seen := make(map[string]bool, len(leaf.DNSNames))
+			for _, dnsName := range leaf.DNSNames {
+				if seen[dnsName] {
+					t.Fatalf("duplicate DNS SAN %q", dnsName)
+				}
+				seen[dnsName] = true
+			}
 			firstLeaf = append([]byte(nil), leaf.Raw...)
 		}
+	}
+	if bytes.Equal(firstLeaf, oldLeaf.Certificate[0]) {
+		t.Fatal("TLS leaf did not rotate after the SANs changed")
 	}
 	stop()
 	restartedAddress, stop := startServerCommand(t, args...)

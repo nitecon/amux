@@ -102,7 +102,9 @@ func (p *gatewaySettingsPanel) content() fyne.CanvasObject {
 	p.saveButton = widget.NewButton("Save mode and restart", p.saveMode)
 	p.remoteDetails = container.NewVBox(widget.NewLabel("Advertised hostname or IP"), p.advertisedHost, container.NewHBox(generate, copyKey, layout.NewSpacer()), widget.NewLabel("Peering key"), p.key)
 	p.serverSection = settingsCard(container.NewVBox(p.endpointLabel, p.remoteHosting, p.remoteDetails, container.NewHBox(p.saveButton, layout.NewSpacer())))
-	p.clientForm = container.NewVBox(widget.NewLabel("Server address"), p.endpoint, widget.NewLabel("Peering key"), p.invitation, container.NewHBox(clientEnroll, layout.NewSpacer()))
+	keyHelp := widget.NewLabel("On the host, open Settings → Gateway → Generate peering key. On a headless host, run amux server peering-key --profile <dir> with the server’s profile directory.")
+	keyHelp.Wrapping = fyne.TextWrapWord
+	p.clientForm = container.NewVBox(widget.NewLabel("Server address"), p.endpoint, widget.NewLabel("Peering key"), keyHelp, p.invitation, container.NewHBox(clientEnroll, layout.NewSpacer()))
 	p.clientEndpointLabel = widget.NewLabel("")
 	p.clientEndpointLabel.Wrapping = fyne.TextWrapWord
 	if p.config.ActiveMode == GatewayModeClient && p.config.ServerEndpoint != "" {

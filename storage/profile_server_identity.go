@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -16,13 +17,44 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ProfileServerTLSNames adds local names to the configured server SANs.
+func ProfileServerTLSNames(ctx context.Context, configured []string) []string {
+	names := make([]string, 0, len(configured)+4)
+	add := func(name string) {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	for _, name := range configured {
+		add(name)
+	}
+	for _, name := range []string{"localhost", "127.0.0.1", "::1"} {
+		add(name)
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	resolved, _ := exec.CommandContext(lookupCtx, "hostname", "-f").Output()
+	hostname, _ := os.Hostname()
+	for _, candidate := range []string{string(resolved), hostname} {
+		name := strings.TrimSuffix(strings.TrimSpace(candidate), ".")
+		if validateProfileTLSNames([]string{name}) == nil && !strings.Contains(name, "*") {
+			add(name)
+			break
+		}
+	}
+	return names
+}
 
 const (
 	profileServerLeafLifetime = 30 * 24 * time.Hour

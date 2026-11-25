@@ -208,13 +208,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		if *profile == "" || *certPath != "" || *keyPath != "" {
 			return fmt.Errorf("--secure-instance-id requires --profile and profile-managed TLS")
 		}
-		profileTLSNames = append(profileTLSNames, "127.0.0.1", "::1")
 	}
 	if len(profileTLSNames) > 0 && *profile == "" {
 		return fmt.Errorf("--profile-tls-name requires --profile")
 	}
 	if len(profileTLSNames) > 0 && (*certPath != "" || *keyPath != "") {
 		return fmt.Errorf("--profile-tls-name cannot be combined with --tls-cert or --tls-key")
+	}
+	if *secureInstance != "" || len(profileTLSNames) > 0 {
+		profileTLSNames = storage.ProfileServerTLSNames(ctx, profileTLSNames)
 	}
 	databasePath := *database
 	if *profile != "" {

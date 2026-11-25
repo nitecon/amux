@@ -19,7 +19,7 @@ The Go server currently provides the server API and its server-owned workers. Na
 
 With `--profile`, supply `--profile-tls-name NAME` once per DNS name or IP address to serve HTTPS with a server certificate signed by the profile root. Clients must trust the public `root.pem` and connect using a configured name. Configure profile TLS names or a manual certificate/key pair. Keep all private keys in the profile directory.
 
-For certificate authentication, add `--secure-instance-id UUID` to profile mode and reuse that administrator instance ID across restarts. Profile-managed TLS includes loopback IPs for the local administrator. For remote enrollment, set `--profile-tls-name` to the name remote clients will use and bind both listeners to reachable addresses. The public discovery listener serves the profile CA and secure port. It defaults to the secure listen host on port 24181 and can be set with `--discovery-bind`.
+For certificate authentication, add `--secure-instance-id UUID` to profile mode and reuse that administrator instance ID across restarts. Profile-managed TLS includes localhost, loopback IPs, and the system hostname (`hostname -f` when available). For remote enrollment, add any additional DNS names or IPs clients use with `--profile-tls-name` and bind both listeners to reachable addresses. Restart the server to apply SAN changes. The public discovery listener serves the profile CA and secure port. It defaults to the secure listen host on port 24181 and can be set with `--discovery-bind`.
 
 From the server host, `amux server peering-key --profile DIR` prints a short-lived peering key. Add `--copy` to retrieve the current key without replacing it. The command uses the loopback administrator certificate in the profile.
 
