@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -134,10 +135,16 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 	var activeCancel context.CancelFunc
 	var activeDone chan error
 	activeTask := ""
+	var followUpDone chan error
+	var followUpCancel context.CancelFunc
 	defer func() {
 		if activeCancel != nil {
 			activeCancel()
 			<-activeDone
+		}
+		if followUpDone != nil {
+			followUpCancel()
+			<-followUpDone
 		}
 		omitPoolSlot(config, pool, slot)
 	}()
@@ -157,10 +164,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 	}
 	drain := config.Drain
 	for {
-		var polling <-chan time.Time
-		if !config.StreamAssignments || activeCancel != nil {
-			polling = poll.C
-		}
+		polled := false
 		select {
 		case <-ctx.Done():
 			return nil
@@ -183,20 +187,43 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				return err // Keep the run journal intact for exact recovery.
 			}
 			return fmt.Errorf("saved worker run ended unexpectedly")
+		case err := <-followUpDone:
+			followUpCancel()
+			followUpDone = nil
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err != nil {
+				slog.Warn("task conversation follow-up stopped", "project", pool.Project, "session", slot.Owner.SessionID, "error", err)
+			}
+			select {
+			case <-config.Drain:
+				return nil
+			default:
+			}
+			if err := poolPresence(ctx, config, pool, slot, false); err != nil {
+				return err
+			}
+			scan = ready
+			continue
 		case <-heartbeat.C:
 			fresh, err := poolSlot(ctx, config.Store, pool.ID, slot.ID)
 			if err != nil {
 				return err
 			}
 			slot = fresh
-			if err = poolPresence(ctx, config, pool, slot, slot.RunID != ""); err != nil {
+			if err = poolPresence(ctx, config, pool, slot, slot.RunID != "" || followUpDone != nil); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
 				return err
 			}
 			continue
-		case <-polling:
+		case <-poll.C:
+			polled = true
+		}
+		if followUpDone != nil {
+			continue
 		}
 		{
 			fresh, err := poolSlot(ctx, config.Store, pool.ID, slot.ID)
@@ -286,6 +313,28 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				return nil
 			default:
 			}
+			if polled {
+				id, err := pendingPoolFollowUp(ctx, config, pool, slot)
+				if err != nil {
+					slog.Warn("could not check task conversation follow-ups", "project", pool.Project, "error", err)
+				}
+				if id != "" {
+					if err := poolPresence(ctx, config, pool, slot, true); err != nil {
+						return err
+					}
+					runCtx, stop := context.WithCancel(ctx)
+					followUpCancel = stop
+					followUpDone = make(chan error, 1)
+					done := followUpDone
+					go func() {
+						done <- Run(runCtx, Config{Store: config.Store, Client: config.Client, RunID: id, Open: config.Open, Archive: config.Archive, Observe: config.Observe, followUp: true})
+					}()
+					continue
+				}
+				if config.StreamAssignments {
+					continue
+				}
+			}
 			var pending storage.PendingWorkerTask
 			if config.StreamAssignments {
 				pending, err = config.Store.PendingWorkerTask(ctx, pool.Server, pool.Project, slot.Owner)
@@ -342,6 +391,38 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 			}()
 		}
 	}
+}
+
+// Only resume conversations with a recovery journal on this host. A slot may
+// have processed other tasks since this run, so its current instance is only
+// used for discovery. Run takes over from the saved conversation instance.
+func pendingPoolFollowUp(ctx context.Context, config PoolConfig, pool storage.WorkerPool, slot storage.WorkerPoolSlot) (string, error) {
+	ids, err := config.Client.PendingTaskConversations(ctx, pool.Project, slot.Owner)
+	var response *gatewayclient.HTTPError
+	if errors.As(err, &response) && response.Status == 404 {
+		return "", nil // Gateway predates task conversation follow-ups.
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, conversationID := range ids {
+		id, err := config.Store.ConversationWorkerRunID(ctx, pool.Server, pool.Project, conversationID)
+		if err != nil {
+			return "", err
+		}
+		if id == "" {
+			continue
+		}
+		run, err := config.Store.WorkerRun(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		if run.NativeSessionID != "" && run.Owner.SessionID == slot.Owner.SessionID &&
+			run.Directory == pool.Directory && run.Owner.Provider == pool.Provider && run.Owner.OS == pool.OS {
+			return id, nil
+		}
+	}
+	return "", nil
 }
 
 var errPoolTaskFinished = errors.New("worker pool task is no longer owned and active")

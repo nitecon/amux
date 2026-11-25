@@ -212,6 +212,11 @@ func (c *Client) Conversation(ctx context.Context, project, id string) (*storage
 	err := c.do(ctx, "GET", conversationPath(project, id), nil, nil, &result)
 	return &result, err
 }
+func (c *Client) PendingTaskConversations(ctx context.Context, project string, origin storage.AgentOrigin) ([]string, error) {
+	var ids []string
+	err := c.do(ctx, "GET", "/v1/projects/"+url.PathEscape(project)+"/worker-task-conversations/pending", nil, &origin, &ids)
+	return ids, err
+}
 func (c *Client) Resume(ctx context.Context, r storage.WorkerRun, origin storage.AgentOrigin) error {
 	return c.do(ctx, "POST", conversationPath(r.Project, r.ConversationID)+"/resume", map[string]string{"previous_instance_id": r.Owner.InstanceID}, &origin, nil)
 }

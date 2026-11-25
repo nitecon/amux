@@ -206,6 +206,33 @@ func enqueueConversationCommandIn(ctx context.Context, tx *sql.Tx, project, id, 
 	}
 	return command, nil
 }
+
+// PendingTaskConversations finds task threads with unfinished prompts for a
+// stable worker session. The worker still needs its local recovery journal.
+func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner AgentOrigin) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id
+		FROM amux_conversations c
+		WHERE c.project_ident=? AND c.task_id IS NOT NULL AND c.native_session_id!=''
+		  AND json_extract(c.owner_json,'$.session_id')=?
+		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=?
+		  AND EXISTS (SELECT 1 FROM amux_conversation_commands q
+			WHERE q.conversation_id=c.id AND q.kind='prompt' AND q.state IN ('queued','claimed'))
+		ORDER BY c.created_at,c.id`, project, owner.SessionID, owner.Provider, owner.OS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) ConversationCommands(ctx context.Context, project, id string, after int64, limit int) ([]ConversationCommand, error) {
 	if after < 0 || limit < 1 || limit > 1000 {
 		return nil, fmt.Errorf("%w: invalid command replay range", ErrConversationInput)

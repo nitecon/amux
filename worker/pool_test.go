@@ -202,6 +202,13 @@ func TestPoolPresenceRetriesOnePersistedSequenceAndUsesCurrentRunOwner(t *testin
 }
 
 func TestRunPoolFinishesTaskBeforeReusingSlotAndSurvivesOfflinePrompt(t *testing.T) {
+	t.Run("polling", func(t *testing.T) { testRunPoolFollowUps(t, false) })
+	t.Run("streamed", func(t *testing.T) { testRunPoolFollowUps(t, true) })
+}
+
+func testRunPoolFollowUps(t *testing.T, streamed bool) {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	remote, err := storage.Open(ctx, filepath.Join(t.TempDir(), "remote.db"))
@@ -254,7 +261,8 @@ func TestRunPoolFinishesTaskBeforeReusingSlotAndSurvivesOfflinePrompt(t *testing
 	close(secondRelease)
 	sessions := make(chan *poolFixtureSession, 2)
 	var opened atomic.Int32
-	open := func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	openedRuns := make(chan storage.WorkerRun, 3)
+	open := func(_ context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
 		release := firstRelease
 		if opened.Add(1) > 1 {
 			release = secondRelease
@@ -263,14 +271,26 @@ func TestRunPoolFinishesTaskBeforeReusingSlotAndSurvivesOfflinePrompt(t *testing
 		if err := sink(ctx, conversation.Event{Kind: "session_ready", SessionID: "pool-native"}); err != nil {
 			return nil, err
 		}
+		openedRuns <- run
 		sessions <- session
 		return session, nil
 	}
 	poolCtx, stopPool := context.WithCancel(ctx)
+	if streamed {
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			WatchAssignments(poolCtx, local, client)
+		}()
+		defer func() {
+			stopPool()
+			<-watchDone
+		}()
+	}
 	poolDone := make(chan error, 1)
 	go func() {
 		defer close(poolDone)
-		poolDone <- RunPool(poolCtx, PoolConfig{Store: local, Client: client, PoolID: pool.ID, Open: open, PollInterval: 10 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond})
+		poolDone <- RunPool(poolCtx, PoolConfig{Store: local, Client: client, PoolID: pool.ID, Open: open, StreamAssignments: streamed, PollInterval: 10 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond})
 	}()
 	defer func() {
 		stopPool()
@@ -363,6 +383,58 @@ func TestRunPoolFinishesTaskBeforeReusingSlotAndSurvivesOfflinePrompt(t *testing
 			}
 		}
 		return false, nil
+	})
+	firstRun := <-openedRuns
+	followUpID := uuid.NewString()
+	const followUp = "What did you change?"
+	if err := client.Enqueue(ctx, pool.Project, firstConversation, followUpID, conversation.Command{Kind: "prompt", Text: followUp}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("original provider session to reopen", func() (bool, error) {
+		return len(sessions) == 1, nil
+	})
+	resumedSession := <-sessions
+	resumedRun := <-openedRuns
+	if resumedRun.ID != firstRun.ID || resumedRun.ConversationID != firstConversation ||
+		resumedRun.NativeSessionID != "pool-native" || resumedRun.Owner.SessionID != firstRun.Owner.SessionID ||
+		resumedRun.Owner.InstanceID == firstRun.Owner.InstanceID {
+		t.Fatalf("follow-up opened the wrong provider session: %+v", resumedRun)
+	}
+	select {
+	case text := <-resumedSession.started:
+		if text != followUp {
+			t.Fatalf("resumed provider received %q, want %q", text, followUp)
+		}
+	case <-ctx.Done():
+		t.Fatal("follow-up did not reach the original provider session")
+	}
+	waitFor("follow-up result in the original conversation", func() (bool, error) {
+		commands, err := remote.ConversationCommands(ctx, pool.Project, firstConversation, 0, 100)
+		for _, command := range commands {
+			if command.ID == followUpID && command.State == "done" {
+				events, err := remote.ConversationEvents(ctx, pool.Project, firstConversation, 0, 100)
+				for _, event := range events {
+					if event.Event.Kind == "user_message" && event.Event.MessageID == followUpID && event.Event.Text == followUp {
+						return true, nil
+					}
+				}
+				return false, err
+			}
+		}
+		return false, err
+	})
+	firstDetail, err = remote.Task(ctx, pool.Project, first.ID)
+	if err != nil || firstDetail.Task.Status != "user_review" {
+		t.Fatalf("follow-up changed task workflow: %+v, err = %v", firstDetail, err)
+	}
+	waitFor("follow-up slot to return to idle", func() (bool, error) {
+		presence, err := remote.Presence(ctx, pool.Project)
+		for _, agent := range presence {
+			if agent.Origin.SessionID == firstRun.Owner.SessionID && agent.AutoAssign && !agent.Busy {
+				return true, nil
+			}
+		}
+		return false, err
 	})
 	if err = remote.ReconcileAssignments(ctx, time.Now()); err != nil {
 		t.Fatal(err)

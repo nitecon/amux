@@ -7,12 +7,26 @@ import (
 )
 
 func (a *api) registerConversationCommandRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/projects/{ident}/worker-task-conversations/pending", a.pendingTaskConversations)
 	mux.HandleFunc("POST /v1/projects/{ident}/conversations/{conversation}/commands", a.enqueueConversationCommand)
 	mux.HandleFunc("GET /v1/projects/{ident}/conversations/{conversation}/commands", a.conversationCommands)
 	mux.HandleFunc("GET /v1/projects/{ident}/conversations/{conversation}/commands/changes", a.conversationCommandChanges)
 	mux.HandleFunc("POST /v1/projects/{ident}/conversations/{conversation}/commands/{command}/claim", a.claimConversationCommand)
 	mux.HandleFunc("POST /v1/projects/{ident}/conversations/{conversation}/commands/{command}/result", a.finishConversationCommand)
 }
+func (a *api) pendingTaskConversations(w http.ResponseWriter, r *http.Request) {
+	actor, ok := a.conversationActor(w, r)
+	if !ok {
+		return
+	}
+	ids, err := a.store.PendingTaskConversations(r.Context(), r.PathValue("ident"), *actor)
+	if err != nil {
+		conversationError(w, err)
+		return
+	}
+	writeJSON(w, ids)
+}
+
 func (a *api) enqueueConversationCommand(w http.ResponseWriter, r *http.Request) {
 	var req *struct {
 		ID      string               `json:"id"`

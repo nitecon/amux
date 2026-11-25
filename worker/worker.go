@@ -44,6 +44,7 @@ type Config struct {
 	Client            *gatewayclient.Client
 	RunID             string
 	Open              Open
+	followUp          bool
 	AdvertisePresence bool
 }
 
@@ -136,7 +137,7 @@ func retry(ctx context.Context, operation func() error) error {
 		}
 	}
 }
-func Run(parent context.Context, config Config) error {
+func Run(parent context.Context, config Config) (runErr error) {
 	if config.Store == nil || config.Client == nil || config.RunID == "" {
 		return fmt.Errorf("worker requires local journal, gateway and run ID")
 	}
@@ -154,6 +155,9 @@ func Run(parent context.Context, config Config) error {
 	planned, err := config.Store.PrepareWorkerInstance(parent, config.RunID)
 	if err != nil {
 		return err
+	}
+	if config.followUp && planned.NativeSessionID == "" {
+		return fmt.Errorf("follow-up requires the saved native session")
 	}
 	owner := planned.Owner
 	owner.InstanceID = planned.PendingInstanceID
@@ -183,6 +187,12 @@ func Run(parent context.Context, config Config) error {
 			session.Close()
 		}
 		group.Wait()
+		if config.followUp && parent.Err() == nil {
+			// Publish the final result while this engine still owns the journal.
+			if err := retry(parent, func() error { return flush(parent, config.Store, config.Client, r.ID, config.Observe) }); err != nil {
+				runErr = errors.Join(runErr, err)
+			}
+		}
 		if config.AdvertisePresence {
 			omitRunPresence(config.Client, config.Store, r.ID, clientRun)
 		}
@@ -302,6 +312,12 @@ func Run(parent context.Context, config Config) error {
 		id  string
 		err error
 	}
+	var followUpDeadline <-chan time.Time
+	if config.followUp {
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		followUpDeadline = timer.C
+	}
 	turns := make(chan turnResult, 1)
 	activeID := ""
 	var cancelTurn context.CancelFunc
@@ -350,6 +366,7 @@ func Run(parent context.Context, config Config) error {
 			}
 			if c.Command.Kind == "prompt" {
 				turnCtx, cancel := context.WithCancel(ctx)
+				followUpDeadline = nil
 				activeID = c.ID
 				cancelTurn = cancel
 				group.Add(1)
@@ -437,6 +454,8 @@ func Run(parent context.Context, config Config) error {
 				return err
 			}
 			return fmt.Errorf("native provider session stopped")
+		case <-followUpDeadline:
+			return nil
 		case result := <-turns:
 			if result.id == activeID {
 				activeID = ""
@@ -449,6 +468,9 @@ func Run(parent context.Context, config Config) error {
 			// exact native session recovery; never silently create a fresh session.
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
 				return result.err
+			}
+			if config.followUp {
+				return nil
 			}
 		case <-changed:
 		case <-retryDelay:
