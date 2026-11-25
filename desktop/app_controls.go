@@ -64,28 +64,24 @@ func newAppControlsPanel(cliPath string, restartDesktop func(string), stage upda
 }
 
 func (p *appControlsPanel) checkForUpdates() {
-	if p.cliPath == "" {
-		p.status.SetText("The amux CLI is not installed beside this desktop app.")
-		return
-	}
+	p.stagedArchive = ""
+	p.restart.Hide()
 	p.update.Disable()
-	p.status.SetText("Checking the latest stable Go release and verifying its package…")
+	p.status.SetText("Checking for an amux update…")
 	go func() {
 		archive, update, err := p.stageUpdate(context.Background(), p.cliPath)
 		fyne.Do(func() {
 			p.update.Enable()
 			if err != nil {
-				p.restart.Hide()
-				if strings.Contains(err.Error(), "not a verified Go portable install") {
-					p.status.SetText("In-app updates require a verified Go portable installation.")
-				} else {
-					p.status.SetText("Could not prepare a verified update: " + err.Error())
-				}
+				p.status.SetText("Could not download the update: " + err.Error())
 				return
 			}
 			if !update.Available {
-				p.restart.Hide()
 				p.status.SetText("amux " + update.Version + " is up to date.")
+				return
+			}
+			if update.ManualInstall || p.restartDesktop == nil {
+				p.status.SetText("Downloaded and verified amux " + update.Version + ". Extract it to a new location and launch amux from there.\n" + archive)
 				return
 			}
 			p.stagedArchive = archive

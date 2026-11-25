@@ -3,8 +3,11 @@ package appupdate
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,10 +69,54 @@ func TestVerifyWindowsReleaseWithShippedMetadata(t *testing.T) {
 	if _, err := verifyArchive(archive, "v0.0.83", build.Target); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("downloads without a portable install", func(t *testing.T) {
+		t.Setenv("LOCALAPPDATA", t.TempDir())
+		name := "amux-windows-x86_64-v0.0.83.zip"
+		sums := []byte(fmt.Sprintf("%s  %s\n", hashBytes(archive), name))
+		base := "https://github.com/nitecon/amux/releases/download/v0.0.83/"
+		payloads := map[string][]byte{base + name: archive, base + "SHA256SUMS": sums}
+		latest := release{TagName: "v0.0.83", TargetCommitish: build.Revision}
+		for _, asset := range []string{name, "SHA256SUMS"} {
+			data := payloads[base+asset]
+			latest.Assets = append(latest.Assets, releaseAsset{
+				Name: asset, Size: int64(len(data)), Digest: "sha256:" + hashBytes(data), BrowserDownloadURL: base + asset,
+			})
+		}
+		metadata, err := json.Marshal(latest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloads["https://api.github.com/repos/nitecon/amux/releases/latest"] = metadata
+		transport := http.DefaultTransport
+		t.Cleanup(func() { http.DefaultTransport = transport })
+		http.DefaultTransport = releaseTestTransport(payloads)
+
+		path, info, err := Stage(context.Background(), "")
+		if err != nil || !info.Available || !info.ManualInstall || filepath.Base(path) != name {
+			t.Fatalf("stage without an install: path=%q info=%+v err=%v", path, info, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(data, archive) {
+			t.Fatalf("downloaded archive differs from the release: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(path), "verified.json")); !os.IsNotExist(err) {
+			t.Fatalf("manual download must not create an apply marker: %v", err)
+		}
+	})
 	files["amux.exe"] = []byte("tampered")
 	if _, err := verifyArchive(zipFixture(t, files), "v0.0.83", build.Target); err == nil {
 		t.Fatal("tampered CLI passed verification")
 	}
+}
+
+type releaseTestTransport map[string][]byte
+
+func (transport releaseTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	data, ok := transport[request.URL.String()]
+	if !ok {
+		return nil, fmt.Errorf("unexpected request to %s", request.URL)
+	}
+	return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(data)), Body: io.NopCloser(bytes.NewReader(data))}, nil
 }
 
 func TestExtractMacAppRejectsEscapingMembers(t *testing.T) {

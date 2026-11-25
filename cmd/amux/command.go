@@ -50,6 +50,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 			_, err = fmt.Fprintf(stdout, "amux %s is up to date.\n", update.Version)
 			return err
 		}
+		if update.ManualInstall {
+			_, err = fmt.Fprintf(stdout, "Downloaded and verified amux %s at %s. Extract it to a new location to use it.\n", update.Version, archive)
+			return err
+		}
 		_, err = fmt.Fprintf(stdout, "Verified amux %s (%s) and staged it at %s. Close amux-desktop, then run: amux --apply-update %q\n", update.Version, update.Revision[:12], archive, archive)
 		return err
 	}

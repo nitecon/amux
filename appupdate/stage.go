@@ -18,12 +18,27 @@ import (
 var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
-	installed, latest, archive, sums, triple, err := check(ctx, executable)
+	triple, cli, gui, prefix, err := target()
 	if err != nil {
 		return "", UpdateInfo{}, err
 	}
-	if archive.Name == "" {
-		return "", UpdateInfo{Available: false, Version: installed.Tag, Revision: installed.Revision}, nil
+	latest, err := latestRelease(ctx)
+	if err != nil {
+		return "", UpdateInfo{}, err
+	}
+	manualInstall := true
+	if executable != "" {
+		dir := filepath.Dir(executable)
+		if installed, err := readInstalled(dir); err == nil {
+			if compareVersions(latest.TagName, installed.Tag) <= 0 {
+				return "", UpdateInfo{Version: installed.Tag, Revision: installed.Revision}, nil
+			}
+			manualInstall = installed.CandidateOnly || verifyInstalled(dir, installed, cli, gui) != nil
+		}
+	}
+	archive, sums, err := findReleaseAssets(latest, prefix, triple)
+	if err != nil {
+		return "", UpdateInfo{}, err
 	}
 	archiveBytes, err := downloadAsset(ctx, archive)
 	if err != nil {
@@ -55,15 +70,21 @@ func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
 	if err := privateDirectory(stageDir); err != nil {
 		return "", UpdateInfo{}, err
 	}
-	archivePath := filepath.Join(stageDir, "bundle"+archiveExtension(triple))
+	archiveName := "bundle" + archiveExtension(triple)
+	if manualInstall {
+		archiveName = archive.Name
+	}
+	archivePath := filepath.Join(stageDir, archiveName)
 	if err := writePrivateFile(archivePath, archiveBytes); err != nil {
 		return "", UpdateInfo{}, err
 	}
-	metadata, _ := json.Marshal(stageMetadata{Tag: latest.TagName, Digest: hashBytes(archiveBytes)})
-	if err := writePrivateFile(filepath.Join(stageDir, "verified.json"), append(metadata, '\n')); err != nil {
-		return "", UpdateInfo{}, err
+	if !manualInstall {
+		metadata, _ := json.Marshal(stageMetadata{Tag: latest.TagName, Digest: hashBytes(archiveBytes)})
+		if err := writePrivateFile(filepath.Join(stageDir, "verified.json"), append(metadata, '\n')); err != nil {
+			return "", UpdateInfo{}, err
+		}
 	}
-	return archivePath, UpdateInfo{Available: true, Version: build.Tag, Revision: build.Revision, Archive: archivePath}, nil
+	return archivePath, UpdateInfo{Available: true, ManualInstall: manualInstall, Version: build.Tag, Revision: build.Revision, Archive: archivePath}, nil
 }
 
 func verifyArchive(data []byte, expectedTag, expectedTarget string) (Build, error) {

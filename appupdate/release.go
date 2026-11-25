@@ -40,10 +40,11 @@ type Build struct {
 }
 
 type UpdateInfo struct {
-	Available bool
-	Version   string
-	Revision  string
-	Archive   string
+	Available     bool
+	ManualInstall bool
+	Version       string
+	Revision      string
+	Archive       string
 }
 
 type release struct {
@@ -95,41 +96,15 @@ func archiveExtension(triple string) string {
 	return ".zip"
 }
 
-func check(ctx context.Context, executable string) (Build, release, releaseAsset, releaseAsset, string, error) {
-	var emptyBuild Build
-	dir, err := filepath.Abs(filepath.Dir(executable))
-	if err != nil {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", err
-	}
-	installed, err := readInstalled(dir)
-	if err != nil {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", fmt.Errorf("not a verified amux install: %w", err)
-	}
-	if installed.CandidateOnly {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", errors.New("candidate installs cannot update from stable releases")
-	}
-	triple, cli, gui, prefix, err := target()
-	if err != nil {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", err
-	}
-	if installed.Target != triple || installed.GUIBinary != gui {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", errors.New("installed build platform metadata differs")
-	}
-	if err := verifyInstalled(dir, installed, cli, gui); err != nil {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", fmt.Errorf("installed bundle failed verification: %w", err)
-	}
+func latestRelease(ctx context.Context) (release, error) {
 	var latest release
 	if err := getJSON(ctx, "https://api.github.com/repos/"+repository+"/releases/latest", &latest); err != nil {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", err
+		return release{}, err
 	}
 	if latest.Draft || latest.Prerelease || !versionPattern.MatchString(latest.TagName) {
-		return emptyBuild, release{}, releaseAsset{}, releaseAsset{}, "", errors.New("latest GitHub release is not a stable semantic version")
+		return release{}, errors.New("latest GitHub release is not a stable semantic version")
 	}
-	if compareVersions(latest.TagName, installed.Tag) <= 0 {
-		return installed, latest, releaseAsset{}, releaseAsset{}, "", nil
-	}
-	archive, sums, err := findReleaseAssets(latest, prefix, triple)
-	return installed, latest, archive, sums, triple, err
+	return latest, nil
 }
 
 func findReleaseAssets(latest release, prefix, triple string) (releaseAsset, releaseAsset, error) {
