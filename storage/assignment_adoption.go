@@ -44,11 +44,13 @@ func (s *Store) AdoptWorkerAssignment(ctx context.Context, project string, origi
 // AdoptWorkerAssignmentWithGoal adopts the exact task owned by origin after
 // validating that a tagged task is selected in the same goal scope.
 func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project string, origin *AgentOrigin, goal *string) (*WorkerAssignment, error) {
-	return s.AdoptWorkerTask(ctx, project, "", origin, goal)
+	return s.AdoptWorkerTask(ctx, project, "", origin, goal, "")
 }
 
 // AdoptWorkerTask fences streamed adoption to the offered task and exact owner.
-func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string) (*WorkerAssignment, error) {
+// principal is the server-authenticated enrolled client recorded on a newly
+// created conversation (see CreateConversationWithPrincipal).
+func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string, principal string) (*WorkerAssignment, error) {
 	selectedGoal, err := NormalizeTaskGoal(goal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid selected goal", ErrTaskConflict)
@@ -144,7 +146,7 @@ func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, ori
 	if err != nil {
 		return nil, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO amux_conversations(id,project_ident,task_id,provider,owner_json,created_at) VALUES(?,?,?,?,?,?)`, conversationID, project, task.ID, actor.Provider, string(owner), now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO amux_conversations(id,project_ident,task_id,provider,owner_json,created_at,principal) VALUES(?,?,?,?,?,?,?)`, conversationID, project, task.ID, actor.Provider, string(owner), now, principal); err != nil {
 		return nil, err
 	}
 	input := conversation.Command{Kind: "prompt", Text: AssignmentPrompt(task)}

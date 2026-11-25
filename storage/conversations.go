@@ -146,6 +146,13 @@ func (s *Store) CreateConversation(ctx context.Context, project, taskID string, 
 // CreateConversationWithGoal atomically claims queued work and creates its
 // conversation. Tagged tasks require the caller to select their exact goal.
 func (s *Store) CreateConversationWithGoal(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string) (*Conversation, error) {
+	return s.CreateConversationWithPrincipal(ctx, project, taskID, origin, goal, "")
+}
+
+// CreateConversationWithPrincipal also records the server-authenticated
+// enrolled client that created the conversation. Only that principal may bind
+// its session or discover its pending follow-ups.
+func (s *Store) CreateConversationWithPrincipal(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string, principal string) (*Conversation, error) {
 	selectedGoal, err := NormalizeTaskGoal(goal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid selected goal", ErrTaskConflict)
@@ -199,7 +206,7 @@ func (s *Store) CreateConversationWithGoal(ctx context.Context, project, taskID 
 		if taskID != "" {
 			storedTaskID = taskID
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO amux_conversations(id,project_ident,task_id,provider,owner_json,created_at) VALUES(?,?,?,?,?,?)`, c.ID, conversationProject, storedTaskID, c.Provider, string(owner), c.CreatedAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO amux_conversations(id,project_ident,task_id,provider,owner_json,created_at,principal) VALUES(?,?,?,?,?,?,?)`, c.ID, conversationProject, storedTaskID, c.Provider, string(owner), c.CreatedAt, principal)
 		return err
 	})
 	if err != nil {
@@ -241,8 +248,9 @@ func (s *Store) BindConversationSession(ctx context.Context, project, id, native
 	return s.BindConversationSessionWithPrincipal(ctx, project, id, nativeID, origin, "")
 }
 
-// BindConversationSessionWithPrincipal also records the authenticated enrolled
-// client on first bind. A different principal may not rebind the session.
+// BindConversationSessionWithPrincipal rejects a principal other than the one
+// recorded at creation. Binding never records a principal, so a conversation
+// without one (legacy rows) stays withheld from pending discovery.
 func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, project, id, nativeID string, origin *AgentOrigin, principal string) (*Conversation, error) {
 	if nativeID == "" || len(nativeID) > 4096 || !utf8.ValidString(nativeID) || strings.ContainsRune(nativeID, 0) {
 		return nil, fmt.Errorf("%w: native session ID must be a nonempty bounded string", ErrConversationInput)
@@ -261,10 +269,7 @@ func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, projec
 		if bound != "" && bound != principal {
 			return ErrTaskOwnership
 		}
-		if bound == "" {
-			bound = principal
-		}
-		_, err := tx.ExecContext(ctx, "UPDATE amux_conversations SET native_session_id=?,principal=? WHERE id=?", nativeID, bound, id)
+		_, err := tx.ExecContext(ctx, "UPDATE amux_conversations SET native_session_id=? WHERE id=?", nativeID, id)
 		if err == nil {
 			c.NativeSessionID = nativeID
 		}

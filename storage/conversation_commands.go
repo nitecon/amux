@@ -39,8 +39,8 @@ func migrateConversationCommands(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	// principal records the enrolled client that bound the worker session, so
-	// pending follow-up discovery is not decided by caller-supplied headers.
+	// principal records the server-authenticated enrolled client that created
+	// the conversation, so session binding and pending follow-up discovery is not decided by caller-supplied headers.
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('amux_conversations') WHERE name='principal')").Scan(&present); err != nil {
 		return err
 	}
@@ -232,8 +232,8 @@ const pendingTaskConversationsQuery = `SELECT c.id
 
 // PendingTaskConversations finds task threads with unfinished prompts for a
 // stable worker session. The worker still needs its local recovery journal.
-// Only conversations whose session was bound under the caller's authenticated
-// principal are listed; origin headers alone reveal nothing, and conversations
+// Only conversations created under the caller's authenticated principal are
+// listed; origin headers alone reveal nothing, and conversations
 // without a recorded principal are withheld.
 func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner AgentOrigin, principal string) ([]string, error) {
 	if principal == "" {

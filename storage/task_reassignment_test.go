@@ -120,7 +120,7 @@ func TestUserReviewCommentRequeuesForLivePreviousAgent(t *testing.T) {
 			if detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != prior || routing.Mode != "session" || routing.Target == nil || *routing.Target != registered.Target {
 				t.Fatalf("live agent was not preferred: %+v", detail.Task)
 			}
-			assignment, err := s.AdoptWorkerTask(ctx, "tasks", task.ID, &prior, nil)
+			assignment, err := s.AdoptWorkerTask(ctx, "tasks", task.ID, &prior, nil, "")
 			if err != nil || assignment == nil || assignment.Task.Status != "in_progress" {
 				t.Fatalf("previous agent could not adopt reply: %+v, %v", assignment, err)
 			}

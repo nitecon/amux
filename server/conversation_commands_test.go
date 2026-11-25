@@ -151,18 +151,35 @@ func TestPendingTaskConversationsAreScopedToAuthenticatedPrincipal(t *testing.T)
 		t.Fatal(err)
 	}
 	actor := apiActor()
-	c, err := s.CreateConversation(ctx, "tasks", task.ID, actor)
+	c, err := s.CreateConversationWithPrincipal(ctx, "tasks", task.ID, actor, nil, "node-a")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "provider-session", actor, "node-b"); !errors.Is(err, storage.ErrTaskOwnership) {
+		t.Fatalf("foreign principal first bind err=%v", err)
 	}
 	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "provider-session", actor, "node-a"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "provider-session", actor, "node-a"); err != nil {
+		t.Fatalf("same principal recovery bind err=%v", err)
+	}
 	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "provider-session", actor, "node-b"); !errors.Is(err, storage.ErrTaskOwnership) {
 		t.Fatalf("foreign principal rebind err=%v", err)
 	}
-	if _, err := s.EnqueueConversationCommand(ctx, "tasks", c.ID, uuid.NewString(), conversation.Command{Kind: "prompt", Text: "Again"}); err != nil {
+	// A legacy conversation has no recorded principal. Binding it, even by a
+	// foreign client, must not establish ownership or reveal it as pending.
+	legacy, err := s.CreateConversation(ctx, "tasks", task.ID, actor)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", legacy.ID, "legacy-session", actor, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{c.ID, legacy.ID} {
+		if _, err := s.EnqueueConversationCommand(ctx, "tasks", id, uuid.NewString(), conversation.Command{Kind: "prompt", Text: "Again"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Live presence ownership of the session moving to another enrolled client
 	// must not transfer access to conversations bound under the first one.

@@ -31,7 +31,7 @@ func (a *api) registerWorkerAssignmentRoutes(mux *http.ServeMux) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		assignment, err := a.store.AdoptWorkerTask(r.Context(), r.PathValue("ident"), taskID, actor, goal)
+		assignment, err := a.store.AdoptWorkerTask(r.Context(), r.PathValue("ident"), taskID, actor, goal, authenticatedPrincipal(r.Context()))
 		if err != nil {
 			conversationError(w, err)
 			return

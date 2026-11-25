@@ -28,7 +28,11 @@ func commandConversation(t *testing.T) (*Store, *Conversation, *AgentOrigin) {
 
 func TestPendingTaskConversationsUsesPendingPromptIndex(t *testing.T) {
 	ctx := context.Background()
-	s, c, actor := commandConversation(t)
+	s, existing, actor := commandConversation(t)
+	c, err := s.CreateConversationWithPrincipal(ctx, "tasks", existing.TaskID, actor, nil, "api-key")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.BindConversationSessionWithPrincipal(ctx, "tasks", c.ID, "native", actor, "api-key"); err != nil {
 		t.Fatal(err)
 	}

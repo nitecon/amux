@@ -73,7 +73,7 @@ func (a *api) createConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a task goal requires a task")
 		return
 	}
-	c, err := a.store.CreateConversationWithGoal(r.Context(), project, taskID, actor, goal)
+	c, err := a.store.CreateConversationWithPrincipal(r.Context(), project, taskID, actor, goal, authenticatedPrincipal(r.Context()))
 	if err != nil {
 		conversationError(w, err)
 		return
