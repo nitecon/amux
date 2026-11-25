@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -322,6 +323,47 @@ func TestWorkSubmissionPreferencesCommandWritesOnlyWhenSetIsRequested(t *testing
 	got, err := worksubmission.LoadPreferences(path)
 	if err != nil || got.Mode != worksubmission.PullRequestMode || got.BranchPrefix != "review/" {
 		t.Fatalf("settings command wrote %+v, %v", got, err)
+	}
+}
+
+func TestWorkSubmissionPreferencesConcurrentDisjointSetsKeepBothFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prefs.json")
+	const count = 30
+	run := func(args ...string) error {
+		var output strings.Builder
+		return runWorkSubmissionSettings(append([]string{"--work-preferences", path, "set"}, args...), &output, &output, func(string) string { return "" })
+	}
+	errs := make(chan error, 2)
+	go func() {
+		for i := range count {
+			mode := "commit_and_push"
+			if i%2 == 1 {
+				mode = "pull_request"
+			}
+			if err := run("--mode", mode); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- nil
+	}()
+	go func() {
+		for i := range count {
+			if err := run("--branch-prefix", fmt.Sprintf("p%d/", i)); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- nil
+	}()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := worksubmission.Preferences{Mode: worksubmission.PullRequestMode, BranchPrefix: fmt.Sprintf("p%d/", count-1)}
+	if got, err := worksubmission.LoadPreferences(path); err != nil || got != want {
+		t.Fatalf("concurrent disjoint CLI sets lost an update: %+v, %v", got, err)
 	}
 }
 

@@ -100,25 +100,52 @@ func LoadPreferences(path string) (Preferences, error) {
 // SavePreferences atomically replaces only work_submission, preserving any
 // other root fields and refusing to overwrite an invalid existing document.
 func SavePreferences(path string, preferences Preferences) error {
+	_, err := UpdatePreferences(path, PreferencesChange{Mode: &preferences.Mode, BranchPrefix: &preferences.BranchPrefix})
+	return err
+}
+
+// PreferencesChange names the work_submission fields a writer changed. Nil
+// fields keep the latest stored value.
+type PreferencesChange struct {
+	Mode         *Mode
+	BranchPrefix *string
+}
+
+// UpdatePreferences applies only the changed fields to the latest stored
+// work_submission while holding the preference lock, so writers editing
+// different fields do not overwrite each other. It returns the saved value.
+func UpdatePreferences(path string, change PreferencesChange) (Preferences, error) {
 	if path == "" {
-		return errors.New("work preferences path is required")
+		return Preferences{}, errors.New("work preferences path is required")
 	}
-	if err := validateMode(preferences.Mode); err != nil {
-		return err
+	if change.Mode != nil {
+		if err := validateMode(*change.Mode); err != nil {
+			return Preferences{}, err
+		}
 	}
 	unlock, err := lockPreferences(path)
 	if err != nil {
-		return err
+		return Preferences{}, err
 	}
 	defer unlock()
-	if _, err := LoadPreferences(path); err != nil {
-		return fmt.Errorf("refusing to overwrite invalid work preferences: %w", err)
+	preferences, err := LoadPreferences(path)
+	if err != nil {
+		return Preferences{}, fmt.Errorf("refusing to overwrite invalid work preferences: %w", err)
+	}
+	if change.Mode != nil {
+		preferences.Mode = *change.Mode
+	}
+	if change.BranchPrefix != nil {
+		preferences.BranchPrefix = *change.BranchPrefix
 	}
 	encoded, err := json.Marshal(preferences)
 	if err != nil {
-		return err
+		return Preferences{}, err
 	}
-	return writePreferencesKey(path, "work_submission", encoded)
+	if err := writePreferencesKey(path, "work_submission", encoded); err != nil {
+		return Preferences{}, err
+	}
+	return preferences, nil
 }
 
 // lockPreferences takes an exclusive lock on a sibling lock file so CLI,

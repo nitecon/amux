@@ -56,24 +56,27 @@ func runWorkSubmissionSettings(args []string, stdout, stderr io.Writer, getenv f
 	if err != nil {
 		return err
 	}
-	preferences, err := worksubmission.LoadPreferences(path)
-	if err != nil {
-		return err
-	}
 	switch pos[0] {
 	case "show":
+		preferences, err := worksubmission.LoadPreferences(path)
+		if err != nil {
+			return err
+		}
 		return json.NewEncoder(stdout).Encode(worksubmission.PreferencesDocument{WorkSubmission: &preferences})
 	case "set":
 		if !flagWasSet(flags, "mode") && !flagWasSet(flags, "branch-prefix") {
 			return fmt.Errorf("set requires --mode or --branch-prefix")
 		}
+		var change worksubmission.PreferencesChange
 		if flagWasSet(flags, "mode") {
-			preferences.Mode = worksubmission.Mode(*mode)
+			selected := worksubmission.Mode(*mode)
+			change.Mode = &selected
 		}
 		if flagWasSet(flags, "branch-prefix") {
-			preferences.BranchPrefix = *branchPrefix
+			change.BranchPrefix = branchPrefix
 		}
-		if err := worksubmission.SavePreferences(path, preferences); err != nil {
+		preferences, err := worksubmission.UpdatePreferences(path, change)
+		if err != nil {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(worksubmission.PreferencesDocument{WorkSubmission: &preferences})

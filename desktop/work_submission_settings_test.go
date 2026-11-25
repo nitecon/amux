@@ -111,3 +111,27 @@ func TestWorkSubmissionSettingsIgnoresDirectSaveAfterClose(t *testing.T) {
 		t.Fatalf("closed panel persisted settings: %v", err)
 	}
 }
+
+func TestWorkSubmissionSettingsStaleDraftKeepsFieldChangedElsewhere(t *testing.T) {
+	app := fynetest.NewApp()
+	defer app.Quit()
+	path := filepath.Join(t.TempDir(), "work-preferences.json")
+	p := newWorkSubmissionSettingsPanel(path, nil)
+	window := fynetest.NewWindow(p.accordion)
+	defer window.Close()
+	window.Show()
+	p.accordion.Open(0)
+	p.prefix.SetText("desk/")
+	// Another writer (the CLI) changes the mode after the panel loaded.
+	if err := worksubmission.SavePreferences(path, worksubmission.Preferences{Mode: worksubmission.PullRequestMode, BranchPrefix: "amux/"}); err != nil {
+		t.Fatal(err)
+	}
+	p.save.OnTapped()
+	want := worksubmission.Preferences{Mode: worksubmission.PullRequestMode, BranchPrefix: "desk/"}
+	if got, err := worksubmission.LoadPreferences(path); err != nil || got != want {
+		t.Fatalf("stale draft overwrote the other writer's mode: %+v, %v", got, err)
+	}
+	if p.draft != want || p.confirmed != want || p.mode.Selected != "Pull request" {
+		t.Fatalf("panel did not adopt the saved value: draft=%+v confirmed=%+v mode=%q", p.draft, p.confirmed, p.mode.Selected)
+	}
+}

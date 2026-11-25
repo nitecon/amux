@@ -88,12 +88,24 @@ func (p *workSubmissionSettingsPanel) saveDraft() {
 	if p.isClosed() {
 		return
 	}
-	if err := worksubmission.SavePreferences(p.path, p.draft); err != nil {
+	// Send only the fields edited in this panel so a stale draft cannot
+	// overwrite a field another writer changed since the panel loaded.
+	var change worksubmission.PreferencesChange
+	if p.draft.Mode != p.confirmed.Mode {
+		change.Mode = &p.draft.Mode
+	}
+	if p.draft.BranchPrefix != p.confirmed.BranchPrefix {
+		change.BranchPrefix = &p.draft.BranchPrefix
+	}
+	saved, err := worksubmission.UpdatePreferences(p.path, change)
+	if err != nil {
 		p.setStatus("Could not save work submission preferences: " + err.Error())
 		p.updateButtons()
 		return
 	}
-	p.confirmed = p.draft
+	p.confirmed = saved
+	p.draft = saved
+	p.syncWidgets()
 	p.loadErr = nil
 	p.setStatus("Work submission preferences saved.")
 	p.updateButtons()
