@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/nitecon/amux/conversation"
 )
@@ -20,6 +21,10 @@ const toolApprovalsKey = "tool_approvals"
 // commands. A request containing any of them never matches a rule, so
 // "git grep *" cannot approve "git grep x; rm -rf ~".
 const shellControl = ";&|<>`$\n\r"
+
+// preferencesMu serializes read-modify-write updates of the shared preferences
+// document within this process so concurrent saves do not discard each other.
+var preferencesMu sync.Mutex
 
 // LoadToolApprovals reads the saved tool approval rules. A missing file or key
 // means no rules.
@@ -45,19 +50,22 @@ func LoadToolApprovals(path string) ([]string, error) {
 	return rules, nil
 }
 
-// AddToolApproval normalizes and saves one rule, preserving the other root
-// fields. Saving an existing rule is a no-op.
+// AddToolApproval saves one rule, preserving the other root fields. Only the
+// rule's surrounding whitespace is trimmed; inner text stays literal. Saving an
+// existing rule is a no-op.
 func AddToolApproval(path, rule string) error {
 	if path == "" {
 		return errors.New("work preferences path is required")
 	}
-	rule = normalizeCommand(rule)
-	if rule == "" || strings.Trim(rule, "* ") == "" {
+	rule = strings.TrimSpace(rule)
+	if strings.Trim(rule, "* \t") == "" {
 		return errors.New("tool approval rule must name a command or tool")
 	}
 	if strings.ContainsAny(rule, shellControl) {
 		return errors.New("tool approval rule cannot contain shell control characters")
 	}
+	preferencesMu.Lock()
+	defer preferencesMu.Unlock()
 	rules, err := LoadToolApprovals(path)
 	if err != nil {
 		return fmt.Errorf("refusing to overwrite invalid tool approvals: %w", err)
@@ -93,8 +101,8 @@ func ToolApprovalSubject(event conversation.Event) string {
 		return ""
 	}
 	for _, candidate := range []string{data.Input.Command, stringValue(data.Command), stringValue(data.ToolCall.RawInput.Command), data.ToolName, data.ToolCall.Name} {
-		if subject := normalizeCommand(candidate); subject != "" {
-			return subject
+		if strings.TrimSpace(candidate) != "" {
+			return candidate
 		}
 	}
 	return ""
@@ -115,15 +123,13 @@ func ToolApprovalOption(rules []string, event conversation.Event) string {
 }
 
 // MatchToolApproval reports whether subject matches any rule. "*" matches any
-// text and every other character is literal.
+// text and every other character, including whitespace, is literal.
 func MatchToolApproval(rules []string, subject string) bool {
-	subject = normalizeCommand(subject)
-	if subject == "" || strings.ContainsAny(subject, shellControl) {
+	if strings.TrimSpace(subject) == "" || strings.ContainsAny(subject, shellControl) {
 		return false
 	}
 	for _, rule := range rules {
-		rule = normalizeCommand(rule)
-		if rule == "" || strings.ContainsAny(rule, shellControl) {
+		if strings.TrimSpace(rule) == "" || strings.ContainsAny(rule, shellControl) {
 			continue
 		}
 		pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(rule), `\*`, ".*") + "$"
@@ -132,12 +138,6 @@ func MatchToolApproval(rules []string, subject string) bool {
 		}
 	}
 	return false
-}
-
-// normalizeCommand collapses spaces and tabs only; line breaks are kept so the
-// shell control check still sees them.
-func normalizeCommand(text string) string {
-	return strings.Join(strings.FieldsFunc(text, func(r rune) bool { return r == ' ' || r == '\t' }), " ")
 }
 
 func stringValue(raw json.RawMessage) string {
@@ -149,7 +149,8 @@ func stringValue(raw json.RawMessage) string {
 }
 
 // writePreferencesKey atomically replaces one root key in the shared
-// preferences document.
+// preferences document. Callers hold preferencesMu across their full
+// read-modify-write.
 func writePreferencesKey(path, key string, value json.RawMessage) error {
 	root, err := readPreferencesRoot(path)
 	if errors.Is(err, os.ErrNotExist) {

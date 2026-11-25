@@ -106,6 +106,8 @@ func SavePreferences(path string, preferences Preferences) error {
 	if err := validateMode(preferences.Mode); err != nil {
 		return err
 	}
+	preferencesMu.Lock()
+	defer preferencesMu.Unlock()
 	if _, err := LoadPreferences(path); err != nil {
 		return fmt.Errorf("refusing to overwrite invalid work preferences: %w", err)
 	}

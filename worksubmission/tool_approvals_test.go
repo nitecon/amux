@@ -2,9 +2,11 @@ package worksubmission
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/nitecon/amux/conversation"
@@ -12,7 +14,7 @@ import (
 
 func TestToolApprovalSubjectReadsEachProviderShape(t *testing.T) {
 	for name, test := range map[string]struct{ data, want string }{
-		"claude bash":     {`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git  grep -i foo"}}`, "git grep -i foo"},
+		"claude bash":     {`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git  grep -i\tfoo"}}`, "git  grep -i\tfoo"},
 		"claude tool":     {`{"subtype":"can_use_tool","tool_name":"WebFetch","input":{"url":"https://x"}}`, "WebFetch"},
 		"codex command":   {`{"threadId":"t","command":"git log -3"}`, "git log -3"},
 		"codex file":      {`{"threadId":"t","reason":"edit"}`, ""},
@@ -53,6 +55,62 @@ func TestMatchToolApprovalUsesLiteralGlobAndRejectsShellControl(t *testing.T) {
 	}
 }
 
+func TestMatchToolApprovalKeepsWhitespaceAndQuotesLiteral(t *testing.T) {
+	for _, test := range []struct {
+		rule, subject string
+		want          bool
+	}{
+		{"printf 'a b'", "printf 'a b'", true},
+		{"printf 'a b'", "printf 'a  b'", false},
+		{"cat 'my file.txt'", "cat 'my  file.txt'", false},
+		{"cat 'my file.txt'", "cat my file.txt", false},
+		{"git log -3", "git  log -3", false},
+		{"git log -3", "git\tlog -3", false},
+		{"git log *", "git log  -3", true},
+		{"printf *", "printf 'a  b'", true},
+	} {
+		if got := MatchToolApproval([]string{test.rule}, test.subject); got != test.want {
+			t.Errorf("rule %q match %q = %v, want %v", test.rule, test.subject, got, test.want)
+		}
+	}
+}
+
+func TestAddToolApprovalConcurrentSavesKeepEveryRule(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work-preferences.json")
+	if err := SavePreferences(path, Preferences{Mode: PullRequestMode, BranchPrefix: "x/"}); err != nil {
+		t.Fatal(err)
+	}
+	const count = 30
+	var wait sync.WaitGroup
+	errs := make(chan error, count+1)
+	for i := range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errs <- AddToolApproval(path, fmt.Sprintf("tool-%d", i))
+		}()
+	}
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		errs <- SavePreferences(path, Preferences{Mode: PullRequestMode, BranchPrefix: "y/"})
+	}()
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rules, err := LoadToolApprovals(path)
+	if err != nil || len(rules) != count {
+		t.Fatalf("saved %d of %d rules: %v", len(rules), count, err)
+	}
+	if preferences, err := LoadPreferences(path); err != nil || preferences.BranchPrefix != "y/" {
+		t.Fatalf("concurrent preference save lost: %+v, %v", preferences, err)
+	}
+}
+
 func TestToolApprovalOptionSelectsAllowOnce(t *testing.T) {
 	event := conversation.Event{Kind: "permission", Data: json.RawMessage(`{"command":"git log -3"}`),
 		Options: []conversation.PermissionOption{{ID: "decline", Kind: "reject_once"}, {ID: "accept", Kind: "allow_once"}}}
@@ -73,7 +131,7 @@ func TestAddToolApprovalPreservesWorkSubmissionAndDeduplicates(t *testing.T) {
 	if err := SavePreferences(path, Preferences{Mode: PullRequestMode, BranchPrefix: "x/"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, rule := range []string{"git  grep *", "git grep *", "WebFetch"} {
+	for _, rule := range []string{"  git grep * ", "git grep *", "WebFetch"} {
 		if err := AddToolApproval(path, rule); err != nil {
 			t.Fatal(err)
 		}
