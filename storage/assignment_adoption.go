@@ -132,6 +132,13 @@ func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, ori
 		if c.Owner != *actor {
 			return nil, ErrTaskOwnership
 		}
+		var bound string
+		if err := tx.QueryRowContext(ctx, "SELECT principal FROM amux_conversations WHERE id=?", conversationID).Scan(&bound); err != nil {
+			return nil, err
+		}
+		if bound != "" && bound != principal {
+			return nil, ErrTaskOwnership
+		}
 		if err = tx.Commit(); err != nil {
 			return nil, err
 		}

@@ -1,7 +1,10 @@
 package server
 
 import (
+	"errors"
 	"net/http"
+
+	"github.com/nitecon/amux/storage"
 )
 
 func (a *api) registerWorkerAssignmentRoutes(mux *http.ServeMux) {
@@ -32,6 +35,10 @@ func (a *api) registerWorkerAssignmentRoutes(mux *http.ServeMux) {
 			return
 		}
 		assignment, err := a.store.AdoptWorkerTask(r.Context(), r.PathValue("ident"), taskID, actor, goal, authenticatedPrincipal(r.Context()))
+		if errors.Is(err, storage.ErrTaskOwnership) {
+			writeError(w, http.StatusForbidden, "assignment belongs to a different enrolled client")
+			return
+		}
 		if err != nil {
 			conversationError(w, err)
 			return
