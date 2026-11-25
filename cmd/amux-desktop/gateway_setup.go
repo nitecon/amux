@@ -72,8 +72,9 @@ func endpointIsThisHost(ctx context.Context, endpoint string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		candidates = []net.IP{ip}
 	} else {
-		// Match the hostname by its first label so "box" and "box.lan" agree.
-		if name, err := os.Hostname(); err == nil && strings.SplitN(host, ".", 2)[0] == strings.SplitN(strings.ToLower(name), ".", 2)[0] {
+		// Only an exact hostname match is trusted; aliases such as "box.lan"
+		// must resolve to a loopback or local interface address below.
+		if name, err := os.Hostname(); err == nil && host == strings.TrimSuffix(strings.ToLower(name), ".") {
 			return true
 		}
 		lookup, cancel := context.WithTimeout(ctx, 2*time.Second)

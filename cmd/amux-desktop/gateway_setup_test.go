@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,7 +42,8 @@ func TestEndpointIsThisHost(t *testing.T) {
 			t.Fatalf("%s should be this host", endpoint)
 		}
 	}
-	for _, endpoint := range []string{"", "https://192.0.2.10:7913", "not a url"} {
+	label := strings.SplitN(name, ".", 2)[0]
+	for _, endpoint := range []string{"", "https://192.0.2.10:7913", "not a url", "https://" + label + ".remote.invalid:7913"} {
 		if endpointIsThisHost(ctx, endpoint) {
 			t.Fatalf("%q should not be this host", endpoint)
 		}
