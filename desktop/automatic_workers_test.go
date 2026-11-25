@@ -138,6 +138,20 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 	})
 	disconnect()
 	<-manager.taskStreamDone
+	// The gateway releases the consumer lease asynchronously; reconnecting
+	// before then is rejected and retried, which would add a connection.
+	waitFor(func() bool {
+		statuses, err := remote.TaskConsumerStatuses(ctx)
+		if err != nil {
+			return false
+		}
+		for _, status := range statuses {
+			if status.Connected {
+				return false
+			}
+		}
+		return true
+	})
 	if _, err := remote.AssignTaskFromUser(ctx, "demo", task.ID, target, time.Now()); err != nil {
 		t.Fatal(err)
 	}
