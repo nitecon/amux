@@ -12,7 +12,15 @@ import (
 //go:embed agent_names.txt
 var agentNamesText string
 
-var agentNames = strings.Split(strings.TrimSpace(agentNamesText), "\n")
+// agentNames trims each line because Windows checkouts may embed CRLF endings,
+// and a trailing carriage return is rejected as a control character.
+var agentNames = func() []string {
+	names := strings.Split(strings.TrimSpace(agentNamesText), "\n")
+	for i, name := range names {
+		names[i] = strings.TrimSpace(name)
+	}
+	return names
+}()
 
 // AgentDisplayName uses the random session ID so the same worker keeps its
 // name across restarts and instance changes without changing its routing identity.
