@@ -21,7 +21,7 @@ With `--profile`, supply `--profile-tls-name NAME` once per DNS name or IP addre
 
 For certificate authentication, add `--secure-instance-id UUID` to profile mode and reuse that administrator instance ID across restarts. Profile-managed TLS includes localhost, loopback IPs, and the system hostname (`hostname -f` when available). For remote enrollment, add any additional DNS names or IPs clients use with `--profile-tls-name` and bind both listeners to reachable addresses. Restart the server to apply SAN changes. The public discovery listener serves the profile CA and secure port. It defaults to the secure listen host on port 24181 and can be set with `--discovery-bind`.
 
-From the server host, `amux server peering-key --profile DIR` prints a short-lived peering key. Add `--copy` to retrieve the current key without replacing it. The command uses the loopback administrator certificate in the profile.
+From the server host, `amux server peering-key` prints a short-lived peering key. It uses the desktop server profile in the OS config directory (for example `~/.config/amux` on Linux); add `--profile DIR` for a different profile. Add `--copy` to retrieve the current key without replacing it. The command uses the loopback administrator certificate in the profile.
 
 On the client, run `amux client enroll --server https://NAME:PORT --state-dir DIR` and supply the peering key on stdin. The command prints the saved `client-profile.json` path. Pass that path with `--enrolled-profile` to the headless worker, desktop, or console commands. Keep the client state directory private because it contains the client private key.
 

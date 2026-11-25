@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 func runServerPeeringKey(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("amux server peering-key", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	profile := flags.String("profile", "", "server profile directory (required)")
+	profile := flags.String("profile", "", "server profile directory (defaults to the desktop server profile in the OS config directory)")
 	copyCurrent := flags.Bool("copy", false, "print the active key without replacing or extending it")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -26,8 +28,15 @@ func runServerPeeringKey(ctx context.Context, args []string, stdout, stderr io.W
 		}
 		return err
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*profile) == "" {
-		return fmt.Errorf("usage: amux server peering-key --profile DIR [--copy]")
+	if flags.NArg() != 0 {
+		return fmt.Errorf("usage: amux server peering-key [--profile DIR] [--copy]")
+	}
+	if strings.TrimSpace(*profile) == "" {
+		configDirectory, err := os.UserConfigDir()
+		if err != nil {
+			return fmt.Errorf("locate default server profile: supply --profile: %w", err)
+		}
+		*profile = filepath.Join(configDirectory, "amux")
 	}
 	credentials, err := storage.LoadLocalClientCredentials(*profile)
 	if err != nil {

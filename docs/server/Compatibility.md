@@ -53,7 +53,8 @@ amux server peering-key --profile ./server-profile --copy
 ```
 
 The first peering-key command generates/replaces the invitation; `--copy` prints
-the existing active invitation for copying without replacing it. These are local
+the existing active invitation for copying without replacing it. `--profile` is
+optional and defaults to the desktop server profile in the OS config directory. These are local
 operator commands using the host's reserved mTLS identity. Keep the profile in a
 persistent, owner-controlled directory. The native child uses its own
 `application.sqlite` and security database rather than an inherited database path.

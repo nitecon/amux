@@ -138,7 +138,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		return fmt.Errorf("usage: amux --generate-server-config")
 	}
 	if !generateServerConfig && (len(args) < 2 || args[0] != "server" || args[1] != "run") {
-		return fmt.Errorf("usage: amux --generate-server-config | amux server run (--config PATH | --database PATH | --profile DIR) [--listen 127.0.0.1:7913] | amux server peering-key --profile DIR [--copy] | amux worker run --state PATH --server URL --project IDENT --task UUID --directory PATH | amux worker pool --state PATH --server URL --project IDENT --directory PATH | amux tasks --server URL --project IDENT [actor options] OPERATION | amux messages [--gateway-url URL] [--project IDENT] list|get|send | amux submit-work [common task options] --directory PATH TASK MESSAGE PATHS... | amux work-submission show|set")
+		return fmt.Errorf("usage: amux --generate-server-config | amux server run (--config PATH | --database PATH | --profile DIR) [--listen 127.0.0.1:7913] | amux server peering-key [--profile DIR] [--copy] | amux worker run --state PATH --server URL --project IDENT --task UUID --directory PATH | amux worker pool --state PATH --server URL --project IDENT --directory PATH | amux tasks --server URL --project IDENT [actor options] OPERATION | amux messages [--gateway-url URL] [--project IDENT] list|get|send | amux submit-work [common task options] --directory PATH TASK MESSAGE PATHS... | amux work-submission show|set")
 	}
 	flags := flag.NewFlagSet("amux server run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
