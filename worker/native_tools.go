@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/providerprocess"
@@ -57,6 +58,8 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 		env := nativeProviderEnv(os.Environ(), run, config.APIKeyEnv, config.EnrolledProfile != "")
 		mcp := providerprocess.MCPConfig{Command: config.Executable, Args: args, Env: nativeMCPEnvironment()}
 		var session Session
+		approvals := &toolApprovals{path: config.WorkPreferencesPath}
+		sink = approvals.sink(sink)
 		switch run.Owner.Provider {
 		case "antigravity":
 			session, err = acp.Start(ctx, acp.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
@@ -77,8 +80,31 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 		if err != nil {
 			return nil, err
 		}
+		approvals.session.Store(&session)
 		identity, _ := json.Marshal(CurrentAgentIdentity(run.Owner))
 		return &identitySession{Session: session, identity: string(identity)}, nil
+	}
+}
+
+// toolApprovals answers permission requests that match a rule the user saved
+// with "Always allow", and forwards every other request to the user.
+type toolApprovals struct {
+	path    string
+	session atomic.Pointer[Session]
+}
+
+func (a *toolApprovals) sink(next conversation.Sink) conversation.Sink {
+	return func(ctx context.Context, event conversation.Event) error {
+		if event.Kind == "permission" && event.RequestID != "" {
+			if session := a.session.Load(); session != nil {
+				rules, err := worksubmission.LoadToolApprovals(a.path)
+				if option := worksubmission.ToolApprovalOption(rules, event); err == nil && option != "" &&
+					(*session).ResolvePermission(ctx, event.RequestID, option) == nil {
+					return nil
+				}
+			}
+		}
+		return next(ctx, event)
 	}
 }
 

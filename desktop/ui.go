@@ -18,6 +18,7 @@ import (
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/worksubmission"
 )
 
 // Config identifies a remote conversation. Dispatch is mainly useful to make
@@ -37,6 +38,9 @@ type Config struct {
 	ReadOnly       bool
 	Model          *chat.Model
 	Dispatch       func(func())
+	// ToolApprovalsPath is the shared preferences file that stores
+	// "Always allow" rules. Empty hides the option.
+	ToolApprovalsPath string
 }
 
 type UI struct {
@@ -59,6 +63,8 @@ type UI struct {
 	permissionButtons       map[string]*widget.Button
 	permissionDetailButtons map[string]*widget.Button
 	expandedPermissions     map[string]bool
+	toolApprovalsPath       string
+	approvalRuleDrafts      map[string]string
 	transcriptEnd           int
 	refreshPending          atomic.Bool
 
@@ -88,6 +94,7 @@ func New(config Config) (*UI, error) {
 	u := &UI{
 		client: config.Client, project: config.Project, conversationID: config.ConversationID,
 		model: config.Model, dispatch: dispatch, transcriptEnd: -1, toolButtons: map[string]*widget.Button{}, permissionButtons: map[string]*widget.Button{}, permissionDetailButtons: map[string]*widget.Button{}, expandedPermissions: map[string]bool{},
+		toolApprovalsPath: config.ToolApprovalsPath, approvalRuleDrafts: map[string]string{},
 		heading: selectableLabel(config.TaskTitle), connection: widget.NewLabel("Ready to connect"),
 		transcript: container.NewVBox(), status: widget.NewLabel(""),
 	}
@@ -636,6 +643,7 @@ func (u *UI) renderPermission(permission chat.Permission) fyne.CanvasObject {
 	})
 	u.permissionDetailButtons[permission.EventID] = inspect
 	content := []fyne.CanvasObject{container.NewHBox(buttons...), inspect}
+	content = append(content, u.renderApprovalRule(permission)...)
 	if u.expandedPermissions[permission.EventID] {
 		var details any
 		text := string(permission.Details)
@@ -653,6 +661,53 @@ func (u *UI) renderPermission(permission chat.Permission) fyne.CanvasObject {
 		content = append(content, detail)
 	}
 	return widget.NewCard("Permission required", title, container.NewVBox(content...))
+}
+
+// renderApprovalRule offers an editable "Always allow" rule prefilled with the
+// requested command, so the user can widen it (for example to "git grep *")
+// before saving it and approving this request.
+func (u *UI) renderApprovalRule(permission chat.Permission) []fyne.CanvasObject {
+	subject := worksubmission.ToolApprovalSubject(conversation.Event{Data: permission.Details})
+	allow := ""
+	for _, option := range permission.Options {
+		if option.Kind == "allow_once" {
+			allow = option.ID
+			break
+		}
+	}
+	if u.toolApprovalsPath == "" || subject == "" || allow == "" {
+		return nil
+	}
+	draft, editing := u.approvalRuleDrafts[permission.EventID]
+	if !editing {
+		return []fyne.CanvasObject{widget.NewButton("Always allow…", func() {
+			u.approvalRuleDrafts[permission.EventID] = subject
+			u.dispatch(u.refresh)
+		})}
+	}
+	entry := widget.NewEntry()
+	entry.SetText(draft)
+	entry.OnChanged = func(text string) { u.approvalRuleDrafts[permission.EventID] = text }
+	save := widget.NewButton("Save rule and allow", func() {
+		rule, path := entry.Text, u.toolApprovalsPath
+		u.launch(func(context.Context) {
+			if err := worksubmission.AddToolApproval(path, rule); err != nil {
+				u.dispatch(func() { u.status.SetText("Approval rule was not saved: " + err.Error()) })
+				return
+			}
+			u.dispatch(func() {
+				delete(u.approvalRuleDrafts, permission.EventID)
+				u.choosePermission(permission, allow)
+			})
+		})
+	})
+	cancel := widget.NewButton("Cancel", func() {
+		delete(u.approvalRuleDrafts, permission.EventID)
+		u.dispatch(u.refresh)
+	})
+	hint := widget.NewLabel("Future requests matching this rule are approved automatically. * matches any text.")
+	hint.Wrapping = fyne.TextWrapWord
+	return []fyne.CanvasObject{hint, container.NewBorder(nil, nil, nil, container.NewHBox(save, cancel), entry)}
 }
 
 func (u *UI) updateButtons() {

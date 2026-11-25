@@ -109,21 +109,15 @@ func SavePreferences(path string, preferences Preferences) error {
 	if _, err := LoadPreferences(path); err != nil {
 		return fmt.Errorf("refusing to overwrite invalid work preferences: %w", err)
 	}
-	root, err := readPreferencesRoot(path)
-	if errors.Is(err, os.ErrNotExist) {
-		root = map[string]json.RawMessage{}
-	} else if err != nil {
-		return fmt.Errorf("read existing work preferences before update: %w", err)
-	}
 	encoded, err := json.Marshal(preferences)
 	if err != nil {
 		return err
 	}
-	root["work_submission"] = encoded
-	data, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return err
-	}
+	return writePreferencesKey(path, "work_submission", encoded)
+}
+
+// writePreferencesFile atomically replaces the shared preferences document.
+func writePreferencesFile(path string, data []byte) error {
 	if len(data) > maxPreferencesBytes {
 		return errors.New("work preferences exceed 1 MiB")
 	}

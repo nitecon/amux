@@ -211,6 +211,19 @@ The Fyne browser's **Work submission settings** section edits this same file
 with explicit Save and Cancel. Desktop `--work-preferences PATH` selects the
 file for both the panel and hosted workers; saving does not publish work.
 
+### Tool approval rules
+
+A permission card in a desktop conversation offers **Always allow…** when the
+request names a shell command or tool. It opens an editable rule prefilled with
+the exact request, for example `git grep -i foo`; widen it to `git grep *`, then
+**Save rule and allow** approves this request and stores the rule under
+`tool_approvals` in the same `work-preferences.json`. Native Claude, Codex and
+Antigravity workers then approve matching requests on the user's behalf without
+showing them. In a rule `*` matches any text and every other character is
+literal. Requests containing `; & | < > $` backticks or line breaks never match,
+so a rule cannot approve a chained or redirected command. To revoke a rule,
+remove it from the `tool_approvals` list in the file.
+
 If publication fails after committing, the error retains the local task commit
 and recovery instructions. After resolving the checkout, use
 `--resume-commit SHA` with the same task and exact paths to publish without

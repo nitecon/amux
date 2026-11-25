@@ -129,6 +129,7 @@ type Browser struct {
 	newTaskAccordion                                    *widget.Accordion
 	pluginSettings                                      *pluginSettingsPanel
 	workSubmissionSettings                              *workSubmissionSettingsPanel
+	workPreferencesPath                                 string
 	gatewaySettings                                     *gatewaySettingsPanel
 	projectItems                                        []storage.ProjectOverview
 	checkoutItems                                       []storage.CheckoutOverview
@@ -308,6 +309,7 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 	b.clusterID = config.Client.ClusterID()
 	migrateEndpointFavorites(prefs.Favorites, b.endpoint, b.clusterID)
 	b.pluginSettings = newPluginSettingsPanel(b)
+	b.workPreferencesPath = workPreferencesPath
 	b.workSubmissionSettings = newWorkSubmissionSettingsPanel(workPreferencesPath, b)
 	if config.GatewaySetup != nil {
 		b.gatewaySettings = newGatewaySettingsPanel(*config.GatewaySetup)
@@ -2199,7 +2201,7 @@ func (b *Browser) chatForConversation(c storage.Conversation) *UI {
 			transport = local
 		}
 		var err error
-		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly})
+		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly, ToolApprovalsPath: b.workPreferencesPath})
 		if err != nil {
 			b.browserStatus.SetText("Conversation could not be opened: " + err.Error())
 			return nil
