@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -428,7 +427,6 @@ func run(args []string) error {
 	windowApp := app.New()
 	windowApp.Settings().SetTheme(desktop.WorkspaceTheme())
 	restartRequested := false
-	stagedUpdate := ""
 	var view desktopView
 	var generatePeeringKey func(context.Context, bool) (string, error)
 	if serverProfile != "" && (gatewayPrefs.RemoteHosting || selectedHostedGateway != nil && selectedHostedGateway.RemoteHosting) {
@@ -486,9 +484,12 @@ func run(args []string) error {
 		if managedClient {
 			managedConfigPath = clientConfigPath
 		}
-		view, err = desktop.NewBrowser(desktop.BrowserConfig{ClientConfigPath: managedConfigPath, Client: client, LocalConversationsDirectory: chatRoot, Project: *project, PreferencesPath: *preferences, WorkPreferencesPath: workPreferencesPath, GatewaySetup: setupConfig, NewWindow: windowApp.NewWindow, AppControls: desktop.NewAppControlsPanel(cliExecutable, func(archive string) {
-			stagedUpdate = archive
-			windowApp.Quit()
+		view, err = desktop.NewBrowser(desktop.BrowserConfig{ClientConfigPath: managedConfigPath, Client: client, LocalConversationsDirectory: chatRoot, Project: *project, PreferencesPath: *preferences, WorkPreferencesPath: workPreferencesPath, GatewaySetup: setupConfig, NewWindow: windowApp.NewWindow, AppControls: desktop.NewAppControlsPanel(cliExecutable, func(archive string) error {
+			if err := scheduleDesktopUpdate(ctx, cliExecutable, managedConfigPath, client.Endpoint(), archive, args); err != nil {
+				return err
+			}
+			fyne.Do(windowApp.Quit)
+			return nil
 		})})
 	}
 	if err != nil {
@@ -567,15 +568,6 @@ func run(args []string) error {
 		case <-timer.C:
 			return fmt.Errorf("saved worker did not stop within 10 seconds")
 		}
-	}
-	if stagedUpdate != "" {
-		args := []string{"--apply-update", stagedUpdate, "--restart-desktop", "--wait-pid", strconv.Itoa(os.Getpid()), "--"}
-		args = append(args, os.Args[1:]...)
-		command := exec.Command(cliExecutable, args...)
-		if err := command.Start(); err != nil {
-			return fmt.Errorf("could not schedule verified update: %w", err)
-		}
-		return nil
 	}
 	if restartRequested {
 		return errRestartDesktop

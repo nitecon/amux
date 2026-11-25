@@ -18,22 +18,25 @@ import (
 var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
-	triple, cli, gui, prefix, err := target()
+	triple, _, _, prefix, err := target()
 	if err != nil {
 		return "", UpdateInfo{}, err
+	}
+	if executable != "" {
+		if err := checkAppStoreInstall(filepath.Dir(executable)); err != nil {
+			return "", UpdateInfo{}, err
+		}
 	}
 	latest, err := latestRelease(ctx)
 	if err != nil {
 		return "", UpdateInfo{}, err
 	}
-	manualInstall := true
 	if executable != "" {
 		dir := filepath.Dir(executable)
 		if installed, err := readInstalled(dir); err == nil {
 			if compareVersions(latest.TagName, installed.Tag) <= 0 {
 				return "", UpdateInfo{Version: installed.Tag, Revision: installed.Revision}, nil
 			}
-			manualInstall = installed.CandidateOnly || verifyInstalled(dir, installed, cli, gui) != nil
 		}
 	}
 	archive, sums, err := findReleaseAssets(latest, prefix, triple)
@@ -70,21 +73,15 @@ func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
 	if err := privateDirectory(stageDir); err != nil {
 		return "", UpdateInfo{}, err
 	}
-	archiveName := "bundle" + archiveExtension(triple)
-	if manualInstall {
-		archiveName = archive.Name
-	}
-	archivePath := filepath.Join(stageDir, archiveName)
+	archivePath := filepath.Join(stageDir, "bundle"+archiveExtension(triple))
 	if err := writePrivateFile(archivePath, archiveBytes); err != nil {
 		return "", UpdateInfo{}, err
 	}
-	if !manualInstall {
-		metadata, _ := json.Marshal(stageMetadata{Tag: latest.TagName, Digest: hashBytes(archiveBytes)})
-		if err := writePrivateFile(filepath.Join(stageDir, "verified.json"), append(metadata, '\n')); err != nil {
-			return "", UpdateInfo{}, err
-		}
+	metadata, _ := json.Marshal(stageMetadata{Tag: latest.TagName, Digest: hashBytes(archiveBytes)})
+	if err := writePrivateFile(filepath.Join(stageDir, "verified.json"), append(metadata, '\n')); err != nil {
+		return "", UpdateInfo{}, err
 	}
-	return archivePath, UpdateInfo{Available: true, ManualInstall: manualInstall, Version: build.Tag, Revision: build.Revision, Archive: archivePath}, nil
+	return archivePath, UpdateInfo{Available: true, Version: build.Tag, Revision: build.Revision, Archive: archivePath}, nil
 }
 
 func verifyArchive(data []byte, expectedTag, expectedTarget string) (Build, error) {

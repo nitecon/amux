@@ -26,13 +26,16 @@ func TestInstallFilesFailureRestoresPreviousFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(stage, "BUILD.json"), []byte("new metadata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rename := func(source, destination string) error {
 		if filepath.Dir(source) == stage && filepath.Base(source) == "amux-desktop" {
 			return errors.New("injected install failure")
 		}
 		return os.Rename(source, destination)
 	}
-	err := installFiles(installed, stage, []string{"amux", "amux-desktop"}, func() error { return nil }, rename)
+	err := installFiles(installed, stage, []string{"amux", "BUILD.json", "amux-desktop"}, func() error { return nil }, rename)
 	if err == nil || !strings.Contains(err.Error(), "injected install failure") || strings.Contains(err.Error(), "rollback also failed") {
 		t.Fatalf("install error = %v", err)
 	}
@@ -41,6 +44,9 @@ func TestInstallFilesFailureRestoresPreviousFiles(t *testing.T) {
 		if readErr != nil || string(got) != want {
 			t.Fatalf("restored %s = %q, err=%v", name, got, readErr)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(installed, "BUILD.json")); !os.IsNotExist(err) {
+		t.Fatalf("rollback retained previously missing metadata: %v", err)
 	}
 }
 

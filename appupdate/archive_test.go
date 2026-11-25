@@ -92,15 +92,15 @@ func TestVerifyWindowsReleaseWithShippedMetadata(t *testing.T) {
 		http.DefaultTransport = releaseTestTransport(payloads)
 
 		path, info, err := Stage(context.Background(), "")
-		if err != nil || !info.Available || !info.ManualInstall || filepath.Base(path) != name {
+		if err != nil || !info.Available || filepath.Base(path) != "bundle.zip" {
 			t.Fatalf("stage without an install: path=%q info=%+v err=%v", path, info, err)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(data, archive) {
 			t.Fatalf("downloaded archive differs from the release: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(filepath.Dir(path), "verified.json")); !os.IsNotExist(err) {
-			t.Fatalf("manual download must not create an apply marker: %v", err)
+		if _, err := stagePathAt(path, os.Getenv("LOCALAPPDATA")); err != nil {
+			t.Fatalf("download must be ready for the update helper: %v", err)
 		}
 	})
 	files["amux.exe"] = []byte("tampered")

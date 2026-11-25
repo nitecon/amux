@@ -40,11 +40,10 @@ type Build struct {
 }
 
 type UpdateInfo struct {
-	Available     bool
-	ManualInstall bool
-	Version       string
-	Revision      string
-	Archive       string
+	Available bool
+	Version   string
+	Revision  string
+	Archive   string
 }
 
 type release struct {
@@ -167,11 +166,12 @@ func readBuild(dir string) (Build, error) {
 }
 
 func verifyInstalled(dir string, build Build, cli, gui string) error {
-	triple, _, _, _, err := target()
+	triple, canonicalCLI, canonicalGUI, _, err := target()
 	if err != nil {
 		return err
 	}
-	if build.Target != triple || build.GUIBinary != gui || !revisionPattern.MatchString(build.Revision) {
+	flatSourceNames := runtime.GOOS == "linux" && cli == canonicalCLI+".bin" && gui == canonicalGUI+".bin"
+	if (!flatSourceNames && (cli != canonicalCLI || gui != canonicalGUI)) || build.Target != triple || build.GUIBinary != canonicalGUI || !revisionPattern.MatchString(build.Revision) {
 		return errors.New("installed build platform or revision metadata differs")
 	}
 	if app := appBundle(dir); app != "" {

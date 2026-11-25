@@ -1,12 +1,37 @@
 package desktop
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"fyne.io/fyne/v2/test"
+	"github.com/nitecon/amux/appupdate"
 )
+
+func TestUpdateNowAutomaticallySchedulesVerifiedArchive(t *testing.T) {
+	test.NewTempApp(t)
+	installed := make(chan string, 1)
+	panel := newAppControlsPanel("amux", func(archive string) error {
+		installed <- archive
+		return nil
+	}, func(context.Context, string) (string, appupdate.UpdateInfo, error) {
+		return "bundle.zip", appupdate.UpdateInfo{Available: true, Version: "v0.9.1"}, nil
+	})
+	test.Tap(panel.update)
+	select {
+	case archive := <-installed:
+		if archive != "bundle.zip" {
+			t.Fatalf("scheduled archive = %q", archive)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Update now did not schedule the verified update")
+	}
+}
 
 func TestLaunchItemFileWritesPrivateFileAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "autostart", "amux.desktop")

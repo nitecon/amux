@@ -13,12 +13,62 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/internal/clientconfig"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/server"
 )
+
+func TestStopClientForUpdateWaitsForProfileRelease(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.yml")
+	lock, err := server.LockProfile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := make(chan struct{})
+	control := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/shutdown" || r.Header.Get("Authorization") != "Bearer test-secret" {
+			http.Error(w, "unexpected shutdown request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		close(requested)
+	})}
+	go control.Serve(listener)
+	defer control.Close()
+	if err := os.WriteFile(config+".control", []byte(listener.Addr().String()+"\ntest-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- stopClientForUpdate(ctx, config) }()
+	select {
+	case <-requested:
+	case err := <-done:
+		t.Fatalf("returned before requesting shutdown: %v", err)
+	case <-ctx.Done():
+		t.Fatal("did not request shutdown")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("returned before profile lock was released: %v", err)
+	default:
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestAttachReusesRunningClient(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "config.yml")

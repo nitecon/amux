@@ -202,19 +202,92 @@ func verifyStageAt(executable, archivePath string, metadata stageMetadata, cache
 	if err != nil {
 		return err
 	}
-	installed, err := readInstalled(filepath.Dir(executable))
+	dir, _, _, _, err := updateInstallPaths(executable)
 	if err != nil {
-		return fmt.Errorf("installed bundle metadata: %w", err)
+		return err
 	}
-	if compareVersions(build.Tag, installed.Tag) <= 0 || build.Revision == installed.Revision {
+	return ensureNewerInstall(dir, build)
+}
+
+func ensureNewerInstall(dir string, build Build) error {
+	installed, err := readInstalled(dir)
+	if err == nil && (compareVersions(build.Tag, installed.Tag) <= 0 || build.Revision == installed.Revision) {
 		return errors.New("staged update is not newer than the installed version")
 	}
-	return verifyInstalled(filepath.Dir(executable), installed, func() string {
-		if runtime.GOOS == "windows" {
-			return "amux.exe"
+	return nil
+}
+
+func checkAppStoreInstall(dir string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	if os.Getenv("APP_SANDBOX_CONTAINER_ID") != "" {
+		return errors.New("this installation is managed by the Mac App Store")
+	}
+	if app := appBundle(dir); app != "" {
+		for _, name := range []string{"_MASReceipt", "embedded.provisionprofile"} {
+			if _, err := os.Lstat(filepath.Join(app, "Contents", name)); !os.IsNotExist(err) {
+				return errors.New("this installation is managed by the Mac App Store")
+			}
 		}
-		return "amux"
-	}(), installed.GUIBinary)
+	}
+	return nil
+}
+
+// Resolve the installation directory before replacing files, but require that
+// both executable entries themselves are regular files in that directory.
+func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string, err error) {
+	_, cli, gui, _, err := target()
+	if err != nil {
+		return "", "", "", "", err
+	}
+	localCLI, localGUI = cli, gui
+	if runtime.GOOS == "linux" && filepath.Base(executable) == cli+".bin" {
+		localCLI, localGUI = cli+".bin", gui+".bin"
+	}
+	if !strings.EqualFold(filepath.Base(executable), localCLI) {
+		return "", "", "", "", errors.New("update target must be the installed amux CLI")
+	}
+	dir, err = filepath.Abs(filepath.Dir(executable))
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if err := checkAppStoreInstall(dir); err != nil {
+		return "", "", "", "", err
+	}
+	app = appBundle(dir)
+	directories := []string{dir}
+	if app != "" {
+		directories = append(directories, filepath.Dir(dir), app)
+	}
+	for _, directory := range directories {
+		if info, err := os.Lstat(directory); err != nil || !info.IsDir() {
+			return "", "", "", "", errors.New("amux installation must use real directories")
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if app != "" && appBundle(resolved) == "" {
+		return "", "", "", "", errors.New("amux app bundle executable directory is redirected")
+	}
+	dir = resolved
+	app = appBundle(dir)
+	if err := checkAppStoreInstall(dir); err != nil {
+		return "", "", "", "", err
+	}
+	for _, name := range []string{localCLI, localGUI} {
+		if info, err := os.Lstat(filepath.Join(dir, name)); err != nil || !info.Mode().IsRegular() {
+			return "", "", "", "", fmt.Errorf("update target is missing regular file %s", name)
+		}
+	}
+	if runtime.GOOS == "darwin" && app == "" {
+		if _, err := os.Lstat(filepath.Join(dir, "amux.app")); !os.IsNotExist(err) {
+			return "", "", "", "", errors.New("an app already exists at the amux.app update destination")
+		}
+	}
+	return dir, app, localCLI, localGUI, nil
 }
 
 func applyStaged(executable, archivePath string) (Build, error) {
@@ -242,8 +315,10 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 	if err != nil {
 		return empty, err
 	}
-	dir := filepath.Dir(executable)
-	app := appBundle(dir)
+	dir, app, localCLI, localGUI, err := updateInstallPaths(executable)
+	if err != nil {
+		return empty, err
+	}
 	stageParent := dir
 	if app != "" {
 		stageParent = filepath.Dir(app)
@@ -262,29 +337,47 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 	if err != nil {
 		return empty, err
 	}
-	installed, err := readInstalled(dir)
-	if err != nil {
+	if err := ensureNewerInstall(dir, build); err != nil {
 		return empty, err
-	}
-	if compareVersions(build.Tag, installed.Tag) <= 0 || build.Revision == installed.Revision {
-		return empty, errors.New("staged update is not newer than the installed version")
-	}
-	if err := verifyInstalled(dir, installed, cli, gui); err != nil {
-		return empty, fmt.Errorf("installed bundle failed verification: %w", err)
 	}
 	if app != "" {
 		return build, replaceApp(app, filepath.Join(stageDir, "amux.app"))
 	}
-	files := append([]string{cli, gui}, bundledToolNames(triple)...)
+	if runtime.GOOS == "darwin" {
+		return build, installNewMacApp(filepath.Join(stageDir, "amux.app"), filepath.Join(dir, "amux.app"))
+	}
+	if cli != localCLI {
+		if err := os.Rename(filepath.Join(stageDir, cli), filepath.Join(stageDir, localCLI)); err != nil {
+			return empty, err
+		}
+		if err := os.Rename(filepath.Join(stageDir, gui), filepath.Join(stageDir, localGUI)); err != nil {
+			return empty, err
+		}
+	}
+	files := append([]string{localCLI, localGUI}, bundledToolNames(triple)...)
 	files = append(files, "models.json", "LICENSE", "BUILD.json", "SHA256SUMS")
-	if err := installFiles(dir, stageDir, files, func() error { return verifyInstalled(dir, build, cli, gui) }, os.Rename); err != nil {
+	if err := installFiles(dir, stageDir, files, func() error { return verifyInstalled(dir, build, localCLI, localGUI) }, os.Rename); err != nil {
 		return empty, err
 	}
 	return build, nil
 }
 
+func installNewMacApp(staged, destination string) error {
+	// Reserve a new app directory so an existing application is never replaced.
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		return fmt.Errorf("could not create the amux app destination: %w", err)
+	}
+	if err := os.Rename(filepath.Join(staged, "Contents"), filepath.Join(destination, "Contents")); err != nil {
+		return errors.Join(err, os.Remove(destination))
+	}
+	return nil
+}
+
 func acquireUpdateLock(dir string) (*os.File, error) {
 	path := filepath.Join(dir, ".amux-update.lock")
+	if info, err := os.Lstat(path); !os.IsNotExist(err) && (err != nil || !info.Mode().IsRegular()) {
+		return nil, errors.New("update lock must be a regular file")
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open update lock: %w", err)
@@ -326,13 +419,15 @@ func installFiles(dir, stageDir string, files []string, verify func() error, ren
 	for _, name := range files {
 		destination := filepath.Join(dir, name)
 		info, err := os.Lstat(destination)
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return rollbackFailure(backupDir, rollback(), fmt.Errorf("installed file %s is missing or not regular", name))
+		if !os.IsNotExist(err) {
+			if err != nil || !info.Mode().IsRegular() {
+				return rollbackFailure(backupDir, rollback(), fmt.Errorf("installed file %s is not regular", name))
+			}
+			if err := rename(destination, filepath.Join(backupDir, name)); err != nil {
+				return rollbackFailure(backupDir, rollback(), fmt.Errorf("cannot stage old %s: %w", name, err))
+			}
+			backedUp = append(backedUp, name)
 		}
-		if err := rename(destination, filepath.Join(backupDir, name)); err != nil {
-			return rollbackFailure(backupDir, rollback(), fmt.Errorf("cannot stage old %s: %w", name, err))
-		}
-		backedUp = append(backedUp, name)
 		if err := rename(filepath.Join(stageDir, name), destination); err != nil {
 			return rollbackFailure(backupDir, rollback(), fmt.Errorf("cannot install %s: %w", name, err))
 		}
@@ -386,7 +481,9 @@ func copyHelper(executable string) (string, error) {
 		return "", err
 	}
 	defer input.Close()
-	file, err := os.CreateTemp("", "amux-update-helper-*")
+	// Avoid names that Windows' installer detection treats as an elevated
+	// installer when the executable lacks a requestedExecutionLevel manifest.
+	file, err := os.CreateTemp("", "amux-handoff-*")
 	if err != nil {
 		return "", err
 	}
@@ -422,7 +519,14 @@ func launchDesktop(executable string, args []string) error {
 	if err != nil {
 		return err
 	}
-	return RelaunchDesktop(filepath.Join(filepath.Dir(executable), gui), args)
+	dir := filepath.Dir(executable)
+	if runtime.GOOS == "darwin" && appBundle(dir) == "" {
+		dir = filepath.Join(dir, "amux.app", "Contents", "MacOS")
+	}
+	if runtime.GOOS == "linux" && filepath.Ext(executable) == ".bin" {
+		gui += ".bin"
+	}
+	return RelaunchDesktop(filepath.Join(dir, gui), args)
 }
 
 // RelaunchDesktop starts the desktop as a new application instance.

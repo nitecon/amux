@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/appupdate"
 	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/internal/clientconfig"
 	"github.com/nitecon/amux/internal/clientcontrol"
@@ -49,6 +50,53 @@ func desktopCLI() (string, error) {
 		}
 	}
 	return packaged, nil
+}
+
+func scheduleDesktopUpdate(ctx context.Context, cli, config, endpoint, archive string, args []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if config != "" {
+		if err := stopClientForUpdate(ctx, config); err != nil {
+			return err
+		}
+	}
+	if err := appupdate.StartApply(cli, archive, nil, append([]string{}, args...)); err != nil {
+		if config != "" {
+			clientCLI, resolveErr := amuxCLIPath()
+			if resolveErr == nil {
+				resolveErr = startOrAttachClient(ctx, clientCLI, config, endpoint, "")
+			}
+			if resolveErr != nil {
+				return fmt.Errorf("schedule update: %w; restart local client: %v", err, resolveErr)
+			}
+		}
+		return fmt.Errorf("schedule update: %w", err)
+	}
+	return nil
+}
+
+func stopClientForUpdate(ctx context.Context, config string) error {
+	if lock, err := server.LockProfile(config); err == nil {
+		return lock.Close()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := clientcontrol.Request(ctx, config, http.MethodPost, "/shutdown", nil); err != nil {
+		return fmt.Errorf("stop local client for update: %w", err)
+	}
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if lock, err := server.LockProfile(config); err == nil {
+			return lock.Close()
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for local client to stop: %w", ctx.Err())
+		case <-tick.C:
+		}
+	}
 }
 
 // Switch an existing client only when the desktop's gateway selection changed.

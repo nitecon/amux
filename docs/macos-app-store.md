@@ -39,7 +39,7 @@ in the job to match the App Store Connect record.
   app container and user-selected folders, not arbitrary project directories,
   `~/.claude` or tools installed elsewhere. Expect to verify, and likely
   adapt, terminal and agent behavior once a signed sandboxed build exists.
-- App Store installs must not self-update. They have no `BUILD.json`, so
-  `amux --update` already treats them as unmanaged and changes nothing.
+- App Store installs update through the App Store. The portable updater
+  excludes apps with an App Store receipt or embedded provisioning profile.
 - The store listing needs a 1024×1024 icon; `assets/icons/amux.png` is
   256×256 and is upscaled for now.

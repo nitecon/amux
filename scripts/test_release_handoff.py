@@ -14,6 +14,7 @@ import subprocess
 import tarfile
 import tempfile
 from threading import Thread
+import time
 import tomllib
 from urllib.request import urlopen
 import zipfile
@@ -135,7 +136,58 @@ def build_harness(directory):
     )
 
 
-def verify_handoff(archive, directory):
+def verify_source_handoff(archive, directory, expected, source_bin, tag):
+    """Run the Go updater from a loose source build with no release metadata."""
+    installed = directory / "source-install"
+    installed.mkdir()
+    suffix = ".exe" if os.name == "nt" else ""
+    cli = installed / f"amux{suffix}"
+    shutil.copy2(source_bin / cli.name, cli)
+    desktop_name = f"amux-desktop{suffix}"
+    shutil.copy2(source_bin / desktop_name, installed / desktop_name)
+    marker = installed / "user-file.txt"
+    marker.write_text("preserve me", encoding="utf-8")
+
+    env = os.environ.copy()
+    cache = directory / "source-cache"
+    if os.name == "nt":
+        env["LOCALAPPDATA"] = str(cache)
+    elif platform.system() == "Darwin":
+        env["HOME"] = str(cache)
+        cache = cache / "Library" / "Caches"
+    else:
+        env["XDG_CACHE_HOME"] = str(cache)
+
+    stage = cache / "amux" / "updates" / tag
+    stage.mkdir(parents=True)
+    staged = stage / ("bundle.zip" if archive.suffix == ".zip" else "bundle.tar.gz")
+    shutil.copyfile(archive, staged)
+    (stage / "verified.json").write_text(json.dumps({
+        "tag": tag, "digest": sha(staged),
+    }), encoding="utf-8")
+    subprocess.run([
+        cli, "--apply-update", staged, "--restart-desktop", "--", "--help",
+    ], env=env, check=True, timeout=60)
+    log = stage / "install.log"
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if log.is_file() and (result := log.read_text(encoding="utf-8").strip()):
+            if result != "update completed":
+                raise ValueError(f"source updater failed: {result}")
+            break
+        time.sleep(0.2)
+    else:
+        raise TimeoutError("source updater did not finish")
+
+    if marker.read_text(encoding="utf-8") != "preserve me":
+        raise ValueError("source updater changed an unrelated file")
+    for path in expected.rglob("*"):
+        if path.is_file() and sha(installed / path.relative_to(expected)) != sha(path):
+            raise ValueError(f"source install differs from release: {path.relative_to(expected)}")
+    print(f"Verified source build installed {tag} and started the replacement desktop")
+
+
+def verify_handoff(archive, directory, source_bin=None):
     tag_match = re.fullmatch(r"(amux-(?:linux-x86_64|windows-x86_64|macos-aarch64))-"
                              r"(v\d+\.\d+\.\d+)\.(tar\.gz|zip)", archive.name)
     if not tag_match:
@@ -160,6 +212,8 @@ def verify_handoff(archive, directory):
     build = json.loads((expected / resources / "BUILD.json").read_bytes())
     if build["candidate_only"] or f'v{build["version"]}' != tag:
         raise ValueError("archive metadata is not a stable build of its tag")
+    if source_bin is not None:
+        verify_source_handoff(archive, directory, expected, source_bin, tag)
 
     served = directory / "public"
     download = served / "download" / tag
@@ -206,8 +260,9 @@ def verify_handoff(archive, directory):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
+    parser.add_argument("--source-bin", type=Path)
     args = parser.parse_args()
     scratch = ROOT / "target"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="amux-handoff-", dir=scratch) as temporary:
-        verify_handoff(args.archive.resolve(), Path(temporary))
+        verify_handoff(args.archive.resolve(), Path(temporary), args.source_bin)

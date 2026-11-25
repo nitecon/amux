@@ -6,18 +6,21 @@ and keep its parent directory writable.
 
 ## Update and restart
 
-In the desktop app, open **Settings → Updates** and choose **Check and download
-update**. When a verified update is ready, choose **Install and restart**.
-Save any work in running sessions before restarting.
+In the desktop app, save any work in running sessions, open **Settings → Updates**,
+and choose **Update now**. Amux downloads and verifies the package for your
+platform, installs it, and restarts automatically.
 
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
 rebuild uses the same public release channel and package layout.
 
-From a portable CLI installation, run `amux --update`. When it prints an
-`amux --apply-update` command, close the desktop and use that command to
-install the verified download. An older CLI may install the update directly.
-Restart the desktop to use the installed version.
+From a portable CLI installation, close the desktop and any running local
+amux client, then run `amux --update`. The helper installs the verified update
+after the command exits. Launch the desktop to use the installed version.
+
+Source builds with the CLI and desktop together in a writable directory can
+also update to the stable release. A loose macOS source build installs and opens
+the signed `amux.app` beside the source binaries.
 
 Use your package manager to upgrade installations it manages. To switch from
 a CI candidate to the stable channel, download and install the complete public

@@ -17,15 +17,13 @@ import (
 type updateStage func(context.Context, string) (string, appupdate.UpdateInfo, error)
 
 type appControlsPanel struct {
-	content        *fyne.Container
-	status         *widget.Label
-	login          *widget.Check
-	update         *widget.Button
-	restart        *widget.Button
-	cliPath        string
-	stagedArchive  string
-	restartDesktop func(string)
-	stageUpdate    updateStage
+	content       *fyne.Container
+	status        *widget.Label
+	login         *widget.Check
+	update        *widget.Button
+	cliPath       string
+	installUpdate func(string) error
+	stageUpdate   updateStage
 }
 
 func linuxLaunchItemContent(executable string) string {
@@ -38,66 +36,58 @@ func macLaunchItemContent(executable string) string {
 }
 
 // NewAppControlsPanel returns the desktop's verified update and startup controls.
-func NewAppControlsPanel(cliPath string, restartDesktop func(string)) fyne.CanvasObject {
-	return newAppControlsPanel(cliPath, restartDesktop, nil).content
+func NewAppControlsPanel(cliPath string, installUpdate func(string) error) fyne.CanvasObject {
+	return newAppControlsPanel(cliPath, installUpdate, nil).content
 }
 
-func newAppControlsPanel(cliPath string, restartDesktop func(string), stage updateStage) *appControlsPanel {
+func newAppControlsPanel(cliPath string, installUpdate func(string) error, stage updateStage) *appControlsPanel {
 	if stage == nil {
 		stage = appupdate.Stage
 	}
 	p := &appControlsPanel{
-		status: widget.NewLabel(""), cliPath: cliPath, restartDesktop: restartDesktop, stageUpdate: stage,
+		status: widget.NewLabel(""), cliPath: cliPath, installUpdate: installUpdate, stageUpdate: stage,
 	}
 	p.status.Wrapping = fyne.TextWrapWord
-	p.update = widget.NewButton("Check and download update", p.checkForUpdates)
-	p.restart = widget.NewButton("Install and restart", p.installAndRestart)
-	p.restart.Hide()
+	p.update = widget.NewButton("Update now", p.checkForUpdates)
 	p.login = widget.NewCheck("Launch amux when I sign in", p.setLaunchAtLogin)
 	p.login.Checked = launchAtLoginEnabled()
 	p.content = container.NewVBox(
 		widget.NewLabel("Updates and startup"),
-		container.NewHBox(p.update, p.restart, p.login),
+		container.NewHBox(p.update, p.login),
 		p.status,
 	)
 	return p
 }
 
 func (p *appControlsPanel) checkForUpdates() {
-	p.stagedArchive = ""
-	p.restart.Hide()
 	p.update.Disable()
 	p.status.SetText("Checking for an amux update…")
 	go func() {
 		archive, update, err := p.stageUpdate(context.Background(), p.cliPath)
-		fyne.Do(func() {
-			p.update.Enable()
-			if err != nil {
-				p.status.SetText("Could not download the update: " + err.Error())
-				return
-			}
-			if !update.Available {
-				p.status.SetText("amux " + update.Version + " is up to date.")
-				return
-			}
-			if update.ManualInstall || p.restartDesktop == nil {
-				p.status.SetText("Downloaded and verified amux " + update.Version + ". Extract it to a new location and launch amux from there.\n" + archive)
-				return
-			}
-			p.stagedArchive = archive
-			p.restart.Show()
-			p.status.SetText("Verified amux " + update.Version + " is ready. Install and restart when you are ready.")
-		})
+		if err != nil {
+			p.finishUpdate("Could not download the update: " + err.Error())
+			return
+		}
+		if !update.Available {
+			p.finishUpdate("amux " + update.Version + " is up to date.")
+			return
+		}
+		if p.installUpdate == nil {
+			p.finishUpdate("The updater is unavailable.")
+			return
+		}
+		fyne.Do(func() { p.status.SetText("Installing amux " + update.Version + " and restarting…") })
+		if err := p.installUpdate(archive); err != nil {
+			p.finishUpdate("Could not install the update: " + err.Error())
+		}
 	}()
 }
 
-func (p *appControlsPanel) installAndRestart() {
-	if p.stagedArchive == "" || p.restartDesktop == nil {
-		p.status.SetText("No verified update is ready to install.")
-		return
-	}
-	p.status.SetText("Closing amux after the verified update helper is scheduled…")
-	p.restartDesktop(p.stagedArchive)
+func (p *appControlsPanel) finishUpdate(status string) {
+	fyne.Do(func() {
+		p.status.SetText(status)
+		p.update.Enable()
+	})
 }
 
 func (p *appControlsPanel) setLaunchAtLogin(enabled bool) {

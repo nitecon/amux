@@ -123,7 +123,7 @@ jobs:
             go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" \
               --version "$tag" --output "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}"
           fi
-          python scripts/test_release_handoff.py "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}"
+          python scripts/test_release_handoff.py "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}" --source-bin bin
       - uses: actions/upload-artifact@v4
         with:
           name: amux-${{ matrix.platform }}-${{ github.sha }}

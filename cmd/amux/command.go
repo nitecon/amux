@@ -42,7 +42,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		if len(args) != 1 {
 			return fmt.Errorf("usage: amux --update")
 		}
-		archive, update, err := appupdate.Stage(ctx, os.Args[0])
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		archive, update, err := appupdate.Stage(ctx, executable)
 		if err != nil {
 			return err
 		}
@@ -50,11 +54,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 			_, err = fmt.Fprintf(stdout, "amux %s is up to date.\n", update.Version)
 			return err
 		}
-		if update.ManualInstall {
-			_, err = fmt.Fprintf(stdout, "Downloaded and verified amux %s at %s. Extract it to a new location to use it.\n", update.Version, archive)
+		if err := appupdate.StartApply(executable, archive, nil, nil); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(stdout, "Verified amux %s (%s) and staged it at %s. Close amux-desktop, then run: amux --apply-update %q\n", update.Version, update.Revision[:12], archive, archive)
+		_, err = fmt.Fprintf(stdout, "Installing verified amux %s after this command exits.\n", update.Version)
 		return err
 	}
 	if len(args) > 0 && args[0] == "--apply-update" {
@@ -85,10 +88,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 			}
 			restartArgs = append(restartArgs, args[index+1:]...)
 		}
-		if err := appupdate.StartApply(os.Args[0], args[1], waitPIDs, restartArgs); err != nil {
+		executable, err := os.Executable()
+		if err != nil {
 			return err
 		}
-		_, err := fmt.Fprintln(stdout, "Update helper started. The previous desktop and CLI will close before the verified package is installed.")
+		if err := appupdate.StartApply(executable, args[1], waitPIDs, restartArgs); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, "Update helper started. The previous desktop and CLI will close before the verified package is installed.")
 		return err
 	}
 	if len(args) > 0 && args[0] == "--finish-update" {
