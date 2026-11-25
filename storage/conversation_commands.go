@@ -209,7 +209,13 @@ func enqueueConversationCommandIn(ctx context.Context, tx *sql.Tx, project, id, 
 
 // PendingTaskConversations finds task threads with unfinished prompts for a
 // stable worker session. The worker still needs its local recovery journal.
-func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner AgentOrigin) ([]string, error) {
+// PendingTaskConversations lists follow-up work for a session only while that
+// session is in current native presence reported under the caller's principal,
+// so origin headers alone cannot reveal another enrolled client's conversations.
+func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner AgentOrigin, principal string) ([]string, error) {
+	if principal == "" {
+		return []string{}, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id
 		FROM amux_conversations c
 		WHERE c.project_ident=? AND c.task_id IS NOT NULL AND c.native_session_id!=''
@@ -217,7 +223,11 @@ func (s *Store) PendingTaskConversations(ctx context.Context, project string, ow
 		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=?
 		  AND EXISTS (SELECT 1 FROM amux_conversation_commands q
 			WHERE q.conversation_id=c.id AND q.kind='prompt' AND q.state IN ('queued','claimed'))
-		ORDER BY c.created_at,c.id`, project, owner.SessionID, owner.Provider, owner.OS)
+		  AND EXISTS (SELECT 1 FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source
+			WHERE a.project_ident=c.project_ident AND a.session_id=? AND a.state!='gone'
+			  AND a.report_kind='native' AND a.sequence=s.sequence AND a.sequence=s.principal_sequence
+			  AND s.principal=?)
+		ORDER BY c.created_at,c.id`, project, owner.SessionID, owner.Provider, owner.OS, owner.SessionID, principal)
 	if err != nil {
 		return nil, err
 	}

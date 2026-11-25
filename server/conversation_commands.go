@@ -19,7 +19,7 @@ func (a *api) pendingTaskConversations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ids, err := a.store.PendingTaskConversations(r.Context(), r.PathValue("ident"), *actor)
+	ids, err := a.store.PendingTaskConversations(r.Context(), r.PathValue("ident"), *actor, authenticatedPrincipal(r.Context()))
 	if err != nil {
 		conversationError(w, err)
 		return

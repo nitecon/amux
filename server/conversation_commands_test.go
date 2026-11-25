@@ -141,3 +141,51 @@ func TestConversationCommandAPIRequiresWorkerForClaimAndResult(t *testing.T) {
 		t.Fatalf("invalid result %d %s", invalid.Code, invalid.Body)
 	}
 }
+
+func TestPendingTaskConversationsAreScopedToAuthenticatedPrincipal(t *testing.T) {
+	ctx := context.Background()
+	s, _ := taskAPI(t)
+	task, err := s.InsertTask(ctx, storage.TaskInsert{Project: "tasks", Title: "Follow up", Reporter: "user"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := apiActor()
+	c, err := s.CreateConversation(ctx, "tasks", task.ID, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BindConversationSession(ctx, "tasks", c.ID, "provider-session", actor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnqueueConversationCommand(ctx, "tasks", c.ID, uuid.NewString(), conversation.Command{Kind: "prompt", Text: "Again"}); err != nil {
+		t.Fatal(err)
+	}
+	report := storage.PresenceReport{Source: "native:node-a", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: *actor}}}
+	if accepted, err := s.ReportPresenceWithPrincipal(ctx, report, time.Now(), "node-a"); err != nil || !accepted {
+		t.Fatalf("presence accepted=%v err=%v", accepted, err)
+	}
+	a := newAPI(s, "task-key")
+	mux := http.NewServeMux()
+	a.registerConversationCommandRoutes(mux)
+	pending := func(principal string) []string {
+		r := httptest.NewRequest("GET", "/v1/projects/tasks/worker-task-conversations/pending", nil)
+		r.Header.Set("X-Agent-Session-Id", actor.SessionID)
+		r.Header.Set("X-Agent-Instance-Id", actor.InstanceID)
+		r.Header.Set("X-Agent-Provider", actor.Provider)
+		r.Header.Set("X-Agent-OS", actor.OS)
+		r = r.WithContext(context.WithValue(r.Context(), authenticatedPrincipalContextKey{}, principal))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		var ids []string
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &ids) != nil {
+			t.Fatalf("pending as %q: %d %s", principal, w.Code, w.Body)
+		}
+		return ids
+	}
+	if ids := pending("node-a"); len(ids) != 1 || ids[0] != c.ID {
+		t.Fatalf("owning client ids=%v", ids)
+	}
+	if ids := pending("node-b"); len(ids) != 0 {
+		t.Fatalf("different enrolled client listed another session's conversations: %v", ids)
+	}
+}
