@@ -134,7 +134,7 @@ func (p *gatewaySettingsPanel) content() fyne.CanvasObject {
 	p.clientMode = widget.NewButtonWithIcon("Client", theme.ComputerIcon(), func() { p.selectMode(GatewayModeClient) })
 	modeControls := container.NewGridWithColumns(2,
 		settingsCard(container.NewVBox(p.serverMode, widget.NewLabel("Host projects and tasks on this device."))),
-		settingsCard(container.NewVBox(p.clientMode, widget.NewLabel("Join a gateway on another machine."))),
+		settingsCard(container.NewVBox(p.clientMode, widget.NewLabel("Connect to an existing gateway."))),
 	)
 
 	if p.config.ConnectionOverride {
