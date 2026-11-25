@@ -46,6 +46,7 @@ func migrateConversationCommands(ctx context.Context, tx *sql.Tx) error {
  state TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
  PRIMARY KEY(conversation_id,id),UNIQUE(conversation_id,sequence));
  CREATE UNIQUE INDEX IF NOT EXISTS amux_conversation_permission_reply ON amux_conversation_commands(conversation_id,permission_event_id) WHERE permission_event_id IS NOT NULL;
+ CREATE INDEX IF NOT EXISTS amux_pending_conversation_prompts ON amux_conversation_commands(conversation_id) WHERE kind='prompt' AND state IN ('queued','claimed');
  CREATE TABLE IF NOT EXISTS amux_conversation_command_changes(
  revision INTEGER PRIMARY KEY AUTOINCREMENT,conversation_id TEXT NOT NULL,
  command_id TEXT NOT NULL,FOREIGN KEY(conversation_id,command_id) REFERENCES amux_conversation_commands(conversation_id,id));
@@ -207,6 +208,22 @@ func enqueueConversationCommandIn(ctx context.Context, tx *sql.Tx, project, id, 
 	return command, nil
 }
 
+// Start with the small pending-prompt index, even when the project has many
+// historical conversations. CROSS JOIN keeps SQLite from reversing the lookup.
+const pendingTaskConversationsQuery = `SELECT c.id
+		FROM (SELECT DISTINCT conversation_id FROM amux_conversation_commands
+			WHERE kind='prompt' AND state IN ('queued','claimed')) q
+		CROSS JOIN amux_conversations c
+		WHERE c.project_ident=? AND c.task_id IS NOT NULL AND c.native_session_id!=''
+		  AND c.id=q.conversation_id
+		  AND json_extract(c.owner_json,'$.session_id')=?
+		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=?
+		  AND EXISTS (SELECT 1 FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source
+			WHERE a.project_ident=c.project_ident AND a.session_id=? AND a.state!='gone'
+			  AND a.report_kind='native' AND a.sequence=s.sequence AND a.sequence=s.principal_sequence
+			  AND s.principal=?)
+		ORDER BY c.created_at,c.id`
+
 // PendingTaskConversations finds task threads with unfinished prompts for a
 // stable worker session. The worker still needs its local recovery journal.
 // PendingTaskConversations lists follow-up work for a session only while that
@@ -216,18 +233,7 @@ func (s *Store) PendingTaskConversations(ctx context.Context, project string, ow
 	if principal == "" {
 		return []string{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id
-		FROM amux_conversations c
-		WHERE c.project_ident=? AND c.task_id IS NOT NULL AND c.native_session_id!=''
-		  AND json_extract(c.owner_json,'$.session_id')=?
-		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=?
-		  AND EXISTS (SELECT 1 FROM amux_conversation_commands q
-			WHERE q.conversation_id=c.id AND q.kind='prompt' AND q.state IN ('queued','claimed'))
-		  AND EXISTS (SELECT 1 FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source
-			WHERE a.project_ident=c.project_ident AND a.session_id=? AND a.state!='gone'
-			  AND a.report_kind='native' AND a.sequence=s.sequence AND a.sequence=s.principal_sequence
-			  AND s.principal=?)
-		ORDER BY c.created_at,c.id`, project, owner.SessionID, owner.Provider, owner.OS, owner.SessionID, principal)
+	rows, err := s.db.QueryContext(ctx, pendingTaskConversationsQuery, project, owner.SessionID, owner.Provider, owner.OS, owner.SessionID, principal)
 	if err != nil {
 		return nil, err
 	}

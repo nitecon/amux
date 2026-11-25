@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
@@ -25,6 +26,81 @@ func commandConversation(t *testing.T) (*Store, *Conversation, *AgentOrigin) {
 	}
 	return s, c, actor
 }
+
+func TestPendingTaskConversationsUsesPendingPromptIndex(t *testing.T) {
+	ctx := context.Background()
+	s, c, actor := commandConversation(t)
+	if accepted, err := s.ReportPresenceWithPrincipal(ctx, PresenceReport{Source: "pending-prompts", Sequence: 1,
+		Agents: []PresenceAgent{{ProjectIdent: "tasks", Origin: *actor}}}, time.Now(), "api-key"); err != nil || !accepted {
+		t.Fatalf("report presence: accepted=%v err=%v", accepted, err)
+	}
+	rows, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+pendingTaskConversationsQuery, "tasks", actor.SessionID, actor.Provider, actor.OS, actor.SessionID, "api-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := strings.Join(plan, "\n")
+	if !strings.Contains(details, "USING INDEX amux_pending_conversation_prompts") ||
+		!strings.Contains(details, "SEARCH c USING INDEX sqlite_autoindex_amux_conversations_1 (id=?)") {
+		t.Fatalf("discovery must scan pending prompts and look up conversations by ID:\n%s", details)
+	}
+
+	check := func(project string, owner AgentOrigin, want bool) {
+		t.Helper()
+		ids, err := s.PendingTaskConversations(ctx, project, owner, "api-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want && (len(ids) != 1 || ids[0] != c.ID) || !want && len(ids) != 0 {
+			t.Fatalf("pending conversations: %v, want match %v", ids, want)
+		}
+	}
+	check("tasks", *actor, false)
+	first, second := uuid.NewString(), uuid.NewString()
+	for _, id := range []string{first, second} {
+		if _, err := s.EnqueueConversationCommand(ctx, "tasks", c.ID, id, conversation.Command{Kind: "prompt", Text: "Follow up"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("tasks", *actor, true) // Multiple pending prompts yield one thread.
+	check("other-project", *actor, false)
+	for _, field := range []string{"session", "provider", "os"} {
+		other := *actor
+		switch field {
+		case "session":
+			other.SessionID = uuid.NewString()
+		case "provider":
+			other.Provider = "other-provider"
+		case "os":
+			other.OS = "other-os"
+		}
+		check("tasks", other, false)
+	}
+	for _, id := range []string{first, second} {
+		if _, err := s.ClaimConversationCommand(ctx, "tasks", c.ID, id, actor); err != nil {
+			t.Fatal(err)
+		}
+		check("tasks", *actor, true) // Claimed prompts remain discoverable.
+		if _, err := s.FinishConversationCommand(ctx, "tasks", c.ID, id, "done", actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("tasks", *actor, false) // Terminal prompts leave the partial index.
+}
+
 func TestConversationCommandsDurableClaimAndIdempotency(t *testing.T) {
 	ctx := context.Background()
 	s, c, actor := commandConversation(t)
