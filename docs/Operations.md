@@ -535,6 +535,19 @@ precedence over the conversation's directory. Existing `tool_approvals` string
 rules remain global for compatibility. Remote fleet workers, archived task
 transcripts, and direct `--conversation` windows do not offer local rule saving.
 
+The two keys have this shape in `work-preferences.json`.
+
+```json
+{
+  "directory_tool_approvals": [{"directory": "/home/me/project", "rules": ["git log *"]}],
+  "tool_approvals": ["git status"]
+}
+```
+
+When editing by hand, use an absolute `directory` path that exactly matches the
+cleaned request directory. Omit trailing separators on non-root paths and match
+letter case, including on Windows. Subdirectories do not inherit the rule.
+
 In a rule an
 unescaped `*` matches any text, `\*` and `\\` match a literal `*` and `\`, and
 every other character is literal. The prefill escapes any `*` or `\` from the
@@ -544,9 +557,12 @@ approve a chained or redirected command. To revoke a rule, remove it from its
 directory's `rules` list (or the legacy `tool_approvals` list) in the file.
 
 Pending requests send an OS notification and remain visible in the browser's
-approval banner and Events approval count until resolved. Use **Open
-conversation** to go directly to a blocked conversation. The banner remains
-visible when OS notifications are unavailable or suppressed.
+approval banner and Events approval count until resolved. With one pending
+request, **Open conversation** goes directly to the blocked conversation. With
+several, **Review approvals** opens Events. The banner remains visible when OS
+notifications are unavailable or suppressed. If the local client's approval
+stream fails, the banner shows “Approval notifications unavailable. Reconnecting
+to the local client…” while the desktop retries.
 
 ### Go desktop milestone check · 2026-11-22
 
