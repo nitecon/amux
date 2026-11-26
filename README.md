@@ -43,8 +43,8 @@ conversation on any machine, read what the agent is doing, and type to it.
   minutes, then connect over mutual TLS with certificates that renew
   themselves.
 - **Agents arrive equipped.** Each agent gets an MCP server with task tools,
-  work submission, code and knowledge-graph search, and durable memory.
-  Nothing extra to install.
+  code and knowledge-graph search, and durable memory. Task workers also get
+  work submission. Nothing extra to install.
 
 ## Get started
 

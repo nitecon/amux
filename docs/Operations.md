@@ -52,6 +52,16 @@ their existing locations and protect them as private keys.
 
 ## Task and project commands
 
+amux automatically registers MCP for standard local chats. The chat can list
+and inspect tasks, read project message threads, create and comment on tasks,
+and delegate across projects. It also exposes agent identity, worker discovery,
+and available bundled tools. Local `task_delegate` calls require an explicit
+`parent` UUID from the source project.
+
+Standard local chat MCP has no result subscriptions (`notify_results` or
+`task_set_requester`), task claiming, completion, reassignment, or `submit_work`.
+Use queued tasks to have task workers execute the work and submit changes.
+
 Console task commands use the same guarded gateway API and emit JSON on stdout:
 
 ```sh
@@ -78,8 +88,8 @@ discovery, legacy agent aliases, and report remain incomplete.
 creates a source tracking task and an unassigned target task atomically. It
 requires native identity and a source-project parent. Target completion makes
 the tracker available for inspection; only closing that tracker after the target
-is done accepts the handoff. Native MCP exposes the same operation as
-`task_delegate`, using the conversation task as its default parent. Inspect both
+is done accepts the handoff. In a server-backed task conversation using native MCP,
+`task_delegate` defaults to the conversation's task as its parent. Inspect both
 projects before retrying an unconfirmed handoff. `tasks update-delegation TASK_ID`
 edits the source contract and mirrors its title, description,
 specification, and labels to the linked target. The update, paired system notes,
@@ -97,9 +107,10 @@ calling execution to results. `tasks watch TASK_ID` sets that subscription;
 `tasks watch TASK_ID --clear` removes it. The caller must have a current registered
 target, which native workers advertise automatically. A requester is separate
 from the task's executor. Queued results are checked again before delivery, so
-removed or changed subscriptions do not receive stale prompts. Native MCP exposes
-`notify_results` on creation and the `task_set_requester` tool. These writes check
-server capability and exact acknowledgements and are never automatically retried.
+removed or changed subscriptions do not receive stale prompts. In server-backed
+task conversations, native MCP exposes `notify_results` on creation and delegation,
+along with `task_set_requester`. These writes check server capability and exact
+acknowledgements and are never automatically retried.
 
 Native project inbox access uses `GET /v1/projects/{ident}/messages/unread`
 and `POST /v1/projects/{ident}/messages/{id}/confirm` with complete native
