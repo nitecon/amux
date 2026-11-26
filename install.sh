@@ -22,13 +22,39 @@ curl -fsSL -o "$tmp/$archive" "$base/$archive"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 (cd "$tmp" && grep " $archive\$" SHA256SUMS | sha256sum -c -)
 
-mkdir "$tmp/bundle"
+# Stage and verify the whole bundle before touching the existing install.
+mkdir "$tmp/bundle" "$tmp/old"
 tar -xzf "$tmp/$archive" -C "$tmp/bundle"
+(cd "$tmp/bundle" && sha256sum -c --quiet SHA256SUMS)
 
-# Rename each file into place so running copies keep working until restart.
-for file in "$tmp/bundle"/*; do
-  mv -f "$file" "$dir/"
-done
+# Rename each bundle file into place, moving any existing copy aside first.
+# Running copies keep working until restart; other files in $dir are untouched.
+installed=""
+replace() {
+  for file in "$tmp/bundle"/*; do
+    name=${file##*/}
+    if [ -e "$dir/$name" ]; then mv -f "$dir/$name" "$tmp/old/" || return 1; fi
+    mv -f "$file" "$dir/" || return 1
+    installed="$installed $name"
+  done
+}
+rollback() {
+  for name in $installed; do rm -f "$dir/$name" || return 1; done
+  for file in "$tmp/old"/*; do
+    [ -e "$file" ] || continue
+    mv -f "$file" "$dir/" || return 1
+  done
+}
+
+if ! replace; then
+  if rollback; then
+    echo "Install failed; the previous amux install was restored." >&2
+  else
+    trap - EXIT
+    echo "Install failed and rollback did not finish; previous files are in $tmp/old" >&2
+  fi
+  exit 1
+fi
 
 echo "amux $tag installed. Start it with: $dir/amux-desktop"
 echo "If amux was already running, restart it to use the new version."

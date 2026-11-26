@@ -22,14 +22,24 @@ curl -fsSL -o "$tmp/$archive" "$base/$archive"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 (cd "$tmp" && grep " $archive\$" SHA256SUMS | shasum -a 256 -c -)
 
+# Stage and verify the whole app before touching the existing install.
 ditto -x -k "$tmp/$archive" "$tmp/bundle"
 [ -d "$tmp/bundle/amux.app" ] || { echo "release archive does not contain amux.app" >&2; exit 1; }
+codesign --verify --strict "$tmp/bundle/amux.app"
 
-# Swap the whole sealed app bundle; keep the old one until the new one is in place.
+# Swap the whole sealed app bundle; put the old one back if the swap fails.
 if [ -e "$apps/amux.app" ]; then
   mv "$apps/amux.app" "$tmp/amux.app.old"
 fi
-mv "$tmp/bundle/amux.app" "$apps/amux.app"
+if ! mv "$tmp/bundle/amux.app" "$apps/amux.app"; then
+  if [ -e "$tmp/amux.app.old" ] && ! mv "$tmp/amux.app.old" "$apps/amux.app"; then
+    trap - EXIT
+    echo "Install failed and rollback did not finish; previous app is at $tmp/amux.app.old" >&2
+    exit 1
+  fi
+  echo "Install failed; the previous amux install was restored." >&2
+  exit 1
+fi
 
 echo "amux $tag installed. Start it with: open \"$apps/amux.app\""
 echo "If amux was already running, quit and reopen it to use the new version."

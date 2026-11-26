@@ -55,7 +55,8 @@ You need Git and at least one signed-in agent CLI
 
 Run the same command to install, reinstall, or upgrade. It fetches the
 [latest release](https://github.com/nitecon/amux/releases/latest), checks it
-against the published checksums, and replaces any existing install in place.
+against the published checksums, and replaces any existing install in place,
+restoring the previous one if anything fails.
 No root or administrator rights needed.
 
 **Linux (x86-64)**: installs to `~/amux`
