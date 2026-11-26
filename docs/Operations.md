@@ -516,25 +516,37 @@ and provider startup errors remain visible in the pool status.
 
 ### Tool approval rules
 
-In desktop browser mode, a permission card offers **Always allow…** for fleet
-conversations whose hostname matches this machine's `os.Hostname()`, when the
-request names a shell command or tool and offers an `allow_once` option. Task
-conversations, conversations on remote fleet hosts, local chats, and direct
-`--conversation` windows do not offer it. Choosing **Always allow…** opens an
-editable rule prefilled with the exact request, for example `git grep -i foo`;
-widen it to `git grep *`, then **Save rule and allow** approves this request and
-stores the rule under `tool_approvals` in `work-preferences.json` (the same
-preferences file described above, overridden by desktop `--work-preferences` or
-`AMUX_WORK_SUBMISSION_PREFERENCES`). Native Claude, Codex, and Antigravity
-workers running with task tools enabled (not `--no-task-tools` or local chats)
-then read `tool_approvals` from that file and automatically approve matching
-requests that offer an `allow_once` option without showing them. In a rule an
+In desktop browser mode, a permission card offers **Always allow…** for local
+chats and fleet conversations on this machine, when the request names a shell
+command or tool and offers an `allow_once` option. Choosing **Always allow…**
+opens an editable command pattern and directory, prefilled from the request or
+conversation. For example, change `git log --oneline` to `git log *`, confirm
+the directory, then choose **Save rule and allow**. This approves the pending
+request and saves the pattern for future requests in that exact directory.
+Draft edits survive conversation updates. A pattern must match the pending
+request before it can be saved through this action.
+
+Rules are stored under `directory_tool_approvals` in `work-preferences.json`
+(the shared preferences file described above, overridden by desktop
+`--work-preferences` or `AMUX_WORK_SUBMISSION_PREFERENCES`). Local chats and
+native task workers read the file for each permission request, so new rules
+apply without restarting the provider. The request's working directory takes
+precedence over the conversation's directory. Existing `tool_approvals` string
+rules remain global for compatibility. Remote fleet workers, archived task
+transcripts, and direct `--conversation` windows do not offer local rule saving.
+
+In a rule an
 unescaped `*` matches any text, `\*` and `\\` match a literal `*` and `\`, and
 every other character is literal. The prefill escapes any `*` or `\` from the
 request, so an unedited rule approves only that exact command. Requests
 containing `; & | < > $` backticks or line breaks never match, so a rule cannot
-approve a chained or redirected command. To revoke a rule, remove it from the
-`tool_approvals` list in the file.
+approve a chained or redirected command. To revoke a rule, remove it from its
+directory's `rules` list (or the legacy `tool_approvals` list) in the file.
+
+Pending requests send an OS notification and remain visible in the browser's
+approval banner and Events approval count until resolved. Use **Open
+conversation** to go directly to a blocked conversation. The banner remains
+visible when OS notifications are unavailable or suppressed.
 
 ### Go desktop milestone check · 2026-11-22
 

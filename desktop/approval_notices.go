@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -25,6 +26,14 @@ type approvalNotice struct {
 
 type approvalKey struct {
 	project, conversation, instance, request string
+}
+
+func approvalNotification(project, provider, title string) *fyne.Notification {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Agent requests approval"
+	}
+	return fyne.NewNotification("Approval needed: "+title, project+" · "+providerConversationLabel(provider)+" · Open Events to review")
 }
 
 func (b *Browser) watchApprovals(open worker.Open, local *storage.Conversation) worker.Open {
@@ -74,7 +83,7 @@ func (b *Browser) watchApprovals(open worker.Open, local *storage.Conversation) 
 					}
 					b.approvalNotices[request] = notice
 					if app := fyne.CurrentApp(); app != nil {
-						app.SendNotification(fyne.NewNotification("Amux approval needed", run.Project+" · "+providerConversationLabel(run.Owner.Provider)+" · Open Events to review"))
+						app.SendNotification(approvalNotification(run.Project, run.Owner.Provider, title))
 					}
 				case "permission_resolved":
 					delete(b.approvalNotices, request)
@@ -136,9 +145,55 @@ func (b *Browser) refreshApprovalNotices() {
 	if b.mainViewButtons["Events"] != nil {
 		label := "Events"
 		if len(b.approvalNotices) > 0 {
-			label = "Events •"
+			count := len(b.approvalNotices)
+			label = fmt.Sprintf("Events · %d approval", count)
+			if count != 1 {
+				label += "s"
+			}
+			b.mainViewButtons["Events"].Importance = widget.HighImportance
+		} else {
+			b.mainViewButtons["Events"].Importance = widget.MediumImportance
 		}
 		b.mainViewButtons["Events"].SetText(label)
+	}
+	if b.approvalBanner != nil {
+		b.approvalBanner.RemoveAll()
+		if len(b.approvalNotices) == 0 {
+			b.approvalBanner.Hide()
+		} else {
+			count := len(b.approvalNotices)
+			var first approvalNotice
+			for _, notice := range b.approvalNotices {
+				first = notice
+				break
+			}
+			title := strings.TrimSpace(first.title)
+			if title == "" {
+				title = "Agent requests approval"
+			}
+			message := fmt.Sprintf("%d approval", count)
+			if count != 1 {
+				message += "s"
+			}
+			message += " need your review · " + first.run.Project + " · " + title
+			label := widget.NewLabel(message)
+			label.Wrapping = fyne.TextWrapWord
+			var action *widget.Button
+			if count == 1 {
+				action = widget.NewButton("Open conversation", func() { b.openApprovalConversation(first) })
+			} else {
+				action = widget.NewButton("Review approvals", func() { b.setMainView("Events") })
+			}
+			b.approvalBanner.Add(container.NewBorder(nil, nil, nil, action, label))
+			b.approvalBanner.Show()
+		}
+		if b.approvalWatchUnavailable {
+			warning := widget.NewLabel("Approval notifications unavailable. Reconnecting to the local client…")
+			warning.Wrapping = fyne.TextWrapWord
+			warning.Importance = widget.WarningImportance
+			b.approvalBanner.Add(warning)
+			b.approvalBanner.Show()
+		}
 	}
 	if b.approvalRows == nil {
 		return
@@ -214,11 +269,12 @@ func (b *Browser) openApprovalConversation(notice approvalNotice) {
 func (b *Browser) watchManagedApprovals(ctx context.Context) {
 	remote := localconversation.Remote{ConfigPath: b.clientConfigPath}
 	for ctx.Err() == nil {
-		_ = remote.WatchApprovals(ctx, func(approvals []localconversation.Approval) error {
+		err := remote.WatchApprovals(ctx, func(approvals []localconversation.Approval) error {
 			b.dispatch(func() {
 				if b.closing {
 					return
 				}
+				b.approvalWatchUnavailable = false
 				if b.approvalNotices == nil {
 					b.approvalNotices = make(map[approvalKey]approvalNotice)
 				}
@@ -253,7 +309,7 @@ func (b *Browser) watchManagedApprovals(ctx context.Context) {
 					}
 					b.approvalNotices[key] = notice
 					if app := fyne.CurrentApp(); app != nil {
-						app.SendNotification(fyne.NewNotification("Amux approval needed", info.ProjectIdent+" · "+providerConversationLabel(info.Provider)+" · Open Events to review"))
+						app.SendNotification(approvalNotification(info.ProjectIdent, info.Provider, title))
 					}
 				}
 				for key := range b.approvalNotices {
@@ -265,6 +321,17 @@ func (b *Browser) watchManagedApprovals(ctx context.Context) {
 			})
 			return ctx.Err()
 		})
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			b.dispatch(func() {
+				if !b.closing {
+					b.approvalWatchUnavailable = true
+					b.refreshApprovalNotices()
+				}
+			})
+		}
 		select {
 		case <-ctx.Done():
 			return

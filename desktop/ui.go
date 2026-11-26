@@ -40,7 +40,12 @@ type Config struct {
 	Dispatch       func(func())
 	// ToolApprovalsPath is the shared preferences file that stores
 	// "Always allow" rules. Empty hides the option.
-	ToolApprovalsPath string
+	ToolApprovalsPath     string
+	ToolApprovalDirectory string
+}
+
+type approvalRuleDraft struct {
+	pattern, directory string
 }
 
 type UI struct {
@@ -64,7 +69,8 @@ type UI struct {
 	permissionDetailButtons map[string]*widget.Button
 	expandedPermissions     map[string]bool
 	toolApprovalsPath       string
-	approvalRuleDrafts      map[string]string
+	toolApprovalDirectory   string
+	approvalRuleDrafts      map[string]approvalRuleDraft
 	transcriptEnd           int
 	refreshPending          atomic.Bool
 
@@ -94,7 +100,7 @@ func New(config Config) (*UI, error) {
 	u := &UI{
 		client: config.Client, project: config.Project, conversationID: config.ConversationID,
 		model: config.Model, dispatch: dispatch, transcriptEnd: -1, toolButtons: map[string]*widget.Button{}, permissionButtons: map[string]*widget.Button{}, permissionDetailButtons: map[string]*widget.Button{}, expandedPermissions: map[string]bool{},
-		toolApprovalsPath: config.ToolApprovalsPath, approvalRuleDrafts: map[string]string{},
+		toolApprovalsPath: config.ToolApprovalsPath, toolApprovalDirectory: config.ToolApprovalDirectory, approvalRuleDrafts: map[string]approvalRuleDraft{},
 		heading: selectableLabel(config.TaskTitle), connection: widget.NewLabel("Ready to connect"),
 		transcript: container.NewVBox(), status: widget.NewLabel(""),
 	}
@@ -193,6 +199,12 @@ func (u *UI) loadConversation(ctx context.Context) {
 	if conversationInfo.ProjectIdent != u.project || conversationInfo.ID != u.conversationID {
 		u.setStatus("Gateway returned a different conversation.")
 		return
+	}
+	if conversationInfo.WorkingDirectory != "" {
+		u.dispatch(func() {
+			u.toolApprovalDirectory = conversationInfo.WorkingDirectory
+			u.refresh()
+		})
 	}
 	if conversationInfo.TaskID == "" {
 		return
@@ -667,7 +679,9 @@ func (u *UI) renderPermission(permission chat.Permission) fyne.CanvasObject {
 // requested command, so the user can widen it (for example to "git grep *")
 // before saving it and approving this request.
 func (u *UI) renderApprovalRule(permission chat.Permission) []fyne.CanvasObject {
-	subject := worksubmission.ToolApprovalSubject(conversation.Event{Data: permission.Details})
+	event := conversation.Event{Data: permission.Details}
+	subject := worksubmission.ToolApprovalSubject(event)
+	directory := worksubmission.ToolApprovalDirectory(event, u.toolApprovalDirectory)
 	allow := ""
 	for _, option := range permission.Options {
 		if option.Kind == "allow_once" {
@@ -681,17 +695,33 @@ func (u *UI) renderApprovalRule(permission chat.Permission) []fyne.CanvasObject 
 	draft, editing := u.approvalRuleDrafts[permission.EventID]
 	if !editing {
 		return []fyne.CanvasObject{widget.NewButton("Always allow…", func() {
-			u.approvalRuleDrafts[permission.EventID] = worksubmission.ToolApprovalRuleDraft(subject)
+			u.approvalRuleDrafts[permission.EventID] = approvalRuleDraft{worksubmission.ToolApprovalRuleDraft(subject), directory}
 			u.dispatch(u.refresh)
 		})}
 	}
 	entry := widget.NewEntry()
-	entry.SetText(draft)
-	entry.OnChanged = func(text string) { u.approvalRuleDrafts[permission.EventID] = text }
+	entry.SetText(draft.pattern)
+	entry.OnChanged = func(text string) {
+		draft := u.approvalRuleDrafts[permission.EventID]
+		draft.pattern = text
+		u.approvalRuleDrafts[permission.EventID] = draft
+	}
+	directoryEntry := widget.NewEntry()
+	directoryEntry.SetPlaceHolder("Absolute directory for this rule")
+	directoryEntry.SetText(draft.directory)
+	directoryEntry.OnChanged = func(text string) {
+		draft := u.approvalRuleDrafts[permission.EventID]
+		draft.directory = text
+		u.approvalRuleDrafts[permission.EventID] = draft
+	}
 	save := widget.NewButton("Save rule and allow", func() {
-		rule, path := entry.Text, u.toolApprovalsPath
+		rule, path, directory := entry.Text, u.toolApprovalsPath, directoryEntry.Text
 		u.launch(func(context.Context) {
-			if err := worksubmission.AddToolApproval(path, rule); err != nil {
+			if !worksubmission.MatchToolApproval([]string{rule}, subject) {
+				u.dispatch(func() { u.status.SetText("Approval rule must match this request before it can be saved.") })
+				return
+			}
+			if err := worksubmission.AddDirectoryToolApproval(path, directory, rule); err != nil {
 				u.dispatch(func() { u.status.SetText("Approval rule was not saved: " + err.Error()) })
 				return
 			}
@@ -705,9 +735,9 @@ func (u *UI) renderApprovalRule(permission chat.Permission) []fyne.CanvasObject 
 		delete(u.approvalRuleDrafts, permission.EventID)
 		u.dispatch(u.refresh)
 	})
-	hint := widget.NewLabel("Future requests matching this rule are approved automatically. * matches any text; \\* is a literal *.")
+	hint := widget.NewLabel("Automatically allow matching requests in this directory. * matches any text; \\* is a literal *. Edit the command pattern before saving.")
 	hint.Wrapping = fyne.TextWrapWord
-	return []fyne.CanvasObject{hint, container.NewBorder(nil, nil, nil, container.NewHBox(save, cancel), entry)}
+	return []fyne.CanvasObject{hint, widget.NewForm(widget.NewFormItem("Directory", directoryEntry), widget.NewFormItem("Command or tool", entry)), container.NewHBox(save, cancel)}
 }
 
 func (u *UI) updateButtons() {

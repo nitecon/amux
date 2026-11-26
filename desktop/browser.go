@@ -59,6 +59,8 @@ type Browser struct {
 	mainContent                                              *fyne.Container
 	mainViews                                                map[string]fyne.CanvasObject
 	mainViewButtons                                          map[string]*widget.Button
+	approvalBanner                                           *fyne.Container
+	approvalWatchUnavailable                                 bool
 	mainView                                                 string
 	taskBoard                                                *taskBoard
 	taskSubtasks                                             *fyne.Container
@@ -932,7 +934,9 @@ func (b *Browser) buildUI() {
 	b.selectedProjectStatus.Truncation = fyne.TextTruncateEllipsis
 	b.selectedProjectStatus.Importance = widget.LowImportance
 	statusBar := container.NewVBox(widget.NewSeparator(), b.selectedProjectStatus)
-	b.shell = container.NewBorder(container.NewVBox(header, widget.NewSeparator()), statusBar, nil, nil, b.root)
+	b.approvalBanner = container.NewVBox()
+	b.approvalBanner.Hide()
+	b.shell = container.NewBorder(container.NewVBox(header, widget.NewSeparator(), b.approvalBanner), statusBar, nil, nil, b.root)
 	b.updateSelectedProjectStatus()
 	b.pluginSettings.setRoot(b.root)
 	b.workSubmissionSettings.setRoot(b.root)
@@ -2203,7 +2207,7 @@ func (b *Browser) chatForConversation(c storage.Conversation) *UI {
 		if !fleet && b.clientConfigPath != "" && c.TaskID == "" {
 			transport = localconversation.Remote{ConfigPath: b.clientConfigPath}
 		} else if !fleet && b.localConversationsDirectory != "" && c.TaskID == "" {
-			local, err := openMarkdownChat(b.localConversationsDirectory, c, b.watchApprovals(worker.OpenNative, &c))
+			local, err := openMarkdownChat(b.localConversationsDirectory, c, b.watchApprovals(worker.OpenWithToolApprovals(worker.OpenNative, b.workPreferencesPath), &c))
 			if err != nil {
 				b.showLocalChatOpenError("Conversation could not be opened: " + err.Error())
 				return nil
@@ -2211,14 +2215,25 @@ func (b *Browser) chatForConversation(c storage.Conversation) *UI {
 			b.localChatSessions[key] = local
 			transport = local
 		}
-		// Only this host's hosted worker reads workPreferencesPath, so a saved
-		// rule could not take effect for a remote fleet worker or a local chat.
+		// Local chats and this host's workers share the approval preferences.
 		approvalsPath := ""
-		if host, hostErr := os.Hostname(); fleet && hostErr == nil && strings.TrimSpace(host) == *c.FleetHostname {
+		localChat := !fleet && c.TaskID == "" && (b.clientConfigPath != "" || b.localConversationsDirectory != "")
+		host, hostErr := os.Hostname()
+		localWorker := fleet && hostErr == nil && strings.EqualFold(strings.TrimSpace(host), strings.TrimSpace(*c.FleetHostname))
+		if !readOnly && (localChat || localWorker) {
 			approvalsPath = b.workPreferencesPath
 		}
+		approvalDirectory := c.WorkingDirectory
+		if approvalDirectory == "" {
+			for _, project := range b.projectItems {
+				if project.Ident == c.ProjectIdent {
+					approvalDirectory = b.projectCheckout(project).Directory
+					break
+				}
+			}
+		}
 		var err error
-		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly, ToolApprovalsPath: approvalsPath})
+		child, err = New(Config{Client: transport, Project: c.ProjectIdent, ConversationID: c.ID, TaskTitle: title, Dispatch: b.dispatch, ReadOnly: readOnly, ToolApprovalsPath: approvalsPath, ToolApprovalDirectory: approvalDirectory})
 		if err != nil {
 			b.browserStatus.SetText("Conversation could not be opened: " + err.Error())
 			return nil

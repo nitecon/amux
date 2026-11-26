@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,6 +16,12 @@ import (
 // toolApprovalsKey stores user-granted tool approval rules in the shared
 // preferences document as a list of patterns where "*" matches any text.
 const toolApprovalsKey = "tool_approvals"
+const directoryToolApprovalsKey = "directory_tool_approvals"
+
+type DirectoryToolApproval struct {
+	Directory string   `json:"directory"`
+	Rules     []string `json:"rules"`
+}
 
 // shellControl lists characters that can chain, substitute or redirect shell
 // commands. A request containing any of them never matches a rule, so
@@ -45,6 +52,116 @@ func LoadToolApprovals(path string) ([]string, error) {
 	return rules, nil
 }
 
+// LoadDirectoryToolApprovals returns global rules and rules scoped to the exact
+// cleaned absolute directory. Relative directories never authorize anything.
+func LoadDirectoryToolApprovals(path, directory string) ([]string, error) {
+	global, err := LoadToolApprovals(path)
+	if err != nil {
+		return nil, err
+	}
+	canonical, ok := canonicalApprovalDirectory(directory)
+	if !ok || path == "" {
+		return global, nil
+	}
+	root, err := readPreferencesRoot(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return global, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read directory tool approvals: %w", err)
+	}
+	raw, exists := root[directoryToolApprovalsKey]
+	if !exists {
+		return global, nil
+	}
+	var entries []DirectoryToolApproval
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("directory tool approvals must be a list: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Directory == canonical {
+			global = append(global, entry.Rules...)
+		}
+	}
+	return global, nil
+}
+
+// AddDirectoryToolApproval saves a rule for one cleaned absolute directory.
+func AddDirectoryToolApproval(path, directory, rule string) error {
+	canonical, ok := canonicalApprovalDirectory(directory)
+	if !ok {
+		return errors.New("tool approval directory must be absolute")
+	}
+	rule = strings.TrimSpace(rule)
+	if err := validateToolApprovalRule(rule); err != nil {
+		return err
+	}
+	if path == "" {
+		return errors.New("work preferences path is required")
+	}
+	unlock, err := lockPreferences(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := LoadToolApprovals(path); err != nil {
+		return fmt.Errorf("refusing to overwrite invalid tool approvals: %w", err)
+	}
+	root, err := readPreferencesRoot(path)
+	if errors.Is(err, os.ErrNotExist) {
+		root = map[string]json.RawMessage{}
+	} else if err != nil {
+		return fmt.Errorf("read existing work preferences before update: %w", err)
+	}
+	var entries []DirectoryToolApproval
+	if raw, exists := root[directoryToolApprovalsKey]; exists {
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("refusing to overwrite invalid directory tool approvals: %w", err)
+		}
+	}
+	for i := range entries {
+		if entries[i].Directory == canonical {
+			if !slices.Contains(entries[i].Rules, rule) {
+				entries[i].Rules = append(entries[i].Rules, rule)
+			}
+			return saveDirectoryApprovals(root, path, entries)
+		}
+	}
+	entries = append(entries, DirectoryToolApproval{Directory: canonical, Rules: []string{rule}})
+	return saveDirectoryApprovals(root, path, entries)
+}
+
+func canonicalApprovalDirectory(directory string) (string, bool) {
+	if directory == "" || !filepath.IsAbs(directory) {
+		return "", false
+	}
+	return filepath.Clean(directory), true
+}
+
+func saveDirectoryApprovals(root map[string]json.RawMessage, path string, entries []DirectoryToolApproval) error {
+	encoded, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	root[directoryToolApprovalsKey] = encoded
+	data, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writePreferencesFile(path, data)
+}
+
+func validateToolApprovalRule(rule string) error {
+	rule = strings.TrimSpace(rule)
+	if strings.Trim(rule, "* \t") == "" {
+		return errors.New("tool approval rule must name a command or tool")
+	}
+	if strings.ContainsAny(rule, shellControl) {
+		return errors.New("tool approval rule cannot contain shell control characters")
+	}
+	return nil
+}
+
 // AddToolApproval saves one rule, preserving the other root fields. Only the
 // rule's surrounding whitespace is trimmed; inner text stays literal. Saving an
 // existing rule is a no-op.
@@ -53,11 +170,8 @@ func AddToolApproval(path, rule string) error {
 		return errors.New("work preferences path is required")
 	}
 	rule = strings.TrimSpace(rule)
-	if strings.Trim(rule, "* \t") == "" {
-		return errors.New("tool approval rule must name a command or tool")
-	}
-	if strings.ContainsAny(rule, shellControl) {
-		return errors.New("tool approval rule cannot contain shell control characters")
+	if err := validateToolApprovalRule(rule); err != nil {
+		return err
 	}
 	unlock, err := lockPreferences(path)
 	if err != nil {
@@ -98,10 +212,48 @@ func ToolApprovalSubject(event conversation.Event) string {
 	if json.Unmarshal(event.Data, &data) != nil {
 		return ""
 	}
-	for _, candidate := range []string{data.Input.Command, stringValue(data.Command), stringValue(data.ToolCall.RawInput.Command), data.ToolName, data.ToolCall.Name} {
+	for _, candidate := range []string{data.Input.Command, stringValue(data.Command), commandValue(data.Command), stringValue(data.ToolCall.RawInput.Command), commandValue(data.ToolCall.RawInput.Command), data.ToolName, data.ToolCall.Name} {
 		if strings.TrimSpace(candidate) != "" {
 			return candidate
 		}
+	}
+	return ""
+}
+
+func commandValue(raw json.RawMessage) string {
+	var command []string
+	if json.Unmarshal(raw, &command) == nil {
+		return strings.Join(command, " ")
+	}
+	return ""
+}
+
+// ToolApprovalDirectory returns the permission request's actual working
+// directory, falling back to the saved run directory when the provider omits it.
+func ToolApprovalDirectory(event conversation.Event, fallback string) string {
+	var data struct {
+		Cwd   string `json:"cwd"`
+		Input struct {
+			Cwd string `json:"cwd"`
+		} `json:"input"`
+		ToolCall struct {
+			RawInput struct {
+				Cwd string `json:"cwd"`
+			} `json:"rawInput"`
+		} `json:"toolCall"`
+	}
+	if json.Unmarshal(event.Data, &data) == nil {
+		for _, candidate := range []string{data.Cwd, data.Input.Cwd, data.ToolCall.RawInput.Cwd} {
+			if candidate != "" {
+				if canonical, ok := canonicalApprovalDirectory(candidate); ok {
+					return canonical
+				}
+				return ""
+			}
+		}
+	}
+	if canonical, ok := canonicalApprovalDirectory(fallback); ok {
+		return canonical
 	}
 	return ""
 }

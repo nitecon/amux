@@ -205,6 +205,7 @@ func (c *Session) Conversation(context.Context, string, string) (*storage.Conver
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	info := c.file.Info
+	info.WorkingDirectory = c.file.Directory
 	return &info, nil
 }
 

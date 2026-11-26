@@ -24,7 +24,9 @@ var (
 // Conversation binds one task to one provider session. An instance change fences
 // the previous worker's writes without changing the native session or transcript.
 type Conversation struct {
-	FleetHostname *string `json:"fleet_hostname,omitempty"`
+	// WorkingDirectory is supplied by a local conversation owner, when known.
+	WorkingDirectory string  `json:"working_directory,omitempty"`
+	FleetHostname    *string `json:"fleet_hostname,omitempty"`
 	// OwnerHostname is the owner session's last reported machine, when known.
 	OwnerHostname   *string     `json:"owner_hostname,omitempty"`
 	ID              string      `json:"id"`

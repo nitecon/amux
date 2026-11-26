@@ -34,12 +34,18 @@ func TestAlwaysAllowOnlyForConversationsOnThisHostsWorker(t *testing.T) {
 	remote := "remote-" + local
 	for name, test := range map[string]struct {
 		hostname *string
+		managed  bool
 		want     string
 	}{
-		"local worker":  {&local, browser.workPreferencesPath},
-		"remote worker": {&remote, ""},
-		"local chat":    {nil, ""},
+		"local worker":           {&local, false, browser.workPreferencesPath},
+		"remote worker":          {&remote, false, ""},
+		"unmanaged gateway chat": {nil, false, ""},
+		"managed local chat":     {nil, true, browser.workPreferencesPath},
 	} {
+		browser.clientConfigPath = ""
+		if test.managed {
+			browser.clientConfigPath = filepath.Join(t.TempDir(), "client.json")
+		}
 		chat := browser.chatForConversation(storage.Conversation{ID: name, ProjectIdent: "demo", Provider: "claude", FleetHostname: test.hostname})
 		if chat == nil {
 			t.Fatalf("%s: conversation did not open", name)

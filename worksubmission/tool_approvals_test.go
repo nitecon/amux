@@ -17,6 +17,7 @@ func TestToolApprovalSubjectReadsEachProviderShape(t *testing.T) {
 		"claude bash":     {`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git  grep -i\tfoo"}}`, "git  grep -i\tfoo"},
 		"claude tool":     {`{"subtype":"can_use_tool","tool_name":"WebFetch","input":{"url":"https://x"}}`, "WebFetch"},
 		"codex command":   {`{"threadId":"t","command":"git log -3"}`, "git log -3"},
+		"codex argv":      {`{"command":["git","log","-3"]}`, "git log -3"},
 		"codex file":      {`{"threadId":"t","reason":"edit"}`, ""},
 		"acp raw command": {`{"toolCall":{"name":"run_command","rawInput":{"command":"git status"}}}`, "git status"},
 		"acp tool":        {`{"toolCall":{"name":"read_file"}}`, "read_file"},
@@ -24,6 +25,63 @@ func TestToolApprovalSubjectReadsEachProviderShape(t *testing.T) {
 	} {
 		if got := ToolApprovalSubject(conversation.Event{Data: json.RawMessage(test.data)}); got != test.want {
 			t.Errorf("%s: subject = %q, want %q", name, got, test.want)
+		}
+	}
+}
+
+func TestDirectoryToolApprovalsMergeGlobalsAndMatchOnlyCleanedExactDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prefs.json")
+	root := filepath.Join(t.TempDir(), "checkout")
+	if err := AddToolApproval(path, "WebFetch"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddDirectoryToolApproval(path, filepath.Join(root, "."), "git log *"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddDirectoryToolApproval(path, root, "git log *"); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		directory string
+		want      []string
+	}{
+		{root, []string{"WebFetch", "git log *"}},
+		{filepath.Join(root, "nested"), []string{"WebFetch"}},
+		{"relative", []string{"WebFetch"}},
+	} {
+		got, err := LoadDirectoryToolApprovals(path, test.directory)
+		if err != nil || !slices.Equal(got, test.want) {
+			t.Errorf("rules for %q = %q, %v; want %q", test.directory, got, err, test.want)
+		}
+	}
+	for _, bad := range []string{"", "relative"} {
+		if err := AddDirectoryToolApproval(path, bad, "git log"); err == nil {
+			t.Errorf("accepted non-absolute directory %q", bad)
+		}
+	}
+}
+
+func TestToolApprovalDirectoryUsesActualProviderCWD(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	other := filepath.Join(t.TempDir(), "other")
+	fallback := filepath.Join(t.TempDir(), "fallback")
+	for _, test := range []struct {
+		data           any
+		fallback, want string
+	}{
+		{map[string]any{"cwd": filepath.Join(repo, "sub", "..")}, fallback, repo},
+		{map[string]any{"input": map[string]string{"cwd": other}}, fallback, other},
+		{map[string]any{"toolCall": map[string]any{"rawInput": map[string]string{"cwd": repo}}}, fallback, repo},
+		{map[string]any{}, filepath.Join(fallback, "."), fallback},
+		{map[string]any{"cwd": "relative"}, fallback, ""},
+	} {
+		data, err := json.Marshal(test.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ToolApprovalDirectory(conversation.Event{Data: data}, test.fallback)
+		if got != test.want {
+			t.Errorf("directory = %q, want %q", got, test.want)
 		}
 	}
 }

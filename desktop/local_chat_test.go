@@ -58,6 +58,10 @@ func TestMarkdownConversationRunsAndRestoresWithoutGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	details, err := local.Conversation(context.Background(), "demo", info.ID)
+	if err != nil || details.WorkingDirectory != root {
+		t.Fatalf("conversation directory = %v, %v", details, err)
+	}
 	defer cancel()
 	done := make(chan error, 1)
 	ready, finished := make(chan struct{}), make(chan struct{}, 1)
