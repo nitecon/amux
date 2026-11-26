@@ -29,7 +29,12 @@ restarting and reopens the same version. Before updating from one of those
 versions, confirm your user owns the installation directory. If it does not,
 `chown` the directory or move amux to a directory you own, or close amux and
 rerun the [install script](../README.md#get-started), which installs the latest
-release in your home directory. If an update from v0.9.1 reopens the same
+release in your home directory. The install script does not remove the old
+copy: a `/usr/local/bin/amux` stays on your `PATH`, and a systemd service
+started from it (see the [deployment guide](../deploy/README.md)) keeps running
+the old version. After moving to the home-directory installation, stop that
+service and remove the old copy, or put `~/amux` first on your `PATH`, so you
+do not launch or connect to the old version. If an update from v0.9.1 reopens the same
 version, the reason is in `install.log` beside the downloaded package in the
 amux update cache.
 
