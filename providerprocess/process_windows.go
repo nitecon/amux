@@ -2,14 +2,15 @@ package providerprocess
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows"
 	"os/exec"
-	"syscall"
 	"unsafe"
+
+	"github.com/nitecon/amux/internal/hidewindow"
+	"golang.org/x/sys/windows"
 )
 
 func configureProcess(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	hidewindow.Apply(command)
 }
 func ownProcess(command *exec.Cmd) (func(), func() error, error) {
 	job, err := windows.CreateJobObject(nil, nil)

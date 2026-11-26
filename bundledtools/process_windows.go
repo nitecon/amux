@@ -4,11 +4,10 @@ package bundledtools
 
 import (
 	"os/exec"
-	"syscall"
 
-	"golang.org/x/sys/windows"
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 func configureProcess(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	hidewindow.Apply(command)
 }
