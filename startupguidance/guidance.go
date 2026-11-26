@@ -10,7 +10,15 @@ const (
 )
 
 func Context(codeTools, memoryTools bool, memories string) string {
-	hints := SessionGuidance
+	return contextWithHints(SessionGuidance, codeTools, memoryTools, memories)
+}
+
+func LocalConversationContext(codeTools, memoryTools bool, memories string) string {
+	const guidance = "[Amux session guidance] Local conversations can inspect tasks with task_list and task_get, report progress with task_comment, create scoped work with task_create, and delegate cross-project work with task_delegate. Read task details, comments, and platform requirements before acting. Read the proposed parent before creating or delegating work. Root exceptions require root_reason (user-directed or principle) and a specification recording the request or finding, evidence, and acceptance criteria. Use a task worker for claiming tasks, completing them, and publishing code."
+	return contextWithHints(guidance, codeTools, memoryTools, memories)
+}
+
+func contextWithHints(hints string, codeTools, memoryTools bool, memories string) string {
 	if codeTools {
 		hints += CodeToolsHint
 	}

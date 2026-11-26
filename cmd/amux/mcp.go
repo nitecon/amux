@@ -123,7 +123,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	}
 	runner := bundledToolRunner{Executable: executable, OverrideDirectory: getenv("AMUX_BUNDLED_DIR"), Directory: workingDirectory}
 	configuredWorkPreferences := getenv("AMUX_WORK_SUBMISSION_PREFERENCES")
-	instructions := mcpStartupInstructionsFor(*provider, getenv("AMUX_AGENT_PROVIDER"), runner)
+	instructions := mcpStartupInstructionsFor(*provider, getenv("AMUX_AGENT_PROVIDER"), runner, *localConversation)
 	listTools := func() []mcpstdio.Tool {
 		tools := make([]mcpstdio.Tool, 0, len(bundledToolCatalog)+len(server.AgentTaskTools())+len(taskRoutingMCPTools)+1)
 		if nativeRequested {
@@ -192,25 +192,21 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	return err
 }
 
-func mcpStartupInstructions(provider string, runner bundledToolRunner) string {
+func mcpStartupInstructionsFor(explicitProvider, environmentProvider string, runner bundledToolRunner, localConversation bool) string {
+	provider := explicitProvider
+	if provider == "" {
+		provider = environmentProvider
+	}
 	if provider == "codex" {
 		return ""
 	}
 	if _, supplied := os.LookupEnv("AMUX_DESKTOP_GUIDANCE"); supplied {
 		return ""
 	}
-	return nativeMCPStartupInstructions(runner)
+	return nativeMCPStartupInstructions(runner, localConversation)
 }
 
-func mcpStartupInstructionsFor(explicitProvider, environmentProvider string, runner bundledToolRunner) string {
-	provider := explicitProvider
-	if provider == "" {
-		provider = environmentProvider
-	}
-	return mcpStartupInstructions(provider, runner)
-}
-
-func nativeMCPStartupInstructions(runner bundledToolRunner) string {
+func nativeMCPStartupInstructions(runner bundledToolRunner, localConversation bool) string {
 	query, ok := startupguidance.MemoryQuery(runner.workingDirectory())
 	if !ok {
 		return ""
@@ -221,5 +217,8 @@ func nativeMCPStartupInstructions(runner bundledToolRunner) string {
 		memoryTools = memoryTools || tool.Name == "memory_search"
 	}
 	memories := bundledtools.DurableMemories(runner.workingDirectory(), query)
+	if localConversation {
+		return startupguidance.LocalConversationContext(codeTools, memoryTools, memories)
+	}
 	return startupguidance.Context(codeTools, memoryTools, memories)
 }

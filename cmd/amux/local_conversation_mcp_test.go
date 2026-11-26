@@ -53,6 +53,10 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	}
 	copyBundledTestBinary(t, executable, filepath.Join(binDir, bundledToolFileName("agent-tools")))
 	workDir := t.TempDir()
+	t.Setenv("AMUX_DESKTOP_GUIDANCE", "")
+	if err := os.Unsetenv("AMUX_DESKTOP_GUIDANCE"); err != nil {
+		t.Fatal(err)
+	}
 	marker := filepath.Join(t.TempDir(), "bundled.json")
 	t.Setenv("AMUX_BUNDLED_DIR", binDir)
 	t.Setenv("AMUX_BUNDLED_RUNNER_FIXTURE", "1")
@@ -124,6 +128,25 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	if len(responses) != 11 {
 		t.Fatalf("responses=%d, want 11: %v", len(responses), responses)
 	}
+	var initialized struct {
+		Result struct {
+			Instructions string `json:"instructions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(responses[0]), &initialized); err != nil {
+		t.Fatal(err)
+	}
+	instructions := initialized.Result.Instructions
+	for _, want := range []string{"Local conversations", "task_list", "task_get", "task_comment", "task_create", "task_delegate", "Use a task worker", "code_read"} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("local conversation MCP instructions missing %q: %q", want, instructions)
+		}
+	}
+	for _, forbidden := range []string{"claim before starting", "submit-work"} {
+		if strings.Contains(instructions, forbidden) {
+			t.Errorf("local conversation MCP instructions contain worker guidance %q: %q", forbidden, instructions)
+		}
+	}
 	var listed struct {
 		Result struct {
 			Tools []mcpstdio.Tool `json:"tools"`
@@ -148,6 +171,9 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	} {
 		if _, ok := toolsByName[forbidden]; ok {
 			t.Fatalf("local conversation MCP catalog exposed unsupported tool %q", forbidden)
+		}
+		if strings.Contains(instructions, forbidden) {
+			t.Errorf("local conversation MCP instructions mention unsupported tool %q: %q", forbidden, instructions)
 		}
 	}
 	// Verify local schemas match executable behavior (explicit parent required for task_delegate; no notify_results).
