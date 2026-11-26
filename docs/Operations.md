@@ -242,6 +242,14 @@ are also available. Task snapshots publish transactionally, and durable review
 deliveries preserve obligations without blocking task completion. Streaming
 uses `github.com/coder/websocket` with durable cursors and connection fences.
 Plugins now have a shared channel bus with independent bounded subscriptions.
+
+Submission-review cards that became obsolete after their source was reopened or
+resubmitted can be closed without a verdict on updated servers. The source stays
+unchanged and no approval is recorded. Current submission reviews still require
+`task_finish_review`. If an old review rejects both verdict and ordinary closure,
+upgrade the server containing the stale-review closure fix; do not reopen the
+source or manufacture an approval to retire its obsolete review.
+
 The server publishes 30-second ticks for reconciliation; plugins read
 committed state through owned subscriptions. Slow subscribers must resubscribe and
 reconcile. The immutable event registry and durable event/pending-delivery journal

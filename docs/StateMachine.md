@@ -347,6 +347,11 @@ Rules carried over from the desktop:
   confirmation still applies to agents. Claim, release and submission retain
   their ownership rules; credential-bound dispatch tasks use their dedicated API.
   Closing an unfinished delegation tracker leaves its target open and unaccepted.
+  A current submission-review child must finish through `task_finish_review`
+  while its source awaits code review. An obsolete child can close through Done
+  when its source has left that state or a newer submission review supersedes it.
+  Closing that child neither approves nor changes the source. The closure guard
+  and verdict handler resolve the current submission through the same lookup.
 - **Review generation:** an agent leaving active work confirms its mutated files
   in the transition request, using `changeset: [paths]` or explicit null. Missing
   confirmation returns a question and rolls back the task mutation. Completion

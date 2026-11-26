@@ -14,6 +14,23 @@ type ReviewFinding struct {
 	Details string `json:"details"`
 }
 
+// currentSubmissionReviewSource resolves the submission cycle shared by verdicts
+// and ordinary closure. Historical reviews must not require an unusable verdict.
+func currentSubmissionReviewSource(ctx context.Context, tx *sql.Tx, project, reviewID string) (*Task, error) {
+	var sourceID string
+	err := tx.QueryRowContext(ctx, `SELECT r.source_task_id FROM task_reviews r
+		WHERE r.review_task_id=? AND r.stage='submission' AND r.source_done_at=(
+			SELECT MAX(current.source_done_at) FROM task_reviews current
+			WHERE current.source_task_id=r.source_task_id AND current.stage='submission')`, reviewID).Scan(&sourceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return readTask(ctx, tx, project, sourceID)
+}
+
 // FinishSubmissionReview applies the review and its effect on the source task
 // together. The owned review conversation supplies the execution fence.
 func (s *Store) FinishSubmissionReview(ctx context.Context, project, id, outcome, summary string, findings []ReviewFinding, actor *AgentOrigin) (*Task, error) {
@@ -39,22 +56,14 @@ func (s *Store) FinishSubmissionReview(ctx context.Context, project, id, outcome
 		if actor == nil || review.Status != "in_progress" || review.OwnerOrigin == nil || *review.OwnerOrigin != *actor {
 			return ErrTaskOwnership
 		}
-		var sourceID string
-		err = tx.QueryRowContext(ctx, `SELECT r.source_task_id FROM task_reviews r
-			WHERE r.review_task_id=? AND r.stage='submission' AND r.source_done_at=(
-				SELECT MAX(current.source_done_at) FROM task_reviews current
-				WHERE current.source_task_id=r.source_task_id AND current.stage='submission')`, id).Scan(&sourceID)
-		if errors.Is(err, sql.ErrNoRows) {
+		source, err := currentSubmissionReviewSource(ctx, tx, project, id)
+		if err != nil {
+			return err
+		}
+		if source == nil {
 			return fmt.Errorf("%w: review is not the current software submission review", ErrTaskConflict)
 		}
-		if err != nil {
-			return err
-		}
-		source, err := readTask(ctx, tx, project, sourceID)
-		if err != nil {
-			return err
-		}
-		if source == nil || source.Status != "user_review" || source.CompletionOwner == nil {
+		if source.Status != "user_review" || source.CompletionOwner == nil {
 			return fmt.Errorf("%w: source is no longer awaiting code review", ErrTaskConflict)
 		}
 		for _, taskID := range []string{source.ID, review.ID} {

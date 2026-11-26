@@ -403,11 +403,11 @@ func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWork
 			}
 		}
 		if hasLabel(t.Labels, "task-review") && !update.Policy.submissionReviewVerdict {
-			var requiresVerdict bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_reviews WHERE review_task_id=? AND stage='submission')`, t.ID).Scan(&requiresVerdict); err != nil {
+			source, err := currentSubmissionReviewSource(ctx, tx, t.ProjectIdent, t.ID)
+			if err != nil {
 				return nil, err
 			}
-			if requiresVerdict {
+			if source != nil && source.Status == "user_review" && source.CompletionOwner != nil {
 				return nil, fmt.Errorf("%w: finish this code review using task_finish_review", ErrTaskConflict)
 			}
 		}

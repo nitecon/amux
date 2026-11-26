@@ -183,6 +183,13 @@ amux tasks user-review ID "Choose the required behavior" --changeset '["src/main
 amux tasks cancel ID --reason "No longer needed" --changeset null
 ```
 
+An active submission review requires `task_finish_review` rather than ordinary
+Done. On updated servers, an obsolete review can use `done` when its source no
+longer awaits code review or a newer submission review has superseded it. This
+closes only the obsolete card; it does not record approval or change its source.
+Older servers can reject both routes in this situation and need the server fix
+before ordinary Done can retire the card.
+
 MCP `task_done`, `task_release` and `task_user_review` accept `changeset` as an
 array or JSON null. Missing and null are distinct. Claiming work and reordering
 within its current lane do not ask about files. Agents must use a task PATCH,
