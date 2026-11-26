@@ -41,28 +41,40 @@ func TestApplyPreservesProcessAttributes(t *testing.T) {
 
 func TestApplyStartsWithoutConsole(t *testing.T) {
 	const childEnv = "AMUX_HIDEWINDOW_TEST_CHILD"
-	if os.Getenv(childEnv) == "1" {
-		consoleCP, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleCP").Call()
-		if consoleCP != 0 {
+	if mode := os.Getenv(childEnv); mode != "" {
+		// Query the console window directly. A code-page query does not
+		// establish whether the process has an associated console window.
+		window, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow").Call()
+		if (window != 0) != (mode == "console") {
+			fmt.Fprintf(os.Stderr, "GetConsoleWindow = %#x in %s mode\n", window, mode)
 			os.Exit(2)
 		}
-		fmt.Print("child output without a console")
+		fmt.Print("child output")
 		os.Exit(0)
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, executable, "-test.run=^TestApplyStartsWithoutConsole$")
-	command.Env = append(os.Environ(), childEnv+"=1")
-	Apply(command)
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("run child without console: %v", err)
-	}
-	if string(output) != "child output without a console" {
-		t.Fatalf("child output = %q", output)
+	for _, mode := range []string{"console", "hidden"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, executable, "-test.run=^TestApplyStartsWithoutConsole$")
+			command.Env = append(os.Environ(), childEnv+"="+mode)
+			if mode == "console" {
+				// Positive control: the same probe must detect an explicit console.
+				command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000010} // CREATE_NEW_CONSOLE
+			} else {
+				Apply(command)
+			}
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("run child: %v\n%s", err, output)
+			}
+			if string(output) != "child output" {
+				t.Fatalf("child output = %q", output)
+			}
+		})
 	}
 }
