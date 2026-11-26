@@ -457,10 +457,13 @@ only changed fields are submitted. Failed writes keep the draft and are not
 automatically retried. Existing labels with embedded line breaks are preserved
 when untouched; editing those labels requires another client.
 
-Open **New task** to enter a title, specification and optional goal. The accepted
-task receipt stays with its project until **New task request** starts another
-operation. An unconfirmed create keeps its draft and receipt across refreshes;
-it is never automatically submitted again.
+Open **New task** to enter a title, specification and optional goal. After a
+successful create, the submitted inputs are cleared (edits typed while the
+request was pending are kept), the drawer closes, and a "Task <id> submitted."
+notice appears below the task list. **Submit a new task** dismisses the notice
+and reopens the drawer. An unconfirmed (unknown) create keeps its draft and
+receipt across refreshes and offers **New task request**; it is never
+automatically submitted again.
 
 The task details accordion also contains a comment composer. Posting as a user
 does not save or discard metadata edits. Typing during a pending post is kept,
