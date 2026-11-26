@@ -22,6 +22,17 @@ previous version and shows the reason. If amux cannot reopen, the reason is
 shown the next time you open the desktop. The report is also kept as
 `install.reported.log` beside the downloaded package in the amux update cache.
 
+These checks and reports start with the release after v0.9.1. Version v0.9.1
+and earlier run their own updater, which does not check the installation
+directory first and does not show a failed installation: amux says it is
+restarting and reopens the same version. Before updating from one of those
+versions, confirm your user owns the installation directory. If it does not,
+`chown` the directory or move amux to a directory you own, or close amux and
+rerun the [install script](../README.md#get-started), which installs the latest
+release in your home directory. If an update from v0.9.1 reopens the same
+version, the reason is in `install.log` beside the downloaded package in the
+amux update cache.
+
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
 rebuild uses the same public release channel and package layout.
