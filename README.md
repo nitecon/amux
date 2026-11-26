@@ -53,43 +53,27 @@ You need Git and at least one signed-in agent CLI
 [Codex](https://developers.openai.com/codex), or
 [Antigravity](https://antigravity.google)) on each machine that runs agents.
 
-These commands always fetch the
-[latest release](https://github.com/nitecon/amux/releases/latest) and check it
-against the published checksums.
+Run the same command to install, reinstall, or upgrade. It fetches the
+[latest release](https://github.com/nitecon/amux/releases/latest), checks it
+against the published checksums, and replaces any existing install in place.
+No root or administrator rights needed.
 
-**Linux (x86-64)**
-
-```sh
-tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/nitecon/amux/releases/latest | sed 's|.*/||')
-base=https://github.com/nitecon/amux/releases/download/$tag
-curl -fsSLO "$base/amux-linux-x86_64-$tag.tar.gz"
-curl -fsSL "$base/SHA256SUMS" | sha256sum -c --ignore-missing
-mkdir -p ~/amux && tar -xzf "amux-linux-x86_64-$tag.tar.gz" -C ~/amux
-~/amux/amux-desktop
-```
-
-**macOS (Apple Silicon)**
+**Linux (x86-64)**: installs to `~/amux`
 
 ```sh
-tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/nitecon/amux/releases/latest | sed 's|.*/||')
-base=https://github.com/nitecon/amux/releases/download/$tag
-curl -fsSLO "$base/amux-macos-aarch64-$tag.zip"
-curl -fsSL "$base/SHA256SUMS" | shasum -a 256 -c --ignore-missing
-mkdir -p ~/Applications && unzip -q "amux-macos-aarch64-$tag.zip" -d ~/Applications
-open ~/Applications/amux.app
+curl -fsSL https://raw.githubusercontent.com/nitecon/amux/main/install.sh | sh
 ```
 
-**Windows (x86-64, PowerShell)**
+**macOS (Apple Silicon)**: installs `~/Applications/amux.app`
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nitecon/amux/main/install-macos.sh | sh
+```
+
+**Windows (x86-64, PowerShell)**: installs to `%LOCALAPPDATA%\amux`. Close amux first.
 
 ```powershell
-$tag  = (Invoke-RestMethod https://api.github.com/repos/nitecon/amux/releases/latest).tag_name
-$base = "https://github.com/nitecon/amux/releases/download/$tag"
-$zip  = "amux-windows-x86_64-$tag.zip"
-Invoke-WebRequest "$base/$zip" -OutFile $zip
-$sum  = (Invoke-RestMethod "$base/SHA256SUMS") -split "`n" | Select-String $zip
-if ("$sum" -notmatch (Get-FileHash $zip).Hash) { throw "Checksum mismatch" }
-Expand-Archive $zip -DestinationPath "$env:LOCALAPPDATA\amux"
-& "$env:LOCALAPPDATA\amux\amux-desktop.exe"
+irm https://raw.githubusercontent.com/nitecon/amux/main/install.ps1 | iex
 ```
 
 Prefer to click? Download the archive for your OS from the

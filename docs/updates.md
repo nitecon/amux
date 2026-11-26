@@ -23,6 +23,9 @@ From a portable CLI installation, close the desktop and any running local
 amux client, then run `amux --update`. The helper installs the verified update
 after the command exits. Launch the desktop to use the installed version.
 
+You can also rerun the [install script](../README.md#get-started) for your
+platform. It replaces the existing installation with the latest release.
+
 Source builds with the CLI and desktop together in a writable directory can
 also update to the stable release. A loose macOS source build installs and opens
 the signed `amux.app` beside the source binaries.
