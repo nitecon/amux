@@ -453,18 +453,21 @@ func testRunPoolFollowUps(t *testing.T, streamed bool) {
 	if err != nil || len(secondConversations) != 1 {
 		t.Fatalf("second assignment conversations = %+v, err = %v", secondConversations, err)
 	}
-	secondEvents, err := remote.ConversationEvents(ctx, pool.Project, secondConversations[0].ID, 0, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Session events are queued locally and flushed asynchronously, so wait
+	// for the upload before counting; open calls guard against a reopen.
 	readyCount := 0
-	for _, event := range secondEvents {
-		if event.Event.Kind == "session_ready" {
-			readyCount++
+	waitFor("second session_ready upload", func() (bool, error) {
+		events, err := remote.ConversationEvents(ctx, pool.Project, secondConversations[0].ID, 0, 100)
+		readyCount = 0
+		for _, event := range events {
+			if event.Event.Kind == "session_ready" {
+				readyCount++
+			}
 		}
-	}
-	if readyCount != 1 {
-		t.Fatalf("second task native session was opened %d times", readyCount)
+		return readyCount > 0, err
+	})
+	if readyCount != 1 || opened.Load() != 3 {
+		t.Fatalf("second task native session_ready events = %d, open calls = %d, want 1 and 3", readyCount, opened.Load())
 	}
 	stopPool()
 	select {
