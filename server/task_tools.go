@@ -39,11 +39,46 @@ func schema(raw string) json.RawMessage { return json.RawMessage(raw) }
 
 // AgentTaskTools returns the native task tools supported by this server.
 func AgentTaskTools() []mcpstdio.Tool {
-	tools := append([]mcpstdio.Tool(nil), agentTaskTools...)
+	return cloneTaskTools(agentTaskTools)
+}
+
+var localConversationTaskTools = []mcpstdio.Tool{
+	mustTaskTool("task_get"),
+	mustTaskTool("project_message_thread"),
+	mustTaskTool("task_list"),
+	{
+		Name:        "task_create",
+		Description: taskToolCreateDescription,
+		InputSchema: schema(`{"type":"object","properties":{"title":{"type":"string","description":"Task title"},"parent":{"type":"string","description":"Existing parent task UUID whose scope includes this work"},"root_reason":{"type":"string","enum":["user-directed","principle"],"description":"Create a root instead of a subtask; requires specification and cannot accompany parent"},"specification":{"type":"string","description":"Context and acceptance criteria"}},"required":["title"],"additionalProperties":false}`),
+	},
+	{
+		Name:        "task_delegate",
+		Description: "Delegate cross-project work under an explicit source parent task UUID; inspect both projects before retrying an uncertain delegation.",
+		InputSchema: schema(`{"type":"object","properties":{"title":{"type":"string","description":"Handoff title"},"target_project":{"type":"string","description":"Owning target project identifier"},"parent":{"type":"string","description":"Existing source parent task UUID"},"specification":{"type":"string","description":"Context and acceptance criteria"}},"required":["title","target_project","parent"],"additionalProperties":false}`),
+	},
+	mustTaskTool("task_comment"),
+}
+
+// LocalConversationTaskTools returns the task tools supported by standalone
+// local conversations that are not bound to a server conversation or task.
+func LocalConversationTaskTools() []mcpstdio.Tool {
+	return cloneTaskTools(localConversationTaskTools)
+}
+
+func cloneTaskTools(source []mcpstdio.Tool) []mcpstdio.Tool {
+	tools := append([]mcpstdio.Tool(nil), source...)
 	for i := range tools {
 		tools[i].InputSchema = append(json.RawMessage(nil), tools[i].InputSchema...)
 	}
 	return tools
+}
+
+func mustTaskTool(name string) mcpstdio.Tool {
+	tool, ok := taskToolByName(name)
+	if !ok {
+		panic("unknown task tool: " + name)
+	}
+	return tool
 }
 
 type taskToolRequest struct {
@@ -189,29 +224,182 @@ func decodeDelegationUpdateFields(fields map[string]json.RawMessage, update *sto
 	return nil
 }
 
-func (a *api) executeTaskTool(ctx context.Context, project string, actor *storage.AgentOrigin, selectedGoal *string, conversationTaskID, name string, raw json.RawMessage) (any, string, error) {
-	allowed := map[string][]string{
-		"task_get": {"id"}, "project_message_thread": {"id"}, "task_list": {"status"}, "task_create": {"title", "parent", "root_reason", "specification", "notify_results"},
-		"task_delegate":          {"title", "target_project", "parent", "specification", "notify_results"},
-		"task_update_delegation": {"id", "title", "description", "specification", "details", "labels"},
-		"task_set_requester":     {"id", "clear"},
-		"task_claim":             {"id"}, "task_started": {"id"}, "task_comment": {"id", "body"},
-		"task_release": {"id", "changeset"}, "task_user_review": {"id", "action", "changeset"}, "task_done": {"id", "changeset"},
-		"task_confirm_mutation": {"id"}, "task_set_changeset": {"id", "changeset"},
-		"task_finish_review": {"id", "outcome", "summary", "findings"},
-	}
-	fields, err := decodeTaskToolArgs(raw, allowed[name]...)
+// TaskCreateArgs holds validated arguments for task_create.
+type TaskCreateArgs struct {
+	Title         string
+	ParentID      *string
+	RootReason    *string
+	Specification *string
+	NotifyResults bool
+}
+
+// TaskDelegateArgs holds validated arguments for task_delegate.
+type TaskDelegateArgs struct {
+	Title         string
+	TargetProject string
+	ParentID      *string
+	Specification *string
+	NotifyResults bool
+}
+
+// ParseTaskIDArg validates a single-field {"id": "..."} task tool argument object.
+func ParseTaskIDArg(raw json.RawMessage) (string, error) {
+	fields, err := decodeTaskToolArgs(raw, "id")
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
 	var id string
-	if name != "task_list" && name != "task_create" && name != "task_delegate" && name != "project_message_thread" {
-		if err = decodeField(fields, "id", &id, true); err != nil {
-			return nil, "", err
+	if err := decodeField(fields, "id", &id, true); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// ParseProjectMessageThreadArgs validates arguments for project_message_thread.
+func ParseProjectMessageThreadArgs(raw json.RawMessage) (int64, error) {
+	fields, err := decodeTaskToolArgs(raw, "id")
+	if err != nil {
+		return 0, err
+	}
+	var messageID int64
+	if err := decodeField(fields, "id", &messageID, true); err != nil || messageID <= 0 {
+		return 0, errors.New("invalid task tool arguments: id must be a positive integer")
+	}
+	return messageID, nil
+}
+
+// ParseTaskListArgs validates arguments for task_list and returns the requested statuses.
+func ParseTaskListArgs(raw json.RawMessage) ([]string, error) {
+	fields, err := decodeTaskToolArgs(raw, "status")
+	if err != nil {
+		return nil, err
+	}
+	statuses := []string{"todo", "in_progress"}
+	if _, ok := fields["status"]; ok {
+		var status string
+		if err := decodeField(fields, "status", &status, true); err != nil {
+			return nil, errors.New("invalid task tool arguments: invalid status")
+		}
+		statuses = []string{}
+		for _, part := range strings.Split(status, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				statuses = append(statuses, part)
+			}
 		}
 	}
+	for _, status := range statuses {
+		if status != "todo" && status != "in_progress" && status != "user_review" && status != "done" && status != "cancelled" {
+			return nil, errors.New("invalid task tool arguments: invalid task status")
+		}
+	}
+	return statuses, nil
+}
+
+// ParseTaskCreateArgs validates arguments for task_create.
+func ParseTaskCreateArgs(raw json.RawMessage, allowNotifyResults bool) (TaskCreateArgs, error) {
+	allowed := []string{"title", "parent", "root_reason", "specification"}
+	if allowNotifyResults {
+		allowed = append(allowed, "notify_results")
+	}
+	fields, err := decodeTaskToolArgs(raw, allowed...)
+	if err != nil {
+		return TaskCreateArgs{}, err
+	}
+	var args TaskCreateArgs
+	if err := decodeField(fields, "title", &args.Title, true); err != nil {
+		return TaskCreateArgs{}, err
+	}
+	if err := decodeField(fields, "parent", &args.ParentID, false); err != nil {
+		return TaskCreateArgs{}, err
+	}
+	if err := decodeField(fields, "root_reason", &args.RootReason, false); err != nil {
+		return TaskCreateArgs{}, err
+	}
+	if err := decodeField(fields, "specification", &args.Specification, false); err != nil {
+		return TaskCreateArgs{}, err
+	}
+	if allowNotifyResults {
+		if err := decodeField(fields, "notify_results", &args.NotifyResults, false); err != nil {
+			return TaskCreateArgs{}, err
+		}
+	}
+	if args.ParentID == nil && args.RootReason == nil {
+		return TaskCreateArgs{}, errors.New("invalid task tool arguments: agent task creation requires parent or root_reason with an explanatory specification")
+	}
+	if args.RootReason != nil && (args.ParentID != nil || args.Specification == nil || strings.TrimSpace(*args.Specification) == "") {
+		return TaskCreateArgs{}, errors.New("invalid task tool arguments: root_reason requires specification and cannot accompany parent")
+	}
+	return args, nil
+}
+
+// ParseTaskDelegateArgs validates arguments for task_delegate.
+func ParseTaskDelegateArgs(raw json.RawMessage, requireParent, allowNotifyResults bool) (TaskDelegateArgs, error) {
+	allowed := []string{"title", "target_project", "parent", "specification"}
+	if allowNotifyResults {
+		allowed = append(allowed, "notify_results")
+	}
+	fields, err := decodeTaskToolArgs(raw, allowed...)
+	if err != nil {
+		return TaskDelegateArgs{}, err
+	}
+	var args TaskDelegateArgs
+	if err := decodeField(fields, "title", &args.Title, true); err != nil {
+		return TaskDelegateArgs{}, err
+	}
+	if err := decodeField(fields, "target_project", &args.TargetProject, true); err != nil {
+		return TaskDelegateArgs{}, err
+	}
+	if requireParent {
+		var parent string
+		if err := decodeField(fields, "parent", &parent, true); err != nil {
+			return TaskDelegateArgs{}, err
+		}
+		if strings.TrimSpace(parent) == "" {
+			return TaskDelegateArgs{}, errors.New("invalid task tool arguments: parent is required")
+		}
+		args.ParentID = &parent
+	} else if _, ok := fields["parent"]; ok {
+		if err := decodeField(fields, "parent", &args.ParentID, true); err != nil {
+			return TaskDelegateArgs{}, err
+		}
+	}
+	if err := decodeField(fields, "specification", &args.Specification, false); err != nil {
+		return TaskDelegateArgs{}, err
+	}
+	if allowNotifyResults {
+		if err := decodeField(fields, "notify_results", &args.NotifyResults, false); err != nil {
+			return TaskDelegateArgs{}, err
+		}
+	}
+	return args, nil
+}
+
+// ParseTaskCommentArgs validates arguments for task_comment.
+func ParseTaskCommentArgs(raw json.RawMessage) (string, string, error) {
+	fields, err := decodeTaskToolArgs(raw, "id", "body")
+	if err != nil {
+		return "", "", err
+	}
+	var id, body string
+	if err := decodeField(fields, "id", &id, true); err != nil {
+		return "", "", err
+	}
+	if err := decodeField(fields, "body", &body, true); err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(body) == "" || len(body) > 65536 {
+		return "", "", errors.New("invalid task tool arguments: body must be non-empty and at most 65536 bytes")
+	}
+	return id, body, nil
+}
+
+func (a *api) executeTaskTool(ctx context.Context, project string, actor *storage.AgentOrigin, selectedGoal *string, conversationTaskID, name string, raw json.RawMessage) (any, string, error) {
 	switch name {
 	case "task_get":
+		id, err := ParseTaskIDArg(raw)
+		if err != nil {
+			return nil, "", err
+		}
 		detail, e := a.store.Task(ctx, project, id)
 		if e != nil {
 			return nil, "", e
@@ -226,30 +414,16 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 			Count         int64                 `json:"comment_count"`
 		}{detail.Task, detail.Task.Details, detail.Comments, detail.CommentCount}, "", nil
 	case "project_message_thread":
-		var messageID int64
-		if err = decodeField(fields, "id", &messageID, true); err != nil || messageID <= 0 {
-			return nil, "", errors.New("invalid task tool arguments: id must be a positive integer")
+		messageID, err := ParseProjectMessageThreadArgs(raw)
+		if err != nil {
+			return nil, "", err
 		}
 		thread, e := a.store.GetProjectMessageThread(ctx, project, messageID)
 		return thread, "", e
 	case "task_list":
-		statuses := []string{"todo", "in_progress"}
-		if _, ok := fields["status"]; ok {
-			var status string
-			if err = decodeField(fields, "status", &status, true); err != nil {
-				return nil, "", errors.New("invalid task tool arguments: invalid status")
-			}
-			statuses = []string{}
-			for _, part := range strings.Split(status, ",") {
-				if part = strings.TrimSpace(part); part != "" {
-					statuses = append(statuses, part)
-				}
-			}
-		}
-		for _, status := range statuses {
-			if status != "todo" && status != "in_progress" && status != "user_review" && status != "done" && status != "cancelled" {
-				return nil, "", errors.New("invalid task tool arguments: invalid task status")
-			}
+		statuses, err := ParseTaskListArgs(raw)
+		if err != nil {
+			return nil, "", err
 		}
 		value, e := a.store.Tasks(ctx, project, statuses, false)
 		if e != nil || selectedGoal == nil {
@@ -268,37 +442,24 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 		value = filtered
 		return value, "", e
 	case "task_create":
-		var input storage.TaskInsert
-		input.Project = project
-		input.Reporter = actor.SessionID
-		input.Goal = selectedGoal
-		if err = decodeField(fields, "title", &input.Title, true); err != nil {
+		args, err := ParseTaskCreateArgs(raw, true)
+		if err != nil {
 			return nil, "", err
 		}
-		if err = decodeField(fields, "parent", &input.ParentID, false); err != nil {
-			return nil, "", err
+		input := storage.TaskInsert{
+			Project:    project,
+			Title:      args.Title,
+			Reporter:   actor.SessionID,
+			Goal:       selectedGoal,
+			ParentID:   args.ParentID,
+			RootReason: args.RootReason,
+			Details:    args.Specification,
 		}
-		if err = decodeField(fields, "root_reason", &input.RootReason, false); err != nil {
-			return nil, "", err
-		}
-		if err = decodeField(fields, "specification", &input.Details, false); err != nil {
-			return nil, "", err
-		}
-		var notifyResults bool
-		if err = decodeField(fields, "notify_results", &notifyResults, false); err != nil {
-			return nil, "", err
-		}
-		if notifyResults {
+		if args.NotifyResults {
 			input.Requester, err = currentRequester(ctx, a.store, project, actor)
 			if err != nil {
 				return nil, "", err
 			}
-		}
-		if input.ParentID == nil && input.RootReason == nil {
-			return nil, "", errors.New("invalid task tool arguments: agent task creation requires parent or root_reason with an explanatory specification")
-		}
-		if input.RootReason != nil && (input.ParentID != nil || input.Details == nil || strings.TrimSpace(*input.Details) == "") {
-			return nil, "", errors.New("invalid task tool arguments: root_reason requires specification and cannot accompany parent")
 		}
 		task, e := a.store.InsertTask(ctx, input, actor)
 		if e != nil {
@@ -310,30 +471,22 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 			Hint          string  `json:"hint"`
 		}{task, task.Details, specificationHint}, "", nil
 	case "task_delegate":
-		var input storage.TaskDelegationInput
-		input.SourceProject = project
-		input.Reporter = actor.SessionID
-		if err = decodeField(fields, "title", &input.Title, true); err != nil {
+		args, err := ParseTaskDelegateArgs(raw, false, true)
+		if err != nil {
 			return nil, "", err
 		}
-		if err = decodeField(fields, "target_project", &input.TargetProject, true); err != nil {
-			return nil, "", err
+		input := storage.TaskDelegationInput{
+			SourceProject: project,
+			Reporter:      actor.SessionID,
+			Title:         args.Title,
+			TargetProject: args.TargetProject,
+			ParentID:      args.ParentID,
+			Details:       args.Specification,
 		}
-		if _, ok := fields["parent"]; ok {
-			if err = decodeField(fields, "parent", &input.ParentID, true); err != nil {
-				return nil, "", err
-			}
-		} else {
+		if input.ParentID == nil {
 			input.ParentID = &conversationTaskID
 		}
-		if err = decodeField(fields, "specification", &input.Details, false); err != nil {
-			return nil, "", err
-		}
-		var notifyResults bool
-		if err = decodeField(fields, "notify_results", &notifyResults, false); err != nil {
-			return nil, "", err
-		}
-		if notifyResults {
+		if args.NotifyResults {
 			input.Requester, err = currentRequester(ctx, a.store, project, actor)
 			if err != nil {
 				return nil, "", err
@@ -341,6 +494,39 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 		}
 		result, e := a.store.DelegateTask(ctx, input, actor)
 		return result, "", e
+	case "task_comment":
+		id, body, err := ParseTaskCommentArgs(raw)
+		if err != nil {
+			return nil, "", err
+		}
+		value, e := a.store.AddTaskComment(ctx, project, id, actor.SessionID, "agent", body, nil, actor)
+		return value, "", e
+	}
+	allowed := map[string][]string{
+		"task_update_delegation": {"id", "title", "description", "specification", "details", "labels"},
+		"task_set_requester":     {"id", "clear"},
+		"task_claim":             {"id"},
+		"task_started":           {"id"},
+		"task_release":           {"id", "changeset"},
+		"task_user_review":       {"id", "action", "changeset"},
+		"task_done":              {"id", "changeset"},
+		"task_confirm_mutation":  {"id"},
+		"task_set_changeset":     {"id", "changeset"},
+		"task_finish_review":     {"id", "outcome", "summary", "findings"},
+	}
+	keys, ok := allowed[name]
+	if !ok {
+		return nil, "", errors.New("unsupported task tool")
+	}
+	fields, err := decodeTaskToolArgs(raw, keys...)
+	if err != nil {
+		return nil, "", err
+	}
+	var id string
+	if err = decodeField(fields, "id", &id, true); err != nil {
+		return nil, "", err
+	}
+	switch name {
 	case "task_set_requester":
 		clear := false
 		if err = decodeField(fields, "clear", &clear, false); err != nil {
@@ -384,16 +570,6 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 			return nil, "", storage.ErrTaskOwnership
 		}
 		return detail.Task, "", nil
-	case "task_comment":
-		var body string
-		if err = decodeField(fields, "body", &body, true); err != nil {
-			return nil, "", err
-		}
-		if strings.TrimSpace(body) == "" || len(body) > 65536 {
-			return nil, "", errors.New("invalid task tool arguments: body must be non-empty and at most 65536 bytes")
-		}
-		value, e := a.store.AddTaskComment(ctx, project, id, actor.SessionID, "agent", body, nil, actor)
-		return value, "", e
 	case "task_finish_review":
 		if conversationTaskID != id {
 			return nil, "", storage.ErrTaskOwnership

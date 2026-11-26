@@ -127,16 +127,17 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	listTools := func() []mcpstdio.Tool {
 		tools := make([]mcpstdio.Tool, 0, len(bundledToolCatalog)+len(server.AgentTaskTools())+len(taskRoutingMCPTools)+1)
 		if nativeRequested {
-			for _, tool := range server.AgentTaskTools() {
-				if *localTask != "" && !localGatewayTaskTool(tool.Name) {
-					continue
+			if *localConversation {
+				tools = append(tools, server.LocalConversationTaskTools()...)
+			} else {
+				for _, tool := range server.AgentTaskTools() {
+					if *localTask != "" && !localGatewayTaskTool(tool.Name) {
+						continue
+					}
+					tools = append(tools, tool)
 				}
-				if *localConversation && !localConversationTaskTool(tool.Name) {
-					continue
-				}
-				tools = append(tools, tool)
+				tools = append(tools, submitWorkMCPTool())
 			}
-			tools = append(tools, submitWorkMCPTool())
 			for _, tool := range taskRoutingMCPTools {
 				if *localConversation && tool.Name == "task_reassign" {
 					continue
@@ -147,7 +148,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 		return append(tools, runner.AvailableTools()...)
 	}
 	err = mcpstdio.Serve(ctx, stdin, stdout, mcpstdio.Config{ListTools: listTools, Instructions: instructions, Call: func(callCtx context.Context, name string, args json.RawMessage) (mcpstdio.Result, error) {
-		if name == "submit_work" {
+		if name == "submit_work" && nativeRequested && !*localConversation {
 			preferencesPath, err := submissionPreferencesPath(*workPreferences, configuredWorkPreferences)
 			if err != nil {
 				return mcpstdio.Result{Content: []mcpstdio.TextContent{{Type: "text", Text: err.Error()}}, IsError: true}, nil
@@ -158,13 +159,11 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 					return localGatewayToolResult(nil, err), nil
 				}
 				conversation = ""
-			} else if *localConversation {
-				conversation = ""
 			}
 			return callSubmitWorkMCP(callCtx, client, *project, conversation, *directory, origin, selectedGoal, preferencesPath, args)
 		}
 		if nativeRequested {
-			if name == "agent_identity" || name == "task_agents" || name == "task_reassign" {
+			if name == "agent_identity" || name == "task_agents" || (!*localConversation && name == "task_reassign") {
 				return callTaskRoutingMCP(callCtx, client, *project, id.String(), *localTask, workingDirectory, origin, name, args), nil
 			}
 			if *localTask != "" && localGatewayTaskTool(name) {

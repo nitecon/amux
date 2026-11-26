@@ -76,6 +76,79 @@ func TestAgentTaskToolsCatalogSchemas(t *testing.T) {
 	}
 }
 
+func TestLocalConversationTaskToolsCatalogSchemas(t *testing.T) {
+	tools := LocalConversationTaskTools()
+	want := []string{"task_get", "project_message_thread", "task_list", "task_create", "task_delegate", "task_comment"}
+	if len(tools) != len(want) {
+		t.Fatalf("local catalog length %d, want %d", len(tools), len(want))
+	}
+	byName := make(map[string]mcpstdio.Tool, len(tools))
+	for i, tool := range tools {
+		if tool.Name != want[i] {
+			t.Fatalf("tool %d: got %s want %s", i, tool.Name, want[i])
+		}
+		byName[tool.Name] = tool
+		var parsed struct {
+			Properties           map[string]json.RawMessage `json:"properties"`
+			Required             []string                   `json:"required"`
+			AdditionalProperties *bool                      `json:"additionalProperties"`
+		}
+		if err := json.Unmarshal(tool.InputSchema, &parsed); err != nil {
+			t.Fatalf("%s schema: %v", tool.Name, err)
+		}
+		if parsed.AdditionalProperties == nil || *parsed.AdditionalProperties {
+			t.Fatalf("%s permits unknown arguments", tool.Name)
+		}
+		for _, required := range parsed.Required {
+			if _, ok := parsed.Properties[required]; !ok {
+				t.Fatalf("%s requires undocumented field %s", tool.Name, required)
+			}
+		}
+	}
+	for _, name := range []string{"task_create", "task_delegate"} {
+		var parsed struct {
+			Properties map[string]struct {
+				Description string `json:"description"`
+			} `json:"properties"`
+			Required []string `json:"required"`
+		}
+		if err := json.Unmarshal(byName[name].InputSchema, &parsed); err != nil {
+			t.Fatalf("%s schema: %v", name, err)
+		}
+		if _, hasNotify := parsed.Properties["notify_results"]; hasNotify {
+			t.Errorf("%s local schema must omit notify_results", name)
+		}
+		if name == "task_delegate" {
+			if strings.Contains(strings.ToLower(byName[name].Description), "defaults to") {
+				t.Errorf("task_delegate local description still claims default parent: %q", byName[name].Description)
+			}
+			if strings.Contains(strings.ToLower(parsed.Properties["parent"].Description), "defaults to") {
+				t.Errorf("task_delegate local parent description still claims default parent: %q", parsed.Properties["parent"].Description)
+			}
+			hasParent := false
+			for _, field := range parsed.Required {
+				hasParent = hasParent || field == "parent"
+			}
+			if !hasParent {
+				t.Errorf("task_delegate local schema must require parent: %v", parsed.Required)
+			}
+		}
+	}
+	if _, err := ParseTaskCreateArgs(json.RawMessage(`{"title":"x","root_reason":"user-directed","specification":"spec","notify_results":true}`), false); err == nil || !strings.Contains(err.Error(), `unknown argument "notify_results"`) {
+		t.Fatalf("ParseTaskCreateArgs local mode accepted notify_results: %v", err)
+	}
+	if _, err := ParseTaskDelegateArgs(json.RawMessage(`{"title":"x","target_project":"other"}`), true, false); err == nil || !strings.Contains(err.Error(), "parent is required") {
+		t.Fatalf("ParseTaskDelegateArgs local mode accepted omitted parent: %v", err)
+	}
+	if _, err := ParseTaskDelegateArgs(json.RawMessage(`{"title":"x","target_project":"other","parent":"p1","notify_results":true}`), true, false); err == nil || !strings.Contains(err.Error(), `unknown argument "notify_results"`) {
+		t.Fatalf("ParseTaskDelegateArgs local mode accepted notify_results: %v", err)
+	}
+	tools[0].InputSchema[0] = 'x'
+	if LocalConversationTaskTools()[0].InputSchema[0] != '{' {
+		t.Fatal("local catalog schema bytes are shared with callers")
+	}
+}
+
 func invokeTaskTool(t *testing.T, a *api, actor *storage.AgentOrigin, conversationID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest("POST", "/", strings.NewReader(body))

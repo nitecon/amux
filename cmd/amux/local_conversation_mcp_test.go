@@ -31,6 +31,9 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	if err := store.InsertProject(ctx, storage.Project{Ident: "demo", ChannelName: "demo", Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.InsertProject(ctx, storage.Project{Ident: "target-demo", ChannelName: "target-demo", Kind: "adhoc"}); err != nil {
+		t.Fatal(err)
+	}
 	msg, err := store.CreateHumanProjectMessage(ctx, "demo", storage.HumanProjectMessageInput{Content: "Check local conversation MCP"})
 	if err != nil {
 		t.Fatal(err)
@@ -97,22 +100,29 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 		return envelope.Result
 	}
 
-	// 1. Verify catalog and create a task + read bundled tool + message thread + identity (no server conversation exists).
-	msgCall, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-		"params": map[string]any{"name": "project_message_thread", "arguments": map[string]any{"id": msgID}},
-	})
+	step := func(id int, name string, params map[string]any) string {
+		raw, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": "tools/call",
+			"params": map[string]any{"name": name, "arguments": params},
+		})
+		return string(raw)
+	}
+
+	// 1. Verify catalog, local schemas, supported read/create/bundled tools, and omitted tools.
 	responses := callMCP(
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"task_create","arguments":{"title":"Local chat task","root_reason":"user-directed","specification":"Verify local conversation MCP"}}}`,
-		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"code_read","arguments":{"file":"README.md"}}}`,
-		string(msgCall),
-		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"agent_identity","arguments":{}}}`,
-		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"task_finish_review","arguments":{"id":"`+uuid.NewString()+`","outcome":"approved","summary":"nope"}}}`,
-		`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"task_reassign","arguments":{"id":"`+uuid.NewString()+`","recipient_session_id":"`+uuid.NewString()+`"}}}`,
+		step(3, "task_create", map[string]any{"title": "Local chat task", "root_reason": "user-directed", "specification": "Verify local conversation MCP"}),
+		step(4, "code_read", map[string]any{"file": "README.md"}),
+		step(5, "project_message_thread", map[string]any{"id": msgID}),
+		step(6, "agent_identity", map[string]any{}),
+		step(7, "task_set_requester", map[string]any{"id": uuid.NewString()}),
+		step(8, "task_claim", map[string]any{"id": uuid.NewString()}),
+		step(9, "submit_work", map[string]any{"task_id": uuid.NewString(), "message": "nope", "paths": []string{"a.go"}}),
+		step(10, "task_finish_review", map[string]any{"id": uuid.NewString(), "outcome": "approved", "summary": "nope"}),
+		step(11, "task_reassign", map[string]any{"id": uuid.NewString(), "recipient_session_id": uuid.NewString()}),
 	)
-	if len(responses) != 8 {
-		t.Fatalf("responses=%d, want 8: %v", len(responses), responses)
+	if len(responses) != 11 {
+		t.Fatalf("responses=%d, want 11: %v", len(responses), responses)
 	}
 	var listed struct {
 		Result struct {
@@ -122,20 +132,59 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	if err := json.Unmarshal([]byte(responses[1]), &listed); err != nil {
 		t.Fatal(err)
 	}
-	names := make(map[string]bool, len(listed.Result.Tools))
+	toolsByName := make(map[string]mcpstdio.Tool, len(listed.Result.Tools))
 	for _, tool := range listed.Result.Tools {
-		names[tool.Name] = true
+		toolsByName[tool.Name] = tool
 	}
-	for _, want := range []string{"task_list", "task_get", "task_create", "task_claim", "task_started", "task_comment", "task_release", "task_user_review", "task_done", "task_confirm_mutation", "task_set_changeset", "task_delegate", "task_update_delegation", "task_set_requester", "project_message_thread", "submit_work", "agent_identity", "task_agents", "code_read"} {
-		if !names[want] {
-			t.Fatalf("local conversation MCP catalog missing %q: %v", want, names)
+	for _, want := range []string{"task_get", "project_message_thread", "task_list", "task_create", "task_delegate", "task_comment", "agent_identity", "task_agents", "code_read"} {
+		if _, ok := toolsByName[want]; !ok {
+			t.Fatalf("local conversation MCP catalog missing %q: %v", want, toolsByName)
 		}
 	}
-	for _, forbidden := range []string{"task_finish_review", "task_reassign"} {
-		if names[forbidden] {
-			t.Fatalf("local conversation MCP catalog exposed bound-only tool %q", forbidden)
+	for _, forbidden := range []string{
+		"task_set_requester", "task_claim", "task_started", "task_release",
+		"task_user_review", "task_done", "task_confirm_mutation", "task_set_changeset",
+		"task_finish_review", "task_update_delegation", "task_reassign", "submit_work",
+	} {
+		if _, ok := toolsByName[forbidden]; ok {
+			t.Fatalf("local conversation MCP catalog exposed unsupported tool %q", forbidden)
 		}
 	}
+	// Verify local schemas match executable behavior (explicit parent required for task_delegate; no notify_results).
+	var createSchema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(toolsByName["task_create"].InputSchema, &createSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, hasNotify := createSchema.Properties["notify_results"]; hasNotify {
+		t.Fatalf("local task_create schema must omit notify_results: %s", toolsByName["task_create"].InputSchema)
+	}
+	var delegateSchema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(toolsByName["task_delegate"].InputSchema, &delegateSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, hasNotify := delegateSchema.Properties["notify_results"]; hasNotify {
+		t.Fatalf("local task_delegate schema must omit notify_results: %s", toolsByName["task_delegate"].InputSchema)
+	}
+	if strings.Contains(strings.ToLower(toolsByName["task_delegate"].Description), "defaults to") ||
+		strings.Contains(strings.ToLower(delegateSchema.Properties["parent"].Description), "defaults to") {
+		t.Fatalf("local task_delegate schema must document explicit parent: desc=%q prop=%q",
+			toolsByName["task_delegate"].Description, delegateSchema.Properties["parent"].Description)
+	}
+	hasRequiredParent := false
+	for _, req := range delegateSchema.Required {
+		hasRequiredParent = hasRequiredParent || req == "parent"
+	}
+	if !hasRequiredParent {
+		t.Fatalf("local task_delegate schema must require parent: %v", delegateSchema.Required)
+	}
+
 	createdResult := parseToolResult(responses[2])
 	if createdResult.IsError || len(createdResult.Content) != 1 {
 		t.Fatalf("task_create failed: %+v", createdResult)
@@ -153,29 +202,22 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	if idResult := parseToolResult(responses[5]); idResult.IsError || !strings.Contains(idResult.Content[0].Text, sessionID) {
 		t.Fatalf("agent_identity failed: %+v", idResult)
 	}
-	if !strings.Contains(responses[6], `"error"`) || !strings.Contains(responses[6], "unknown tool: task_finish_review") {
-		t.Fatalf("expected JSON-RPC unknown tool error for task_finish_review: %s", responses[6])
-	}
-	if !strings.Contains(responses[7], `"error"`) || !strings.Contains(responses[7], "unknown tool: task_reassign") {
-		t.Fatalf("expected JSON-RPC unknown tool error for task_reassign: %s", responses[7])
+	for idx, forbidden := range []string{"task_set_requester", "task_claim", "submit_work", "task_finish_review", "task_reassign"} {
+		resp := responses[6+idx]
+		if !strings.Contains(resp, `"error"`) || !strings.Contains(resp, "unknown tool: "+forbidden) {
+			t.Fatalf("expected JSON-RPC unknown tool error for %s: %s", forbidden, resp)
+		}
 	}
 
-	// 2. Verify list, get, claim, started, comment, guided done conflict, and done with changeset null.
-	step := func(id int, name string, params map[string]any) string {
-		raw, _ := json.Marshal(map[string]any{
-			"jsonrpc": "2.0", "id": id, "method": "tools/call",
-			"params": map[string]any{"name": name, "arguments": params},
-		})
-		return string(raw)
-	}
+	// 2. Verify list, get, comment, explicit-parent delegation, and rejection of omitted parent / notify_results.
 	workflow := callMCP(
 		step(2, "task_list", map[string]any{}),
 		step(3, "task_get", map[string]any{"id": createdTask.ID}),
-		step(4, "task_claim", map[string]any{"id": createdTask.ID}),
-		step(5, "task_started", map[string]any{"id": createdTask.ID}),
-		step(6, "task_comment", map[string]any{"id": createdTask.ID, "body": "Progress from local conversation"}),
-		step(7, "task_done", map[string]any{"id": createdTask.ID}),
-		step(8, "task_set_changeset", map[string]any{"id": createdTask.ID, "changeset": nil}),
+		step(4, "task_comment", map[string]any{"id": createdTask.ID, "body": "Progress from local conversation"}),
+		step(5, "task_create", map[string]any{"title": "No subscriptions", "parent": createdTask.ID, "notify_results": true}),
+		step(6, "task_delegate", map[string]any{"title": "Missing parent", "target_project": "target-demo"}),
+		step(7, "task_delegate", map[string]any{"title": "No subscriptions", "target_project": "target-demo", "parent": createdTask.ID, "notify_results": true}),
+		step(8, "task_delegate", map[string]any{"title": "Delegated from local chat", "target_project": "target-demo", "parent": createdTask.ID, "specification": "Cross-project handoff"}),
 	)
 	if len(workflow) != 8 {
 		t.Fatalf("workflow responses=%d, want 8: %v", len(workflow), workflow)
@@ -186,20 +228,20 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	if res := parseToolResult(workflow[2]); res.IsError || !strings.Contains(res.Content[0].Text, "Local chat task") {
 		t.Fatalf("task_get failed: %+v", res)
 	}
-	if res := parseToolResult(workflow[3]); res.IsError || !strings.Contains(res.Content[0].Text, `"status":"in_progress"`) {
-		t.Fatalf("task_claim failed: %+v", res)
-	}
-	if res := parseToolResult(workflow[4]); res.IsError || !strings.Contains(res.Content[0].Text, createdTask.ID) {
-		t.Fatalf("task_started failed: %+v", res)
-	}
-	if res := parseToolResult(workflow[5]); res.IsError || !strings.Contains(res.Content[0].Text, "Progress from local conversation") {
+	if res := parseToolResult(workflow[3]); res.IsError || !strings.Contains(res.Content[0].Text, "Progress from local conversation") {
 		t.Fatalf("task_comment failed: %+v", res)
 	}
-	if res := parseToolResult(workflow[6]); !res.IsError || !strings.Contains(res.Content[0].Text, "task_set_changeset") {
-		t.Fatalf("task_done without changeset should return MCP guidance: %+v", res)
+	if res := parseToolResult(workflow[4]); !res.IsError || !strings.Contains(res.Content[0].Text, `unknown argument "notify_results"`) {
+		t.Fatalf("task_create with notify_results should be rejected: %+v", res)
 	}
-	if res := parseToolResult(workflow[7]); res.IsError || !strings.Contains(res.Content[0].Text, `"status":"done"`) {
-		t.Fatalf("task_set_changeset null failed: %+v", res)
+	if res := parseToolResult(workflow[5]); !res.IsError || !strings.Contains(res.Content[0].Text, "parent is required") {
+		t.Fatalf("task_delegate without parent should be rejected: %+v", res)
+	}
+	if res := parseToolResult(workflow[6]); !res.IsError || !strings.Contains(res.Content[0].Text, `unknown argument "notify_results"`) {
+		t.Fatalf("task_delegate with notify_results should be rejected: %+v", res)
+	}
+	if res := parseToolResult(workflow[7]); res.IsError || !strings.Contains(res.Content[0].Text, `"target_project_ident":"target-demo"`) {
+		t.Fatalf("task_delegate with explicit parent failed: %+v", res)
 	}
 }
 
