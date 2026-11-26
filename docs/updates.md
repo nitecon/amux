@@ -33,10 +33,10 @@ release in your home directory. The install script does not remove the old
 copy: a `/usr/local/bin/amux` stays on your `PATH`, and a systemd service
 started from it (see the [deployment guide](../deploy/README.md)) keeps running
 the old version. After moving to the home-directory installation, stop that
-service and remove the old copy, or put `~/amux` first on your `PATH`, so you
-do not launch or connect to the old version. If an update from v0.9.1 reopens the same
-version, the reason is in `install.log` beside the downloaded package in the
-amux update cache.
+service so nothing connects to the old server. Then remove the old copy, or put
+`~/amux` first on your `PATH`, so you launch the new installation. If an update
+from v0.9.1 reopens the same version, the reason is in `install.log` beside the
+downloaded package in the amux update cache.
 
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
