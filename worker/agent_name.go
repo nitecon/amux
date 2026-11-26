@@ -22,12 +22,17 @@ var agentNames = func() []string {
 	return names
 }()
 
+// AgentName is the stable personal name derived from a worker session ID.
+func AgentName(sessionID string) string {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(sessionID))
+	return agentNames[int(hash.Sum32()%uint32(len(agentNames)))]
+}
+
 // AgentDisplayName uses the random session ID so the same worker keeps its
 // name across restarts and instance changes without changing its routing identity.
 func AgentDisplayName(origin storage.AgentOrigin) string {
-	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(origin.SessionID))
-	name := agentNames[int(hash.Sum32()%uint32(len(agentNames)))]
+	name := AgentName(origin.SessionID)
 	switch origin.Provider {
 	case "codex":
 		return name + " - Codex"

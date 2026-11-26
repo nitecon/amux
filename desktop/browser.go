@@ -709,7 +709,11 @@ func (b *Browser) buildUI() {
 			return
 		}
 		c := b.conversationItems[i]
-		obj.(*widget.Label).SetText(conversationLabel(c))
+		var comments []storage.TaskComment
+		if b.selectedTaskDetail != nil && b.selectedTaskDetail.Task.ID == c.TaskID {
+			comments = b.selectedTaskDetail.Comments
+		}
+		obj.(*widget.Label).SetText(conversationLabel(c, comments))
 	})
 	b.loadMoreConversations = widget.NewButton("Load more conversations", b.loadMore)
 	b.loadMoreConversations.Hide()
@@ -2484,7 +2488,27 @@ func taskExists(items []storage.TaskSummary, id string) bool {
 	return false
 }
 func chatKey(project, conversation string) string { return project + "\x00" + conversation }
-func conversationLabel(c storage.Conversation) string {
+
+// conversationLabel reads "host - Name (Provider) @ date". The host comes from
+// the fleet record or the owner's own task comments and is omitted when unknown.
+func conversationLabel(c storage.Conversation, comments []storage.TaskComment) string {
 	date := time.UnixMilli(c.CreatedAt).Format("Jan 2, 2006 15:04")
-	return fmt.Sprintf("%s · %s · %s", c.Provider, date, shortID(c.ID))
+	agent := worker.AgentName(c.Owner.SessionID) + " (" + providerConversationLabel(c.Provider) + ")"
+	if host := conversationHostname(c, comments); host != "" {
+		agent = host + " - " + agent
+	}
+	return agent + " @ " + date
+}
+
+func conversationHostname(c storage.Conversation, comments []storage.TaskComment) string {
+	if c.FleetHostname != nil && strings.TrimSpace(*c.FleetHostname) != "" {
+		return strings.TrimSpace(*c.FleetHostname)
+	}
+	for i := len(comments) - 1; i >= 0; i-- {
+		comment := comments[i]
+		if comment.Origin != nil && comment.Origin.SessionID == c.Owner.SessionID && comment.Hostname != nil && strings.TrimSpace(*comment.Hostname) != "" {
+			return strings.TrimSpace(*comment.Hostname)
+		}
+	}
+	return ""
 }
