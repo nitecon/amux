@@ -814,6 +814,17 @@ func (b *Browser) buildUI() {
 		b.newTaskAccordion.Show()
 		newTaskButton.SetText("Close")
 	}
+	b.taskComposer.onCreated = func() {
+		b.newTaskAccordion.Close(0)
+		b.newTaskAccordion.Hide()
+		newTaskButton.SetText("New Task")
+	}
+	b.taskComposer.submitAnother.OnTapped = func() {
+		b.taskComposer.newTaskRequest()
+		b.newTaskAccordion.Open(0)
+		b.newTaskAccordion.Show()
+		newTaskButton.SetText("Close")
+	}
 	newTaskButton.Importance = widget.HighImportance
 	b.taskComposer.releasePrepare.Importance = widget.LowImportance
 	b.statusShortcuts = make(map[string]*widget.Button)
@@ -849,7 +860,7 @@ func (b *Browser) buildUI() {
 	emptyDetailLabel := widget.NewLabel("Choose a task from the queue.")
 	emptyDetailLabel.Alignment = fyne.TextAlignCenter
 	b.emptyDetailPrompt = container.NewCenter(emptyDetailLabel)
-	taskPane := browserPanel(container.NewBorder(taskHeader, b.newTaskAccordion, nil, nil, container.NewThemeOverride(b.tasks, cardLists)))
+	taskPane := browserPanel(container.NewBorder(taskHeader, container.NewVBox(b.taskComposer.createdNotice, b.newTaskAccordion), nil, nil, container.NewThemeOverride(b.tasks, cardLists)))
 	b.taskSubtasks = container.NewVBox()
 	b.taskParent = container.NewVBox()
 	settings := widget.NewAccordion(widget.NewAccordionItem("Task settings", container.NewVBox(b.taskAssignment.panel(), widget.NewSeparator(), b.taskEditor.form)))

@@ -265,7 +265,7 @@ func TestBrowserCreatedTaskReceiptStaysWithOriginalProject(t *testing.T) {
 		t.Fatal("late accepted receipt changed the current project draft")
 	}
 	b.selectProject("demo")
-	if c.createTitle.Text != "Next unsent demo task" || c.createSubmit.Text != "New task request" {
+	if c.createTitle.Text != "Next unsent demo task" || c.createSubmit.Text != "Submit a new task" {
 		t.Fatal("project navigation lost the newer draft or accepted receipt")
 	}
 	stored, err := fixture.store.Task(context.Background(), "demo", draft.createdTaskID)

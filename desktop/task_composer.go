@@ -75,6 +75,10 @@ type taskComposer struct {
 	createSubmit                        *widget.Button
 	releasePrepare                      *widget.Button
 	createStatus                        *widget.Label
+	createdLabel                        *widget.Label
+	createdNotice                       *fyne.Container
+	submitAnother                       *widget.Button
+	onCreated                           func()
 	routingSelect                       *widget.Select
 	routingRefresh                      *widget.Button
 	routingStatus                       *widget.Label
@@ -118,6 +122,11 @@ func (c *taskComposer) buildNewTaskAccordion() *widget.Accordion {
 	c.routingStatus.Wrapping = fyne.TextWrapWord
 	c.createSubmit = widget.NewButton("Create task", c.handleCreateButton)
 	c.releasePrepare = widget.NewButton("New Release", c.prepareReleaseTask)
+	c.createdLabel = widget.NewLabel("")
+	c.createdLabel.Wrapping = fyne.TextWrapWord
+	c.submitAnother = widget.NewButton("Submit a new task", c.newTaskRequest)
+	c.createdNotice = container.NewVBox(c.createdLabel, c.submitAnother)
+	c.createdNotice.Hide()
 	c.createTitle.OnChanged = c.captureCreateTitle
 	for _, entry := range []*widget.Entry{c.createSpec, c.createGoal} {
 		entry.OnChanged = func(string) { c.captureCreateDraft() }
@@ -512,6 +521,16 @@ func (c *taskComposer) refreshWidgets() {
 	if receipt != nil && receipt.state == taskCreateReady {
 		receipt = nil
 	}
+	shown := create
+	if receipt != nil {
+		shown = receipt
+	}
+	if c.activeProject != "" && shown.state == taskCreateAccepted {
+		c.createdLabel.SetText(shown.status)
+		c.createdNotice.Show()
+	} else {
+		c.createdNotice.Hide()
+	}
 	if c.activeProject == "" {
 		c.createTitle.Disable()
 		c.createSpec.Disable()
@@ -526,16 +545,15 @@ func (c *taskComposer) refreshWidgets() {
 		c.createTitle.Enable()
 		c.createSpec.Enable()
 		c.createGoal.Enable()
-		shown := create
-		if receipt != nil {
-			shown = receipt
-		}
 		c.createStatus.SetText(shown.status)
 		switch shown.state {
 		case taskCreatePending:
 			c.createSubmit.SetText("Creating…")
 			c.createSubmit.Disable()
-		case taskCreateAccepted, taskCreateUnknown:
+		case taskCreateAccepted:
+			c.createSubmit.SetText("Submit a new task")
+			c.createSubmit.Enable()
+		case taskCreateUnknown:
 			c.createSubmit.SetText("New task request")
 			c.createSubmit.Enable()
 		default:
@@ -786,10 +804,27 @@ func (c *taskComposer) finishCreate(workspaceID, project string, operation uint6
 	} else {
 		draft.state = taskCreateAccepted
 		draft.createdTaskID = task.ID
-		draft.status = "Created task " + task.ID + ". Start a new task request when ready."
+		draft.status = "Task " + task.ID + " submitted."
+		// Clear the submitted inputs so they cannot be resent; edits made while
+		// the request was pending are newer than the submission and are kept.
+		if draft.revision == draft.submittedRevision {
+			draft.title, draft.specification, draft.goal = "", "", ""
+			draft.revision++
+			draft.submittedRevision = draft.revision
+			if currentProject {
+				c.updating = true
+				c.createTitle.SetText("")
+				c.createSpec.SetText("")
+				c.createGoal.SetText("")
+				c.updating = false
+			}
+		}
 	}
 	c.refreshWidgets()
 	if err == nil && currentProject {
+		if c.onCreated != nil {
+			c.onCreated()
+		}
 		b.refreshTasksAfterMutation(project)
 	}
 }

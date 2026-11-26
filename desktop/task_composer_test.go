@@ -71,6 +71,13 @@ func TestTaskComposerRejectsOversizeDraftsBeforeGatewayRequest(t *testing.T) {
 	if composer.createDraft("demo").createdTaskID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatal("accepted task receipt did not retain its ID")
 	}
+	if composer.createTitle.Text != "" || composer.createDraft("demo").title != "" || !composer.createdNotice.Visible() || composer.createSubmit.Text != "Submit a new task" {
+		t.Fatalf("accepted create did not clear inputs and offer a new task: title=%q notice=%v button=%q", composer.createTitle.Text, composer.createdNotice.Visible(), composer.createSubmit.Text)
+	}
+	fynetest.Tap(composer.submitAnother)
+	if composer.createdNotice.Visible() {
+		t.Fatal("Submit a new task did not dismiss the submitted notice")
+	}
 	composer.newTaskRequest()
 	if composer.createDraft("demo").state != taskCreateReady || composer.createTitle.Text != "" {
 		t.Fatal("explicit New task request did not clear the completed request")
