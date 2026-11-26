@@ -14,20 +14,17 @@ func TestConversationLabelShowsMachineAgentProviderAndTime(t *testing.T) {
 	c := storage.Conversation{ID: "13599c49-0000", Provider: "claude", Owner: owner, CreatedAt: created.UnixMilli()}
 	name := worker.AgentName("session-a")
 
-	if got, want := conversationLabel(c, nil), name+" (Claude) @ Nov 25, 2026 21:04"; got != want {
+	if got, want := conversationLabel(c), name+" (Claude) @ Nov 25, 2026 21:04"; got != want {
 		t.Fatalf("unknown host label = %q, want %q", got, want)
 	}
-	other, host := "Other", "Defcon2"
-	comments := []storage.TaskComment{
-		{Hostname: &other, Origin: &storage.AgentOrigin{SessionID: "session-b"}},
-		{Hostname: &host, Origin: &owner},
-	}
-	if got, want := conversationLabel(c, comments), "Defcon2 - "+name+" (Claude) @ Nov 25, 2026 21:04"; got != want {
-		t.Fatalf("comment host label = %q, want %q", got, want)
+	host := "Defcon2"
+	c.OwnerHostname = &host
+	if got, want := conversationLabel(c), "Defcon2 - "+name+" (Claude) @ Nov 25, 2026 21:04"; got != want {
+		t.Fatalf("owner host label = %q, want %q", got, want)
 	}
 	fleet := "Fleet1"
 	c.FleetHostname = &fleet
-	if got, want := conversationLabel(c, comments), "Fleet1 - "+name+" (Claude) @ Nov 25, 2026 21:04"; got != want {
+	if got, want := conversationLabel(c), "Fleet1 - "+name+" (Claude) @ Nov 25, 2026 21:04"; got != want {
 		t.Fatalf("fleet host label = %q, want %q", got, want)
 	}
 }

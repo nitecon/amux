@@ -491,3 +491,27 @@ func TestTaskConversationsStaySeparateAndPageWithoutRepeats(t *testing.T) {
 		t.Fatalf("last page %+v %v", last, err)
 	}
 }
+
+func TestTaskConversationsCarryOwnerReportedHostname(t *testing.T) {
+	ctx := context.Background()
+	s := taskStore(t)
+	task := makeTask(t, s, nil)
+	if _, err := s.CreateConversation(ctx, "tasks", task.ID, taskActor()); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.TaskConversations(ctx, "tasks", task.ID, "", 10)
+	if err != nil || len(items) != 1 || items[0].OwnerHostname != nil || items[0].FleetHostname != nil {
+		t.Fatalf("unknown host %+v %v", items, err)
+	}
+	host := "Defcon2"
+	if accepted, err := s.ReportPresence(ctx, PresenceReport{
+		Source: "fixture-pool", Sequence: 1, Hostname: &host,
+		Agents: []PresenceAgent{{ProjectIdent: "tasks", Origin: *taskActor()}},
+	}, time.Now().UTC()); err != nil || !accepted {
+		t.Fatalf("presence accepted %v, %v", accepted, err)
+	}
+	items, err = s.TaskConversations(ctx, "tasks", task.ID, "", 10)
+	if err != nil || len(items) != 1 || items[0].OwnerHostname == nil || *items[0].OwnerHostname != host || items[0].FleetHostname != nil {
+		t.Fatalf("reported host %+v %v", items, err)
+	}
+}

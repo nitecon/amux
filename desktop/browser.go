@@ -709,11 +709,7 @@ func (b *Browser) buildUI() {
 			return
 		}
 		c := b.conversationItems[i]
-		var comments []storage.TaskComment
-		if b.selectedTaskDetail != nil && b.selectedTaskDetail.Task.ID == c.TaskID {
-			comments = b.selectedTaskDetail.Comments
-		}
-		obj.(*widget.Label).SetText(conversationLabel(c, comments))
+		obj.(*widget.Label).SetText(conversationLabel(c))
 	})
 	b.loadMoreConversations = widget.NewButton("Load more conversations", b.loadMore)
 	b.loadMoreConversations.Hide()
@@ -2490,24 +2486,20 @@ func taskExists(items []storage.TaskSummary, id string) bool {
 func chatKey(project, conversation string) string { return project + "\x00" + conversation }
 
 // conversationLabel reads "host - Name (Provider) @ date". The host comes from
-// the fleet record or the owner's own task comments and is omitted when unknown.
-func conversationLabel(c storage.Conversation, comments []storage.TaskComment) string {
+// the fleet record or the owner's reported presence and is omitted when unknown.
+func conversationLabel(c storage.Conversation) string {
 	date := time.UnixMilli(c.CreatedAt).Format("Jan 2, 2006 15:04")
 	agent := worker.AgentName(c.Owner.SessionID) + " (" + providerConversationLabel(c.Provider) + ")"
-	if host := conversationHostname(c, comments); host != "" {
+	if host := conversationHostname(c); host != "" {
 		agent = host + " - " + agent
 	}
 	return agent + " @ " + date
 }
 
-func conversationHostname(c storage.Conversation, comments []storage.TaskComment) string {
-	if c.FleetHostname != nil && strings.TrimSpace(*c.FleetHostname) != "" {
-		return strings.TrimSpace(*c.FleetHostname)
-	}
-	for i := len(comments) - 1; i >= 0; i-- {
-		comment := comments[i]
-		if comment.Origin != nil && comment.Origin.SessionID == c.Owner.SessionID && comment.Hostname != nil && strings.TrimSpace(*comment.Hostname) != "" {
-			return strings.TrimSpace(*comment.Hostname)
+func conversationHostname(c storage.Conversation) string {
+	for _, host := range []*string{c.FleetHostname, c.OwnerHostname} {
+		if host != nil && strings.TrimSpace(*host) != "" {
+			return strings.TrimSpace(*host)
 		}
 	}
 	return ""

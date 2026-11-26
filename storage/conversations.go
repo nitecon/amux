@@ -24,7 +24,9 @@ var (
 // Conversation binds one task to one provider session. An instance change fences
 // the previous worker's writes without changing the native session or transcript.
 type Conversation struct {
-	FleetHostname   *string     `json:"fleet_hostname,omitempty"`
+	FleetHostname *string `json:"fleet_hostname,omitempty"`
+	// OwnerHostname is the owner session's last reported machine, when known.
+	OwnerHostname   *string     `json:"owner_hostname,omitempty"`
 	ID              string      `json:"id"`
 	ProjectIdent    string      `json:"project_ident"`
 	TaskID          string      `json:"task_id"`
@@ -61,7 +63,7 @@ func migrateConversations(ctx context.Context, tx *sql.Tx) error {
 func readConversation(ctx context.Context, q queryer, project, id string) (*Conversation, error) {
 	return scanConversation(q.QueryRowContext(ctx, `SELECT id,project_ident,task_id,provider,native_session_id,owner_json,created_at FROM amux_conversations WHERE project_ident=? AND id=?`, project, id), false)
 }
-func scanConversation(row interface{ Scan(...any) error }, withTitle bool) (*Conversation, error) {
+func scanConversation(row interface{ Scan(...any) error }, withTitle bool, extra ...any) (*Conversation, error) {
 	var c Conversation
 	var owner string
 	var taskID sql.NullString
@@ -69,7 +71,7 @@ func scanConversation(row interface{ Scan(...any) error }, withTitle bool) (*Con
 	if withTitle {
 		fields = append(fields, &c.TaskTitle, &c.UpdatedAt)
 	}
-	err := row.Scan(fields...)
+	err := row.Scan(append(fields, extra...)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
@@ -124,16 +126,22 @@ func (s *Store) listConversations(ctx context.Context, project string, taskID *s
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,project_ident,task_id,provider,native_session_id,owner_json,created_at,
  COALESCE((SELECT title FROM tasks t WHERE t.id=c.task_id AND t.project_ident=c.project_ident), ''),
- COALESCE((SELECT created_at FROM amux_conversation_events e WHERE e.conversation_id=c.id ORDER BY sequence DESC LIMIT 1), c.created_at) FROM amux_conversations c WHERE project_ident=? AND id>? AND (? IS NULL OR task_id=?) ORDER BY id LIMIT ?`, project, afterID, taskID, taskID, limit)
+ COALESCE((SELECT created_at FROM amux_conversation_events e WHERE e.conversation_id=c.id ORDER BY sequence DESC LIMIT 1), c.created_at),
+ COALESCE((SELECT COALESCE(NULLIF(a.hostname,''),NULLIF(s.hostname,'')) FROM amux_presence_agents a LEFT JOIN amux_presence_sources s ON s.source=a.source
+   WHERE a.project_ident=c.project_ident AND a.session_id=json_extract(c.owner_json,'$.session_id') ORDER BY a.seen_at DESC LIMIT 1), '') FROM amux_conversations c WHERE project_ident=? AND id>? AND (? IS NULL OR task_id=?) ORDER BY id LIMIT ?`, project, afterID, taskID, taskID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := []Conversation{}
 	for rows.Next() {
-		c, err := scanConversation(rows, true)
+		var hostname string
+		c, err := scanConversation(rows, true, &hostname)
 		if err != nil {
 			return nil, err
+		}
+		if hostname != "" {
+			c.OwnerHostname = &hostname
 		}
 		result = append(result, *c)
 	}
