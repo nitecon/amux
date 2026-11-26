@@ -526,7 +526,8 @@ func (c *taskComposer) refreshWidgets() {
 		shown = receipt
 	}
 	if c.activeProject != "" && shown.state == taskCreateAccepted {
-		c.createdLabel.SetText(shown.status)
+		// Built from the receipt ID so draft validation status cannot replace it.
+		c.createdLabel.SetText("Task " + shown.createdTaskID + " submitted.")
 		c.createdNotice.Show()
 	} else {
 		c.createdNotice.Hide()

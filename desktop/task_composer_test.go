@@ -74,9 +74,21 @@ func TestTaskComposerRejectsOversizeDraftsBeforeGatewayRequest(t *testing.T) {
 	if composer.createTitle.Text != "" || composer.createDraft("demo").title != "" || !composer.createdNotice.Visible() || composer.createSubmit.Text != "Submit a new task" {
 		t.Fatalf("accepted create did not clear inputs and offer a new task: title=%q notice=%v button=%q", composer.createTitle.Text, composer.createdNotice.Visible(), composer.createSubmit.Text)
 	}
+	// Reopening the drawer and typing an oversized title must not replace the
+	// submission confirmation while the receipt is still accepted.
+	composer.createTitle.SetText(strings.Repeat("x", 1025))
+	if composer.createdLabel.Text != "Task aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa submitted." || !composer.createdNotice.Visible() {
+		t.Fatalf("draft validation replaced the submitted notice: %q", composer.createdLabel.Text)
+	}
 	fynetest.Tap(composer.submitAnother)
 	if composer.createdNotice.Visible() {
 		t.Fatal("Submit a new task did not dismiss the submitted notice")
+	}
+	if !browser.newTaskAccordion.Visible() || !browser.newTaskAccordion.Items[0].Open {
+		t.Fatal("Submit a new task did not reopen the drawer")
+	}
+	if creates.Load() != 1 {
+		t.Fatalf("Submit a new task sent an HTTP POST; create count %d", creates.Load())
 	}
 	composer.newTaskRequest()
 	if composer.createDraft("demo").state != taskCreateReady || composer.createTitle.Text != "" {
