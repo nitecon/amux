@@ -546,7 +546,9 @@ The two keys have this shape in `work-preferences.json`.
 
 When editing by hand, use an absolute `directory` path that exactly matches the
 cleaned request directory. Omit trailing separators on non-root paths and match
-letter case, including on Windows. Subdirectories do not inherit the rule.
+letter case, including on Windows. On Windows, use backslashes escaped in JSON
+(for example, `"C:\\Users\\me\\project"`) because forward slashes never match.
+Subdirectories do not inherit the rule.
 
 In a rule an
 unescaped `*` matches any text, `\*` and `\\` match a literal `*` and `\`, and
