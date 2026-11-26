@@ -13,30 +13,34 @@ platform, installs it, and restarts automatically.
 The installation directory must be writable by your user and hold the bundle's
 own files. If it is not, for example a root-owned copy in `/usr/local/bin` or
 bundled tools replaced by links, amux reports the reason and keeps running
-without changing anything. For a directory your user cannot write, make your
-user its owner with `chown`, or move amux to a directory you own, then update
-again.
+without changing anything. If your user cannot write to the directory, give your
+user write access on Windows or make your user its owner with `chown` on Linux
+and macOS. You can also move amux to a directory you own, then update again.
 
 If the installation fails after the desktop has closed, amux reopens the
 previous version and shows the reason. If amux cannot reopen, the reason is
-shown the next time you open the desktop. The report is also kept as
-`install.reported.log` beside the downloaded package in the amux update cache.
+shown the next time you open the desktop. The helper writes the report to
+`install.log` beside the downloaded package in the amux update cache. The
+desktop keeps it as `install.reported.log` once it shows the failure.
 
-These checks and reports start with the release after v0.9.1. Version v0.9.1
-and earlier run their own updater, which does not check the installation
-directory first and does not show a failed installation: amux says it is
-restarting and reopens the same version. Before updating from one of those
-versions, confirm your user owns the installation directory. If it does not,
-`chown` the directory or move amux to a directory you own, or close amux and
-rerun the [install script](../README.md#get-started), which installs the latest
-release in your home directory. The install script does not remove the old
+The upfront checks and desktop failure notice start with the release after
+v0.9.1. In the Go desktop releases v0.9.0 and v0.9.1, amux says it is
+restarting, then closes so the update helper can install the package. If
+installation fails, amux stays closed and the old version is still installed
+when you open it again. The helper records the reason in `install.log` beside
+the downloaded package in the amux update cache.
+
+Before updating from v0.9.0 or v0.9.1, check that your user can write to the
+installation directory. Give your user write access on Windows, use `chown`
+to make your user the owner on Linux and macOS, or move amux to a directory
+you own. You can also close amux and rerun the
+[install script](../README.md#get-started), which installs the latest release
+in your home directory. The install script does not remove the old
 copy: a `/usr/local/bin/amux` stays on your `PATH`, and a systemd service
 started from it (see the [deployment guide](../deploy/README.md)) keeps running
 the old version. After moving to the home-directory installation, stop that
 service so nothing connects to the old server. Then remove the old copy, or put
-`~/amux` first on your `PATH`, so you launch the new installation. If an update
-from v0.9.1 reopens the same version, the reason is in `install.log` beside the
-downloaded package in the amux update cache.
+`~/amux` first on your `PATH`, so you launch the new installation.
 
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
