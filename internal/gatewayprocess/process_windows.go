@@ -4,9 +4,10 @@ package gatewayprocess
 
 import (
 	"os/exec"
-	"syscall"
+
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 func prepareProcess(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	hidewindow.Apply(command)
 }
