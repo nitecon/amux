@@ -19,6 +19,7 @@ import (
 	"github.com/nitecon/amux/chat"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/hidewindow"
 	"github.com/nitecon/amux/projects"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -526,13 +527,17 @@ func ProviderAvailable(parent context.Context, provider, directory string) bool 
 	defer cancel()
 	switch provider {
 	case "claude":
-		data, err := exec.CommandContext(ctx, ProviderExecutable("claude"), "auth", "status", "--json").Output()
+		command := exec.CommandContext(ctx, ProviderExecutable("claude"), "auth", "status", "--json")
+		hidewindow.Apply(command)
+		data, err := command.Output()
 		var status struct {
 			LoggedIn bool `json:"loggedIn"`
 		}
 		return err == nil && json.Unmarshal(data, &status) == nil && status.LoggedIn
 	case "codex":
-		return exec.CommandContext(ctx, ProviderExecutable("codex"), "login", "status").Run() == nil
+		command := exec.CommandContext(ctx, ProviderExecutable("codex"), "login", "status")
+		hidewindow.Apply(command)
+		return command.Run() == nil
 	case "antigravity":
 		session, err := worker.OpenNative(ctx, storage.WorkerRun{
 			Directory: directory, Owner: storage.AgentOrigin{Provider: provider},

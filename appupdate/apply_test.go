@@ -4,9 +4,32 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestCheckInstallableRejectsFilesTheHelperCannotReplace(t *testing.T) {
+	_, cli, gui, _, err := target()
+	if err != nil || runtime.GOOS == "darwin" {
+		t.Skip("the fixture uses a flat release")
+	}
+	dir := t.TempDir()
+	for _, name := range []string{cli, gui} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := checkInstallable(filepath.Join(dir, cli)); err != nil {
+		t.Fatalf("replaceable install rejected: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "models.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkInstallable(filepath.Join(dir, cli)); err == nil || !strings.Contains(err.Error(), "models.json") {
+		t.Fatalf("irregular installed file error = %v", err)
+	}
+}
 
 func TestInstallFilesFailureRestoresPreviousFiles(t *testing.T) {
 	root := t.TempDir()

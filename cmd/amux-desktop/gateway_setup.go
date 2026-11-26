@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/internal/gatewayprocess"
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 func amuxCLIPath() (string, error) {
@@ -45,7 +46,9 @@ func requestServerPeeringKey(ctx context.Context, profile string, copyCurrent bo
 	if copyCurrent {
 		args = append(args, "--copy")
 	}
-	output, err := exec.CommandContext(ctx, cli, args...).Output()
+	command := exec.CommandContext(ctx, cli, args...)
+	hidewindow.Apply(command)
+	output, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("request server peering key: %w", err)
 	}

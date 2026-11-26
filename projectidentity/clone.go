@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/internal/hidewindow"
 	"github.com/nitecon/amux/projects"
 )
 
@@ -117,6 +118,7 @@ func cloneRepositoryAt(ctx context.Context, parent, name, repository string) (st
 	cloneCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(cloneCtx, "git", "clone", "--", repository, destination)
+	hidewindow.Apply(cmd)
 	cmd.Dir = parent
 	cmd.Env = cloneEnvironment()
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard

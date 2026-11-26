@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 // StartApply schedules a verified update helper, then lets the running desktop
@@ -32,6 +34,9 @@ func startApplyAt(executable, archivePath, cacheRoot string, waitPIDs []int, res
 		return err
 	}
 	if err := verifyStageAt(executable, archivePath, verified, cacheRoot); err != nil {
+		return err
+	}
+	if err := checkInstallable(executable); err != nil {
 		return err
 	}
 	executable, err = filepath.Abs(executable)
@@ -57,6 +62,7 @@ func startApplyAt(executable, archivePath, cacheRoot string, waitPIDs []int, res
 	}
 	commandArgs := []string{"--finish-update", archivePath, executable, fmt.Sprint(parentPID), string(waitJSON), string(argsJSON), cacheRoot}
 	command := exec.Command(helper, commandArgs...)
+	hidewindow.Apply(command)
 	command.Stdout = nil
 	command.Stderr = nil
 	if err := command.Start(); err != nil {
@@ -290,6 +296,44 @@ func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string,
 	return dir, app, localCLI, localGUI, nil
 }
 
+// checkInstallable reports problems the helper would otherwise only hit after
+// the desktop has already closed.
+func checkInstallable(executable string) error {
+	dir, app, localCLI, localGUI, err := updateInstallPaths(executable)
+	if err != nil {
+		return err
+	}
+	stageParent := dir
+	if app != "" {
+		stageParent = filepath.Dir(app)
+	}
+	lock, err := acquireUpdateLock(stageParent)
+	if err != nil {
+		return fmt.Errorf("amux cannot update the installation in %s: %w", stageParent, err)
+	}
+	if err := lock.Close(); err != nil {
+		return err
+	}
+	if runtime.GOOS == "darwin" {
+		return nil
+	}
+	triple, _, _, _, err := target()
+	if err != nil {
+		return err
+	}
+	for _, name := range installFileNames(triple, localCLI, localGUI) {
+		if info, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) && (err != nil || !info.Mode().IsRegular()) {
+			return fmt.Errorf("installed file %s in %s is not a regular file", name, dir)
+		}
+	}
+	return nil
+}
+
+func installFileNames(triple, localCLI, localGUI string) []string {
+	files := append([]string{localCLI, localGUI}, bundledToolNames(triple)...)
+	return append(files, "models.json", "LICENSE", "BUILD.json", "SHA256SUMS")
+}
+
 func applyStaged(executable, archivePath string) (Build, error) {
 	cacheRoot, err := os.UserCacheDir()
 	if err != nil {
@@ -354,9 +398,7 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 			return empty, err
 		}
 	}
-	files := append([]string{localCLI, localGUI}, bundledToolNames(triple)...)
-	files = append(files, "models.json", "LICENSE", "BUILD.json", "SHA256SUMS")
-	if err := installFiles(dir, stageDir, files, func() error { return verifyInstalled(dir, build, localCLI, localGUI) }, os.Rename); err != nil {
+	if err := installFiles(dir, stageDir, installFileNames(triple, localCLI, localGUI), func() error { return verifyInstalled(dir, build, localCLI, localGUI) }, os.Rename); err != nil {
 		return empty, err
 	}
 	return build, nil

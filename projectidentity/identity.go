@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/internal/hidewindow"
 	"github.com/nitecon/amux/projects"
 )
 
@@ -193,6 +194,7 @@ func observe(ctx context.Context, directory string, args ...string) (string, err
 	defer cancel()
 	base := []string{"--no-optional-locks", "-c", "core.hooksPath=" + os.DevNull, "-C", directory}
 	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
+	hidewindow.Apply(cmd)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "GIT_") {
 			cmd.Env = append(cmd.Env, entry)

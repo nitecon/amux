@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 // CIRun records one GitHub Actions attempt for the report's endpoint commit.
@@ -36,6 +38,7 @@ func ReadReportCI(ctx context.Context, root, sha string) ([]CIRun, error) {
 		return nil, fmt.Errorf("GitHub CI report requires a full 40- or 64-digit commit SHA")
 	}
 	repoCommand := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner")
+	hidewindow.Apply(repoCommand)
 	repoCommand.Dir = root
 	repoCommand.Env = cleanEnv()
 	repoOutput, err := repoCommand.Output()
@@ -53,6 +56,7 @@ func ReadReportCI(ctx context.Context, root, sha string) ([]CIRun, error) {
 	}
 	endpoint := fmt.Sprintf("repos/%s/actions/runs?head_sha=%s&per_page=100", repository.NameWithOwner, sha)
 	command := exec.CommandContext(ctx, "gh", "api", "--paginate", "--method", "GET", endpoint)
+	hidewindow.Apply(command)
 	command.Dir = root
 	command.Env = cleanEnv()
 	command.Stderr = io.Discard

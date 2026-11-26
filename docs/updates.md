@@ -10,6 +10,11 @@ In the desktop app, save any work in running sessions, open **Settings → Updat
 and choose **Update now**. Amux downloads and verifies the package for your
 platform, installs it, and restarts automatically.
 
+The installation directory must be writable by your user and hold the bundle's
+own files. If it is not, for example a root-owned copy in `/usr/local/bin` or
+bundled tools replaced by links, amux reports the reason and keeps running
+without changing anything.
+
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
 rebuild uses the same public release channel and package layout.

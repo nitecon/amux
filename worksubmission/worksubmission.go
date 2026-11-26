@@ -16,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 type Mode string
@@ -231,6 +233,7 @@ func Resume(ctx context.Context, req Request, prefs Preferences, commit string, 
 
 func OpenGitHubPullRequest(ctx context.Context, p PullRequest) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--head="+p.Head, "--base="+p.Base, "--title="+p.Title, "--body="+p.Body)
+	hidewindow.Apply(cmd)
 	cmd.Dir = p.Root
 	cmd.Env = cleanEnv()
 	cmd.Env = append(cmd.Env, "GH_PROMPT_DISABLED=1")
@@ -364,6 +367,7 @@ type repo struct {
 func (r *repo) command(ctx context.Context, args ...string) *exec.Cmd {
 	all := append([]string{"-C", r.root}, args...)
 	c := exec.CommandContext(ctx, "git", all...)
+	hidewindow.Apply(c)
 	c.Env = cleanEnv()
 	c.Env = append(c.Env, "GIT_LITERAL_PATHSPECS=1")
 	if r.index != "" {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 // ReportOptions selects a local Git history window. Set Range or both Since
@@ -58,6 +59,7 @@ func reportGit(ctx context.Context, root string, args ...string) ([]byte, error)
 	all := []string{"-C", root, "--no-optional-locks", "-c", "core.hooksPath=/dev/null"}
 	all = append(all, args...)
 	c := exec.CommandContext(ctx, "git", all...)
+	hidewindow.Apply(c)
 	c.Env = append(cleanEnv(), "GIT_TERMINAL_PROMPT=0")
 	out, err := c.Output()
 	if err != nil {
@@ -355,6 +357,7 @@ func BuildLocalReport(ctx context.Context, root string, options ReportOptions) (
 	}
 	if len(r.Commits) > 0 {
 		cmd := exec.CommandContext(ctx, "git", "-C", root, "--no-optional-locks", "-c", "core.hooksPath=/dev/null", "diff-tree", "--stdin", "--root", "-m", "-r", "--no-commit-id", "--no-renames", "--name-only", "-z")
+		hidewindow.Apply(cmd)
 		cmd.Env = append(cleanEnv(), "GIT_TERMINAL_PROMPT=0")
 		cmd.Stdin = strings.NewReader(shaInput.String())
 		out, e := cmd.Output()
