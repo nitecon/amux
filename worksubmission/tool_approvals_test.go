@@ -250,3 +250,52 @@ func TestToolApprovalRuleDraftKeepsRequestAsteriskLiteral(t *testing.T) {
 		t.Error(`"\\" followed by "*" must be a literal backslash then a wildcard`)
 	}
 }
+
+func TestAddDirectoryToolApprovalPreservesPreferencesAndRejectsInvalidExistingData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work-preferences.json")
+	repo := filepath.Join(t.TempDir(), "repo")
+	other := filepath.Join(t.TempDir(), "other")
+	if err := SavePreferences(path, Preferences{Mode: PullRequestMode, BranchPrefix: "x/"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct{ dir, rule string }{
+		{repo, "  git status  "},
+		{repo, "git status"},
+		{repo, "git diff *"},
+		{other, "go test *"},
+	} {
+		if err := AddDirectoryToolApproval(path, entry.dir, entry.rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rules, err := LoadDirectoryToolApprovals(path, repo); err != nil || !slices.Equal(rules, []string{"git status", "git diff *"}) {
+		t.Fatalf("repo rules = %q, %v", rules, err)
+	}
+	if rules, err := LoadDirectoryToolApprovals(path, other); err != nil || !slices.Equal(rules, []string{"go test *"}) {
+		t.Fatalf("other rules = %q, %v", rules, err)
+	}
+	if preferences, err := LoadPreferences(path); err != nil || preferences.Mode != PullRequestMode || preferences.BranchPrefix != "x/" {
+		t.Fatalf("work submission preferences changed: %+v, %v", preferences, err)
+	}
+	if err := AddDirectoryToolApproval("", repo, "git log"); err == nil {
+		t.Error("empty preferences path was accepted")
+	}
+	for _, bad := range []string{"", "  ", "*", "git log; rm"} {
+		if err := AddDirectoryToolApproval(path, repo, bad); err == nil {
+			t.Errorf("rule %q was accepted", bad)
+		}
+	}
+	for name, payload := range map[string]string{
+		"invalid tool_approvals":           `{"tool_approvals":"git *"}`,
+		"invalid directory_tool_approvals": `{"directory_tool_approvals":"bad"}`,
+		"invalid json":                     `{not json`,
+	} {
+		invalidPath := filepath.Join(t.TempDir(), "invalid.json")
+		if err := os.WriteFile(invalidPath, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := AddDirectoryToolApproval(invalidPath, repo, "git log"); err == nil {
+			t.Errorf("%s: invalid existing preferences were overwritten", name)
+		}
+	}
+}

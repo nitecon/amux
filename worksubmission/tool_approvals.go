@@ -41,6 +41,10 @@ func LoadToolApprovals(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read tool approvals: %w", err)
 	}
+	return decodeToolApprovals(root)
+}
+
+func decodeToolApprovals(root map[string]json.RawMessage) ([]string, error) {
 	raw, exists := root[toolApprovalsKey]
 	if !exists {
 		return nil, nil
@@ -92,43 +96,25 @@ func AddDirectoryToolApproval(path, directory, rule string) error {
 	if !ok {
 		return errors.New("tool approval directory must be absolute")
 	}
-	rule = strings.TrimSpace(rule)
-	if err := validateToolApprovalRule(rule); err != nil {
-		return err
-	}
-	if path == "" {
-		return errors.New("work preferences path is required")
-	}
-	unlock, err := lockPreferences(path)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if _, err := LoadToolApprovals(path); err != nil {
-		return fmt.Errorf("refusing to overwrite invalid tool approvals: %w", err)
-	}
-	root, err := readPreferencesRoot(path)
-	if errors.Is(err, os.ErrNotExist) {
-		root = map[string]json.RawMessage{}
-	} else if err != nil {
-		return fmt.Errorf("read existing work preferences before update: %w", err)
-	}
-	var entries []DirectoryToolApproval
-	if raw, exists := root[directoryToolApprovalsKey]; exists {
-		if err := json.Unmarshal(raw, &entries); err != nil {
-			return fmt.Errorf("refusing to overwrite invalid directory tool approvals: %w", err)
-		}
-	}
-	for i := range entries {
-		if entries[i].Directory == canonical {
-			if !slices.Contains(entries[i].Rules, rule) {
-				entries[i].Rules = append(entries[i].Rules, rule)
+	return updateToolApproval(path, rule, directoryToolApprovalsKey, func(root map[string]json.RawMessage, _ []string, rule string) (any, bool, error) {
+		var entries []DirectoryToolApproval
+		if raw, exists := root[directoryToolApprovalsKey]; exists {
+			if err := json.Unmarshal(raw, &entries); err != nil {
+				return nil, false, fmt.Errorf("refusing to overwrite invalid directory tool approvals: %w", err)
 			}
-			return saveDirectoryApprovals(root, path, entries)
 		}
-	}
-	entries = append(entries, DirectoryToolApproval{Directory: canonical, Rules: []string{rule}})
-	return saveDirectoryApprovals(root, path, entries)
+		for i := range entries {
+			if entries[i].Directory == canonical {
+				if slices.Contains(entries[i].Rules, rule) {
+					return nil, false, nil
+				}
+				entries[i].Rules = append(entries[i].Rules, rule)
+				return entries, true, nil
+			}
+		}
+		entries = append(entries, DirectoryToolApproval{Directory: canonical, Rules: []string{rule}})
+		return entries, true, nil
+	})
 }
 
 func canonicalApprovalDirectory(directory string) (string, bool) {
@@ -136,19 +122,6 @@ func canonicalApprovalDirectory(directory string) (string, bool) {
 		return "", false
 	}
 	return filepath.Clean(directory), true
-}
-
-func saveDirectoryApprovals(root map[string]json.RawMessage, path string, entries []DirectoryToolApproval) error {
-	encoded, err := json.Marshal(entries)
-	if err != nil {
-		return err
-	}
-	root[directoryToolApprovalsKey] = encoded
-	data, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writePreferencesFile(path, data)
 }
 
 func validateToolApprovalRule(rule string) error {
@@ -166,6 +139,18 @@ func validateToolApprovalRule(rule string) error {
 // rule's surrounding whitespace is trimmed; inner text stays literal. Saving an
 // existing rule is a no-op.
 func AddToolApproval(path, rule string) error {
+	return updateToolApproval(path, rule, toolApprovalsKey, func(_ map[string]json.RawMessage, rules []string, rule string) (any, bool, error) {
+		if slices.Contains(rules, rule) {
+			return nil, false, nil
+		}
+		return append(rules, rule), true, nil
+	})
+}
+
+// updateToolApproval validates path and rule, locks the shared preferences
+// document, verifies existing tool approvals, and lets mutate compute the
+// replacement value for key before atomically writing the preferences root.
+func updateToolApproval(path, rule, key string, mutate func(root map[string]json.RawMessage, rules []string, rule string) (any, bool, error)) error {
 	if path == "" {
 		return errors.New("work preferences path is required")
 	}
@@ -178,18 +163,26 @@ func AddToolApproval(path, rule string) error {
 		return err
 	}
 	defer unlock()
-	rules, err := LoadToolApprovals(path)
+	root, err := readPreferencesRoot(path)
+	if errors.Is(err, os.ErrNotExist) {
+		root = map[string]json.RawMessage{}
+	} else if err != nil {
+		return fmt.Errorf("read existing work preferences before update: %w", err)
+	}
+	rules, err := decodeToolApprovals(root)
 	if err != nil {
 		return fmt.Errorf("refusing to overwrite invalid tool approvals: %w", err)
 	}
-	if slices.Contains(rules, rule) {
-		return nil
+	value, changed, err := mutate(root, rules, rule)
+	if err != nil || !changed {
+		return err
 	}
-	encoded, err := json.Marshal(append(rules, rule))
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	return writePreferencesKey(path, toolApprovalsKey, encoded)
+	root[key] = encoded
+	return writePreferencesRoot(path, root)
 }
 
 // ToolApprovalSubject returns the text a rule is matched against: the shell
@@ -334,6 +327,10 @@ func writePreferencesKey(path, key string, value json.RawMessage) error {
 		return fmt.Errorf("read existing work preferences before update: %w", err)
 	}
 	root[key] = value
+	return writePreferencesRoot(path, root)
+}
+
+func writePreferencesRoot(path string, root map[string]json.RawMessage) error {
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return err
