@@ -99,6 +99,29 @@ func TestObsoleteSubmissionReviewCanCloseWithoutChangingSource(t *testing.T) {
 				if string(beforeJSON) != string(afterJSON) {
 					t.Fatal("closing the obsolete review changed its source or recorded an approval")
 				}
+				if state == "reopened" {
+					if _, err := s.TransitionTask(ctx, "tasks", source.ID, "in_progress", implementer); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := s.UpdateTaskWorkflow(ctx, "tasks", source.ID, TaskWorkflowUpdate{
+						Status: "user_review", ReviewAction: ptr("Confirm the ordinary decision"), Changeset: json.RawMessage(`null`),
+					}, implementer); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := s.UpdateTaskWorkflow(ctx, "tasks", source.ID, TaskWorkflowUpdate{
+						Status: "done", Policy: TaskTransitionPolicy{HumanRequest: true},
+					}, nil); err != nil {
+						t.Fatal(err)
+					}
+					var stage string
+					if err := s.db.QueryRowContext(ctx, "SELECT stage FROM task_reviews WHERE review_task_id=?", review.ID).Scan(&stage); err != nil || stage != "obsolete" {
+						t.Fatalf("obsolete review was promoted on later source completion: stage=%q error=%v", stage, err)
+					}
+					var freshReview string
+					if err := s.db.QueryRowContext(ctx, "SELECT review_task_id FROM task_reviews WHERE source_task_id=? AND stage='code'", source.ID).Scan(&freshReview); err != nil || freshReview == review.ID {
+						t.Fatalf("later completion reused an obsolete review: review=%q error=%v", freshReview, err)
+					}
+				}
 			})
 		}
 	}

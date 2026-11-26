@@ -352,6 +352,8 @@ Rules carried over from the desktop:
   when its source has left that state or a newer submission review supersedes it.
   Closing that child neither approves nor changes the source. The closure guard
   and verdict handler resolve the current submission through the same lookup.
+  Its historical submission mapping becomes `obsolete`, so later source
+  completion cannot reuse ordinary closure as a code-review verdict.
 - **Review generation:** an agent leaving active work confirms its mutated files
   in the transition request, using `changeset: [paths]` or explicit null. Missing
   confirmation returns a question and rolls back the task mutation. Completion

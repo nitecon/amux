@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v0.9.2 - 2026-11-26
+
+### Added
+
+- Register amux MCP tools for standard local conversations, with guidance and
+  capabilities scoped to the conversation and its attached checkout.
+- Support persistent directory-scoped local tool approvals and surface pending
+  permission requests in the desktop.
+- Provide one-line installation and upgrade scripts for Linux, macOS, and Windows,
+  preserving the previous installation when replacement fails.
+
+### Changed
+
+- Clear submitted New task inputs and offer **Submit a new task**, preserving the
+  submission notice if a subsequent draft fails validation.
+- Show machine and agent names in task conversation links, and retain discovered
+  checkouts when companion workspace binding fails.
+
+### Fixed
+
+- Check update staging permissions before stopping the local client or closing
+  the desktop. Show installation-path and permission guidance on refusal.
+- Persist update failure reports before reopening the desktop, preserve diagnostic
+  logs, and distinguish installation failures from restart failures.
+- Suppress unwanted Windows console windows for Git, tools, providers, client,
+  gateway, and updater child processes through the shared process helper.
+- Allow obsolete submission-review cards to close without approving or changing
+  their source. Retire their submission mappings so later source completion
+  cannot reuse ordinary closure as a review verdict. Active reviews still
+  require a formal verdict.
+
+### Upgrade notes
+
+- Update the gateway service as well as the desktop/CLI to receive task workflow
+  fixes. A previously running service can continue using the old executable.
+- The new update preflight and desktop failure reporting do not run during an
+  upgrade initiated by v0.9.1 or earlier. Use the supported install scripts or
+  correct the installation directory permissions for that first upgrade; see
+  [update guidance](docs/updates.md).
+- [Task worktrees](docs/worktrees.md) remain a design draft. This release does not
+  enable task worktree allocation or the proposed `not_ready` queue.
+
 ## v0.0.82 - 2026-11-15
 
 ### Removed

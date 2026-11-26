@@ -410,6 +410,12 @@ func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWork
 			if source != nil && source.Status == "user_review" && source.CompletionOwner != nil {
 				return nil, fmt.Errorf("%w: finish this code review using task_finish_review", ErrTaskConflict)
 			}
+			// Preserve the obsolete review without letting a later source completion
+			// reuse its ordinary closure as a code-review verdict.
+			if _, err := tx.ExecContext(ctx, `UPDATE task_reviews SET stage='obsolete'
+				WHERE review_task_id=? AND stage='submission'`, t.ID); err != nil {
+				return nil, err
+			}
 		}
 		var done any = t.DoneAt
 		if t.Status != "done" {

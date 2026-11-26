@@ -187,6 +187,7 @@ An active submission review requires `task_finish_review` rather than ordinary
 Done. On updated servers, an obsolete review can use `done` when its source no
 longer awaits code review or a newer submission review has superseded it. This
 closes only the obsolete card; it does not record approval or change its source.
+Its submission mapping is retained as obsolete and cannot satisfy a later review.
 Older servers can reject both routes in this situation and need the server fix
 before ordinary Done can retire the card.
 
