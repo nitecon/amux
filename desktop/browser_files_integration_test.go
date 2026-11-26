@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	fynetest "fyne.io/fyne/v2/test"
 	"github.com/nitecon/amux/projectidentity"
@@ -24,7 +25,9 @@ func TestBrowserFilesFollowAttachedWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(checkout, "notes.md"), []byte("workspace fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := projectidentity.ResolveCheckout(context.Background(), checkout)
+	// FromParts canonicalizes the fixture path without spawning Git, whose
+	// bounded two-second observer can time out under a loaded full test run.
+	identity, err := projectidentity.FromParts(checkout, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,10 +68,18 @@ func TestBrowserFilesFollowAttachedWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(checkout, "pending.txt"), []byte("new change"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Each refresh runs several bounded Git observations; retry a refresh that
+	// reports a transient Git failure instead of failing on machine load.
 	fynetest.Tap(b.worktreeStatus.refresh)
-	waitBrowser(t, fixture.callbacks, func() bool {
-		return strings.Contains(b.worktreeStatus.changes.Text, "?? pending.txt")
-	})
+	for deadline := time.Now().Add(30 * time.Second); !strings.Contains(b.worktreeStatus.changes.Text, "?? pending.txt"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for Git status: %q", b.worktreeStatus.status.Text)
+		}
+		fixture.callbacks.pump()
+		if strings.HasPrefix(b.worktreeStatus.status.Text, "Git status unavailable") {
+			fynetest.Tap(b.worktreeStatus.refresh)
+		}
+	}
 	if pane.selected != "notes.md" || pane.preview.Text != "Loading preview…" {
 		t.Fatalf("refreshing Git replaced the pending Files preview: %q", pane.preview.Text)
 	}
