@@ -222,7 +222,10 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		})
 		return localconversation.RegisterControl(mux, ctx, conversationRoot, func(project string) string {
 			return currentWorkspace.Load().(workspaceSnapshot).Workspace.Projects[project]
-		}, worker.OpenWithToolApprovals(worker.OpenNative, config.WorkPreferences), taskApprovals)
+		}, worker.OpenWithNativeTools(worker.NativeToolsConfig{
+			Executable: executable, Server: client.Endpoint(), EnrolledProfile: config.EnrolledProfile,
+			APIKeyEnv: config.APIKeyEnv, WorkPreferencesPath: config.WorkPreferences, LocalConversation: true,
+		}), taskApprovals)
 	})
 	if err != nil {
 		return err

@@ -154,3 +154,55 @@ func TestManagedChatSurvivesViewerDisconnectAndResolvesApproval(t *testing.T) {
 		t.Fatalf("unexpected transcript %q, %v", text, err)
 	}
 }
+
+func TestLocalConversationPopulatesAgentOriginOnCreateAndLegacyFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	created, err := Create(root, "demo", root, "claude", Preferences{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Owner.SessionID == "" || created.Owner.Provider != "claude" || created.Owner.OS == "" {
+		t.Fatalf("created local conversation missing owner identity: %+v", created.Owner)
+	}
+	var opened storage.WorkerRun
+	s, err := Open(root, created, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+		opened = run
+		return &approvalTestProvider{done: make(chan struct{}), approved: make(chan struct{})}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.KeepAlive(ctx)
+	if _, err := s.connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
+	if opened.Owner.SessionID != created.Owner.SessionID || opened.Owner.InstanceID == "" || opened.Owner.Provider != "claude" || opened.Owner.OS != created.Owner.OS {
+		t.Fatalf("connected run had incomplete owner identity: %+v", opened.Owner)
+	}
+
+	// Pre-existing local conversation without a persisted owner falls back to its conversation ID.
+	legacyID := "018f0000-0000-7000-8000-000000000099"
+	legacy := Header{Info: storage.Conversation{ID: legacyID, ProjectIdent: "demo", Provider: "codex"}, Directory: root}
+	if err := writeMarkdownChat(filepath.Join(root, "demo", legacyID+".md"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	var legacyOpened storage.WorkerRun
+	ls, err := Open(root, legacy.Info, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+		legacyOpened = run
+		return &approvalTestProvider{done: make(chan struct{}), approved: make(chan struct{})}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls.KeepAlive(ctx)
+	if _, err := ls.connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ls.Stop()
+	if legacyOpened.Owner.SessionID != legacyID || legacyOpened.Owner.InstanceID == "" || legacyOpened.Owner.Provider != "codex" || legacyOpened.Owner.OS == "" {
+		t.Fatalf("legacy local conversation owner fallback failed: %+v", legacyOpened.Owner)
+	}
+}

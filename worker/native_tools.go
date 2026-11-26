@@ -25,6 +25,7 @@ type NativeToolsConfig struct {
 	Executable, Server, APIKeyEnv string
 	EnrolledProfile               string
 	WorkPreferencesPath           string
+	LocalConversation             bool
 }
 
 // OpenWithNativeTools returns an opener that registers one scoped amux MCP
@@ -43,8 +44,16 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 		if err != nil || info.IsDir() || runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
 			return nil, fmt.Errorf("amux MCP executable must be an existing executable file")
 		}
-		if config.Server == "" || config.Server != run.Server {
+		if config.Server == "" || (!config.LocalConversation && config.Server != run.Server) || (config.LocalConversation && run.Server != "" && config.Server != run.Server) {
 			return nil, fmt.Errorf("amux MCP server must match the saved worker gateway")
+		}
+		if config.LocalConversation {
+			if run.Server == "" {
+				run.Server = config.Server
+			}
+			if run.Project == "" || run.ConversationID == "" || run.Owner.SessionID == "" || run.Owner.InstanceID == "" || run.Owner.Provider == "" || run.Owner.OS == "" {
+				return nil, fmt.Errorf("local conversation MCP requires project, conversation ID, and complete agent identity")
+			}
 		}
 		if config.EnrolledProfile == "" && !validEnvName(config.APIKeyEnv) {
 			return nil, fmt.Errorf("amux MCP API key environment name must be valid")
@@ -261,6 +270,9 @@ func nativeMCPArgs(config NativeToolsConfig, run storage.WorkerRun) []string {
 		"--conversation", run.ConversationID, "--session", run.Owner.SessionID,
 		"--instance", run.Owner.InstanceID, "--provider", run.Owner.Provider,
 		"--os", run.Owner.OS}
+	if config.LocalConversation {
+		args = append(args, "--local-conversation")
+	}
 	if run.LocalTaskID != "" {
 		args = append(args, "--local-task", run.LocalTaskID)
 	}

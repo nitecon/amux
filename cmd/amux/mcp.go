@@ -27,6 +27,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	project := flags.String("project", "", "bound project identifier")
 	conversationID := flags.String("conversation", "", "bound task conversation UUID")
 	localTask := flags.String("local-task", "", "bound task UUID for a gateway without server-side conversations")
+	localConversation := flags.Bool("local-conversation", false, "local conversation without a server-side conversation record")
 	session := flags.String("session", "", "bound agent session UUID")
 	instance := flags.String("instance", "", "bound agent instance UUID")
 	provider := flags.String("provider", "", "bound native provider")
@@ -47,7 +48,7 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	nativeRequested := false
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "server", "enrolled-profile", "project", "conversation", "local-task", "session", "instance", "provider", "os", "goal":
+		case "server", "enrolled-profile", "project", "conversation", "local-task", "local-conversation", "session", "instance", "provider", "os", "goal":
 			nativeRequested = true
 		}
 	})
@@ -109,6 +110,9 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 		}
 	}
 	if *localTask != "" {
+		if *localConversation {
+			return fmt.Errorf("--local-conversation cannot be combined with --local-task")
+		}
 		if _, err := canonicalTaskID(*localTask); err != nil {
 			return err
 		}
@@ -121,15 +125,24 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 	configuredWorkPreferences := getenv("AMUX_WORK_SUBMISSION_PREFERENCES")
 	instructions := mcpStartupInstructionsFor(*provider, getenv("AMUX_AGENT_PROVIDER"), runner)
 	listTools := func() []mcpstdio.Tool {
-		tools := make([]mcpstdio.Tool, 0, len(bundledToolCatalog)+len(server.AgentTaskTools())+1)
+		tools := make([]mcpstdio.Tool, 0, len(bundledToolCatalog)+len(server.AgentTaskTools())+len(taskRoutingMCPTools)+1)
 		if nativeRequested {
 			for _, tool := range server.AgentTaskTools() {
-				if *localTask == "" || localGatewayTaskTool(tool.Name) {
-					tools = append(tools, tool)
+				if *localTask != "" && !localGatewayTaskTool(tool.Name) {
+					continue
 				}
+				if *localConversation && !localConversationTaskTool(tool.Name) {
+					continue
+				}
+				tools = append(tools, tool)
 			}
 			tools = append(tools, submitWorkMCPTool())
-			tools = append(tools, taskRoutingMCPTools...)
+			for _, tool := range taskRoutingMCPTools {
+				if *localConversation && tool.Name == "task_reassign" {
+					continue
+				}
+				tools = append(tools, tool)
+			}
 		}
 		return append(tools, runner.AvailableTools()...)
 	}
@@ -145,6 +158,8 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 					return localGatewayToolResult(nil, err), nil
 				}
 				conversation = ""
+			} else if *localConversation {
+				conversation = ""
 			}
 			return callSubmitWorkMCP(callCtx, client, *project, conversation, *directory, origin, selectedGoal, preferencesPath, args)
 		}
@@ -155,8 +170,11 @@ func runMCP(ctx context.Context, args []string, stdin io.ReadCloser, stdout, std
 			if *localTask != "" && localGatewayTaskTool(name) {
 				return callLocalGatewayTaskTool(callCtx, client, *project, *localTask, origin, selectedGoal, name, args), nil
 			}
+			if *localConversation && localConversationTaskTool(name) {
+				return callLocalConversationTaskTool(callCtx, client, *project, origin, selectedGoal, name, args), nil
+			}
 			for _, tool := range server.AgentTaskTools() {
-				if *localTask != "" || name != tool.Name {
+				if *localTask != "" || *localConversation || name != tool.Name {
 					continue
 				}
 				if name == "task_delegate" {

@@ -150,6 +150,13 @@ func List(root, project string) ([]storage.Conversation, error) {
 	return chats, nil
 }
 
+func currentAgentOS() string {
+	if runtime.GOOS == "darwin" {
+		return "macos"
+	}
+	return runtime.GOOS
+}
+
 func Create(root, project, directory, provider string, prefs Preferences) (storage.Conversation, error) {
 	dir, err := ProjectDirectory(root, project)
 	if err != nil {
@@ -160,7 +167,11 @@ func Create(root, project, directory, provider string, prefs Preferences) (stora
 	}
 	id := uuid.NewString()
 	now := time.Now().UnixMilli()
-	info := storage.Conversation{ID: id, ProjectIdent: project, Provider: provider, CreatedAt: now, UpdatedAt: now}
+	info := storage.Conversation{
+		ID: id, ProjectIdent: project, Provider: provider,
+		Owner:     storage.AgentOrigin{SessionID: uuid.NewString(), Provider: provider, OS: currentAgentOS()},
+		CreatedAt: now, UpdatedAt: now,
+	}
 	err = writeMarkdownChat(filepath.Join(dir, id+".md"), Header{Info: info, Directory: directory, Preferences: prefs})
 	return info, err
 }
@@ -432,7 +443,16 @@ func (c *Session) connect(ctx context.Context) (worker.Session, error) {
 	if len(command) > 0 {
 		command[0] = ProviderExecutable(command[0])
 	}
-	run := storage.WorkerRun{Project: info.ProjectIdent, ConversationID: info.ID, Directory: c.file.Directory, Command: command, NativeSessionID: info.NativeSessionID, Owner: storage.AgentOrigin{Provider: info.Provider}}
+	owner := info.Owner
+	if owner.SessionID == "" {
+		owner.SessionID = info.ID
+	}
+	owner.InstanceID = uuid.NewString()
+	owner.Provider = info.Provider
+	if owner.OS == "" {
+		owner.OS = currentAgentOS()
+	}
+	run := storage.WorkerRun{Project: info.ProjectIdent, ConversationID: info.ID, Directory: c.file.Directory, Command: command, NativeSessionID: info.NativeSessionID, Owner: owner}
 	session, err = c.open(lifetime, run, c.AppendEvent)
 	if err != nil {
 		return nil, err

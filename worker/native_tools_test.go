@@ -1,9 +1,12 @@
 package worker
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/nitecon/amux/storage"
@@ -170,5 +173,48 @@ func TestAntigravityDefaultsApproveOnlyKnownAmuxTools(t *testing.T) {
 		if antigravityAmuxTool(name) != allowed {
 			t.Errorf("incorrect permission decision for %q", name)
 		}
+	}
+}
+
+func TestLocalConversationMCPArgsAndValidation(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "amux")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := NativeToolsConfig{
+		Executable: executable, Server: "https://gateway.example",
+		EnrolledProfile: "/private/profile/local-client.json", LocalConversation: true,
+	}
+	run := storage.WorkerRun{
+		Project: "demo", Directory: t.TempDir(), ConversationID: "018f0000-0000-7000-8000-000000000001",
+		Owner: storage.AgentOrigin{
+			SessionID: "018f0000-0000-7000-8000-000000000002", InstanceID: "018f0000-0000-7000-8000-000000000003",
+			Provider: "codex", OS: "macos",
+		},
+	}
+	args := nativeMCPArgs(config, run)
+	foundLocalFlag := false
+	for _, arg := range args {
+		if arg == "--local-conversation" {
+			foundLocalFlag = true
+			break
+		}
+	}
+	if !foundLocalFlag {
+		t.Fatalf("local conversation MCP args omitted --local-conversation: %#v", args)
+	}
+	open := OpenWithNativeTools(config)
+	if _, err := open(context.Background(), storage.WorkerRun{Server: "https://other.example", Project: "demo", ConversationID: run.ConversationID, Owner: run.Owner}, nil); err == nil {
+		t.Fatal("accepted mismatched gateway server for local conversation")
+	}
+	missingOwner := run
+	missingOwner.Owner.SessionID = ""
+	if _, err := open(context.Background(), missingOwner, nil); err == nil {
+		t.Fatal("accepted incomplete agent identity for local conversation")
+	}
+	unsupported := run
+	unsupported.Owner.Provider = "unsupported"
+	if _, err := open(context.Background(), unsupported, nil); err == nil || !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("local conversation with empty run.Server should fill config.Server before provider dispatch; got %v", err)
 	}
 }
