@@ -614,6 +614,8 @@ func (b *Browser) buildUI() {
 			summary.Text = "Local checkout"
 		} else if b.projectCheckout(p).Directory != "" {
 			summary.Text = "Local · " + summary.Text
+		} else if b.discoveredRailProjects[p.Ident] {
+			summary.Text = "Local checkout found · " + summary.Text
 		}
 		summary.Refresh()
 		dotBox := content.Objects[1].(*fyne.Container)

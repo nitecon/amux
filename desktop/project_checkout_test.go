@@ -66,6 +66,18 @@ func TestProjectsDirectoryDiscoveryMatchesGatewayByOrigin(t *testing.T) {
 	waitBrowser(t, fixture.callbacks, func() bool {
 		return b.projectCheckout(project).Directory == want
 	})
+	b.clientConfigPath = filepath.Join(t.TempDir(), "client.yml")
+	b.projectItems = []storage.ProjectOverview{project}
+	b.selectedProject = project.Ident
+	b.selection.CheckoutPath = ""
+	b.applyProjectFilter()
+	b.updateSelectedProjectStatus()
+	if binding := b.projectCheckout(project); binding.Directory != "" {
+		t.Fatalf("discovery created a managed binding: %+v", binding)
+	}
+	if status := b.selectedProjectStatus.Text; !strings.Contains(status, want+" (found locally, awaiting attachment)") {
+		t.Fatalf("managed checkout discovery was hidden: %q", status)
+	}
 	b.prefKey = "https://another.example"
 	if b.projectsDirectory() != parent {
 		t.Fatalf("projects directory changed with gateway: %q", b.projectsDirectory())

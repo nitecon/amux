@@ -120,6 +120,11 @@ func (b *Browser) updateSelectedProjectStatus() {
 		for _, row := range b.projectItems {
 			if row.Ident == project {
 				path = b.projectCheckout(row).Directory
+				if path == "" {
+					if directory := b.discoveredProjectCheckout(row); directory != "" {
+						path = directory + " (found locally, awaiting attachment)"
+					}
+				}
 				break
 			}
 		}

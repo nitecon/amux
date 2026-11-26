@@ -238,18 +238,25 @@ func (b *Browser) projectCheckout(project storage.ProjectOverview) localProjectB
 	if b.clientConfigPath != "" {
 		return localProjectBinding{}
 	}
-	for _, checkout := range b.localCheckouts {
-		if checkout.CanonicalRemote == nil || project.CanonicalRemote == nil {
-			continue
-		}
-		if matches, _ := checkoutMatchesProjectRemote(*checkout.CanonicalRemote, project.CanonicalRemote); matches {
-			return localProjectBinding{Directory: checkout.Directory}
-		}
+	if directory := b.discoveredProjectCheckout(project); directory != "" {
+		return localProjectBinding{Directory: directory}
 	}
 	if b.selection.Project == project.Ident && localCheckoutAvailable(b.selection.CheckoutPath) {
 		return localProjectBinding{Directory: b.selection.CheckoutPath, Origin: b.selection.CheckoutOrigin}
 	}
 	return localProjectBinding{}
+}
+
+func (b *Browser) discoveredProjectCheckout(project storage.ProjectOverview) string {
+	for _, checkout := range b.localCheckouts {
+		if checkout.CanonicalRemote == nil || project.CanonicalRemote == nil {
+			continue
+		}
+		if matches, _ := checkoutMatchesProjectRemote(*checkout.CanonicalRemote, project.CanonicalRemote); matches {
+			return checkout.Directory
+		}
+	}
+	return ""
 }
 
 func (b *Browser) restoreProjectCheckout(project string) {
@@ -278,6 +285,9 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 	back := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), func() { b.setMainView(previous) })
 	parent := b.projectsDirectory()
 	local := b.projectCheckout(project)
+	if local.Directory == "" {
+		local.Directory = b.discoveredProjectCheckout(project)
+	}
 	source := widget.NewEntry()
 	source.SetPlaceHolder("Git repository URL")
 	if local.Origin != nil {

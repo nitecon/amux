@@ -22,7 +22,7 @@ func configuredCheckoutHandler(client *gatewayclient.Client, reloads chan<- clie
 		}
 		inventory, err := client.Projects(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, "The local amux client could not read gateway projects: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		for _, project := range inventory {
