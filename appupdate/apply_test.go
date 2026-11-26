@@ -31,6 +31,27 @@ func TestCheckInstallableRejectsFilesTheHelperCannotReplace(t *testing.T) {
 	}
 }
 
+func TestCheckInstallableExplainsUnwritableInstallDirectory(t *testing.T) {
+	_, cli, gui, _, err := target()
+	if err != nil || runtime.GOOS == "darwin" || runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a flat release in a directory the user cannot write")
+	}
+	dir := t.TempDir()
+	for _, name := range []string{cli, gui} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	err = checkInstallable(filepath.Join(dir, cli))
+	if err == nil || !strings.Contains(err.Error(), "chown") || !strings.Contains(err.Error(), "move amux") {
+		t.Fatalf("unwritable install error = %v", err)
+	}
+}
+
 func TestInstallFilesFailureRestoresPreviousFiles(t *testing.T) {
 	root := t.TempDir()
 	installed := filepath.Join(root, "install")

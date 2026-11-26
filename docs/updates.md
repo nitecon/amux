@@ -13,7 +13,9 @@ platform, installs it, and restarts automatically.
 The installation directory must be writable by your user and hold the bundle's
 own files. If it is not, for example a root-owned copy in `/usr/local/bin` or
 bundled tools replaced by links, amux reports the reason and keeps running
-without changing anything.
+without changing anything. For a directory your user cannot write, make your
+user its owner with `chown`, or move amux to a directory you own, then update
+again.
 
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the

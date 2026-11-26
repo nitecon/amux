@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -308,6 +309,13 @@ func checkInstallable(executable string) error {
 		stageParent = filepath.Dir(app)
 	}
 	lock, err := acquireUpdateLock(stageParent)
+	if errors.Is(err, fs.ErrPermission) {
+		fix := "Give your user write access to that directory"
+		if runtime.GOOS != "windows" {
+			fix = "Make your user the owner of that directory with chown"
+		}
+		return fmt.Errorf("your user cannot write to the amux installation directory %s. %s, or move amux to a directory you own, then update again", stageParent, fix)
+	}
 	if err != nil {
 		return fmt.Errorf("amux cannot update the installation in %s: %w", stageParent, err)
 	}
