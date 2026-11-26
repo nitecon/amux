@@ -16,6 +16,8 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 	"github.com/nitecon/amux/appupdate"
 	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/gatewayclient"
@@ -553,6 +555,15 @@ func run(args []string) error {
 		window.Close()
 	})
 	view.Start(ctx)
+	if failure := appupdate.TakeFailure(); failure != "" {
+		message := widget.NewLabel("The amux update was not installed: " + failure)
+		message.Wrapping = fyne.TextWrapWord
+		var notice *widget.PopUp
+		content := container.NewPadded(container.NewVBox(message, widget.NewButton("OK", func() { notice.Hide() })))
+		notice = widget.NewModalPopUp(content, window.Canvas())
+		notice.Resize(fyne.NewSize(480, content.MinSize().Height))
+		notice.Show()
+	}
 	window.ShowAndRun()
 	view.Close()
 	cancel()

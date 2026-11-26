@@ -56,6 +56,10 @@ func scheduleDesktopUpdate(ctx context.Context, cli, config, endpoint, archive s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Refuse before stopping the client, so a refused update disturbs nothing.
+	if err := appupdate.CheckInstallable(cli); err != nil {
+		return fmt.Errorf("schedule update: %w", err)
+	}
 	if config != "" {
 		if err := stopClientForUpdate(ctx, config); err != nil {
 			return err

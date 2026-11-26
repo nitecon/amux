@@ -20,13 +20,13 @@ func TestCheckInstallableRejectsFilesTheHelperCannotReplace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := checkInstallable(filepath.Join(dir, cli)); err != nil {
+	if err := CheckInstallable(filepath.Join(dir, cli)); err != nil {
 		t.Fatalf("replaceable install rejected: %v", err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, "models.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkInstallable(filepath.Join(dir, cli)); err == nil || !strings.Contains(err.Error(), "models.json") {
+	if err := CheckInstallable(filepath.Join(dir, cli)); err == nil || !strings.Contains(err.Error(), "models.json") {
 		t.Fatalf("irregular installed file error = %v", err)
 	}
 }
@@ -46,9 +46,42 @@ func TestCheckInstallableExplainsUnwritableInstallDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(dir, 0o700)
-	err = checkInstallable(filepath.Join(dir, cli))
-	if err == nil || !strings.Contains(err.Error(), "chown") || !strings.Contains(err.Error(), "move amux") {
-		t.Fatalf("unwritable install error = %v", err)
+	check := func(name string) {
+		err := CheckInstallable(filepath.Join(dir, cli))
+		if err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "chown") || !strings.Contains(err.Error(), "move amux") {
+			t.Fatalf("%s: unwritable install error = %v", name, err)
+		}
+	}
+	check("no lock")
+	// A lock left by an earlier update still opens, but staging cannot be created.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".amux-update.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	check("existing lock")
+}
+
+func TestTakeFailureReportsAFailedInstallOnce(t *testing.T) {
+	cache := t.TempDir()
+	for tag, message := range map[string]string{"v1.0.0": "update completed\n", "v1.0.1": "cannot install amux: access denied\n"} {
+		stage := filepath.Join(cache, "amux", "updates", tag)
+		if err := os.MkdirAll(stage, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stage, "install.log"), []byte(message), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := takeFailureAt(cache); got != "cannot install amux: access denied" {
+		t.Fatalf("failure = %q", got)
+	}
+	if got := takeFailureAt(cache); got != "" {
+		t.Fatalf("failure reported twice: %q", got)
 	}
 }
 

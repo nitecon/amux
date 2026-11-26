@@ -37,7 +37,7 @@ func startApplyAt(executable, archivePath, cacheRoot string, waitPIDs []int, res
 	if err := verifyStageAt(executable, archivePath, verified, cacheRoot); err != nil {
 		return err
 	}
-	if err := checkInstallable(executable); err != nil {
+	if err := CheckInstallable(executable); err != nil {
 		return err
 	}
 	executable, err = filepath.Abs(executable)
@@ -83,6 +83,31 @@ func FinishHelper(args []string) error {
 		_ = os.WriteFile(filepath.Join(filepath.Dir(args[1]), "install.log"), []byte(message+"\n"), 0o600)
 	}
 	return err
+}
+
+// TakeFailure returns the error from an update that failed after the desktop
+// closed, and clears it so it is reported once.
+func TakeFailure() string {
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return takeFailureAt(cacheRoot)
+}
+
+func takeFailureAt(cacheRoot string) string {
+	logs, _ := filepath.Glob(filepath.Join(cacheRoot, "amux", "updates", "*", "install.log"))
+	failure := ""
+	for _, log := range logs {
+		data, err := os.ReadFile(log)
+		if err != nil || os.Remove(log) != nil {
+			continue
+		}
+		if message := strings.TrimSpace(string(data)); message != "" && message != "update completed" {
+			failure = message
+		}
+	}
+	return failure
 }
 
 func finishHelper(args []string) error {
@@ -144,6 +169,11 @@ func finishHelper(args []string) error {
 	}
 	_, err = applyStagedAt(executable, archivePath, args[6])
 	if err != nil {
+		// The desktop has already closed. Reopen the untouched installation so it
+		// can report the failure recorded in install.log.
+		if restartArgs != nil {
+			_ = launchDesktop(executable, restartArgs)
+		}
 		return err
 	}
 	if restartArgs != nil {
@@ -297,9 +327,9 @@ func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string,
 	return dir, app, localCLI, localGUI, nil
 }
 
-// checkInstallable reports problems the helper would otherwise only hit after
+// CheckInstallable reports problems the helper would otherwise only hit after
 // the desktop has already closed.
-func checkInstallable(executable string) error {
+func CheckInstallable(executable string) error {
 	dir, app, localCLI, localGUI, err := updateInstallPaths(executable)
 	if err != nil {
 		return err
@@ -309,6 +339,15 @@ func checkInstallable(executable string) error {
 		stageParent = filepath.Dir(app)
 	}
 	lock, err := acquireUpdateLock(stageParent)
+	if err == nil {
+		// An existing lock file opens even where new entries are refused, so
+		// create the staging directory the helper needs.
+		var probe string
+		if probe, err = os.MkdirTemp(stageParent, ".amux-update-stage-"); err == nil {
+			err = os.Remove(probe)
+		}
+		err = errors.Join(err, lock.Close())
+	}
 	if errors.Is(err, fs.ErrPermission) {
 		fix := "Give your user write access to that directory"
 		if runtime.GOOS != "windows" {
@@ -318,9 +357,6 @@ func checkInstallable(executable string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("amux cannot update the installation in %s: %w", stageParent, err)
-	}
-	if err := lock.Close(); err != nil {
-		return err
 	}
 	if runtime.GOOS == "darwin" {
 		return nil

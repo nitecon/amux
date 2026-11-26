@@ -17,6 +17,9 @@ without changing anything. For a directory your user cannot write, make your
 user its owner with `chown`, or move amux to a directory you own, then update
 again.
 
+If the installation fails after the desktop has closed, amux reopens the
+previous version and shows the reason.
+
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
 rebuild uses the same public release channel and package layout.

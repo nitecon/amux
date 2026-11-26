@@ -70,6 +70,21 @@ func TestStopClientForUpdateWaitsForProfileRelease(t *testing.T) {
 	}
 }
 
+func TestRefusedUpdateLeavesLocalClientRunning(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.yml")
+	lock, err := server.LockProfile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	// The running client holds the profile and has no control endpoint here, so
+	// any attempt to stop it would report "stop local client".
+	err = scheduleDesktopUpdate(t.Context(), filepath.Join(t.TempDir(), "amux"), config, "https://gateway.test", "", nil)
+	if err == nil || !strings.Contains(err.Error(), "schedule update") || strings.Contains(err.Error(), "local client") {
+		t.Fatalf("refused update error = %v", err)
+	}
+}
+
 func TestAttachReusesRunningClient(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "config.yml")
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
