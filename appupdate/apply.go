@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/nitecon/amux/internal/hidewindow"
 )
@@ -74,19 +75,22 @@ func startApplyAt(executable, archivePath, cacheRoot string, waitPIDs []int, res
 
 // FinishHelper is an internal command used by the temporary updater copy.
 func FinishHelper(args []string) error {
-	err := finishHelper(args)
-	if len(args) > 1 {
-		message := "update completed"
-		if err != nil {
-			message = err.Error()
+	request, err := parseHelperArgs(args)
+	if err != nil {
+		if len(args) > 1 {
+			recordResult(args[1], "The amux update was not installed: "+err.Error())
 		}
-		_ = os.WriteFile(filepath.Join(filepath.Dir(args[1]), "install.log"), []byte(message+"\n"), 0o600)
+		return err
 	}
-	return err
+	return finishUpdate(request, waitForProcessExit, launchDesktop)
 }
 
-// TakeFailure returns the error from an update that failed after the desktop
-// closed, and clears it so it is reported once.
+func recordResult(archivePath, message string) {
+	_ = os.WriteFile(filepath.Join(filepath.Dir(archivePath), "install.log"), []byte(message+"\n"), 0o600)
+}
+
+// TakeFailure returns the report of an update that failed after the desktop
+// closed. Each report is returned once; its log is kept as install.reported.log.
 func TakeFailure() string {
 	cacheRoot, err := os.UserCacheDir()
 	if err != nil {
@@ -98,90 +102,113 @@ func TakeFailure() string {
 func takeFailureAt(cacheRoot string) string {
 	logs, _ := filepath.Glob(filepath.Join(cacheRoot, "amux", "updates", "*", "install.log"))
 	failure := ""
+	var newest time.Time
 	for _, log := range logs {
+		info, statErr := os.Stat(log)
 		data, err := os.ReadFile(log)
-		if err != nil || os.Remove(log) != nil {
+		if statErr != nil || err != nil || os.Rename(log, filepath.Join(filepath.Dir(log), "install.reported.log")) != nil {
 			continue
 		}
-		if message := strings.TrimSpace(string(data)); message != "" && message != "update completed" {
-			failure = message
+		// Only the latest attempt counts: a later success supersedes an older failure.
+		if !info.ModTime().Before(newest) {
+			newest = info.ModTime()
+			failure = strings.TrimSpace(string(data))
+			if failure == "update completed" {
+				failure = ""
+			}
 		}
 	}
 	return failure
 }
 
-func finishHelper(args []string) error {
+type helperRequest struct {
+	archivePath, executable, cacheRoot string
+	pids                               []int
+	restartArgs                        []string
+}
+
+func parseHelperArgs(args []string) (helperRequest, error) {
+	var empty helperRequest
 	if len(args) != 7 {
-		return errors.New("invalid internal updater arguments")
+		return empty, errors.New("invalid internal updater arguments")
 	}
 	cacheRoot, err := os.UserCacheDir()
 	if err != nil {
-		return err
+		return empty, err
 	}
 	wantCacheRoot, err := filepath.Abs(cacheRoot)
 	if err != nil {
-		return err
+		return empty, err
 	}
 	providedCacheRoot, err := filepath.Abs(args[6])
 	if err != nil {
-		return err
+		return empty, err
 	}
 	if providedCacheRoot != wantCacheRoot {
 		executablePath, pathErr := filepath.Abs(args[2])
 		tempRoot, tempErr := filepath.Abs(os.TempDir())
 		if pathErr != nil || tempErr != nil {
-			return errors.New("could not validate isolated update paths")
+			return empty, errors.New("could not validate isolated update paths")
 		}
 		relative, relErr := filepath.Rel(tempRoot, executablePath)
 		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return errors.New("non-user cache root is allowed only for temporary test installs")
+			return empty, errors.New("non-user cache root is allowed only for temporary test installs")
 		}
 	}
-	archivePath, executable := args[1], args[2]
+	request := helperRequest{archivePath: args[1], executable: args[2], cacheRoot: args[6]}
 	parentPID, err := optionalPID(args[3])
 	if err != nil {
-		return err
+		return empty, err
 	}
-	var waitPIDs []int
-	if err := json.Unmarshal([]byte(args[4]), &waitPIDs); err != nil {
-		return errors.New("invalid helper process wait list")
+	if err := json.Unmarshal([]byte(args[4]), &request.pids); err != nil {
+		return empty, errors.New("invalid helper process wait list")
 	}
-	for _, pid := range waitPIDs {
+	for _, pid := range request.pids {
 		if pid <= 0 {
-			return errors.New("invalid helper process id")
+			return empty, errors.New("invalid helper process id")
 		}
 	}
-	var restartArgs []string
-	if err := json.Unmarshal([]byte(args[5]), &restartArgs); err != nil {
-		return err
+	if err := json.Unmarshal([]byte(args[5]), &request.restartArgs); err != nil {
+		return empty, err
 	}
-	pids := waitPIDs
 	if parentPID > 0 {
-		pids = append(pids, parentPID)
+		request.pids = append(request.pids, parentPID)
 	}
-	for _, pid := range pids {
-		if pid == 0 {
-			continue
-		}
-		if err := waitForProcessExit(pid); err != nil {
+	return request, nil
+}
+
+// finishUpdate records the outcome before reopening the desktop, because the
+// desktop reads it once at startup.
+func finishUpdate(request helperRequest, wait func(int) error, launch func(string, []string) error) error {
+	for _, pid := range request.pids {
+		if err := wait(pid); err != nil {
+			// That process may be the desktop, so do not open a second one. The
+			// report is shown the next time the desktop starts.
+			recordResult(request.archivePath, "The amux update was not installed: "+err.Error())
 			return err
 		}
 	}
-	_, err = applyStagedAt(executable, archivePath, args[6])
-	if err != nil {
-		// The desktop has already closed. Reopen the untouched installation so it
-		// can report the failure recorded in install.log.
-		if restartArgs != nil {
-			_ = launchDesktop(executable, restartArgs)
-		}
-		return err
+	_, installErr := applyStagedAt(request.executable, request.archivePath, request.cacheRoot)
+	message := "update completed"
+	if installErr != nil {
+		message = "The amux update was not installed: " + installErr.Error()
 	}
-	if restartArgs != nil {
-		if err := launchDesktop(executable, restartArgs); err != nil {
-			return fmt.Errorf("update installed, but desktop restart failed: %w", err)
-		}
+	recordResult(request.archivePath, message)
+	if request.restartArgs == nil {
+		return installErr
 	}
-	return nil
+	// After a failed install this reopens the untouched previous version.
+	if err := launch(request.executable, request.restartArgs); err != nil {
+		if installErr == nil {
+			message = "The amux update was installed, but amux could not restart: " + err.Error()
+		} else {
+			message += ". amux also could not reopen: " + err.Error()
+		}
+		// Kept for the next time the user opens the desktop.
+		recordResult(request.archivePath, message)
+		return errors.Join(installErr, fmt.Errorf("desktop restart failed: %w", err))
+	}
+	return installErr
 }
 
 func stagePath(archivePath string) (stageMetadata, error) {

@@ -18,7 +18,9 @@ user its owner with `chown`, or move amux to a directory you own, then update
 again.
 
 If the installation fails after the desktop has closed, amux reopens the
-previous version and shows the reason.
+previous version and shows the reason. If amux cannot reopen, the reason is
+shown the next time you open the desktop. The report is also kept as
+`install.reported.log` beside the downloaded package in the amux update cache.
 
 If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the

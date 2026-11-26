@@ -556,7 +556,7 @@ func run(args []string) error {
 	})
 	view.Start(ctx)
 	if failure := appupdate.TakeFailure(); failure != "" {
-		message := widget.NewLabel("The amux update was not installed: " + failure)
+		message := widget.NewLabel(failure)
 		message.Wrapping = fyne.TextWrapWord
 		var notice *widget.PopUp
 		content := container.NewPadded(container.NewVBox(message, widget.NewButton("OK", func() { notice.Hide() })))

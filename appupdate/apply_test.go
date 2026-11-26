@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCheckInstallableRejectsFilesTheHelperCannotReplace(t *testing.T) {
@@ -66,22 +67,81 @@ func TestCheckInstallableExplainsUnwritableInstallDirectory(t *testing.T) {
 	check("existing lock")
 }
 
-func TestTakeFailureReportsAFailedInstallOnce(t *testing.T) {
+func TestTakeFailureReportsTheLatestFailedInstallOnce(t *testing.T) {
 	cache := t.TempDir()
-	for tag, message := range map[string]string{"v1.0.0": "update completed\n", "v1.0.1": "cannot install amux: access denied\n"} {
+	write := func(tag, message string, age time.Duration) string {
 		stage := filepath.Join(cache, "amux", "updates", tag)
 		if err := os.MkdirAll(stage, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(stage, "install.log"), []byte(message), 0o600); err != nil {
+		log := filepath.Join(stage, "install.log")
+		if err := os.WriteFile(log, []byte(message), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		stamp := time.Now().Add(-age)
+		if err := os.Chtimes(log, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+		return stage
 	}
+	write("v1.0.0", "update completed\n", time.Hour)
+	stage := write("v1.0.1", "cannot install amux: access denied\n", time.Minute)
 	if got := takeFailureAt(cache); got != "cannot install amux: access denied" {
 		t.Fatalf("failure = %q", got)
 	}
 	if got := takeFailureAt(cache); got != "" {
 		t.Fatalf("failure reported twice: %q", got)
+	}
+	if kept, err := os.ReadFile(filepath.Join(stage, "install.reported.log")); err != nil || !strings.Contains(string(kept), "access denied") {
+		t.Fatalf("diagnostic log not kept: %q, %v", kept, err)
+	}
+	// An older failure nobody saw must not be reported after a later success.
+	write("v1.0.1", "cannot install amux: access denied\n", time.Hour)
+	write("v1.0.2", "update completed\n", time.Minute)
+	if got := takeFailureAt(cache); got != "" {
+		t.Fatalf("stale failure reported after a successful update: %q", got)
+	}
+}
+
+func TestFinishUpdateRecordsFailureBeforeReopeningDesktop(t *testing.T) {
+	cache := t.TempDir()
+	stage := filepath.Join(cache, "amux", "updates", "v1.0.1")
+	if err := os.MkdirAll(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// No verified package is staged, so the install fails after the handoff.
+	request := helperRequest{archivePath: filepath.Join(stage, "bundle.zip"), executable: filepath.Join(t.TempDir(), "amux"), cacheRoot: cache, restartArgs: []string{}}
+	noWait := func(int) error { return nil }
+
+	seenAtStartup, launches := "", 0
+	err := finishUpdate(request, noWait, func(string, []string) error {
+		launches++
+		seenAtStartup = takeFailureAt(cache)
+		return nil
+	})
+	if err == nil || launches != 1 {
+		t.Fatalf("err = %v, launches = %d", err, launches)
+	}
+	if !strings.HasPrefix(seenAtStartup, "The amux update was not installed: ") || !strings.Contains(seenAtStartup, err.Error()) {
+		t.Fatalf("reopened desktop saw %q, want install error %v", seenAtStartup, err)
+	}
+
+	err = finishUpdate(request, noWait, func(string, []string) error { return errors.New("injected launch failure") })
+	if err == nil || !strings.Contains(err.Error(), "injected launch failure") {
+		t.Fatalf("err = %v", err)
+	}
+	got := takeFailureAt(cache)
+	if !strings.HasPrefix(got, "The amux update was not installed: ") || !strings.Contains(got, "amux also could not reopen: injected launch failure") {
+		t.Fatalf("failure kept for the next desktop start = %q", got)
+	}
+
+	request.pids = []int{42}
+	err = finishUpdate(request, func(int) error { return errors.New("timed out waiting for process 42 to exit") }, func(string, []string) error {
+		t.Fatal("opened a second desktop while a process was still running")
+		return nil
+	})
+	if got := takeFailureAt(cache); err == nil || got != "The amux update was not installed: timed out waiting for process 42 to exit" {
+		t.Fatalf("err = %v, failure = %q", err, got)
 	}
 }
 
