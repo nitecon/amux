@@ -54,6 +54,12 @@ func TestServerPeeringKeyRejectsNonLoopbackProfileURL(t *testing.T) {
 	_, stop := startServerCommand(t, "--profile", profile, "--profile-tls-name", "127.0.0.1",
 		"--secure-instance-id", uuid.NewString(), "--listen", "127.0.0.1:0", "--discovery-bind", "127.0.0.1:0")
 	defer stop()
+	// Join credential maintenance before editing the manifest: ProvisionLocal
+	// restores the loopback URL during reconciliation, including at startup.
+	stop()
+	if _, err := storage.LoadLocalClientCredentials(profile); err != nil {
+		t.Fatalf("load valid local credentials: %v", err)
+	}
 	manifestPath := filepath.Join(profile, "local-client.json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -72,8 +78,8 @@ func TestServerPeeringKeyRejectsNonLoopbackProfileURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
-	if err := run(context.Background(), []string{"server", "peering-key", "--profile", profile}, &stdout, io.Discard, nil); err == nil {
-		t.Fatal("accepted a non-loopback local server URL")
+	if err := run(context.Background(), []string{"server", "peering-key", "--profile", profile}, &stdout, io.Discard, nil); err == nil || err.Error() != "local server URL must use a loopback IP and explicit port" {
+		t.Fatalf("expected non-loopback URL rejection, got %v", err)
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("invalid profile printed output: %q", stdout.String())
