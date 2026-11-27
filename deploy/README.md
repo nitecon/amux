@@ -210,6 +210,19 @@ for a gateway project ID. Explicit entries in `project_urls` or `projects`
 can register missing gateway projects. Discovery alone does not create them.
 A project needs a local checkout before this client can run its tasks.
 
+To stop this machine from executing a project, list its gateway project ID
+under `excluded_projects`:
+
+```yaml
+excluded_projects:
+  sre: true
+```
+
+The checkout stays bound and reported, but this client runs no workers or local
+chats for that project. After `amux --reload-config` or `SIGHUP`, existing
+workers drain. The desktop menu action writes the same key, and gateway
+switches keep it.
+
 Start the client with `amux client run`. It keeps its worker journal alongside
 the YAML as `workers.db`. Set `worker_journal` to the absolute path of an
 existing journal to reuse it across desktop and service starts.

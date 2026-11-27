@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Exclude or allow agent execution of a project on this machine from the
+  managed desktop project menu. The checkout stays bound and browsable, and
+  active tasks finish before execution stops.
+
 ### Fixed
 
 - Tell agents notified of a user task comment to reply on the task with
