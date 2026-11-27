@@ -114,6 +114,10 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 			heading = "Task ready for user review"
 			instructions = "The task is waiting for a user decision. Read its review action and submitted result."
 		}
+		if kind == "task_commented" && heading == "" && userComment(payload.Comment) {
+			heading = "User commented on task"
+			instructions = "The user wrote this comment on the task and reads replies there, not in this conversation. Act on it, then answer with task_comment on this task."
+		}
 		notificationEvent := struct {
 			Kind      string          `json:"kind"`
 			Project   string          `json:"project_ident"`
@@ -138,6 +142,13 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 		stored = stored || emitted.Stored
 	}
 	return stored, nil
+}
+
+func userComment(raw json.RawMessage) bool {
+	var comment struct {
+		AuthorType string `json:"author_type"`
+	}
+	return json.Unmarshal(raw, &comment) == nil && comment.AuthorType == "user"
 }
 
 func routerNotifierNewTask(eventID string, task json.RawMessage) bool {

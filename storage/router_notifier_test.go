@@ -359,3 +359,34 @@ func TestRouterNotifierNewTaskIsBasedOnlyOnCreatedEventAndReviewLabel(t *testing
 		})
 	}
 }
+
+func TestUserCommentNotificationAsksForTaskReply(t *testing.T) {
+	s := taskStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	registry := notifierRegistry(t)
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{owner}}, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("presence accepted=%t err=%v", ok, err)
+	}
+	task := `{"status":"in_progress","owner_origin":{"session_id":"` + notifierOwnerSession + `","instance_id":"` + notifierOwnerInstance + `"}}`
+	for i, tc := range []struct{ authorType, want string }{{"user", "task_comment"}, {"agent", ""}} {
+		payload := `{"project":"tasks","task":` + task + `,"comment":{"author_type":"` + tc.authorType + `","content":"done?"},"actor":null}`
+		if err := s.ReconcileRouterNotifiers(ctx, registry, notifierCause(t, s, "task.commented", payload)); err != nil {
+			t.Fatal(err)
+		}
+		var raw string
+		if err := s.db.QueryRowContext(ctx, "SELECT payload FROM router_events WHERE id='agent.notify' ORDER BY seq DESC LIMIT 1").Scan(&raw); err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+		var notice struct {
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal([]byte(raw), &notice); err != nil {
+			t.Fatal(err)
+		}
+		if tc.want == "" && notice.Instructions != "" || !strings.Contains(notice.Instructions, tc.want) {
+			t.Fatalf("%s comment instructions=%q", tc.authorType, notice.Instructions)
+		}
+	}
+}

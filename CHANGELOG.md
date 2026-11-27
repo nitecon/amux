@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Tell agents notified of a user task comment to reply on the task with
+  `task_comment`, so answers no longer stay only in the agent conversation.
+
 ## v0.9.2 - 2026-11-26
 
 ### Added
