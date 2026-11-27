@@ -7,7 +7,9 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/uuid v1.6.0
+	github.com/rs/zerolog v1.35.1
 	github.com/rymdport/portal v0.4.2
+	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -19,7 +21,6 @@ require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/anthonynsimon/bild v0.14.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/fyne-io/gl-js v0.2.1-0.20260315212741-029c47fd27e8 // indirect
 	github.com/fyne-io/glfw-js v0.4.0 // indirect
@@ -35,17 +36,18 @@ require (
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade // indirect
 	github.com/jsummers/gobmp v0.0.0-20230614200233-a9de23ed2e25 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/text v0.44.0 // indirect

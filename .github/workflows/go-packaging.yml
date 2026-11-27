@@ -70,20 +70,20 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev libwayland-dev libxkbcommon-dev xorg-dev
       - name: Fetch pinned bundled tools
-        run: go run ./cmd/amux-release tools --target ${{ matrix.target }} --output target/bundled
+        run: go run ./tools/amux-release tools --target ${{ matrix.target }} --output target/bundled
       - name: Test Go packages
         run: go test ./...
       - name: Prepare build directory
         shell: bash
         run: mkdir -p bin
-      - name: Build CLI
-        run: go build -trimpath -o "bin/amux${{ matrix.ext }}" ./cmd/amux
-      - name: Build desktop
+      - name: Build Amux
+        run: go build -tags desktop -trimpath -o "bin/amux${{ matrix.ext }}" ./cmd
+      - name: Preserve desktop launcher
         if: runner.os != 'Windows'
-        run: go build -tags desktop -trimpath -o "bin/amux-desktop${{ matrix.ext }}" ./cmd/amux-desktop
+        run: cp bin/amux bin/amux-desktop
       - name: Build Windows desktop
         if: runner.os == 'Windows'
-        run: go build -tags desktop -trimpath -ldflags "-H=windowsgui" -o bin/amux-desktop.exe ./cmd/amux-desktop
+        run: go build -tags desktop -trimpath -ldflags "-H=windowsgui" -o bin/amux-desktop.exe ./cmd
       - name: Desktop CLI argument smoke
         shell: bash
         run: |
@@ -112,8 +112,8 @@ jobs:
             version_args=(--version "$tag" --candidate-only)
           fi
           package_name="amux-${{ matrix.platform }}-$package_id.${{ matrix.archive }}"
-          go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output "dist/$package_name" "${version_args[@]}"
-          go run ./cmd/amux-release smoke --bundle "dist/$package_name" --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output dist/installed
+          go run ./tools/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output "dist/$package_name" "${version_args[@]}"
+          go run ./tools/amux-release smoke --bundle "dist/$package_name" --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output dist/installed
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
       - name: Verify upgrade with the shipped updater
         shell: bash
@@ -124,7 +124,7 @@ jobs:
           directory=dist
           if [ "$GITHUB_REF_TYPE" != tag ]; then
             directory=dist/handoff
-            go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" \
+            go run ./tools/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" \
               --version "$TAG" --output "$directory/amux-${{ matrix.platform }}-$TAG.${{ matrix.archive }}"
           fi
           python scripts/test_release_handoff.py "$directory/amux-${{ matrix.platform }}-$TAG.${{ matrix.archive }}" --source-bin bin
@@ -157,7 +157,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          go run ./cmd/amux-release check-tag "$TAG"
+          go run ./tools/amux-release check-tag "$TAG"
           mkdir -p dist
           for asset in "amux-linux-x86_64-$TAG.tar.gz" "amux-windows-x86_64-$TAG.zip" "amux-macos-aarch64-$TAG.zip"; do
             cp "artifacts/amux-"*/"$asset" dist/

@@ -4,7 +4,7 @@
 
 Move the twelve code, documentation, knowledge, and memory tools currently exposed by the `amux` MCP server into native Go packages. The desktop and headless workers will keep using the same `amux` MCP entry point. A clean Amux installation must run these tools with the `agent-tools` and `memory` executables absent. Amux already owns task tracking, agent identity, and gateway transport. Reuse those systems.
 
-The compatibility baseline is the checksum-pinned `agent-tools` v2.0.0 and `memory` v1.13.11 release binaries in [bundled-tools.json](../packaging/bundled-tools.json). The [current MCP catalog](../cmd/amux/bundled_catalog.go) defines the public tool names, schemas, and argument handling. Confirm behavior against the pinned binaries, including where an older source checkout disagrees. Record applicable licenses and notices for any copied code, grammar, or model artifact.
+The compatibility baseline is the checksum-pinned `agent-tools` v2.0.0 and `memory` v1.13.11 release binaries in [bundled-tools.json](../packaging/bundled-tools.json). The [current MCP catalog](../internal/amuxruntime/bundled_catalog.go) defines the public tool names, schemas, and argument handling. Confirm behavior against the pinned binaries, including where an older source checkout disagrees. Record applicable licenses and notices for any copied code, grammar, or model artifact.
 
 ## Storage and execution boundaries
 
@@ -28,7 +28,7 @@ Use actual process execution for acceptance. Use the release fetcher to stage th
 
 Run both sides against equivalent isolated checkouts, stores, and initial state. Compare `isError`, content shape, text, ordering, and state changes. Require exact text where deterministic. A fixture may map nondeterministic IDs, temporary roots, and timestamps by field. For ranking, use fixed corpus, model, configuration, and query fixtures. Compare result IDs and order where deterministic, and document any supported platform-specific score tolerance. Keep real parser, index, SQLite, and inference execution in the acceptance path. Golden files and mock providers can supplement the reference execution.
 
-Take a baseline of the existing tool catalog, including required and optional arguments, defaults, literal argument handling, output encoding, errors, and checkout scope. Reuse [stdio coverage](../cmd/amux/bundled_mcp_process_test.go), [pinned release contracts](../cmd/amux/bundled_version_contract_test.go), and [memory regression fixtures](../cmd/amux/bundled_memory_contract_test.go). Adapt them as tools move in-process. Exercise supported requests with absent or invalid paths, ambiguous results, empty matches, and cancellation wherever those cases apply.
+Take a baseline of the existing tool catalog, including required and optional arguments, defaults, literal argument handling, output encoding, errors, and checkout scope. Reuse [stdio coverage](../internal/amuxruntime/bundled_mcp_process_test.go), [pinned release contracts](../internal/amuxruntime/bundled_version_contract_test.go), and [memory regression fixtures](../internal/amuxruntime/bundled_memory_contract_test.go). Adapt them as tools move in-process. Exercise supported requests with absent or invalid paths, ambiguous results, empty matches, and cancellation wherever those cases apply.
 
 ## Milestone 1 — File reads and Markdown
 

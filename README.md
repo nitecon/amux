@@ -115,7 +115,7 @@ same bundle:
 ```sh
 amux client enroll --server https://gateway.example:24182 --state-dir ~/.amux/cluster  # peering key on stdin
 amux --generate-client-config   # then list your projects and providers in ~/.amux/config.yml
-amux client run
+amux headless
 ```
 
 To run the server itself without a desktop, see the

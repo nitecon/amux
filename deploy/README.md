@@ -1,6 +1,6 @@
 # Standalone server deployment
 
-The `amux server run` command runs the Go server without the desktop application or an interactive login. It defaults to `127.0.0.1:7913`. Bearer mode requires a nonempty API key in `GATEWAY_API_KEY` and TLS for a non-loopback listener. Choose `--database PATH` for a standalone SQLite database or `--profile DIR` to keep `application.sqlite` and the installation identity in `security.sqlite` under one directory. Profile mode retains an existing Rust installation ID and valid root certificate and key, creates a root pair for a fresh profile, and holds the security owner lock for the lifetime of the process. Incomplete or mismatched root material prevents startup.
+The `amux server` command runs the Go server without the desktop application or an interactive login. It defaults to `127.0.0.1:7913`. Bearer mode requires a nonempty API key in `GATEWAY_API_KEY` and TLS for a non-loopback listener. Choose `--database PATH` for a standalone SQLite database or `--profile DIR` to keep `application.sqlite` and the installation identity in `security.sqlite` under one directory. Profile mode retains an existing Rust installation ID and valid root certificate and key, creates a root pair for a fresh profile, and holds the security owner lock for the lifetime of the process. Incomplete or mismatched root material prevents startup.
 
 Run `amux --generate-server-config` to create `amux-server.yml` in the
 current directory. Choose an absolute `database` or `profile` path and
@@ -8,7 +8,7 @@ edit the listener, TLS, and retention settings as needed. The template
 references credential environment variables. It does not contain the
 credentials themselves.
 
-Start the server with `amux server run --config /absolute/path/to/amux-server.yml`.
+Start the server with `amux server --config /absolute/path/to/amux-server.yml`.
 For systemd, use that command as `ExecStart` and keep the existing
 `EnvironmentFile`. The same command works as the service program and
 arguments for Windows or macOS. Explicit CLI flags override the matching YAML
@@ -44,7 +44,7 @@ Build the standalone server image from the repository root:
 docker build -t amux-server:local .
 ```
 
-The image uses Go 1.26.11 to build `./cmd/amux` with `CGO_ENABLED=0`, then copies the binary into a `scratch` runtime. It runs as UID/GID 65532 and keeps SQLite state under `/data`. The Go base image is version tagged; no immutable digest or security audit is claimed here.
+The image uses Go 1.26.11 to build `./cmd` with `CGO_ENABLED=0`, then copies the binary into a `scratch` runtime. It runs as UID/GID 65532 and keeps SQLite state under `/data`. The Go base image is version tagged; no immutable digest or security audit is claimed here.
 
 Create a private environment file on the host (outside the build context) containing `GATEWAY_API_KEY=<strong-secret>`, then start a loopback-only instance on a Linux host:
 
@@ -69,7 +69,7 @@ docker run -d --name amux-server \
   --volume amux-data:/data \
   --volume /etc/amux/tls:/tls:ro \
   amux-server:local \
-  server run --database /data/amux.db --listen 0.0.0.0:7913 \
+  server --database /data/amux.db --listen 0.0.0.0:7913 \
   --tls-cert /tls/server.crt --tls-key /tls/server.key
 ```
 
@@ -114,7 +114,7 @@ Use this drop-in content, adjusting the address and certificate paths:
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/amux server run --database /var/lib/amux/amux.db --listen 0.0.0.0:7913 --tls-cert /etc/amux/tls/server.crt --tls-key /etc/amux/tls/server.key
+ExecStart=/usr/local/bin/amux server --database /var/lib/amux/amux.db --listen 0.0.0.0:7913 --tls-cert /etc/amux/tls/server.crt --tls-key /etc/amux/tls/server.key
 ```
 
 Then apply the override:
@@ -225,7 +225,7 @@ also send `SIGHUP` to the client. Existing workers drain after the reload.
 The desktop menu action writes the same key. Switching gateways preserves the
 exclusion entries when the desktop rewrites the same profile.
 
-Start the client with `amux client run`. It keeps its worker journal alongside
+Start the client with `amux headless`. It keeps its worker journal alongside
 the YAML as `workers.db`. Set `worker_journal` to the absolute path of an
 existing journal to reuse it across desktop and service starts.
 After editing projects or providers, use `amux --reload-config` or send the
@@ -235,9 +235,9 @@ can take work. Changing the enrollment manifest path requires a client restart.
 
 When the desktop hosts a gateway, it writes a `hosted_gateway` section for its
 local enrollment and starts the client. The client starts the gateway as a
-separate `amux server run` process. Closing the desktop leaves the client and
+separate `amux server` process. Closing the desktop leaves the client and
 gateway running. Reopening the desktop reuses the services.
 
-Use `amux client run --config PATH` and `amux --reload-config --config PATH`
+Use `amux headless --config PATH` and `amux --reload-config --config PATH`
 for a separate client profile. Explicit desktop gateway overrides use their
 own profile and journal, so they can coexist with the default client.

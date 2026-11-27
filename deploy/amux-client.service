@@ -9,7 +9,7 @@ User=amux
 Group=amux
 Environment=HOME=/var/lib/amux-client
 StateDirectory=amux-client
-ExecStart=/usr/local/bin/amux client run
+ExecStart=/usr/local/bin/amux headless
 ExecReload=/usr/local/bin/amux --reload-config
 Restart=on-failure
 RestartSec=5

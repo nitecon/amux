@@ -1237,7 +1237,7 @@
       "line": 896,
       "test": "list_arguments_pass_each_element_as_one_positional",
       "status": "ported",
-      "go_test": "cmd/amux/work_submission_mcp_contract_test.go:TestSubmitWorkMCPPathsMatchSourceListContract,TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames,TestSubmitWorkMCPForwardsResumeCommit,TestSubmitWorkMCPRejectsInvalidPathShapesBeforeHTTPOrGit; cmd/amux/work_submission_test.go:TestSubmitWorkPathsFilePreservesLiteralStrings",
+      "go_test": "internal/amuxruntime/work_submission_mcp_contract_test.go:TestSubmitWorkMCPPathsMatchSourceListContract,TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames,TestSubmitWorkMCPForwardsResumeCommit,TestSubmitWorkMCPRejectsInvalidPathShapesBeforeHTTPOrGit; internal/amuxruntime/work_submission_test.go:TestSubmitWorkPathsFilePreservesLiteralStrings",
       "disposition": "Direct typed MCP handling replaces source argv expansion while preserving the named list contract: paths are a required string array, literal filenames and leading-dash values reach submission intact, and invalid/empty path lists reject before HTTP or Git. MCP filters blank path entries; strict file-manifest decoding preserves literal values. Resume evidence here covers forwarding a commit that fails AmuxID trailer validation with local and remote HEAD unchanged; it does not establish successful resume acceptance."
     },
     {
@@ -1245,7 +1245,7 @@
       "line": 932,
       "test": "tool_names_are_unique",
       "status": "ported",
-      "go_test": "server/task_tools_test.go::TestAgentTaskToolsCatalogSchemas;cmd/amux/bundled_catalog_test.go::TestCombinedMCPToolCatalogNamesAreUnique",
+      "go_test": "server/task_tools_test.go::TestAgentTaskToolsCatalogSchemas;internal/amuxruntime/bundled_catalog_test.go::TestCombinedMCPToolCatalogNamesAreUnique",
       "disposition": "The combined Go catalog test builds the 15 server task/message tools, local submit_work, and all 12 bundled definitions (28 total), then asserts every name is unique. This proves the source invariant across the complete current combined catalog; bundle availability is runtime-dependent."
     },
     {
@@ -1397,7 +1397,7 @@
       "line": 699,
       "test": "preferences_default_to_commit_and_push_with_the_amux_prefix",
       "status": "ported",
-      "go_test": "worksubmission/source_unit_contract_test.go::TestSourcePreferencesDefaultToDirectPushAndUseFullUUIDBranchNames;cmd/amux/work_submission_test.go::TestWorkSubmissionPreferencesDefaultAndPreserveExistingRootFields",
+      "go_test": "worksubmission/source_unit_contract_test.go::TestSourcePreferencesDefaultToDirectPushAndUseFullUUIDBranchNames;internal/amuxruntime/work_submission_test.go::TestWorkSubmissionPreferencesDefaultAndPreserveExistingRootFields",
       "disposition": "Go-native adaptation of the complete source case, using only synthetic repositories/local bare remotes and test servers. Selected paths, Git history/index/worktree, task identity and source recovery behavior are checked. Native CLI/MCP supplies explicit execution and checkout binding instead of the legacy registry; local submission never runs on the gateway."
     },
     {
@@ -1525,7 +1525,7 @@
       "line": 226,
       "test": "invalid_cancellation_and_unwrapped_cli_never_contact_gateway",
       "status": "ported",
-      "go_test": "gatewayclient/task_cancellation_test.go::TestTaskCancelValidatesNativeInputAndDoesNotSendInvalidWrites; cmd/amux/task_cancellation_test.go::TestHeadlessCancellationCLIUsesGatewayAliasAndKeyFallback",
+      "go_test": "gatewayclient/task_cancellation_test.go::TestTaskCancelValidatesNativeInputAndDoesNotSendInvalidWrites; internal/amuxruntime/task_cancellation_test.go::TestHeadlessCancellationCLIUsesGatewayAliasAndKeyFallback",
       "disposition": "Invalid SDK inputs and a shipped binary cancellation without an execution origin are rejected before any gateway request. The binary fixture uses source-compatible gateway flags."
     },
     {
@@ -1533,7 +1533,7 @@
       "line": 283,
       "test": "shipped_cli_reads_cancellation_without_claim_or_agent_identity",
       "status": "ported",
-      "go_test": "cmd/amux/task_cancellation_test.go::TestHeadlessCancellationCLIUsesGatewayAliasAndKeyFallback",
+      "go_test": "internal/amuxruntime/task_cancellation_test.go::TestHeadlessCancellationCLIUsesGatewayAliasAndKeyFallback",
       "disposition": "Shipped binary uses one bearer-only GET, renders the scoped canonical report and creates no application state."
     },
     {
@@ -1637,7 +1637,7 @@
       "line": 101,
       "test": "old_gateways_fail_the_hierarchy_preflight_without_a_creation_request",
       "status": "ported",
-      "go_test": "gatewayclient/task_delegation_test.go::TestOldGatewayFailsHierarchyPreflightWithoutCreation;cmd/amux/task_delegation_test.go::TestTasksDelegateRequiresNativeOriginAndHierarchyBeforePost",
+      "go_test": "gatewayclient/task_delegation_test.go::TestOldGatewayFailsHierarchyPreflightWithoutCreation;internal/amuxruntime/task_delegation_test.go::TestTasksDelegateRequiresNativeOriginAndHierarchyBeforePost",
       "disposition": "Hierarchy version is checked before CLI/MCP creation; old capabilities send no creation."
     },
     {
@@ -1661,7 +1661,7 @@
       "line": 259,
       "test": "invalid_delegations_and_unregistered_cli_callers_send_nothing",
       "status": "ported",
-      "go_test": "gatewayclient/task_delegation_test.go::TestInvalidDelegationsSendNothing;cmd/amux/task_delegation_test.go::TestTasksDelegateRequiresNativeOriginAndHierarchyBeforePost",
+      "go_test": "gatewayclient/task_delegation_test.go::TestInvalidDelegationsSendNothing;internal/amuxruntime/task_delegation_test.go::TestTasksDelegateRequiresNativeOriginAndHierarchyBeforePost",
       "disposition": "Invalid scope/title/context and missing native identity refused before mutation. Explicit native identity replaces the removed terminal registry."
     },
     {
@@ -1669,7 +1669,7 @@
       "line": 315,
       "test": "registered_agent_cli_delegates_without_agent_tools",
       "status": "ported",
-      "go_test": "cmd/amux/mcp_delegation_process_test.go::TestNativeMCPProcessDelegatesWithoutAgentTools",
+      "go_test": "internal/amuxruntime/mcp_delegation_process_test.go::TestNativeMCPProcessDelegatesWithoutAgentTools",
       "disposition": "Adapted to required native architecture: an actual MCP CLI subprocess with empty PATH uses a real local gateway and exact conversation owner/parent, creating linked tasks without agent-tools or terminal injection. No paid/live provider turn claimed."
     },
     {
@@ -1981,7 +1981,7 @@
       "line": 5,
       "test": "recall_uses_durable_search_and_hints_only_at_present_capabilities",
       "status": "ported",
-      "go_test": "bundledtools/recall_contract_test.go::TestDurableMemoriesChildProcessContract;cmd/amux/bundled_mcp_process_test.go::TestNativeMCPInitializeUsesMemoryOnlyRecallAndCapabilityHints;startupguidance/guidance_test.go::TestMemoryQueryUsesProjectBasename",
+      "go_test": "bundledtools/recall_contract_test.go::TestDurableMemoriesChildProcessContract;internal/amuxruntime/bundled_mcp_process_test.go::TestNativeMCPInitializeUsesMemoryOnlyRecallAndCapabilityHints;startupguidance/guidance_test.go::TestMemoryQueryUsesProjectBasename",
       "disposition": "Real child-process tests cover durable search argv/cwd/environment, bounded and UTF-8-safe output, failures, blank results and timeout. MCP initialize coverage verifies runtime capability hints (including memory_update), absence of WorkingContext, and literal multiline/CRLF recall after JSON decoding; the focused race check passed (3.678s). The source terminal_text normalization assertion is intentionally superseded by the user's no-terminal/no-injection requirement: preserve recall text verbatim instead of adding a terminal normalizer."
     },
     {
@@ -2349,7 +2349,7 @@
       "line": 459,
       "test": "project_agents_reassignment_and_os_retag_keep_exact_actor_and_platform",
       "status": "ported",
-      "go_test": "cmd/amux/task_reassignment_integration_test.go::TestTasksReassignCLITransfersTaskToRegisteredRecipient;gatewayclient/task_agents_test.go;gatewayclient/task_reassignment_test.go;gatewayclient/task_os_test.go",
+      "go_test": "internal/amuxruntime/task_reassignment_integration_test.go::TestTasksReassignCLITransfersTaskToRegisteredRecipient;gatewayclient/task_agents_test.go;gatewayclient/task_reassignment_test.go;gatewayclient/task_os_test.go",
       "disposition": "Go integration and SDK fixtures verify live OS-filtered discovery, exact native actor and recipient routing, wrong-OS rejection, incompatible-owner release on retag, and rejection of stale routing or retained ownership receipts without retry."
     },
     {
@@ -2357,7 +2357,7 @@
       "line": 598,
       "test": "cli_project_agent_discovery_is_read_only_and_reports_remote_os",
       "status": "ported",
-      "go_test": "cmd/amux/task_agents_test.go::TestRunTaskAgentsIsReadOnlyAndReportsRemoteOSAndHost;gatewayclient/task_agents_test.go",
+      "go_test": "internal/amuxruntime/task_agents_test.go::TestRunTaskAgentsIsReadOnlyAndReportsRemoteOSAndHost;gatewayclient/task_agents_test.go",
       "disposition": "The Go CLI dispatcher verifies repository binding and reports the remote agent OS and host in JSON. The fixture verifies only project and target-directory GET requests without agent identity headers. The SDK tests verify expiry and OS filtering and reject mismatched repository binding."
     },
     {
@@ -2869,7 +2869,7 @@
       "line": 33,
       "test": "large_submit_work_lists_reach_the_cli_without_os_argument_overflow",
       "status": "ported",
-      "go_test": "cmd/amux/work_submission_integration_test.go::TestNativeMCPLargeSubmitWorkListReachesTaskValidationWithoutArgvExpansion",
+      "go_test": "internal/amuxruntime/work_submission_integration_test.go::TestNativeMCPLargeSubmitWorkListReachesTaskValidationWithoutArgvExpansion",
       "disposition": "Actual 16673 long paths are delivered through initialized native MCP JSON, exceed the previous 1 MiB frame bound, and reach invalid-task UUID validation with no gateway/Git effect. Local dispatch replaces child-CLI argv expansion. Inbound framing remains bounded at 4 MiB; ordinary trusted local tool results are returned in full without a 5 MiB output cap."
     },
     {
@@ -2877,7 +2877,7 @@
       "line": 65,
       "test": "every_tool_command_and_option_exists_in_the_bundled_version",
       "status": "partial",
-      "go_test": "cmd/amux/bundled_version_contract_test.go::TestPinnedBundledToolCommandsAndOptionsExist;cmd/amux/bundled_catalog_test.go::TestBundledCatalogHasExactUniqueSourceTools",
+      "go_test": "internal/amuxruntime/bundled_version_contract_test.go::TestPinnedBundledToolCommandsAndOptionsExist;internal/amuxruntime/bundled_catalog_test.go::TestBundledCatalogHasExactUniqueSourceTools",
       "disposition": "Go verifies the pinned 12-tool catalog and checks each configured command and option against the bundled binaries. This does not fully port the Rust contract across its complete bundled command, option, coercion and runtime behavior; keep this source case partial."
     },
     {
@@ -2885,7 +2885,7 @@
       "line": 91,
       "test": "the_server_lists_and_runs_bundled_tools_over_stdio",
       "status": "partial",
-      "go_test": "cmd/amux/bundled_version_contract_test.go::TestPinnedBundledMCPReadsGoModuleOverRealStdio;cmd/amux/bundled_mcp_process_test.go::TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools;cmd/amux/bundled_mcp_process_test.go::TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest",
+      "go_test": "internal/amuxruntime/bundled_version_contract_test.go::TestPinnedBundledMCPReadsGoModuleOverRealStdio;internal/amuxruntime/bundled_mcp_process_test.go::TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools;internal/amuxruntime/bundled_mcp_process_test.go::TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest",
       "disposition": "Go exercises the real pinned bundle over stdio, checks the configured catalog and runs a bundled code_read call. This covers a subset of the Rust end-to-end contract; native task/submit tools use separate MCP paths, and the source case remains partial."
     },
     {
@@ -2893,7 +2893,7 @@
       "line": 179,
       "test": "memory_update_reports_tombstone_recovery_without_changing_retained_content",
       "status": "ported",
-      "go_test": "cmd/amux/bundled_memory_contract_test.go::TestPinnedBundledMemoryUpdateRetainsTombstoneThroughMCP",
+      "go_test": "internal/amuxruntime/bundled_memory_contract_test.go::TestPinnedBundledMemoryUpdateRetainsTombstoneThroughMCP",
       "disposition": "A pinned memory executable is called through an initialized Go MCP stdio subprocess. Its memory_update response reports tombstone recovery with safe copy guidance, and a direct isolated database read confirms the retained visible/raw content, tags, timestamp and tombstone row are unchanged. This verifies the pinned bundled binary contract only; it does not establish a Go server memory backend or live gateway behavior."
     },
     {
@@ -2901,7 +2901,7 @@
       "line": 240,
       "test": "memory_push_all_continues_past_retained_gateway_deletions",
       "status": "ported",
-      "go_test": "cmd/amux/bundled_memory_contract_test.go::TestPinnedBundledMemoryPushAllContinuesPastTombstones",
+      "go_test": "internal/amuxruntime/bundled_memory_contract_test.go::TestPinnedBundledMemoryPushAllContinuesPastTombstones",
       "disposition": "The pinned memory executable runs push --all against an isolated database with two retained tombstones and an unreachable test gateway URL. It completes both projects with blocked=2 and rejected=0, emits no recovery prompt, and preserves both tombstone rows. This verifies the pinned bundled binary contract only; no live gateway or Go server memory backend parity is claimed."
     },
     {
@@ -2917,7 +2917,7 @@
       "line": 303,
       "test": "guided_confirmation_tools_preserve_required_json_and_file_names",
       "status": "ported",
-      "go_test": "server/task_tools_test.go::TestTaskToolLifecycleAndStrictArguments; cmd/amux/mcp_process_test.go::TestNativeWorkerTaskToolsCompleteAssignedTask",
+      "go_test": "server/task_tools_test.go::TestTaskToolLifecycleAndStrictArguments; internal/amuxruntime/mcp_process_test.go::TestNativeWorkerTaskToolsCompleteAssignedTask",
       "disposition": "The native Go stdio child verifies guided confirmation, rejects omitted and boolean changesets, accepts explicit null, and persists a filename containing spaces exactly as supplied."
     },
     {
@@ -2925,7 +2925,7 @@
       "line": 86,
       "test": "inline_messages_preserve_text_identity_and_uncertain_publication",
       "status": "ported",
-      "go_test": "gatewayclient/inline_message_contract_test.go::TestInlineProjectMessageReadsAndUncertainWritesMatchSourceContract;gatewayclient/inline_message_contract_test.go::TestProjectMessageEncodedLimitAppliesToRootReplyAndAction;cmd/amux/messages_test.go::TestMessagesSendUsesWorkerIdentityLiteralBodyAndDoesNotRetry",
+      "go_test": "gatewayclient/inline_message_contract_test.go::TestInlineProjectMessageReadsAndUncertainWritesMatchSourceContract;gatewayclient/inline_message_contract_test.go::TestProjectMessageEncodedLimitAppliesToRootReplyAndAction;internal/amuxruntime/messages_test.go::TestMessagesSendUsesWorkerIdentityLiteralBodyAndDoesNotRetry",
       "disposition": "Literal message text, native worker identity and uncertain publication behavior are covered by SDK and CLI contract tests. The CLI enforces the route's encoded-size boundary; this does not claim a broader limit for generic REST clients."
     },
     {
@@ -2933,7 +2933,7 @@
       "line": 176,
       "test": "shipped_cli_reads_threads_and_refuses_unwrapped_publication",
       "status": "ported",
-      "go_test": "cmd/amux/messages_cli_process_contract_test.go::TestMessagesCLIProcessReadsThreadAndRefusesUnwrappedPublication;cmd/amux/messages_test.go::TestMessagesListAndGetUseConfiguredDefaultsWithoutNativeHeaders",
+      "go_test": "internal/amuxruntime/messages_cli_process_contract_test.go::TestMessagesCLIProcessReadsThreadAndRefusesUnwrappedPublication;internal/amuxruntime/messages_test.go::TestMessagesListAndGetUseConfiguredDefaultsWithoutNativeHeaders",
       "disposition": "An actual CLI subprocess lists and reads threads without native headers, and refuses publication outside the worker's launch checkout before making an HTTP request."
     },
     {
@@ -2941,7 +2941,7 @@
       "line": 216,
       "test": "launched_agent_publishes_with_its_registered_execution_identity",
       "status": "partial",
-      "go_test": "cmd/amux/messages_worker_process_test.go::TestNativeWorkerMessagesSendUsesSavedRunIdentityEnvironment;worker/native_tools_test.go::TestNativeProviderEnvUsesSavedRunIdentityWithoutDuplicateOverrides",
+      "go_test": "internal/amuxruntime/messages_worker_process_test.go::TestNativeWorkerMessagesSendUsesSavedRunIdentityEnvironment;worker/native_tools_test.go::TestNativeProviderEnvUsesSavedRunIdentityWithoutDuplicateOverrides",
       "disposition": "A launched Codex fixture publishes literal text using the saved run's session, instance and provider identity, exact checkout, and configured API-key environment-variable name. The source display-alias identity header and legacy manual-agent selection are not implemented, so full source-case parity remains partial."
     },
     {
@@ -2989,7 +2989,7 @@
       "line": 19,
       "test": "pairing_bypasses_a_rejecting_proxy_and_recovers_after_server_restart",
       "status": "partial",
-      "go_test": "storage/security_pairing_client_test.go::TestPairRemoteRecoversReceiptAfterFullServerRestartAndBypassesProxy;cmd/amux/command_test.go::TestSecureProfileListenerRequiresEnrolledCertificate",
+      "go_test": "storage/security_pairing_client_test.go::TestPairRemoteRecoversReceiptAfterFullServerRestartAndBypassesProxy;internal/amuxruntime/command_test.go::TestSecureProfileListenerRequiresEnrolledCertificate",
       "disposition": "Real discovery/TLS listeners and reopened durable stores verify pinned recovery by receipt without reposting, zero proxy traffic, published-profile access, and denial of operator privileges. Explicit client renewal and isolated subprocess parity remain pending."
     },
     {
@@ -3165,7 +3165,7 @@
       "line": 202,
       "test": "release_and_submit_refuse_without_exact_confirmed_ownership",
       "status": "ported",
-      "go_test": "cmd/amux/work_submission_integration_test.go::TestNativeReleaseAndSubmitRejectEveryUnconfirmedOwnershipShape",
+      "go_test": "internal/amuxruntime/work_submission_integration_test.go::TestNativeReleaseAndSubmitRejectEveryUnconfirmedOwnershipShape",
       "disposition": "Native explicit-origin adaptation: authoritative task read uses comments=0 before path-file access or mutation, with extra project/conversation binding reads where needed. Positive path-file flow publishes and posts one exact agent receipt; the seven source refusal shapes are checked for both release and submission, including explicit no-submission diagnostics and zero mutations. Legacy actor discovery is tracked separately."
     },
     {
@@ -3173,7 +3173,7 @@
       "line": 252,
       "test": "path_file_submission_confirms_ownership_publishes_and_posts_the_result",
       "status": "ported",
-      "go_test": "cmd/amux/work_submission_integration_test.go::TestWorkSubmissionCLIPathFileAndTopLevelAliasPublishAndPostOneReceipt",
+      "go_test": "internal/amuxruntime/work_submission_integration_test.go::TestWorkSubmissionCLIPathFileAndTopLevelAliasPublishAndPostOneReceipt",
       "disposition": "Native explicit-origin adaptation: authoritative task read uses comments=0 before path-file access or mutation, with extra project/conversation binding reads where needed. Positive path-file flow publishes and posts one exact agent receipt; the seven source refusal shapes are checked for both release and submission, including explicit no-submission diagnostics and zero mutations. Legacy actor discovery is tracked separately."
     },
     {
@@ -3181,7 +3181,7 @@
       "line": 268,
       "test": "exact_owner_completes_or_releases_after_the_read",
       "status": "partial",
-      "go_test": "cmd/amux/tasks_test.go::TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate;cmd/amux/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow;server/workflow_test.go",
+      "go_test": "internal/amuxruntime/tasks_test.go::TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate;internal/amuxruntime/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow;server/workflow_test.go",
       "disposition": "Native console reads before completion, preserves exact active owner release preflight and delegates every-lane completion policy to transactional server. Full original CLI discovery/alias execution fixtures remain unported."
     },
     {
@@ -3189,7 +3189,7 @@
       "line": 284,
       "test": "parked_completion_allows_peers_but_release_still_requires_ownership",
       "status": "partial",
-      "go_test": "cmd/amux/tasks_test.go::TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate;cmd/amux/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow;server/workflow_test.go",
+      "go_test": "internal/amuxruntime/tasks_test.go::TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate;internal/amuxruntime/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow;server/workflow_test.go",
       "disposition": "Native console reads before completion, preserves exact active owner release preflight and delegates every-lane completion policy to transactional server. Full original CLI discovery/alias execution fixtures remain unported."
     },
     {
@@ -3197,7 +3197,7 @@
       "line": 314,
       "test": "completion_allows_every_status_and_owner",
       "status": "partial",
-      "go_test": "cmd/amux/tasks_test.go::TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate;cmd/amux/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow;server/workflow_test.go",
+      "go_test": "internal/amuxruntime/tasks_test.go::TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate;internal/amuxruntime/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow;server/workflow_test.go",
       "disposition": "Native console reads before completion, preserves exact active owner release preflight and delegates every-lane completion policy to transactional server. Full original CLI discovery/alias execution fixtures remain unported."
     },
     {
@@ -3533,7 +3533,7 @@
       "line": 178,
       "test": "date_window_and_offline_cli_need_no_actor_or_gateway_and_write_no_state",
       "status": "ported",
-      "go_test": "worksubmission/work_report_test.go::TestBuildLocalReportDateBoundsAndRejectsUnsafeOrInvalidSelections; cmd/amux/task_report_test.go::TestTasksReportOfflineUsesFixtureAndDoesNotWriteRepositoryState",
+      "go_test": "worksubmission/work_report_test.go::TestBuildLocalReportDateBoundsAndRejectsUnsafeOrInvalidSelections; internal/amuxruntime/task_report_test.go::TestTasksReportOfflineUsesFixtureAndDoesNotWriteRepositoryState",
       "disposition": "Verified exclusive date bounds and invalid selection, source-compatible offline invocation, explicit offline marker, and no repository or state directory mutation. TestTasksReportMarksMissingGatewayAndGitHubCoveragePartial verifies unenrolled online partial coverage."
     },
     {
@@ -5038,7 +5038,7 @@
       "test": "independent_plugins_run_in_parallel",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRuntimeUsesDurableDependenciesAndParallelChannels;router/runtime_channels_test.go::TestRuntimeRoutesClaimedWorkToPluginChannels",
-      "disposition": "Core runtime/journal parallelism plus plugin-specific bounded work-channel routing are covered. The global active-claim limit remains enforced by the runtime and durable journal; channels only dispatch already-claimed work. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal parallelism plus plugin-specific bounded work-channel routing are covered. The global active-claim limit remains enforced by the runtime and durable journal; channels only dispatch already-claimed work. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5046,7 +5046,7 @@
       "test": "dependents_wait_for_completion_and_steps_run_in_phase_order",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRuntimeUsesDurableDependenciesAndParallelChannels",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5054,7 +5054,7 @@
       "test": "stop_ends_the_run_and_skips_only_its_dependents",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRuntimeStopSkipsOnlyDeclaredDependents",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5062,7 +5062,7 @@
       "test": "failed_runs_retry_from_the_first_step_after_backoff_and_hold_dependents",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRuntimeTickMakesDurableRetryEligible",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5070,7 +5070,7 @@
       "test": "a_panicking_step_is_retried_like_a_failure",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRuntimeTickMakesDurableRetryEligible;router/runtime_test.go::TestRuntimeTurnsPanicAndInvalidOutcomeIntoFailure",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5078,7 +5078,7 @@
       "test": "retry_delay_doubles_from_one_second_and_caps_at_thirty",
       "status": "ported",
       "go_test": "router/execution_test.go::TestRetryDelayDoublesAndCaps",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5086,7 +5086,7 @@
       "test": "paged_claims_reach_runnable_work_after_delayed_backlog_and_respect_capacity",
       "status": "ported",
       "go_test": "storage/router_scheduler_test.go::TestRouterClaimPagesDelayedParallelBacklogAndHonorsCapacity",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5094,7 +5094,7 @@
       "test": "fifo_holds_running_and_retrying_heads_without_blocking_parallel_work",
       "status": "ported",
       "go_test": "storage/router_scheduler_test.go::TestRouterFIFORunningAndRetryingHeadAcrossEventTypes;storage/router_scheduler_test.go::TestRouterFIFOHeadDoesNotBlockParallelPlugin",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5102,7 +5102,7 @@
       "test": "bounded_failures_settle_dependents_and_survive_recovery",
       "status": "ported",
       "go_test": "storage/router_scheduler_test.go::TestRouterDependenciesReadyVetoAndFailureExhaustion;storage/router_runtime_integration_test.go::TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5126,7 +5126,7 @@
       "test": "recovery_skips_removed_subscriptions_on_registered_plugins",
       "status": "ported",
       "go_test": "storage/router_scheduler_test.go::TestRouterRecoverySkipsRemovedSubscriptionVersion",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5134,7 +5134,7 @@
       "test": "recording_failure_retries_without_reexecuting_plugin_steps",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRuntimeRetriesCompletionWriteWithoutRepeatingStep",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5142,7 +5142,7 @@
       "test": "router_shutdown_cancels_owned_controller_runs_and_bounds_concurrency",
       "status": "ported",
       "go_test": "router/runtime_test.go::TestRuntimeCapacityBoundsOwnedExecutions;router/runtime_test.go::TestRuntimeRejectsConcurrentRunAndCancellationReleases;storage/router_runtime_integration_test.go::TestRouterRuntimeCancellationJoinsOwnedBlockedStep;router/runtime_channels_test.go::TestRuntimeDrainsQueuedPluginChannelOnShutdown",
-      "disposition": "Shutdown cancels and joins owned executions and drains queued plugin-channel work; the focused channel test confirms queued callbacks are not invoked when their context is already canceled. FIFO/dependency/retry state and delivery identity remain journal-owned. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Shutdown cancels and joins owned executions and drains queued plugin-channel work; the focused channel test confirms queued callbacks are not invoked when their context is already canceled. FIFO/dependency/retry state and delivery identity remain journal-owned. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5150,7 +5150,7 @@
       "test": "queued_claim_cannot_mutate_deliveries_after_router_shutdown",
       "status": "ported",
       "go_test": "storage/router_scheduler_test.go::TestCanceledQueuedRouterClaimCannotMutateAfterRelease;storage/router_scheduler_test.go::TestCanceledRouterReleaseFencesOldTokenAndRecoversRunningDelivery",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5158,7 +5158,7 @@
       "test": "reaching_the_retry_cap_emits_router_retrying_once",
       "status": "ported",
       "go_test": "storage/router_scheduler_test.go::TestRouterRetryCapMarshalsControlCharactersAsJSON;storage/router_scheduler_test.go::TestFinishRouterDeliveryFailureReplayIsIdempotent",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -5166,7 +5166,7 @@
       "test": "unfinished_work_replays_after_restart_and_removed_plugins_are_skipped",
       "status": "ported",
       "go_test": "storage/router_runtime_integration_test.go::TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures",
-      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in cmd/amux/router_test.go and cmd/amux/command_test.go."
+      "disposition": "Core runtime/journal behavioral equivalent tested with channel ticks, owned cooperative cancellation and SQLite transitions. Complete builtin source/plugin production activation is covered separately in internal/amuxruntime/router_test.go and internal/amuxruntime/command_test.go."
     },
     {
       "source": "crates/gateway-backend/src/router.rs",
@@ -6107,7 +6107,7 @@
       "source": "crates/gateway-backend/src/lib.rs",
       "line": 143,
       "status": "ported",
-      "evidence": "server/task_reassign_test.go;storage/task_reassignment_test.go;cmd/amux/task_reassignment_integration_test.go"
+      "evidence": "server/task_reassign_test.go;storage/task_reassignment_test.go;internal/amuxruntime/task_reassignment_integration_test.go"
     },
     {
       "path": "/v1/projects/{ident}/tasks/{id}/assign",
@@ -6135,7 +6135,7 @@
       "source": "crates/gateway-backend/src/lib.rs",
       "line": 147,
       "status": "ported",
-      "evidence": "server/remote_stream.go;server/remote_stream_test.go;cmd/amux/command_test.go"
+      "evidence": "server/remote_stream.go;server/remote_stream_test.go;internal/amuxruntime/command_test.go"
     },
     {
       "path": "/v1/presence/summary",
@@ -6716,7 +6716,7 @@
     "not_parity": "Complete builtin router wiring now runs in the headless server; full application parity is still incomplete, including secure peers, remaining bundled MCP tools, channel adapters and desktop features."
   },
   "desktop_runtime": {
-    "build": "go build -tags desktop -o amux-desktop ./cmd/amux-desktop; native Fyne driver requires the platform graphics/C toolchain. Default cmd/amux server/headless dependency graph imports no Fyne/GL packages.",
+    "build": "go build -tags desktop -o amux-desktop ./cmd; native Fyne driver requires the platform graphics/C toolchain. Default cmd/amux server/headless dependency graph imports no Fyne/GL packages.",
     "connect": "GATEWAY_API_KEY is read at runtime. amux-desktop --server URL --project IDENT --conversation UUID opens an existing task conversation. No terminal, browser login or provider model request is started by merely viewing it.",
     "local_worker": "Browser Native worker pool panel reuses worker.RunPool and saved pool/slot/run journals; default local OS config journal workers.db is profile-locked for the desktop lifetime. --state PATH replaces its path and --state= disables hosting. Optional direct --state PATH --run-id UUID still hosts an exact saved conversation through worker.Run. Shutdown cancels and joins workers before store/profile cleanup.",
     "projection": "chat.Model binds conversation/native-session scope, rejects gaps/conflicting replay, groups anonymous ACP deltas, reconciles snapshots and user echoes, preserves drafts/expansion, and deep-copies inspection/permission buffers.",
@@ -6752,7 +6752,7 @@
     "adoption": "POST /v1/projects/{project}/worker-assignment with {} and exact agent origin headers. Returns null when no exactly owned in_progress task. Atomically creates {run_id,task,conversation} with one queued initial prompt or replays the existing binding with the same run, conversation, and prompt IDs. Replay requires an exact conversation owner origin match and, when the conversation has a recorded principal, the same authenticated enrolled-client principal. Legacy conversations without a recorded principal retain origin-only replay eligibility. Adoption ownership failures return HTTP 403. Binding invalidates when task status changes, retaining prior conversations/history so new claims have fresh intent. X-Task-Goal must match a tagged task before creating or returning its binding. Missing or wrong selection is HTTP 409.",
     "recovery": "Conversation resume transfers a task owner only if its in_progress owner exactly equals the previous conversation origin. Task ownership, conversation handoff and command interruption commit together. Foreign and terminal task owners remain untouched. Pending native instance CAS is accounted for during runtime ownership checks.",
     "execution": "Shared worker.Run handles each slot conversation. Prompt turn completion does not mark task done. Slot is released locally only after task workflow no longer considers it active, owned worker has stopped/joined and pending output is flushed. Heartbeat/network loss alone never releases potentially running work.",
-    "evidence": "cmd/amux/pool_process_test.go::TestHeadlessPoolProcessAdoptsAndResumesWithoutRepeatingPrompt; gatewayclient/worker_assignment_test.go::TestWorkerAssignmentHTTPRetryPreservesConversationAndPrompt; storage/assignment_adoption_test.go; storage/worker_pool_test.go; worker/pool_test.go::TestRunPoolFinishesTaskBeforeReusingSlotAndSurvivesOfflinePrompt; storage/owner_recovery_failure_test.go. Native process fixtures require no display, login or live model calls.;worker/pool_registration_test.go;worker/pool_registration_integration_test.go;storage/worker_goal_test.go;gatewayclient/worker_assignment_goal_test.go;worker/pool_goal_integration_test.go;server/task_tools_goal_propagation_test.go",
+    "evidence": "internal/amuxruntime/pool_process_test.go::TestHeadlessPoolProcessAdoptsAndResumesWithoutRepeatingPrompt; gatewayclient/worker_assignment_test.go::TestWorkerAssignmentHTTPRetryPreservesConversationAndPrompt; storage/assignment_adoption_test.go; storage/worker_pool_test.go; worker/pool_test.go::TestRunPoolFinishesTaskBeforeReusingSlotAndSurvivesOfflinePrompt; storage/owner_recovery_failure_test.go. Native process fixtures require no display, login or live model calls.;worker/pool_registration_test.go;worker/pool_registration_integration_test.go;storage/worker_goal_test.go;gatewayclient/worker_assignment_goal_test.go;worker/pool_goal_integration_test.go;server/task_tools_goal_propagation_test.go",
     "remaining": "Legacy review APIs, explicit session/delegated routing, full project checkout discovery, remaining MCP catalog, secure peer source identity, native abrupt-parent-death runtime verification and full desktop pool controls remain incomplete.",
     "registration": "Each accepted activity/availability report is preceded by explicit target registration against the checkout canonical remote. Existing report/heartbeat schedule renews registration; report retries keep sequence/lifetime stable. Startup cleanup also omits prior source availability when initial registration fails. Manual registration lease remains independent and expires normally.",
     "goals": "Migration29 saves normalized optional pool/run Goal; old rows remain unscoped. --goal is selected only at creation and resume flags cannot override it. Reports advertise the saved pool goal; tagged allocation/review/adoption/initial conversation claims require exact selection, while untagged tasks remain unrestricted. Native MCP argv and per-request SDK headers retain saved scope without shared mutable client state. Review conversation creation preserves the separate peer-selection claim boundary."
@@ -6777,7 +6777,7 @@
       "deploy/README.md"
     ],
     "behavior": "Static CGO-disabled cmd/amux binary in non-root scratch runtime, SQLite volume /data. Container bridged access requires mounted TLS and explicit nonloopback listen flags; Linux host networking can use loopback reverse proxy. systemd service uses a non-login system account, StateDirectory, private credential env file and bounded SIGTERM shutdown. Native providers run separately as worker pools.",
-    "verification": "Go headless native process tests, race suites, vet, Linux/Windows builds, native Mac Fyne build and static Linux amd64 server build pass. cmd/amux/command_test.go and storage/security_profile_test.go verify opt-in --profile startup, separate Rust-compatible application and security databases, retained or newly created installation identity across restart, and lock release on startup failure. Profile TLS loopback tests verify chain, DNS/IP SANs and leaf reuse after restart. Storage tests verify Rust DER serial formatting, name-change rotation and retention after a failed manifest publication. Real local TLS tests verify certificate enrollment, operator invitation, revocation and nonce-fenced shutdown, and retained server certificate generations through connection drain. Container build/run and systemd execution remain pending."
+    "verification": "Go headless native process tests, race suites, vet, Linux/Windows builds, native Mac Fyne build and static Linux amd64 server build pass. internal/amuxruntime/command_test.go and storage/security_profile_test.go verify opt-in --profile startup, separate Rust-compatible application and security databases, retained or newly created installation identity across restart, and lock release on startup failure. Profile TLS loopback tests verify chain, DNS/IP SANs and leaf reuse after restart. Storage tests verify Rust DER serial formatting, name-change rotation and retention after a failed manifest publication. Real local TLS tests verify certificate enrollment, operator invitation, revocation and nonce-fenced shutdown, and retained server certificate generations through connection drain. Container build/run and systemd execution remain pending."
   },
   "native_task_tools": {
     "transport": "amux mcp --server URL --project IDENT --conversation UUID --session UUID --instance UUID --provider PROVIDER --os OS [--goal GOAL] --api-key-env NAME. Stdlib newline JSON-RPC MCP stdio; initialize/initialized, ping, tools/list and tools/call. Supports 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25; newer modern protocol revisions remain pending. Inbound JSON-RPC frames are bounded at 4 MiB. Ordinary trusted local tool results are serialized in full for source-compatible output without a 5 MiB cap. Canceled closable streams unblock and watcher joins.",
@@ -6801,8 +6801,8 @@
     "server": "POST /v1/projects/{project}/conversations/{conversation}/tools with {name,arguments} and exact agent headers. Current conversation instance checked before dispatch and again inside each taskMutation transaction. Existing ownership/OS/root/goal/file-change confirmation rules reused. task_update_delegation takes an explicit source task ID; its conversation fence is rechecked in the atomic storage mutation, and OS-label edits retain storage owner checks. Explicit null changeset differs from omission. Tool domain errors are MCP isError results with safe guidance.",
     "provider_binding": "CLI worker run and worker pool register a task MCP server by default, with --no-task-tools runtime-only opt-out. ACP session/new/resume MCP servers, Codex app-server configuration overrides and Claude --mcp-config carry executable/argv and key variable name; credential value is inherited through environment and not persisted or put in argv. Binding is generated from saved current owner after native instance CAS. Desktop hosted worker optionally uses --task-tools-command absolute Go CLI path. Saved checkout directory and configured work preference path are pinned as explicit MCP arguments, including Codex child configurations. Ordinary MCP startup does not require a user config directory; implicit absent configuration uses typed in-memory submission defaults. Codex MCP forwards the runtime native MCP environment allowlist, including AMUX_BUNDLED_DIR and a fixed allowlist of Git/gh authentication environment names plus the configured API-key name, deduplicated; no values or unrelated environment names are serialized.",
     "evidence": [
-      "cmd/amux/mcp_process_test.go::TestNativeWorkerTaskToolsCompleteAssignedTask",
-      "cmd/amux/mcp_project_message_process_test.go",
+      "internal/amuxruntime/mcp_process_test.go::TestNativeWorkerTaskToolsCompleteAssignedTask",
+      "internal/amuxruntime/mcp_project_message_process_test.go",
       "server/task_tools_test.go",
       "server/project_message_tool_test.go",
       "gatewayclient/project_message_tool_test.go",
@@ -6895,7 +6895,7 @@
     ],
     "semantics": "Native goal header and explicit empty-goal query are preserved; --all-goals is read-only. Creates preserve hierarchy and native reporter. Started verifies an active exact owner then records a comment report, not an atomic lifecycle transition. Native release preflights exact active owner, while done reads then delegates completion eligibility to server policy. Changesets distinguish absent from literal null and use shared validation.",
     "wire": "Successful replies are checked for task/project/status, hierarchy/UUID on creation, native claim origin, rank/label reflection and comment/confirmation binding. Only bounded whitelisted task confirmation error codes survive transport; raw error payloads and credentials are not printed. No mutation retries.",
-    "verification": "gatewayclient/task_operations_test.go;cmd/amux/tasks_test.go;cmd/amux/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow. Re-executed CLI process uses an actual test server without display/session-bus environment. Full race suite, vet, native desktop build and CGO-disabled Linux/Windows builds pass.",
+    "verification": "gatewayclient/task_operations_test.go;internal/amuxruntime/tasks_test.go;internal/amuxruntime/tasks_process_test.go::TestHeadlessTaskCLIProcessPreservesNativeWorkflow. Re-executed CLI process uses an actual test server without display/session-bus environment. Full race suite, vet, native desktop build and CGO-disabled Linux/Windows builds pass.",
     "remaining": "No complete legacy workspace/profile/gateway discovery, actor aliases, exact-target routing, delegation, watch, report or full CLI surface. Native ownership uses supplied execution headers; secure peer enrollment remains separately unported. Work-submission mode is configurable through CLI/file; its Fyne settings controls remain pending."
   },
   "worker_startup_failure": {
@@ -6909,7 +6909,7 @@
     "replay": "Already-cancelled replay succeeds only for identical full reporter origin and trimmed reason, before requiring a new changeset. It reuses timestamp/report without another lifecycle event. Conflicting replay fails; missing changeset creates no guided pending request. Cancelled tasks only transition to done through existing lifecycle rules.",
     "stopping": "executor_stop_confirmed is always false. Recording cancellation is independent from observing provider-process termination. SDK requires explicit JSON false and validates reporter, prior claim consistency, current task state and scope.",
     "schema": "Before migration14, startup widens recognized legacy three/four-status CHECK constraints on a pinned connection after a protected VACUUM INTO logical backup with a write-capable file sync and Unix directory syncing. Windows uses the SQLite VFS baseline without claiming POSIX directory-fsync guarantees; native Windows ACL/runtime verification remains pending. Table rebuild preserves rows, rowids, comments, indexes, triggers and references; foreign-key checking precedes commit and connection PRAGMAs are restored on success/failure. Unknown constraints and newer Go schemas fail closed. SQLite user_version is retained. Full exported Rust schema upgrade is tested for both historical CHECK variants, including all original schema objects and seeded review/execution/receipt/router history; broader application parity remains incomplete.",
-    "evidence": "storage/task_cancellation_test.go;server/task_cancellation_test.go;gatewayclient/task_cancellation_test.go;cmd/amux/task_cancellation_test.go;cmd/amux/tasks_process_test.go::TestHeadlessTaskCancellationProcessPreservesReportAndReplay.;storage/task_status_rust_test.go;storage/testdata/task_status_legacy.sql;storage/task_backup_sync_test.go.",
+    "evidence": "storage/task_cancellation_test.go;server/task_cancellation_test.go;gatewayclient/task_cancellation_test.go;internal/amuxruntime/task_cancellation_test.go;internal/amuxruntime/tasks_process_test.go::TestHeadlessTaskCancellationProcessPreservesReportAndReplay.;storage/task_status_rust_test.go;storage/testdata/task_status_legacy.sql;storage/task_backup_sync_test.go.",
     "verification": "Full go test -race -timeout180s ./..., go vet ./..., native macOS Fyne build and CGO-disabled Linux/Windows builds pass. Source-derived HTTP, storage rollback/reopen/replay, malformed SDK acknowledgement and re-executed console process tests cover the native contract."
   },
   "durable_plugin_journal": {
@@ -6966,7 +6966,7 @@
     "domain": "ReconcileRouterReviews validates the current source task and completion identity inside the existing task mutation boundary, then reuses the code/documentation review transaction. Missing, stale, reopened or unsupported work stops without generation; storage errors propagate to durable router retry.",
     "idempotency": "Existing source task + completion timestamp + review stage uniqueness is shared with the legacy automatic review/outbox worker and explicit endpoint. The completion transaction remains independent of generation failure.",
     "activation": "Production calls UseRouterReviews before serving; synchronous review generation and the legacy production review worker are replaced by router deliveries. The owned legacy-review bridge retains old obligations until a matching review delivery is durably stored, and drops obsolete completion identities. Default passive storage behavior remains compatible.",
-    "evidence": "plugins/review_test.go;storage/router_review_test.go;storage/router_review_integration_test.go;storage/workflow_test.go;storage/router_review_cutover_test.go;cmd/amux/router_test.go"
+    "evidence": "plugins/review_test.go;storage/router_review_test.go;storage/router_review_integration_test.go;storage/workflow_test.go;storage/router_review_cutover_test.go;internal/amuxruntime/router_test.go"
   },
   "durable_agent_notifications": {
     "contract": "agent.notify v1 is local-only; agent.notify_result v1 permits remote emission at registry level. Object/type checks preserve assigned/recipient modes, exact optional receiver binding, idle/new-task booleans and delivered/skipped/failed results. This declaration does not expose a remote emit endpoint.",
@@ -7052,7 +7052,7 @@
     "storage": "Migration33 adds durable per-run presence_sequence. A logical report snapshot stays unchanged across retries, including current native owner/generation, saved goal, source and runtime lifetime.",
     "runtime": "worker.Config.AdvertisePresence is enabled by standalone CLI and desktop-hosted saved-run entry points. Pool-managed Run uses its existing reporter. Source is worker:<saved-run-id>; selected workers have AutoAssign=false and no fresh-review capability. Busy describes occupied execution, not provider-turn eligibility.",
     "binding": "Current checkout canonical remote is resolved on every registration/report retry before provider admission. A permanent binding failure opens no provider. Cleanup omits the source after owned provider shutdown without releasing its task or deleting run/outbox state.",
-    "evidence": "storage/worker_presence_test.go;worker/presence_test.go;cmd/amux/worker.go;cmd/amux-desktop/main.go;worker/native_delivery_integration_test.go"
+    "evidence": "storage/worker_presence_test.go;worker/presence_test.go;internal/amuxruntime/worker.go;internal/desktopapp/run.go;worker/native_delivery_integration_test.go"
   },
   "native_notification_delivery": {
     "registry": "NativeDeliveryPlugin subscribes to agent.notify v1 without FIFO, a private ticker or a new switchable setting. Pending attempts use existing router retry ownership. Production newServerRouter acquires the complete builtin catalog including native delivery before readiness.",
@@ -7070,13 +7070,13 @@
     "ownership": "A new connection atomically takes over the consumer. Cursor writes, lease renewal and cleanup are owner-fenced. Only client input or durable skipped cursor progress renews replay leases; outbound heartbeats and empty scans do not.",
     "authority": "Server derives client:api-key, checks Registry.AcceptsRemote and validates correlation UUID. Client source/principal frame fields are rejected. Raw heartbeat/activity observations cannot grant native execution authority. Distinct authenticated peer identities remain pending.",
     "bounds": "64KiB incoming frames,5s write deadline,60s client inactivity,20s heartbeat and owned retry deadlines. Outgoing events preserve full stored snapshots, including task specifications accepted by the1MiB REST body boundary, matching Rust send semantics. Plugin transitions use shared30s ticks; transport deadlines add no polling ticker.",
-    "evidence": "storage/router_remote_consumers_test.go;server/remote_stream_test.go;server/remote_authority_integration_test.go;plugins/remote_test.go;cmd/amux/command_test.go"
+    "evidence": "storage/router_remote_consumers_test.go;server/remote_stream_test.go;server/remote_authority_integration_test.go;plugins/remote_test.go;internal/amuxruntime/command_test.go"
   },
   "builtin_router_activation": {
     "registry": "Production composes remote,inbound,presence,assignment,notifier,reminder,review,reclaim,retention,native-delivery,project-inbox together. Acquisition recovers retained subscriptions before readiness; no partial-registry cutover.",
     "lifetime": "One owned runtime plus task/legacy-review/presence/heartbeat/clock sources and shared ticker. Unexpected child termination cancels the group; all children join before storage closes. HTTP and streams share the runtime lifetime.",
     "reviews": "UseRouterReviews disables synchronous generation for production completion and reorder paths. Legacy review outbox emission and acknowledgement share a transaction, require a review subscriber and preserve failed obligations across restart.",
-    "evidence": "cmd/amux/router_test.go;cmd/amux/command_test.go;storage/router_review_cutover_test.go"
+    "evidence": "internal/amuxruntime/router_test.go;internal/amuxruntime/command_test.go;storage/router_review_cutover_test.go"
   },
   "plugin_settings_api": {
     "routes": "GET /v1/plugins and PUT /v1/plugins/{id} under existing server bearer authority.",
@@ -7120,7 +7120,7 @@
     "errors": "Failure snapshots retain requested/known saved pool identity and preserve genuine provider errors, including standalone cancellation/deadline errors. Manager-caused cancellation is a clean stop. Local task-tools executable resolution uses an explicit path, sibling amux or PATH, never the desktop executable as an MCP server.",
     "verification": "Real local server/store/Fyne tests cover creating scoped pools, stop/resume after editing all new-pool fields and switching projects, stable slot identities, saved ID restore without autostart, failed-resume preference protection and gated active-provider shutdown. Manager tests cover one active lifetime, immutable snapshots and visible synthetic native failures. No live provider calls. Native interactive controls and full platform runtime remain unverified. Window-backed software capture and bounds checks verify wrapped saved identity/status separation after an acknowledgement; layout refresh occurs only on changed text.",
     "remaining": "Existing checkout only; no local discovery/clone UI, saved pool list, delegated/session controls, complete source workspace launch semantics or native interactive verification.",
-    "evidence": "desktop/worker_manager_test.go;desktop/worker_panel_test.go;desktop/browser_worker_integration_test.go;desktop/navigation_preferences_test.go;cmd/amux-desktop/worker_tools_test.go;worker/pool_registration_integration_test.go"
+    "evidence": "desktop/worker_manager_test.go;desktop/worker_panel_test.go;desktop/browser_worker_integration_test.go;desktop/navigation_preferences_test.go;internal/desktopapp/worker_tools_test.go;worker/pool_registration_integration_test.go"
   },
   "desktop_plugin_settings": {
     "controls": "Collapsed server-wide plugin settings panel in the Projects column reads assignment/notifier/reminder/review/reclaim from the existing authenticated API. Toggles save immediately; values remain server-confirmed rather than optimistic defaults. These remote management controls allow a separate headless server to be configured without an embedded desktop.",
@@ -7141,7 +7141,7 @@
     "bounds": "Actual 16673-path MCP input fits the 4 MiB inbound frame bound without argv expansion. Ordinary trusted local tool results remain full source-compatible output with no 5 MiB cap. CLI path manifests and preference files are bounded single JSON values. Raw Git/gh stderr is excluded from tool errors; command/exit information and safe recovery references remain.",
     "source_cases": "All15 work_submission_contract cases,2 source unit cases, large MCP submission case and2 ownership cases are mapped above with executable Go evidence.",
     "limits": "PR construction retains the Rust commit-tree path and does not run commit hooks. Live GitHub publication, native settings UI, Windows Git/ACL runtime and whole-system descendant lifecycle remain unverified or incomplete. Git publication and gateway comment are separate effects with a preflight, not an atomic cross-system transaction.",
-    "evidence": "worksubmission/source_contract_test.go;worksubmission/source_unit_contract_test.go;worksubmission/concurrency_contract_test.go;worksubmission/worksubmission_test.go;cmd/amux/work_submission_integration_test.go;cmd/amux/work_submission_test.go;worker/native_tools_test.go;mcpstdio/mcpstdio_test.go;worksubmission/preferences_test.go;desktop/work_submission_settings_test.go;desktop/browser_work_submission_integration_test.go",
+    "evidence": "worksubmission/source_contract_test.go;worksubmission/source_unit_contract_test.go;worksubmission/concurrency_contract_test.go;worksubmission/worksubmission_test.go;internal/amuxruntime/work_submission_integration_test.go;internal/amuxruntime/work_submission_test.go;worker/native_tools_test.go;mcpstdio/mcpstdio_test.go;worksubmission/preferences_test.go;desktop/work_submission_settings_test.go;desktop/browser_work_submission_integration_test.go",
     "desktop_settings": "Fyne browser Work submission settings exposes direct commit-and-push or pull-request mode and branch prefix, with explicit Save/Cancel. CLI, desktop and native worker share one bounded source-compatible codec and path resolver. Desktop --work-preferences and AMUX_WORK_SUBMISSION_PREFERENCES select the same pinned file for hosted workers; unavailable implicit configuration leaves browsing usable with a visible settings error. Save errors retain drafts; closed-browser callbacks cannot persist; saving does not launch workers or publish work.",
     "remaining": "Live provider/GitHub PR validation, native interactive submissions and Windows runtime/ACL verification remain pending. PR commit-tree retains source behavior without commit hooks. Broader general settings and remaining task tool/catalog behavior remain incomplete."
   },
@@ -7163,9 +7163,9 @@
       "gatewayclient/task_delegation_tool_test.go",
       "gatewayclient/task_delegation_update_test.go",
       "gatewayclient/task_delegation_update_integration_test.go",
-      "cmd/amux/task_delegation_test.go",
-      "cmd/amux/task_delegation_update_test.go",
-      "cmd/amux/mcp_delegation_process_test.go"
+      "internal/amuxruntime/task_delegation_test.go",
+      "internal/amuxruntime/task_delegation_update_test.go",
+      "internal/amuxruntime/mcp_delegation_process_test.go"
     ],
     "remaining": "Credential-bound dispatch/session handoffs and full source desktop delegation remain incomplete. Native nudge delivery now has focused shared-tick/provider verification; full inbox race regression passed before subsequent human-authoring/thread work. No actual checkout Git publication or paid/live provider calls.",
     "verification": "Focused storage, server, CLI and SDK race checks passed, including real local HTTP/MCP authority, rollback and exact paired receipts; independent Luna review found no confirmed scoped defect. Full go test -race -timeout=600s ./... passed, including storage439.434s. Repository-wide vet, native Fyne and Linux/Windows builds passed. This validates the delegation slice before subsequent project-message implementation. No legacy test-count mapping is claimed."
@@ -7215,11 +7215,11 @@
       "plugins/project_inbox_test.go",
       "worker/project_inbox_integration_test.go",
       "worker/native_tools_test.go",
-      "cmd/amux/router_test.go",
-      "cmd/amux/mcp_project_message_process_test.go",
-      "cmd/amux/messages_test.go",
-      "cmd/amux/messages_cli_process_contract_test.go",
-      "cmd/amux/messages_worker_process_test.go"
+      "internal/amuxruntime/router_test.go",
+      "internal/amuxruntime/mcp_project_message_process_test.go",
+      "internal/amuxruntime/messages_test.go",
+      "internal/amuxruntime/messages_cli_process_contract_test.go",
+      "internal/amuxruntime/messages_worker_process_test.go"
     ]
   },
   "native_requester_subscriptions": {
@@ -7235,7 +7235,7 @@
       "gatewayclient/task_requester_test.go",
       "gatewayclient/task_requester_tool_test.go",
       "gatewayclient/task_requester_integration_test.go",
-      "cmd/amux/task_requester_test.go",
+      "internal/amuxruntime/task_requester_test.go",
       "storage/task_requester_migration_test.go"
     ],
     "remaining": "Explicit human assignment and native CLI reassignment are covered through authenticated HTTP and focused integration tests. Broader session routing, source desktop requester controls, MCP catalog and deployment/platform runtime verification remain incomplete. Full source executor-handoff lifecycle is marked partial.",

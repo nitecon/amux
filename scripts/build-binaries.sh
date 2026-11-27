@@ -24,23 +24,18 @@ mkdir -p bin
 stage=$(mktemp -d "$PWD/bin/.build-binaries.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 
-build_cli() {
-    GOOS="$1" GOARCH="$2" CGO_ENABLED=0 \
-        "$go_command" build -trimpath -o "$stage/amux$3" ./cmd/amux
-}
-
 echo 'Building macOS arm64'
-build_cli darwin arm64 ""
 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 \
-    "$go_command" build -trimpath -tags desktop -o "$stage/amux-desktop" ./cmd/amux-desktop
+    "$go_command" build -trimpath -tags desktop -o "$stage/amux" ./cmd
+cp "$stage/amux" "$stage/amux-desktop"
 
 echo 'Building Windows amd64'
-build_cli windows amd64 .exe
 GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC="$windows_cc" \
-    "$go_command" build -trimpath -tags desktop -o "$stage/amux-desktop.exe" ./cmd/amux-desktop
+    "$go_command" build -trimpath -tags desktop -o "$stage/amux.exe" ./cmd
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC="$windows_cc" \
+    "$go_command" build -trimpath -tags desktop -ldflags "-H=windowsgui" -o "$stage/amux-desktop.exe" ./cmd
 
 echo 'Building Linux amd64'
-build_cli linux amd64 .bin
 go_version=$(awk '$1 == "go" {print $2; exit}' go.mod)
 docker_args=(--rm --platform linux/amd64 -v "$PWD:/src:ro" -v "$stage:/out" -w /src)
 module_cache=$("$go_command" env GOMODCACHE)
@@ -50,8 +45,9 @@ fi
 docker run "${docker_args[@]}" "golang:$go_version-bookworm" sh -ec '
     apt-get update -qq
     apt-get install -y -qq gcc libgl1-mesa-dev libwayland-dev libxkbcommon-dev xorg-dev >/tmp/amux-build-deps.log
-    CGO_ENABLED=1 go build -buildvcs=false -trimpath -tags desktop -o /out/amux-desktop.bin ./cmd/amux-desktop
-    /out/amux.bin client run --help >/dev/null 2>&1
+    CGO_ENABLED=1 go build -buildvcs=false -trimpath -tags desktop -o /out/amux.bin ./cmd
+    cp /out/amux.bin /out/amux-desktop.bin
+    /out/amux.bin headless --help >/dev/null 2>&1
     /out/amux-desktop.bin --help >/dev/null 2>&1
 '
 

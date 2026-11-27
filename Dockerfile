@@ -6,7 +6,7 @@ COPY go.mod go.sum ./
 RUN go mod download github.com/coder/websocket github.com/google/uuid golang.org/x/sys modernc.org/sqlite
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/amux ./cmd/amux \
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/amux ./cmd \
     && mkdir -p /out/data \
     && chmod 0700 /out/data \
     && chown 65532:65532 /out/data
