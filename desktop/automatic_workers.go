@@ -49,6 +49,7 @@ var (
 	automaticWorkerSteadyInterval = 30 * time.Second
 	automaticWorkerRetryInterval  = time.Second
 	resolveAutomaticCheckout      = projectidentity.ResolveCheckout
+	runAutomaticPool              = worker.RunPool
 )
 
 func automaticWorkerID(endpoint, project, provider string) string {
@@ -167,7 +168,7 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 						run.done <- (localconversation.LegacyTaskWorker{Store: m.store, Client: m.client, TranscriptRoot: m.taskConversationRoot, Open: m.open}).Run(ctx, *pool, run.drain, presence)
 						return
 					}
-					run.done <- worker.RunPool(ctx, worker.PoolConfig{
+					run.done <- runAutomaticPool(ctx, worker.PoolConfig{
 						Store: m.store, Client: m.client, PoolID: pool.ID, Open: m.open, Archive: m.archive, Drain: run.drain, StreamAssignments: m.useTaskStream,
 					})
 				}()
@@ -180,7 +181,6 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 			}
 		}
 		if lastError != nil {
-			retrySoon = true
 			report("Automatic agents: " + lastError.Error())
 		} else {
 			report(fmt.Sprintf("Automatic agents: %d local workers started.", len(active)))

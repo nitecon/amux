@@ -226,10 +226,12 @@ func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
 	defer cancel()
 	origRetry := automaticWorkerRetryInterval
 	origResolve := resolveAutomaticCheckout
+	origRunPool := runAutomaticPool
 	automaticWorkerRetryInterval = 50 * time.Millisecond
 	defer func() {
 		automaticWorkerRetryInterval = origRetry
 		resolveAutomaticCheckout = origResolve
+		runAutomaticPool = origRunPool
 	}()
 
 	checkout := t.TempDir()
@@ -241,13 +243,22 @@ func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var attempts atomic.Int32
+	var attempts, poolStarts atomic.Int32
 	resolveAutomaticCheckout = func(ctx context.Context, directory string) (projectidentity.Identity, error) {
 		n := attempts.Add(1)
 		if n == 1 || n == 3 {
 			return projectidentity.Identity{}, fmt.Errorf("inspect Git checkout: %w", context.DeadlineExceeded)
 		}
 		return resolved, nil
+	}
+	drainCh := make(chan (<-chan struct{}), 2)
+	runAutomaticPool = func(ctx context.Context, config worker.PoolConfig) error {
+		poolStarts.Add(1)
+		select {
+		case drainCh <- config.Drain:
+		default:
+		}
+		return worker.RunPool(ctx, config)
 	}
 
 	manager, _, _, client, _ := workerManagerFixture(t, nil)
@@ -288,6 +299,7 @@ func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
 	if attempts.Load() < 2 {
 		t.Fatalf("checkout resolution attempts = %d, want >= 2", attempts.Load())
 	}
+	workerDrain := <-drainCh
 
 	// Trigger another pass that hits a transient checkout timeout and ensure
 	// the running worker is preserved instead of drained and restarted.
@@ -295,6 +307,14 @@ func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
 	waitFor("recovery pass after mid-flight transient timeout", func() bool {
 		return attempts.Load() >= 4
 	})
+	if got := poolStarts.Load(); got != 1 {
+		t.Fatalf("worker pool starts after transient timeout = %d, want 1", got)
+	}
+	select {
+	case <-workerDrain:
+		t.Fatal("worker drain channel was closed during transient checkout timeout")
+	default:
+	}
 	targets, err := client.Targets(ctx, "demo")
 	if err != nil || len(targets) != 1 {
 		t.Fatalf("targets after transient timeout = %+v, err=%v", targets, err)
@@ -302,4 +322,160 @@ func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
 	if targets[0].Target.Origin != initial.Origin {
 		t.Fatalf("worker restarted after transient timeout: got %+v, want %+v", targets[0].Target.Origin, initial.Origin)
 	}
+}
+
+func TestAutomaticWorkersKeepSteadyIntervalOnPersistentErrors(t *testing.T) {
+	t.Run("persistent automaticPool error", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		origRetry := automaticWorkerRetryInterval
+		origSteady := automaticWorkerSteadyInterval
+		origResolve := resolveAutomaticCheckout
+		automaticWorkerRetryInterval = 20 * time.Millisecond
+		automaticWorkerSteadyInterval = 5 * time.Second
+		defer func() {
+			automaticWorkerRetryInterval = origRetry
+			automaticWorkerSteadyInterval = origSteady
+			resolveAutomaticCheckout = origResolve
+		}()
+
+		oldCheckout, movedCheckout := t.TempDir(), t.TempDir()
+		manager, _, _, client, _ := workerManagerFixture(t, nil)
+		id := automaticWorkerID(client.Endpoint(), "demo", "codex")
+		if _, err := manager.automaticPool(ctx, id, "demo", oldCheckout, "codex"); err != nil {
+			t.Fatal(err)
+		}
+
+		var attempts, reports atomic.Int32
+		resolveAutomaticCheckout = func(_ context.Context, directory string) (projectidentity.Identity, error) {
+			attempts.Add(1)
+			return projectidentity.Identity{Directory: directory}, nil
+		}
+		var lastStatus atomic.Value
+		lastStatus.Store("")
+
+		updates := make(chan []automaticWorkerScope, 1)
+		updates <- []automaticWorkerScope{{storage.ProjectOverview{Project: storage.Project{Ident: "demo", Kind: "adhoc"}}, movedCheckout}}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			manager.runAutomaticWorkers(ctx, updates, func(status string) {
+				lastStatus.Store(status)
+				reports.Add(1)
+			}, func(_ context.Context, provider, _ string) bool {
+				return provider == "codex"
+			})
+		}()
+		defer func() { cancel(); <-done }()
+
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for reports.Load() < 1 {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				t.Fatalf("timed out waiting for persistent pool error status (attempts=%d)", attempts.Load())
+			}
+		}
+		if status := lastStatus.Load().(string); !strings.Contains(status, "has moved") {
+			t.Fatalf("status = %q, want moved-checkout error", status)
+		}
+
+		time.Sleep(150 * time.Millisecond)
+		if got := attempts.Load(); got != 1 {
+			t.Fatalf("checkout attempts during steady interval = %d, want 1", got)
+		}
+		if got := reports.Load(); got != 1 {
+			t.Fatalf("status reports during steady interval = %d, want 1", got)
+		}
+	})
+
+	t.Run("persistent worker run error", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		origRetry := automaticWorkerRetryInterval
+		origSteady := automaticWorkerSteadyInterval
+		origResolve := resolveAutomaticCheckout
+		origRunPool := runAutomaticPool
+		automaticWorkerRetryInterval = 20 * time.Millisecond
+		automaticWorkerSteadyInterval = 5 * time.Second
+		defer func() {
+			automaticWorkerRetryInterval = origRetry
+			automaticWorkerSteadyInterval = origSteady
+			resolveAutomaticCheckout = origResolve
+			runAutomaticPool = origRunPool
+		}()
+
+		checkout := t.TempDir()
+		manager, _, _, _, _ := workerManagerFixture(t, nil)
+
+		var attempts, poolStarts, reports atomic.Int32
+		resolveAutomaticCheckout = func(_ context.Context, directory string) (projectidentity.Identity, error) {
+			attempts.Add(1)
+			return projectidentity.Identity{Directory: directory}, nil
+		}
+		runAutomaticPool = func(_ context.Context, _ worker.PoolConfig) error {
+			poolStarts.Add(1)
+			return fmt.Errorf("persistent worker failure")
+		}
+		var lastStatus atomic.Value
+		lastStatus.Store("")
+
+		scope := []automaticWorkerScope{{storage.ProjectOverview{Project: storage.Project{Ident: "demo", Kind: "adhoc"}}, checkout}}
+		updates := make(chan []automaticWorkerScope, 1)
+		updates <- scope
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			manager.runAutomaticWorkers(ctx, updates, func(status string) {
+				lastStatus.Store(status)
+				reports.Add(1)
+			}, func(_ context.Context, provider, _ string) bool {
+				return provider == "codex"
+			})
+		}()
+		defer func() { cancel(); <-done }()
+
+		waitFor := func(phase string, condition func() bool) {
+			t.Helper()
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for !condition() {
+				select {
+				case <-ticker.C:
+				case <-ctx.Done():
+					t.Fatalf("timed out waiting for %s (attempts=%d, starts=%d, reports=%d, status=%q)",
+						phase, attempts.Load(), poolStarts.Load(), reports.Load(), lastStatus.Load())
+				}
+			}
+		}
+
+		waitFor("initial worker pass", func() bool {
+			return reports.Load() >= 1 && poolStarts.Load() >= 1
+		})
+		waitFor("reaped persistent worker error", func() bool {
+			if strings.Contains(lastStatus.Load().(string), "persistent worker failure") {
+				return true
+			}
+			prev := reports.Load()
+			updates <- scope
+			waitFor("pass after update", func() bool { return reports.Load() > prev })
+			return strings.Contains(lastStatus.Load().(string), "persistent worker failure")
+		})
+
+		afterAttempts := attempts.Load()
+		afterStarts := poolStarts.Load()
+		afterReports := reports.Load()
+
+		time.Sleep(150 * time.Millisecond)
+		if got := attempts.Load(); got != afterAttempts {
+			t.Fatalf("checkout attempts during steady interval = %d, want %d", got, afterAttempts)
+		}
+		if got := poolStarts.Load(); got != afterStarts {
+			t.Fatalf("worker starts during steady interval = %d, want %d", got, afterStarts)
+		}
+		if got := reports.Load(); got != afterReports {
+			t.Fatalf("status reports during steady interval = %d, want %d", got, afterReports)
+		}
+	})
 }
