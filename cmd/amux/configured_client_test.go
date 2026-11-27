@@ -113,7 +113,8 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 		t.Setenv("HOME", home)
 	}
 	t.Setenv("AMUX_GO_ACP_TEST", "1")
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	// Allow time for multiple worker restarts and presence updates on Windows CI.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	const project = "checkout-reload"
 	profile := t.TempDir()
