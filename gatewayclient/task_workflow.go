@@ -30,7 +30,7 @@ func (c *Client) ParkTask(ctx context.Context, project, id, reviewAction string)
 	if err != nil {
 		return nil, err
 	}
-	if current.Status != "todo" && (current.Status != "in_progress" && current.Status != "stalled") {
+	if current.Status != "todo" && !storage.IsActiveTaskStatus(current.Status) {
 		return nil, fmt.Errorf("only todo or in-progress tasks can be parked")
 	}
 	return c.updateDesktopTask(ctx, project, id, storage.TaskWorkflowUpdate{

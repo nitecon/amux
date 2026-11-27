@@ -255,7 +255,7 @@ func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWork
 			if t.Status == "user_review" {
 				return nil, fmt.Errorf("%w: tasks in user review require a user decision", ErrTaskConflict)
 			}
-			if (t.OwnerOrigin == nil && (t.OwnerAgentID != nil || (t.Status == "in_progress" || t.Status == "stalled"))) || (t.OwnerOrigin != nil && (actor == nil || actor.SessionID != t.OwnerOrigin.SessionID || actor.InstanceID != t.OwnerOrigin.InstanceID)) {
+			if (t.OwnerOrigin == nil && (t.OwnerAgentID != nil || IsActiveTaskStatus(t.Status))) || (t.OwnerOrigin != nil && (actor == nil || actor.SessionID != t.OwnerOrigin.SessionID || actor.InstanceID != t.OwnerOrigin.InstanceID)) {
 				return nil, ErrTaskOwnership
 			}
 		}
@@ -287,7 +287,7 @@ func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWork
 	confirming := requestedStatus != "" && update.Status != "in_progress" && (t.Status != update.Status || (update.Status == "todo" && t.OwnerOrigin != nil))
 	nextType := t.TaskType
 	if update.SubmissionCommentID != "" {
-		if requestedStatus != "user_review" || (t.Status != "in_progress" && t.Status != "stalled") || actor == nil ||
+		if requestedStatus != "user_review" || !IsActiveTaskStatus(t.Status) || actor == nil ||
 			t.OwnerOrigin == nil || *t.OwnerOrigin != *actor {
 			return nil, fmt.Errorf("%w: a submission comment requires an owned task entering user review", ErrTaskConflict)
 		}
@@ -388,7 +388,7 @@ func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWork
 			return nil, err
 		}
 	case "done":
-		if actor != nil && (t.Status == "in_progress" || t.Status == "stalled") && nextType == "software" &&
+		if actor != nil && IsActiveTaskStatus(t.Status) && nextType == "software" &&
 			t.Kind != "delegated" && !hasLabel(t.Labels, "task-review") {
 			var assigned bool
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM amux_assignment_runs WHERE task_id=?)`, t.ID).Scan(&assigned); err != nil {

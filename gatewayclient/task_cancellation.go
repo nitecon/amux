@@ -110,9 +110,7 @@ func validateCancellation(cancellation *storage.Cancellation, project, id string
 	if cancellation.PriorStartedAt != nil && *cancellation.PriorStartedAt < 0 {
 		return fmt.Errorf("gateway cancellation response has an invalid prior start time")
 	}
-	switch cancellation.PriorStatus {
-	case "todo", "in_progress", "stalled":
-	default:
+	if cancellation.PriorStatus != "todo" && !storage.IsActiveTaskStatus(cancellation.PriorStatus) {
 		return fmt.Errorf("gateway cancellation response has an invalid prior status")
 	}
 	if (cancellation.PriorStatus == "in_progress" || cancellation.PriorOwnerAgentID != nil) && cancellation.PriorOwnerOrigin == nil {

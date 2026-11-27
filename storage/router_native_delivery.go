@@ -354,7 +354,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err != nil && !errors.Is(err, ErrTaskNotFound) {
 			return false, err
 		}
-		ownerMatches := current != nil && (current.Status == "in_progress" || current.Status == "stalled") && current.OwnerOrigin != nil && *current.OwnerOrigin == identity.receiver.origin()
+		ownerMatches := current != nil && IsActiveTaskStatus(current.Status) && current.OwnerOrigin != nil && *current.OwnerOrigin == identity.receiver.origin()
 		if !ownerMatches {
 			if err := completeNativeNotice(ctx, tx, registry, event, identity, "skipped", "task-owner-changed", now); err != nil {
 				return false, err

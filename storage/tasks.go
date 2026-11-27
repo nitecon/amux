@@ -24,6 +24,11 @@ var (
 	ErrTaskChangeset   = errors.New("task transition requires an explicit file-change declaration; the task has not moved")
 )
 
+// IsActiveTaskStatus reports whether status represents active work with a retained claim.
+func IsActiveTaskStatus(status string) bool {
+	return status == "in_progress" || status == "stalled"
+}
+
 type TaskParent struct {
 	ID           string `json:"id"`
 	ProjectIdent string `json:"project_ident"`
@@ -409,13 +414,13 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	if policy.HumanRequest && actor != nil {
 		return nil, fmt.Errorf("%w: user controls require an ordinary human task request", ErrTaskConflict)
 	}
-	if t.Status != "todo" && (t.Status != "in_progress" && t.Status != "stalled") {
+	if t.Status != "todo" && !IsActiveTaskStatus(t.Status) {
 		return nil, ErrTaskUnsupported
 	}
 	if err := ordinaryWorkflowTask(ctx, tx, t); err != nil {
 		return nil, err
 	}
-	if status == "in_progress" && (t.Status != "in_progress" && t.Status != "stalled") && t.Kind == "delegated" && actor != nil {
+	if status == "in_progress" && !IsActiveTaskStatus(t.Status) && t.Kind == "delegated" && actor != nil {
 		ready, err := taskDelegationReady(ctx, tx, t.ProjectIdent, t.ID)
 		if err != nil {
 			return nil, err
@@ -426,7 +431,7 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	}
 
 	enforceOwner := !policy.HumanRequest || status == "in_progress"
-	if enforceOwner && t.OwnerOrigin == nil && (t.OwnerAgentID != nil || (t.Status == "in_progress" || t.Status == "stalled")) {
+	if enforceOwner && t.OwnerOrigin == nil && (t.OwnerAgentID != nil || IsActiveTaskStatus(t.Status)) {
 		return nil, ErrTaskOwnership
 	}
 	if enforceOwner && t.OwnerOrigin != nil && (actor == nil || actor.SessionID != t.OwnerOrigin.SessionID || actor.InstanceID != t.OwnerOrigin.InstanceID) {
@@ -440,7 +445,7 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	}
 	var ownerID, ownerJSON, started any
 	if status == "in_progress" {
-		if t.Status != "in_progress" && t.Status != "stalled" {
+		if !IsActiveTaskStatus(t.Status) {
 			if actor != nil && !taskplatform.Matches(t.Labels, actor.OS) {
 				return nil, fmt.Errorf("%w: claiming agent OS does not match the task os: label", ErrTaskConflict)
 			}
@@ -485,7 +490,7 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	if err != nil {
 		return nil, err
 	}
-	if (t.Status != "in_progress" && t.Status != "stalled") && status == "in_progress" && t.Kind == "delegated" {
+	if !IsActiveTaskStatus(t.Status) && status == "in_progress" && t.Kind == "delegated" {
 		if err := recordDelegationInspection(ctx, tx, t, actor); err != nil {
 			return nil, err
 		}

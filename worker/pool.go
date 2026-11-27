@@ -469,8 +469,8 @@ func checkRunTask(ctx context.Context, store *storage.Store, client *gatewayclie
 	if run.PendingInstanceID != "" {
 		pendingOwner.InstanceID = run.PendingInstanceID
 	}
-	if (task.Status != "in_progress" && task.Status != "stalled") || !owned(task.OwnerOrigin, run.Owner) && !(run.PendingInstanceID != "" && owned(task.OwnerOrigin, pendingOwner)) {
-		if task.Status == "todo" || task.Status == "in_progress" || task.Status == "stalled" {
+	if !storage.IsActiveTaskStatus(task.Status) || !owned(task.OwnerOrigin, run.Owner) && !(run.PendingInstanceID != "" && owned(task.OwnerOrigin, pendingOwner)) {
+		if task.Status == "todo" || storage.IsActiveTaskStatus(task.Status) {
 			return errPoolTaskReassigned
 		}
 		return errPoolTaskFinished

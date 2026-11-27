@@ -566,7 +566,7 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 		if detail == nil {
 			return nil, "", storage.ErrTaskNotFound
 		}
-		if (detail.Task.Status != "in_progress" && detail.Task.Status != "stalled") || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != *actor {
+		if !storage.IsActiveTaskStatus(detail.Task.Status) || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != *actor {
 			return nil, "", storage.ErrTaskOwnership
 		}
 		return detail.Task, "", nil

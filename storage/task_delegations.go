@@ -404,7 +404,7 @@ func applyDelegationContractMetadata(ctx context.Context, tx *sql.Tx, current *T
 		}
 		nextOS, _ = taskplatform.RequiredOS(labels)
 	}
-	if currentOS != nextOS && ((current.OwnerOrigin == nil && (current.OwnerAgentID != nil || (current.Status == "in_progress" || current.Status == "stalled"))) || (current.OwnerOrigin != nil && (actor == nil || actor.SessionID != current.OwnerOrigin.SessionID || actor.InstanceID != current.OwnerOrigin.InstanceID))) {
+	if currentOS != nextOS && ((current.OwnerOrigin == nil && (current.OwnerAgentID != nil || IsActiveTaskStatus(current.Status))) || (current.OwnerOrigin != nil && (actor == nil || actor.SessionID != current.OwnerOrigin.SessionID || actor.InstanceID != current.OwnerOrigin.InstanceID))) {
 		return nil, ErrTaskOwnership
 	}
 	return applyTaskMetadata(ctx, tx, current, metadata, "", TaskTransitionPolicy{}, actor)

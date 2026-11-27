@@ -154,7 +154,7 @@ func applyTaskMetadata(ctx context.Context, tx *sql.Tx, current *Task, update Ta
 	if osChanged && status != "" {
 		return nil, fmt.Errorf("%w: change the task os: label without a status or owner change", ErrTaskConflict)
 	}
-	if osChanged && actor != nil && current.Status != "todo" && (current.Status != "in_progress" && current.Status != "stalled") {
+	if osChanged && actor != nil && current.Status != "todo" && !IsActiveTaskStatus(current.Status) {
 		return nil, fmt.Errorf("%w: only active tasks can change their os: label", ErrTaskConflict)
 	}
 	if actor != nil && policy.CheckGoal && current.Goal != nil && (status == "in_progress" || goalChanged) && strings.TrimSpace(policy.SelectedGoal) != *current.Goal {
@@ -162,7 +162,7 @@ func applyTaskMetadata(ctx context.Context, tx *sql.Tx, current *Task, update Ta
 	}
 	requiresOwner := (status != "" && status != "done") || goalChanged || osChanged
 	if actor != nil && requiresOwner {
-		if (current.OwnerOrigin == nil && (current.OwnerAgentID != nil || (current.Status == "in_progress" || current.Status == "stalled"))) || (current.OwnerOrigin != nil && (actor.SessionID != current.OwnerOrigin.SessionID || actor.InstanceID != current.OwnerOrigin.InstanceID)) {
+		if (current.OwnerOrigin == nil && (current.OwnerAgentID != nil || IsActiveTaskStatus(current.Status))) || (current.OwnerOrigin != nil && (actor.SessionID != current.OwnerOrigin.SessionID || actor.InstanceID != current.OwnerOrigin.InstanceID)) {
 			return nil, ErrTaskOwnership
 		}
 	}

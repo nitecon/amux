@@ -152,7 +152,7 @@ func submitWork(ctx context.Context, client *gatewayclient.Client, input submitW
 	if err := json.Unmarshal(rawTask, &task); err != nil {
 		return receipt, fmt.Errorf("work was not submitted: decode task ownership response: %w", err)
 	}
-	if task.ID != taskID || projects.NormalizeIdent(task.ProjectIdent) != projects.NormalizeIdent(input.Project) || (task.Status != "in_progress" && task.Status != "stalled") || task.OwnerOrigin == nil || *task.OwnerOrigin != *input.Origin {
+	if task.ID != taskID || projects.NormalizeIdent(task.ProjectIdent) != projects.NormalizeIdent(input.Project) || !storage.IsActiveTaskStatus(task.Status) || task.OwnerOrigin == nil || *task.OwnerOrigin != *input.Origin {
 		return receipt, fmt.Errorf("work was not submitted: task is not in progress under this exact execution in the selected project")
 	}
 	selectedGoal, err := storage.NormalizeTaskGoal(input.Goal)

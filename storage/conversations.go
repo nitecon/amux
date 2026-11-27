@@ -318,7 +318,7 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 				return err
 			}
 		}
-		if task != nil && (task.Status == "in_progress" || task.Status == "stalled") && task.OwnerOrigin != nil && *task.OwnerOrigin == c.Owner {
+		if task != nil && IsActiveTaskStatus(task.Status) && task.OwnerOrigin != nil && *task.OwnerOrigin == c.Owner {
 			ownerJSON, err := json.Marshal(actor)
 			if err != nil {
 				return err

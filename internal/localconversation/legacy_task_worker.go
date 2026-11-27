@@ -189,7 +189,7 @@ func (m LegacyTaskWorker) executeLegacyTask(ctx context.Context, pool storage.Wo
 	if err != nil || current == nil {
 		return err
 	}
-	if (current.Status != "in_progress" && current.Status != "stalled") || current.StartedAt == nil || *current.StartedAt != *task.StartedAt {
+	if !storage.IsActiveTaskStatus(current.Status) || current.StartedAt == nil || *current.StartedAt != *task.StartedAt {
 		return nil
 	}
 	prompt := storage.AssignmentPrompt(current)

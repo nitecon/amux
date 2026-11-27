@@ -316,14 +316,14 @@ type taskAction struct {
 }
 
 func taskActions(status string) []taskAction {
-	switch status {
-	case "todo":
+	switch {
+	case status == "todo":
 		return []taskAction{{"Claim", "primary", "in_progress"}, {"Done", "primary", "done"}, {"User review", "secondary", "user_review"}}
-	case "in_progress", "stalled":
+	case storage.IsActiveTaskStatus(status):
 		return []taskAction{{"Release", "secondary", "todo"}, {"Done", "primary", "done"}, {"User review", "secondary", "user_review"}}
-	case "user_review":
+	case status == "user_review":
 		return []taskAction{{"Return to TODO", "secondary", "todo"}, {"Close", "primary", "done"}}
-	case "done":
+	case status == "done":
 		return []taskAction{{"Reopen", "secondary", "todo"}}
 	default:
 		return []taskAction{}
