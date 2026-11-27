@@ -81,7 +81,7 @@ func resolveTaskIdentity(explicit *string, r *http.Request) string {
 }
 func taskError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, storage.ErrTaskMetadataInput):
+	case errors.Is(err, storage.ErrTaskMetadataInput), errors.Is(err, storage.ErrTaskQuestionInput):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, storage.ErrTaskDelegation):
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -132,6 +132,8 @@ func (a *api) registerTaskRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{ident}/tasks/{id}/reassign", a.reassignTask)
 	mux.HandleFunc("POST /v1/projects/{ident}/tasks/{id}/assign", a.assignTask)
 	mux.HandleFunc("POST /v1/projects/{ident}/tasks/{id}/comments", a.commentTask)
+	mux.HandleFunc("POST /v1/projects/{ident}/tasks/{id}/questions", a.askTaskQuestion)
+	mux.HandleFunc("GET /v1/questions", a.openTaskQuestions)
 	mux.HandleFunc("POST /v1/projects/{ident}/tasks/{id}/confirmation", a.confirmTask)
 	mux.HandleFunc("POST /v1/projects/{ident}/tasks/{id}/review", a.enqueueReviews)
 }
@@ -495,4 +497,43 @@ func (a *api) commentTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, comment)
+}
+
+// askTaskQuestion records a question from the task's active owner.
+func (a *api) askTaskQuestion(w http.ResponseWriter, r *http.Request) {
+	origin, ok := requestActor(w, r)
+	if !ok {
+		return
+	}
+	if origin == nil {
+		writeError(w, 400, "questions require complete agent origin headers")
+		return
+	}
+	var req *struct {
+		Question string   `json:"question"`
+		Options  []string `json:"options"`
+	}
+	if !readTaskRequest(w, r, &req) {
+		return
+	}
+	if req == nil {
+		writeError(w, 400, "question is required")
+		return
+	}
+	question, err := a.store.AskTaskQuestion(r.Context(), r.PathValue("ident"), r.PathValue("id"), req.Question, req.Options, origin)
+	if err != nil {
+		taskError(w, err)
+		return
+	}
+	writeJSON(w, question)
+}
+
+// openTaskQuestions lists unanswered questions, optionally for one project.
+func (a *api) openTaskQuestions(w http.ResponseWriter, r *http.Request) {
+	questions, err := a.store.OpenTaskQuestions(r.Context(), r.URL.Query().Get("project"))
+	if err != nil {
+		taskError(w, err)
+		return
+	}
+	writeJSON(w, questions)
 }

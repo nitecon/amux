@@ -242,3 +242,24 @@ func validateTaskAcknowledgement(task *storage.Task, project, id string) error {
 	}
 	return nil
 }
+
+// AskTaskQuestion records a question from the task's owning agent.
+func (c *Client) AskTaskQuestion(ctx context.Context, project, id, question string, options []string, origin *storage.AgentOrigin) (json.RawMessage, error) {
+	if origin == nil {
+		return nil, fmt.Errorf("questions require an agent origin")
+	}
+	input := struct {
+		Question string   `json:"question"`
+		Options  []string `json:"options,omitempty"`
+	}{question, options}
+	var result json.RawMessage
+	err := c.do(ctx, "POST", taskPath(project)+"/"+url.PathEscape(id)+"/questions", input, origin, &result)
+	return result, err
+}
+
+// OpenTaskQuestions lists unanswered agent questions across all projects.
+func (c *Client) OpenTaskQuestions(ctx context.Context) ([]storage.TaskQuestion, error) {
+	var result []storage.TaskQuestion
+	err := c.do(ctx, "GET", "/v1/questions", nil, nil, &result)
+	return result, err
+}

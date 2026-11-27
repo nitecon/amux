@@ -31,6 +31,7 @@ type TaskSummary struct {
 	DelegatedToProjectIdent *string         `json:"delegated_to_project_ident"`
 	DelegatedToTaskID       *string         `json:"delegated_to_task_id"`
 	DelegationReady         bool            `json:"delegation_ready"`
+	WaitingOnUser           bool            `json:"waiting_on_user"`
 }
 
 func (s *Store) Tasks(ctx context.Context, project string, statuses []string, includeStale bool) ([]TaskSummary, error) {
@@ -68,7 +69,7 @@ func (s *Store) Tasks(ctx context.Context, project string, statuses []string, in
 			rows.Close()
 			return nil, err
 		}
-		result = append(result, TaskSummary{TaskType: t.TaskType, Parent: t.Parent, Routing: t.Routing, Requester: t.Requester, ID: t.ID, Title: t.Title, Goal: t.Goal, Status: t.Status, Rank: t.Rank, Labels: t.Labels, OwnerAgentID: t.OwnerAgentID, Hostname: t.Hostname, Reporter: t.Reporter, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Kind: t.Kind, DelegatedToProjectIdent: t.DelegatedToProjectIdent, DelegatedToTaskID: t.DelegatedToTaskID, DelegationReady: t.DelegationReady})
+		result = append(result, TaskSummary{TaskType: t.TaskType, Parent: t.Parent, Routing: t.Routing, Requester: t.Requester, ID: t.ID, Title: t.Title, Goal: t.Goal, Status: t.Status, Rank: t.Rank, Labels: t.Labels, OwnerAgentID: t.OwnerAgentID, Hostname: t.Hostname, Reporter: t.Reporter, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Kind: t.Kind, DelegatedToProjectIdent: t.DelegatedToProjectIdent, DelegatedToTaskID: t.DelegatedToTaskID, DelegationReady: t.DelegationReady, WaitingOnUser: t.WaitingOnUser})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()

@@ -728,7 +728,7 @@ func (r *repo) rebasePreservingIndex(ctx context.Context, branch string) error {
 		}
 	}
 	if rebErr != nil {
-		return fmt.Errorf("%s moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. If you have unrelated drafts, save them with git stash push --include-untracked and record that stash's ID with git rev-parse refs/stash. Run git pull --rebase; resolve conflicts, git add the resolved files, and git -c core.editor=true rebase --continue until finished. Restore saved drafts with git stash apply --index <saved-stash-id>; verify the staged and unstaged drafts before dropping only that saved stash. Use git rev-parse HEAD to obtain the recovered commit, then retry amux submit-work --resume-commit with that commit, the same task and file list: %w", branch, rebErr)
+		return fmt.Errorf("%s moved and rebasing onto it failed, so any active rebase was aborted and staged and unstaged work restored. If you have unrelated drafts, save them with git stash push --include-untracked and record that stash's ID with git rev-parse refs/stash. Run git pull --rebase; resolve conflicts, git add the resolved files, and git -c core.editor=true rebase --continue until finished. Restore saved drafts with git stash apply --index <saved-stash-id>; verify the staged and unstaged drafts before dropping only that saved stash. Use git rev-parse HEAD to obtain the recovered commit, then retry amux submit-work --resume-commit with that commit, the same task and file list. If the conflicts involve commits from other tasks or otherwise need a user decision, do not resolve or drop them yourself: ask the user with task_ask and wait for the answer on the task: %w", branch, rebErr)
 	}
 	return nil
 }

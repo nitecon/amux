@@ -61,8 +61,8 @@ func TestCombinedMCPToolCatalogNamesAreUnique(t *testing.T) {
 	for _, spec := range bundledToolCatalog {
 		tools = append(tools, bundledToolDefinition(spec))
 	}
-	if len(tools) != 29 {
-		t.Fatalf("combined MCP catalog has %d tools, want 29", len(tools))
+	if len(tools) != 30 {
+		t.Fatalf("combined MCP catalog has %d tools, want 30", len(tools))
 	}
 	seen := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {

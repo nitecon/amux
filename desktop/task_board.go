@@ -91,6 +91,9 @@ func newTaskBoard(b *Browser) *taskBoard {
 			browserCardObject(card, 0).(*fyne.Container).Objects[0].(*widget.Label).SetText(task.Title)
 			parent := browserCardObject(card, 1).(*widget.Label)
 			caption := browserStatusLabel(task.Status)
+			if task.WaitingOnUser {
+				caption = waitingOnUserLabel + " · " + caption
+			}
 			if task.Parent != nil {
 				caption += " · Subtask of " + task.Parent.Title
 			}

@@ -78,6 +78,8 @@ type Task struct {
 	DelegatedToProjectIdent *string         `json:"delegated_to_project_ident"`
 	DelegatedToTaskID       *string         `json:"delegated_to_task_id"`
 	DelegationReady         bool            `json:"delegation_ready"`
+	// WaitingOnUser reports an unanswered task_ask question; ownership is unchanged.
+	WaitingOnUser bool `json:"waiting_on_user"`
 }
 type TaskComment struct {
 	ID         string       `json:"id"`
@@ -196,12 +198,13 @@ func (s *Store) taskMutation(ctx context.Context, origin *AgentOrigin, mutate fu
 const taskSelect = `t.id,t.project_ident,t.title,t.description,t.details,t.status,t.rank,t.labels,t.hostname,t.owner_agent_id,t.reporter,t.created_at,t.updated_at,t.started_at,t.done_at,t.kind,t.delegated_to_project_ident,t.delegated_to_task_id,t.owner_origin_json,t.goal,t.routing_json,t.requester_json,
  (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id),t.review_action,t.task_type,t.changeset_json,
  (SELECT origin_json FROM task_completion_owners WHERE task_id=t.id),
- (t.kind='delegated' AND EXISTS(SELECT 1 FROM task_delegations d JOIN tasks target ON target.id=d.target_task_id AND target.project_ident=d.target_project_ident WHERE d.source_project_ident=t.project_ident AND d.source_task_id=t.id AND target.status='done'))`
+ (t.kind='delegated' AND EXISTS(SELECT 1 FROM task_delegations d JOIN tasks target ON target.id=d.target_task_id AND target.project_ident=d.target_project_ident WHERE d.source_project_ident=t.project_ident AND d.source_task_id=t.id AND target.status='done')),
+ EXISTS(SELECT 1 FROM task_questions q WHERE q.task_id=t.id AND q.answered_at IS NULL)`
 
 func scanTask(row scanner) (*Task, error) {
 	var t Task
 	var labels, origin, routing, requester, parent, changeset, completion *string
-	err := row.Scan(&t.ID, &t.ProjectIdent, &t.Title, &t.Description, &t.Details, &t.Status, &t.Rank, &labels, &t.Hostname, &t.OwnerAgentID, &t.Reporter, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.DoneAt, &t.Kind, &t.DelegatedToProjectIdent, &t.DelegatedToTaskID, &origin, &t.Goal, &routing, &requester, &parent, &t.ReviewAction, &t.TaskType, &changeset, &completion, &t.DelegationReady)
+	err := row.Scan(&t.ID, &t.ProjectIdent, &t.Title, &t.Description, &t.Details, &t.Status, &t.Rank, &labels, &t.Hostname, &t.OwnerAgentID, &t.Reporter, &t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.DoneAt, &t.Kind, &t.DelegatedToProjectIdent, &t.DelegatedToTaskID, &origin, &t.Goal, &routing, &requester, &parent, &t.ReviewAction, &t.TaskType, &changeset, &completion, &t.DelegationReady, &t.WaitingOnUser)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -645,6 +648,11 @@ func (s *Store) AddTaskComment(ctx context.Context, project, id, author, authorT
 		result, err = insertTaskComment(ctx, tx, id, author, authorType, content, hostname, actor)
 		if err != nil || authorType == "system" {
 			return err
+		}
+		if authorType == "user" {
+			if err := answerTaskQuestions(ctx, tx, id, result.ID, result.CreatedAt); err != nil {
+				return err
+			}
 		}
 		if delegation, err := delegationBySource(ctx, tx, project, id); err != nil {
 			return err

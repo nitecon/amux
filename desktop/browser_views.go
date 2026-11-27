@@ -36,6 +36,7 @@ func (b *Browser) setMainView(name string) {
 		}
 		button.Refresh()
 	}
+	b.applyQuestionsButton()
 	b.refreshMainView()
 }
 
@@ -49,6 +50,9 @@ func (b *Browser) refreshMainView() {
 		b.loadEventView()
 	case "Alerts":
 		b.loadAlertsView()
+	case "Questions":
+		b.renderQuestions()
+		b.refreshQuestions()
 	case "Git":
 		b.refreshWorktreeStatus()
 	}

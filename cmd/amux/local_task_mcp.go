@@ -13,7 +13,7 @@ import (
 
 func localGatewayTaskTool(name string) bool {
 	switch name {
-	case "task_get", "task_comment", "task_started", "task_done", "task_release", "task_user_review", "task_confirm_mutation", "task_set_changeset":
+	case "task_get", "task_comment", "task_ask", "task_started", "task_done", "task_release", "task_user_review", "task_confirm_mutation", "task_set_changeset":
 		return true
 	}
 	return false
@@ -48,6 +48,8 @@ func callLocalGatewayTaskTool(ctx context.Context, client *gatewayclient.Client,
 		ID        string          `json:"id"`
 		Body      string          `json:"body"`
 		Action    string          `json:"action"`
+		Question  string          `json:"question"`
+		Options   []string        `json:"options"`
 		Changeset json.RawMessage `json:"changeset"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
@@ -66,6 +68,8 @@ func callLocalGatewayTaskTool(ctx context.Context, client *gatewayclient.Client,
 	switch name {
 	case "task_comment":
 		return localGatewayToolResult(client.TaskComment(ctx, project, id, input.Body, &origin))
+	case "task_ask":
+		return localGatewayToolResult(client.AskTaskQuestion(ctx, project, id, input.Question, input.Options, &origin))
 	case "task_user_review":
 		return localGatewayToolResult(client.TaskUpdate(ctx, project, id, storage.TaskWorkflowUpdate{Status: "user_review", ReviewAction: &input.Action, Changeset: input.Changeset}, &origin, goal))
 	case "task_set_changeset":

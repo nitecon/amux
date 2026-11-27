@@ -182,6 +182,7 @@ type Browser struct {
 	navigationReconnecting        bool
 	reviewNoticeCursors           map[string]int64
 	reviewNoticesLoading          bool
+	questions                     *questionsView
 	projectGen, taskGen           uint64
 	projectLoading, detailLoading bool
 }
@@ -691,6 +692,10 @@ func (b *Browser) buildUI() {
 			status.Text = "Parent"
 		}
 		status.Color = taskStatusColor(t.Status)
+		if t.WaitingOnUser {
+			status.Text = waitingOnUserLabel
+			status.Color = theme.Color(theme.ColorNameWarning)
+		}
 		tint := color.NRGBAModel.Convert(status.Color).(color.NRGBA)
 		tint.A = 100
 		badgeBackground := badge.Objects[0].(*canvas.Rectangle)
@@ -914,6 +919,8 @@ func (b *Browser) buildUI() {
 	b.taskBoard = newTaskBoard(b)
 	b.mainViews["Board"] = b.taskBoard.content
 	b.mainViews["Alerts"] = container.NewBorder(container.NewVBox(browserSectionHeading("ALERTS"), b.checkoutAlert, b.alertStatus), nil, nil, nil, b.alertList)
+	b.questions = newQuestionsView()
+	b.mainViews["Questions"] = b.questions.content
 	b.mainViews["Settings"] = b.settingsView()
 	b.checkoutPage = container.NewStack()
 	b.mainViews["Checkout"] = b.checkoutPage
@@ -921,12 +928,12 @@ func (b *Browser) buildUI() {
 	b.mainContent = container.NewStack(b.mainViews["Tasks"])
 	b.mainViewButtons = make(map[string]*widget.Button)
 	mainNav, actions := container.NewHBox(), container.NewHBox()
-	for _, name := range []string{"Tasks", "Board", "Conversations", "Files", "Git", "Events", "Alerts", "Settings"} {
+	for _, name := range []string{"Tasks", "Board", "Conversations", "Files", "Git", "Questions", "Events", "Alerts", "Settings"} {
 		viewName := name
 		button := widget.NewButton(viewName, func() { b.setMainView(viewName) })
 		b.mainViewButtons[viewName] = button
 		switch name {
-		case "Events", "Alerts", "Settings":
+		case "Questions", "Events", "Alerts", "Settings":
 			actions.Add(button)
 		default:
 			mainNav.Add(button)
@@ -1238,6 +1245,7 @@ func (b *Browser) refreshOnUI() {
 	}
 	b.projectLoading = true
 	b.mu.Unlock()
+	b.refreshQuestions()
 	bindings := b.machineCheckoutBindings()
 	b.launch(func(ctx context.Context) {
 		hostname, hostErr := os.Hostname()
@@ -2051,6 +2059,9 @@ func (b *Browser) applyTaskDetail(project, task string, generation uint64, detai
 	}
 	b.taskDetailSplit.Refresh()
 	meta := browserStatusLabel(detail.Task.Status)
+	if detail.Task.WaitingOnUser {
+		meta = waitingOnUserLabel + " · " + meta
+	}
 	if detail.Task.TaskType != "" {
 		meta += " · " + detail.Task.TaskType
 	}

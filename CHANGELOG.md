@@ -13,6 +13,16 @@
   be targeted by reassignment. Disabling a provider returns its active tasks to
   the automatic queue so enabled agents pick them up. API:
   `GET /v1/providers`, `PUT /v1/providers/{id}`.
+- Question center for agent decisions that need you. Agents raise a question
+  on an owned task with the new `task_ask` MCP tool (question text plus
+  optional suggested answers). The task keeps its owner and shows "Waiting on
+  you" on the task list, board and detail. The desktop **Questions** view
+  lists open questions across projects, newest first, with a count on its
+  button and a desktop notification for each new one. Pick a suggested answer
+  or write your own: it is posted as your task comment, which closes the
+  question and notifies the owning agent to continue. Session guidance and the
+  submit_work rebase-conflict message tell agents to ask instead of stalling.
+  API: `POST /v1/projects/{ident}/tasks/{id}/questions`, `GET /v1/questions`.
 
 ### Fixed
 

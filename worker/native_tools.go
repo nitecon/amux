@@ -162,7 +162,7 @@ func antigravityAmuxTool(name string) bool {
 	switch tool {
 	case "submit_work", "project_message_thread", "task_agents", "task_reassign", "agent_identity",
 		"task_get", "task_list", "task_create", "task_delegate", "task_update_delegation", "task_set_requester",
-		"task_claim", "task_started", "task_comment", "task_release", "task_user_review", "task_done",
+		"task_claim", "task_started", "task_comment", "task_ask", "task_release", "task_user_review", "task_done",
 		"task_finish_review", "task_confirm_mutation", "task_set_changeset",
 		"memory_search", "memory_store", "memory_get", "memory_update",
 		"code_read", "code_symbols", "code_symbol", "code_search",

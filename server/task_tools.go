@@ -27,6 +27,7 @@ var agentTaskTools = []mcpstdio.Tool{
 	{Name: "task_claim", Description: "Claim a task before working on it.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"}},"required":["id"],"additionalProperties":false}`)},
 	{Name: "task_started", Description: "Report that work on a claimed task has started.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"}},"required":["id"],"additionalProperties":false}`)},
 	{Name: "task_comment", Description: "Add a progress, evidence or question comment to a task.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"},"body":{"type":"string","description":"Comment text"}},"required":["id","body"],"additionalProperties":false}`)},
+	{Name: "task_ask", Description: "Ask the user a question you need answered to continue an owned task. The task keeps its owner and shows it is waiting on the user; the answer arrives as a user comment on the task. Use this, not only task_comment, whenever you need a user decision.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"},"question":{"type":"string","description":"The decision you need, with enough context to answer without opening the conversation"},"options":{"type":"array","items":{"type":"string"},"maxItems":8,"description":"Optional suggested answers, one line each"}},"required":["id","question"],"additionalProperties":false}`)},
 	{Name: "task_release", Description: "Release an owned task you cannot continue.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"},"changeset":{"description":"Every file mutated by this task, or null if no files were mutated.","oneOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}]}},"required":["id"],"additionalProperties":false}`)},
 	{Name: "task_user_review", Description: "Park an owned task for a user decision. Supply the specific action the user must take.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"},"action":{"type":"string","description":"Specific decision or action required from the user"},"changeset":{"description":"Every file mutated by this task, or null if no files were mutated.","oneOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}]}},"required":["id","action"],"additionalProperties":false}`)},
 	{Name: "task_done", Description: "Complete a task regardless of its current status or owner. Confirm every mutated file (or null for none). Closing a delegated tracker does not complete unfinished target work.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"},"changeset":{"description":"Every file mutated by this task, or null if no files were mutated.","oneOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}]}},"required":["id"],"additionalProperties":false}`)},
@@ -114,7 +115,7 @@ func (a *api) callTaskTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, found := taskToolByName(req.Name); !found {
-		writeJSON(w, taskToolResult("Unknown task tool. Supported tools: task_get, project_message_thread, task_list, task_create, task_delegate, task_update_delegation, task_set_requester, task_claim, task_started, task_comment, task_release, task_user_review, task_done, task_finish_review, task_confirm_mutation, task_set_changeset.", true))
+		writeJSON(w, taskToolResult("Unknown task tool. Supported tools: task_get, project_message_thread, task_list, task_create, task_delegate, task_update_delegation, task_set_requester, task_claim, task_started, task_comment, task_ask, task_release, task_user_review, task_done, task_finish_review, task_confirm_mutation, task_set_changeset.", true))
 		return
 	}
 	selectedGoal, err := selectedTaskGoal(r.Header)
@@ -501,6 +502,24 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 		}
 		value, e := a.store.AddTaskComment(ctx, project, id, actor.SessionID, "agent", body, nil, actor)
 		return value, "", e
+	case "task_ask":
+		fields, err := decodeTaskToolArgs(raw, "id", "question", "options")
+		if err != nil {
+			return nil, "", err
+		}
+		var id, question string
+		var options []string
+		if err := decodeField(fields, "id", &id, true); err != nil {
+			return nil, "", err
+		}
+		if err := decodeField(fields, "question", &question, true); err != nil {
+			return nil, "", err
+		}
+		if err := decodeField(fields, "options", &options, false); err != nil {
+			return nil, "", err
+		}
+		value, e := a.store.AskTaskQuestion(ctx, project, id, question, options, actor)
+		return value, "", e
 	}
 	allowed := map[string][]string{
 		"task_update_delegation": {"id", "title", "description", "specification", "details", "labels"},
@@ -629,7 +648,7 @@ func safeTaskToolError(err error) string {
 		return strings.TrimPrefix(err.Error(), "invalid task tool arguments: ")
 	}
 	switch {
-	case errors.Is(err, storage.ErrTaskGuidedQuestion):
+	case errors.Is(err, storage.ErrTaskGuidedQuestion), errors.Is(err, storage.ErrTaskQuestionInput):
 		return err.Error()
 	case errors.Is(err, storage.ErrTaskChangeset):
 		return changesetQuestion

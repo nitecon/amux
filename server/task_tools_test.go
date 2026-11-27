@@ -13,7 +13,7 @@ import (
 
 func TestAgentTaskToolsCatalogSchemas(t *testing.T) {
 	tools := AgentTaskTools()
-	want := []string{"task_get", "project_message_thread", "task_list", "task_create", "task_delegate", "task_update_delegation", "task_set_requester", "task_claim", "task_started", "task_comment", "task_release", "task_user_review", "task_done", "task_finish_review", "task_confirm_mutation", "task_set_changeset"}
+	want := []string{"task_get", "project_message_thread", "task_list", "task_create", "task_delegate", "task_update_delegation", "task_set_requester", "task_claim", "task_started", "task_comment", "task_ask", "task_release", "task_user_review", "task_done", "task_finish_review", "task_confirm_mutation", "task_set_changeset"}
 	if len(tools) != len(want) {
 		t.Fatalf("catalog length %d", len(tools))
 	}
@@ -344,3 +344,53 @@ func TestTaskToolLinksFirstCreatedTaskToStandaloneConversation(t *testing.T) {
 }
 
 func stringPtr(value string) *string { return &value }
+
+func TestTaskAskToolRaisesQuestionListedUntilUserAnswers(t *testing.T) {
+	store, _ := taskAPI(t)
+	ctx := context.Background()
+	actor := apiActor()
+	task, err := store.InsertTask(ctx, storage.TaskInsert{Project: "tasks", Title: "Blocked work", Reporter: actor.SessionID, RootReason: stringPtr("user-directed"), Details: stringPtr("Exercise questions")}, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := store.CreateConversation(ctx, "tasks", task.ID, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAPI(store, "unused")
+	call := func(name, args string) mcpstdio.Result {
+		w := invokeTaskTool(t, a, actor, conversation.ID, `{"name":"`+name+`","arguments":`+args+`}`)
+		var result mcpstdio.Result
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil {
+			t.Fatalf("%s HTTP %d: %s", name, w.Code, w.Body.String())
+		}
+		return result
+	}
+	if got := call("task_claim", `{"id":"`+task.ID+`"}`); got.IsError {
+		t.Fatalf("claim: %+v", got)
+	}
+	if got := call("task_ask", `{"id":"`+task.ID+`","question":""}`); !got.IsError || !strings.Contains(got.Content[0].Text, "question must be non-empty") {
+		t.Fatalf("blank question: %+v", got)
+	}
+	if got := call("task_ask", `{"id":"`+task.ID+`","question":"Keep or drop?","options":["Keep","Drop"]}`); got.IsError {
+		t.Fatalf("ask: %+v", got)
+	}
+	list := func() []storage.TaskQuestion {
+		w := httptest.NewRecorder()
+		a.openTaskQuestions(w, httptest.NewRequest("GET", "/v1/questions", nil))
+		var questions []storage.TaskQuestion
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &questions) != nil {
+			t.Fatalf("questions HTTP %d: %s", w.Code, w.Body.String())
+		}
+		return questions
+	}
+	if questions := list(); len(questions) != 1 || questions[0].TaskID != task.ID || len(questions[0].Options) != 2 {
+		t.Fatalf("listed questions: %+v", questions)
+	}
+	if _, err := store.AddTaskComment(ctx, "tasks", task.ID, "user", "user", "Keep", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if questions := list(); len(questions) != 0 {
+		t.Fatalf("answered question still listed: %+v", questions)
+	}
+}

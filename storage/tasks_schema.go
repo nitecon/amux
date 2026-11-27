@@ -21,7 +21,10 @@ func migrateTasks(ctx context.Context, tx *sql.Tx) error {
  CREATE INDEX IF NOT EXISTS task_subtasks_parent ON task_subtasks(parent_id);
  CREATE TABLE IF NOT EXISTS task_completion_owners(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,origin_json TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS task_mutation_context(id INTEGER PRIMARY KEY CHECK(id=1),origin_json TEXT);
- INSERT OR IGNORE INTO task_mutation_context(id) VALUES(1);`)
+ INSERT OR IGNORE INTO task_mutation_context(id) VALUES(1);
+ CREATE TABLE IF NOT EXISTS task_questions(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,comment_id TEXT NOT NULL,
+ question TEXT NOT NULL,options_json TEXT NOT NULL DEFAULT '[]',origin_json TEXT,created_at INTEGER NOT NULL,answered_at INTEGER,answer_comment_id TEXT);
+ CREATE INDEX IF NOT EXISTS idx_task_questions_open ON task_questions(task_id) WHERE answered_at IS NULL;`)
 	if err != nil {
 		return err
 	}
