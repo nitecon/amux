@@ -55,8 +55,9 @@ func (c *Client) AddTaskComment(ctx context.Context, project, taskID, content st
 	return userCommentAcknowledgement(raw, taskID, content)
 }
 
-// AnswerTaskQuestion posts a user answer that closes one open question.
-func (c *Client) AnswerTaskQuestion(ctx context.Context, project, taskID, questionID, content string) (*storage.TaskComment, error) {
+// AnswerTaskQuestion posts a user answer that closes one open question. The
+// gateway records the answer quoted under its question text.
+func (c *Client) AnswerTaskQuestion(ctx context.Context, project, taskID, questionID, question, content string) (*storage.TaskComment, error) {
 	input := struct {
 		Content    string `json:"content"`
 		Author     string `json:"author"`
@@ -67,7 +68,7 @@ func (c *Client) AnswerTaskQuestion(ctx context.Context, project, taskID, questi
 	if err := c.do(ctx, "POST", taskPath(project)+"/"+url.PathEscape(taskID)+"/comments", input, nil, &raw); err != nil {
 		return nil, err
 	}
-	return userCommentAcknowledgement(raw, taskID, content)
+	return userCommentAcknowledgement(raw, taskID, storage.TaskAnswerComment(question, content))
 }
 
 func userCommentAcknowledgement(raw json.RawMessage, taskID, content string) (*storage.TaskComment, error) {

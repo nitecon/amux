@@ -186,4 +186,7 @@ func TestOpenTaskQuestionsSkipFinishedTasksNewestFirst(t *testing.T) {
 	if err != nil || len(open) != 2 || open[0].TaskID != ids[2] || open[1].TaskID != ids[0] {
 		t.Fatalf("open questions = %+v, %v", open, err)
 	}
+	if detail, err := s.Task(ctx, "tasks", ids[1]); err != nil || detail.Task.WaitingOnUser {
+		t.Fatalf("cancelled task still waiting on user: %+v, %v", detail, err)
+	}
 }

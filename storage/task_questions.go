@@ -115,9 +115,9 @@ func (s *Store) AskTaskQuestion(ctx context.Context, project, id, question strin
 	return result, err
 }
 
-// taskAnswerComment labels a user answer with the question it answers, so the
+// TaskAnswerComment labels a user answer with the question it answers, so the
 // task thread and the owner notification identify the decision.
-func taskAnswerComment(question, answer string) string {
+func TaskAnswerComment(question, answer string) string {
 	return "Answer to question:\n> " + strings.ReplaceAll(question, "\n", "\n> ") + "\n\n" + answer
 }
 

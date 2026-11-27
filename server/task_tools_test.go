@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/storage"
 )
@@ -407,5 +408,38 @@ func TestTaskAskToolRaisesQuestionListedUntilUserAnswers(t *testing.T) {
 	}
 	if questions := list(); len(questions) != 0 {
 		t.Fatalf("answered question still listed: %+v", questions)
+	}
+}
+
+func TestGatewayClientAnswerTaskQuestionAcceptsQuotedAcknowledgement(t *testing.T) {
+	store, h := taskAPI(t)
+	ctx := context.Background()
+	actor := apiActor()
+	task, err := store.InsertTask(ctx, storage.TaskInsert{Project: "tasks", Title: "Blocked work", Reporter: actor.SessionID, RootReason: stringPtr("user-directed"), Details: stringPtr("Exercise answers")}, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyTaskTransition(ctx, "tasks", task.ID, "in_progress", actor, storage.TaskTransitionPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	question, err := store.AskTaskQuestion(ctx, "tasks", task.ID, "Which branch?\nPick one.", []string{"main"}, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	client, err := gatewayclient.New(srv.URL, "task-key", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, err := client.AnswerTaskQuestion(ctx, "tasks", task.ID, question.ID, question.Question, "main")
+	if err != nil {
+		t.Fatalf("answer rejected: %v", err)
+	}
+	if comment.Content != storage.TaskAnswerComment(question.Question, "main") {
+		t.Fatalf("answer comment = %q", comment.Content)
+	}
+	if detail, err := store.Task(ctx, "tasks", task.ID); err != nil || detail.Task.WaitingOnUser {
+		t.Fatalf("answered task still waiting: %+v, %v", detail, err)
 	}
 }

@@ -22,7 +22,8 @@
   or write your own: it is posted as your task comment, quoting the question it
   answers, which closes only that question and notifies the owning agent to continue. Drafts survive background
   refreshes. A task waiting on you is not treated as stalled, so it keeps its
-  owner however long you take. Session guidance, recovery, restart, periodic
+  owner however long you take. Finished or cancelled tasks never show
+  "Waiting on you", matching the Questions view. Session guidance, recovery, restart, periodic
   and already-claimed reminders, and the submit_work rebase-conflict message
   tell agents to ask with `task_ask` (not User review) instead of stalling.
   API: `POST /v1/projects/{ident}/tasks/{id}/questions`, `GET /v1/questions`;

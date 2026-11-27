@@ -199,7 +199,7 @@ const taskSelect = `t.id,t.project_ident,t.title,t.description,t.details,t.statu
  (SELECT json_object('id',p.id,'project_ident',p.project_ident,'title',p.title) FROM task_subtasks s JOIN tasks p ON p.id=s.parent_id WHERE s.child_id=t.id),t.review_action,t.task_type,t.changeset_json,
  (SELECT origin_json FROM task_completion_owners WHERE task_id=t.id),
  (t.kind='delegated' AND EXISTS(SELECT 1 FROM task_delegations d JOIN tasks target ON target.id=d.target_task_id AND target.project_ident=d.target_project_ident WHERE d.source_project_ident=t.project_ident AND d.source_task_id=t.id AND target.status='done')),
- EXISTS(SELECT 1 FROM task_questions q WHERE q.task_id=t.id AND q.answered_at IS NULL)`
+ (t.status NOT IN ('done','cancelled') AND EXISTS(SELECT 1 FROM task_questions q WHERE q.task_id=t.id AND q.answered_at IS NULL))`
 
 func scanTask(row scanner) (*Task, error) {
 	var t Task
@@ -666,7 +666,7 @@ func (s *Store) addTaskComment(ctx context.Context, project, id, author, authorT
 			if err != nil {
 				return err
 			}
-			content = taskAnswerComment(question, content)
+			content = TaskAnswerComment(question, content)
 		}
 		result, err = insertTaskComment(ctx, tx, id, author, authorType, content, hostname, actor)
 		if err != nil || authorType == "system" {

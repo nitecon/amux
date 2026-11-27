@@ -154,7 +154,7 @@ func (b *Browser) questionCard(item storage.TaskQuestion) *questionCard {
 			control.Disable()
 		}
 		b.launch(func(ctx context.Context) {
-			_, err := b.client.AnswerTaskQuestion(ctx, item.ProjectIdent, item.TaskID, item.ID, text)
+			_, err := b.client.AnswerTaskQuestion(ctx, item.ProjectIdent, item.TaskID, item.ID, item.Question, text)
 			b.dispatch(func() {
 				if err != nil {
 					for _, control := range controls {

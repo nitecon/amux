@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,7 +50,7 @@ func TestQuestionsRefreshKeepsDraftAndSendsAnswerForItsQuestion(t *testing.T) {
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		posted <- body
-		_ = json.NewEncoder(w).Encode(storage.TaskComment{ID: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", TaskID: "t1", Author: "user", AuthorType: "user", Content: body["content"]})
+		_ = json.NewEncoder(w).Encode(storage.TaskComment{ID: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", TaskID: "t1", Author: "user", AuthorType: "user", Content: storage.TaskAnswerComment("Which branch?", body["content"])})
 	}))
 	defer server.Close()
 	client, err := gatewayclient.New(server.URL, "test-key", server.Client())
@@ -81,4 +82,7 @@ func TestQuestionsRefreshKeepsDraftAndSendsAnswerForItsQuestion(t *testing.T) {
 		t.Fatal("answer was not sent")
 	}
 	b.wg.Wait()
+	if status := b.questions.status.Text; strings.HasPrefix(status, "Answer not sent") {
+		t.Fatalf("acknowledged answer reported failure: %s", status)
+	}
 }
