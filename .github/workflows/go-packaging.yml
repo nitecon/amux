@@ -72,7 +72,8 @@ jobs:
       - name: Fetch pinned bundled tools
         run: go run ./tools/amux-release tools --target ${{ matrix.target }} --output target/bundled
       - name: Test Go packages
-        run: go test ./...
+        # Windows Git subprocess fixtures can exceed the default package timeout.
+        run: go test -timeout 20m ./...
       - name: Prepare build directory
         shell: bash
         run: mkdir -p bin
