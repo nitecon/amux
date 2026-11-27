@@ -80,7 +80,7 @@ catalog and build metadata at the archive root. On macOS they are inside
 `amux.app`, which is sealed with an ad-hoc code signature. The updater verifies
 the download and package integrity before replacing the installation.
 
-To release, set [VERSION](../VERSION) to the next stable version and push the
-matching tag from the validated release commit. The
-[packaging workflow](../.github/workflows/go-packaging.yml) checks that the tag
-matches `VERSION`, then builds, validates, and publishes a single GitHub release.
+To release, push a new `vMAJOR.MINOR.PATCH` tag on a validated commit on
+`main`. The [packaging workflow](../.github/workflows/go-packaging.yml) uses
+the tag as the package version and generates GitHub release notes from the
+commits since the previous reachable version tag.

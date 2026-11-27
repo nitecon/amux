@@ -160,7 +160,7 @@ server for you, and it keeps running after you close the window.
 - [Updates](docs/updates.md): updating and release packages
 - [Build from source](docs/SourceBuilds.md)
 - [Contributing](docs/Contributing.md) and the [coding guidelines](docs/CodingGuidelines.md)
-- [Changelog](CHANGELOG.md)
+- [Release notes](https://github.com/nitecon/amux/releases)
 
 ## License
 

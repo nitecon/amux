@@ -91,6 +91,7 @@ jobs:
           # not open the GUI or prove that a graphical session can render it.
           bin/amux-desktop${{ matrix.ext }} --project-dir "$GITHUB_WORKSPACE" --help
       - name: Assemble and smoke test portable install
+        id: package
         shell: bash
         env:
           AMUX_RELEASE_GITHUB_TOKEN: ${{ github.token }}
@@ -102,28 +103,31 @@ jobs:
           cp LICENSE dist/install/
           cp assets/models.json dist/install/models.json
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            go run ./cmd/amux-release check-tag "$GITHUB_REF_NAME"
-            package_name="amux-${{ matrix.platform }}-$GITHUB_REF_NAME.${{ matrix.archive }}"
-            version_args=(--version "$GITHUB_REF_NAME")
+            tag="$GITHUB_REF_NAME"
+            package_id="$tag"
+            candidate_args=()
           else
-            package_name="amux-${{ matrix.platform }}-$GITHUB_SHA.${{ matrix.archive }}"
-            version_args=(--candidate-only)
+            tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*')"
+            package_id="$GITHUB_SHA"
+            candidate_args=(--candidate-only)
           fi
-          go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output "dist/$package_name" "${version_args[@]}"
+          package_name="amux-${{ matrix.platform }}-$package_id.${{ matrix.archive }}"
+          go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --version "$tag" --output "dist/$package_name" "${candidate_args[@]}"
           go run ./cmd/amux-release smoke --bundle "dist/$package_name" --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output dist/installed
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
       - name: Verify upgrade with the shipped updater
         shell: bash
+        env:
+          TAG: ${{ steps.package.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
           directory=dist
           if [ "$GITHUB_REF_TYPE" != tag ]; then
-            tag="$(cat VERSION | tr -d '\r')"
             directory=dist/handoff
             go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" \
-              --version "$tag" --output "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}"
+              --version "$TAG" --output "$directory/amux-${{ matrix.platform }}-$TAG.${{ matrix.archive }}"
           fi
-          python scripts/test_release_handoff.py "$directory/amux-${{ matrix.platform }}-$tag.${{ matrix.archive }}" --source-bin bin
+          python scripts/test_release_handoff.py "$directory/amux-${{ matrix.platform }}-$TAG.${{ matrix.archive }}" --source-bin bin
       - uses: actions/upload-artifact@v4
         with:
           name: amux-${{ matrix.platform }}-${{ github.sha }}
@@ -139,6 +143,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -157,4 +163,10 @@ jobs:
             cp "artifacts/amux-"*/"$asset" dist/
           done
           (cd dist && sha256sum amux-* > SHA256SUMS)
-          gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "amux $TAG" --generate-notes
+          previous="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude "$TAG")"
+          {
+            printf '## Changes since %s\n\n' "$previous"
+            git log --no-merges --format='- %s (%h)' "$previous..$TAG"
+            printf '\n[Full changelog](%s/%s/compare/%s...%s)\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$previous" "$TAG"
+          } > release-notes.md
+          gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "amux $TAG" --notes-file release-notes.md

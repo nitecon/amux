@@ -61,7 +61,7 @@ func run(args []string) error {
 	target := flags.String("target", "", "release target")
 	output := flags.String("output", "", "output path")
 	bundle := flags.String("bundle", "", "staged executables, license and model catalog")
-	version := flags.String("version", "", "release version, or VERSION if omitted")
+	version := flags.String("version", "", "release version (vMAJOR.MINOR.PATCH)")
 	revision := flags.String("revision", "", "source commit")
 	candidate := flags.Bool("candidate-only", false, "exclude from stable updates")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -75,13 +75,6 @@ func run(args []string) error {
 	case "tools":
 		return fetchTools(*target, p, *output)
 	case "package":
-		if *version == "" {
-			contents, err := os.ReadFile("VERSION")
-			if err != nil {
-				return err
-			}
-			*version = strings.TrimSpace(string(contents))
-		}
 		if !tagPattern.MatchString(*version) || !revisionPattern.MatchString(*revision) {
 			return fmt.Errorf("invalid release version or revision")
 		}
