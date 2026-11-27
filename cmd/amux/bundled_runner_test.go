@@ -109,15 +109,40 @@ func TestBundledRunnerExecutesSiblingWithOwnedContextAndLiteralArgv(t *testing.T
 	cancelMarker := filepath.Join(t.TempDir(), "cancel-marker.json")
 	t.Setenv("AMUX_BUNDLED_RUNNER_FIXTURE_MARKER", cancelMarker)
 	t.Setenv("AMUX_BUNDLED_RUNNER_FIXTURE_STDERR_SIZE", "")
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	// Cancel only once the child has written its marker, so slow process
+	// startup under parallel load cannot race a fixed cancellation deadline.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	started := time.Now()
+	callDone := make(chan struct{})
+	canceledAt := make(chan time.Time, 1)
+	go func() {
+		defer cancel()
+		deadline := time.After(30 * time.Second)
+		for {
+			if _, err := os.Stat(cancelMarker); err == nil {
+				canceledAt <- time.Now()
+				return
+			}
+			select {
+			case <-callDone:
+				return
+			case <-deadline:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
 	canceled, err := runner.Call(ctx, "code_read", json.RawMessage(`{"file":"README.md"}`))
-	if err != nil || !canceled.IsError || time.Since(started) > 2*time.Second {
-		t.Fatalf("canceled child result=%+v err=%v elapsed=%s", canceled, err, time.Since(started))
+	returned := time.Now()
+	close(callDone)
+	var cancelTime time.Time
+	select {
+	case cancelTime = <-canceledAt:
+	default:
+		t.Fatalf("cancellation fixture did not start: result=%+v err=%v", canceled, err)
 	}
-	if _, err := os.Stat(cancelMarker); err != nil {
-		t.Fatalf("cancellation fixture did not start: %v", err)
+	if elapsed := returned.Sub(cancelTime); err != nil || !canceled.IsError || elapsed > 2*time.Second {
+		t.Fatalf("canceled child result=%+v err=%v elapsed after cancel=%s", canceled, err, elapsed)
 	}
 }
 
@@ -160,7 +185,9 @@ func runBundledRunnerFixtureProcess() int {
 	}
 	_, _ = io.WriteString(os.Stderr, stderr)
 	if os.Getenv("AMUX_BUNDLED_RUNNER_FIXTURE_WAIT") == "1" {
-		select {}
+		// Sleep instead of select{}: the runtime aborts an empty select as a
+		// deadlock when no other goroutine exists, which fakes a fast exit.
+		time.Sleep(time.Hour)
 	}
 	code, err := strconv.Atoi(os.Getenv("AMUX_BUNDLED_RUNNER_FIXTURE_EXIT"))
 	if err != nil {
