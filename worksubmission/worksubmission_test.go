@@ -2,11 +2,14 @@ package worksubmission
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/google/uuid"
@@ -123,15 +126,25 @@ func TestHookStderrIsNotIncludedInSubmissionError(t *testing.T) {
 	}
 }
 
+func symlinkForTest(t *testing.T, target, link string) {
+	t.Helper()
+	// ERROR_PRIVILEGE_NOT_HELD is only defined by syscall on Windows.
+	const errorPrivilegeNotHeld = syscall.Errno(1314)
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" && errors.Is(err, errorPrivilegeNotHeld) {
+			t.Skipf("creating symlinks requires a Windows privilege: %v", err)
+		}
+		t.Fatal(err)
+	}
+}
+
 func TestSubmitAllowsDeletedPathThroughSymlinkedParentAndRejectsIgnoredPath(t *testing.T) {
 	f := newFixture(t)
 	write(t, filepath.Join(f.root, "real", "deleted.txt"), "old\n")
 	f.git(t, f.root, "add", "real/deleted.txt")
 	f.git(t, f.root, "commit", "-m", "add deleted target")
 	f.git(t, f.root, "push")
-	if e := os.Symlink(filepath.Join(f.root, "real"), filepath.Join(f.root, "alias")); e != nil {
-		t.Fatal(e)
-	}
+	symlinkForTest(t, filepath.Join(f.root, "real"), filepath.Join(f.root, "alias"))
 	if e := os.Remove(filepath.Join(f.root, "real", "deleted.txt")); e != nil {
 		t.Fatal(e)
 	}
@@ -144,9 +157,7 @@ func TestSubmitAllowsDeletedPathThroughSymlinkedParentAndRejectsIgnoredPath(t *t
 	}
 	outside := filepath.Join(t.TempDir(), "outside")
 	write(t, filepath.Join(outside, "escape.txt"), "outside edit\n")
-	if e := os.Symlink(outside, filepath.Join(f.root, "escape")); e != nil {
-		t.Fatal(e)
-	}
+	symlinkForTest(t, outside, filepath.Join(f.root, "escape"))
 	if _, e = Submit(context.Background(), Request{Root: f.root, TaskID: taskID(), Message: "Escape", Paths: []string{"escape/escape.txt"}}, DefaultPreferences(), nil); e == nil || !strings.Contains(e.Error(), "not inside the project") {
 		t.Fatalf("symlink escape should be rejected: %v", e)
 	}
