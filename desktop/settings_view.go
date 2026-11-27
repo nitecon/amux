@@ -76,7 +76,7 @@ func (b *Browser) settingsView() fyne.CanvasObject {
 	sections = append(sections,
 		section{"Workspace", theme.FolderIcon(), settingsCard(workspace)},
 		section{"Automation", theme.SettingsIcon(), settingsCard(
-			container.NewVBox(b.pluginSettings.accordion, container.NewHScroll(b.workSubmissionSettings.accordion)))},
+			container.NewVBox(b.pluginSettings.accordion, b.providerSettings.accordion, container.NewHScroll(b.workSubmissionSettings.accordion)))},
 	)
 	if b.workerPanel != nil {
 		sections = append(sections, section{"Workers", theme.ComputerIcon(), settingsCard(container.NewHScroll(b.workerPanel.accordion))})

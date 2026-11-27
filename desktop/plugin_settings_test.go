@@ -80,12 +80,12 @@ func TestPluginSettingsAcceptOnlyCurrentServerResponses(t *testing.T) {
 	p.writeGeneration = 3
 	p.writing = true // a newer toggle is still awaiting its acknowledgement
 	p.finishReload(1, 2, staleRead, nil)
-	p.finishWrite(2, "review", false, &storage.PluginSetting{ID: "review", Enabled: false}, nil)
+	p.finishWrite(2, "review", false, &storage.PluginSetting{ID: "review", Enabled: false}, "", nil)
 	if !p.writing || p.uncertain || !p.confirmed["review"] || !p.checks["review"].Checked {
 		t.Fatal("stale read or write changed a newer pending server value")
 	}
 
-	p.finishWrite(3, "review", false, &storage.PluginSetting{ID: "review", Enabled: false}, nil)
+	p.finishWrite(3, "review", false, &storage.PluginSetting{ID: "review", Enabled: false}, "", nil)
 	if p.writing || p.uncertain || p.confirmed["review"] || p.checks["review"].Checked || p.checks["review"].Disabled() {
 		t.Fatal("matching acknowledgement did not confirm the requested false value")
 	}
@@ -93,7 +93,7 @@ func TestPluginSettingsAcceptOnlyCurrentServerResponses(t *testing.T) {
 	p.readGeneration = 4 // a GET already in flight before the next PUT
 	p.writeGeneration = 4
 	p.writing = true
-	p.finishWrite(4, "review", true, nil, errors.New("server unavailable"))
+	p.finishWrite(4, "review", true, nil, "", errors.New("server unavailable"))
 	p.finishReload(4, 3, staleRead, nil)
 	if p.writing || !p.uncertain || p.confirmed["review"] || p.checks["review"].Checked || !p.checks["review"].Disabled() || !strings.Contains(p.status.Text, "server unavailable") {
 		t.Fatal("current write failure did not become unknown or stale GET cleared uncertainty")
@@ -133,7 +133,7 @@ func TestBrowserPluginSettingsWrappedStatusFitsProjectColumn(t *testing.T) {
 	p.confirmed["review"] = false
 	p.writeGeneration++
 	p.writing = true
-	p.finishWrite(p.writeGeneration, "review", true, nil, errors.New(strings.Repeat("server unavailable ", 8)))
+	p.finishWrite(p.writeGeneration, "review", true, nil, "", errors.New(strings.Repeat("server unavailable ", 8)))
 	_ = window.Canvas().Capture()
 	columnWidth := b.mainViews["Settings"].Size().Width
 	if p.status.Size().Height+1 < p.status.MinSize().Height {

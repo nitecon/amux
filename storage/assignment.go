@@ -237,6 +237,10 @@ func assignmentReadyCandidates(ctx context.Context, q queryer, observed int64) (
 	if err != nil {
 		return nil, err
 	}
+	disabled, err := disabledProviders(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 	busy := make(map[string]bool)
 	rows, err := q.QueryContext(ctx, "SELECT DISTINCT json_extract(owner_origin_json,'$.session_id') FROM tasks WHERE (status IN ('in_progress','stalled') OR (status='todo' AND EXISTS(SELECT 1 FROM assignment_offers o WHERE o.task_id=tasks.id))) AND owner_origin_json IS NOT NULL")
 	if err != nil {
@@ -275,7 +279,8 @@ func assignmentReadyCandidates(ctx context.Context, q queryer, observed int64) (
 			if !presence.AutoAssign || presence.ProjectIdent != project || presence.Source == "" ||
 				presence.State != "idle" || presence.Busy || presence.Draft || presence.LastActivityAt == nil ||
 				observed-presence.SeenAt >= presenceGoneAfter ||
-				busy[origin.SessionID] || refused[origin.SessionID] || seenSessions[origin.SessionID] {
+				busy[origin.SessionID] || refused[origin.SessionID] || seenSessions[origin.SessionID] ||
+				disabled[origin.Provider] {
 				continue
 			}
 			seenSessions[origin.SessionID] = true

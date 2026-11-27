@@ -122,6 +122,7 @@ func NewHandlerWithConfig(store *storage.Store, apiKey string, config HandlerCon
 	api.registerSelfServiceUserRoutes(mux)
 	api.registerUserAdminRoutes(mux)
 	api.registerPluginRoutes(mux)
+	api.registerProviderRoutes(mux)
 	api.registerSkillRoutes(mux)
 	api.registerArtifactReadRoutes(mux)
 	api.registerArtifactWriteRoutes(mux)

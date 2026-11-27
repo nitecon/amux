@@ -18,8 +18,27 @@ var pluginSettingLabels = map[string]string{
 	"reclaim":    "Recover work",
 }
 
+var providerSettingLabels = map[string]string{
+	"antigravity": "Antigravity",
+	"claude":      "Claude",
+	"codex":       "Codex",
+}
+
+// switchSettingsSource describes one server-side set of on/off switches.
+// save may return a status note shown after a confirmed write.
+type switchSettingsSource struct {
+	noun   string
+	title  string
+	note   string
+	ids    []string
+	labels map[string]string
+	load   func(context.Context) ([]storage.PluginSetting, error)
+	save   func(context.Context, string, bool) (*storage.PluginSetting, string, error)
+}
+
 type pluginSettingsPanel struct {
 	browser   *Browser
+	source    switchSettingsSource
 	checks    map[string]*widget.Check
 	refresh   *widget.Button
 	status    *widget.Label
@@ -38,28 +57,75 @@ type pluginSettingsPanel struct {
 }
 
 func newPluginSettingsPanel(browser *Browser) *pluginSettingsPanel {
+	return newSwitchSettingsPanel(browser, switchSettingsSource{
+		noun:   "plugin",
+		title:  "Server plugin settings",
+		note:   "Changes apply across this server. Automatic reviews apply to future completions; queued reviews remain available.",
+		ids:    storage.SwitchablePluginIDs(),
+		labels: pluginSettingLabels,
+		load: func(ctx context.Context) ([]storage.PluginSetting, error) {
+			return browser.client.PluginSettings(ctx)
+		},
+		save: func(ctx context.Context, id string, enabled bool) (*storage.PluginSetting, string, error) {
+			setting, err := browser.client.SetPluginEnabled(ctx, id, enabled)
+			return setting, "", err
+		},
+	})
+}
+
+func newProviderSettingsPanel(browser *Browser) *pluginSettingsPanel {
+	return newSwitchSettingsPanel(browser, switchSettingsSource{
+		noun:   "provider",
+		title:  "Agent providers",
+		note:   "Disabled providers receive no new tasks. Disabling a provider returns its active tasks to the queue for enabled agents.",
+		ids:    storage.SwitchableProviderIDs(),
+		labels: providerSettingLabels,
+		load: func(ctx context.Context) ([]storage.PluginSetting, error) {
+			settings, err := browser.client.ProviderSettings(ctx)
+			converted := make([]storage.PluginSetting, len(settings))
+			for i, setting := range settings {
+				converted[i] = storage.PluginSetting{ID: setting.ID, Enabled: setting.Enabled}
+			}
+			return converted, err
+		},
+		save: func(ctx context.Context, id string, enabled bool) (*storage.PluginSetting, string, error) {
+			setting, released, err := browser.client.SetProviderEnabled(ctx, id, enabled)
+			if err != nil || setting == nil {
+				return nil, "", err
+			}
+			note := ""
+			if !enabled {
+				note = fmt.Sprintf(" %d active task(s) returned to the queue.", released)
+			}
+			return &storage.PluginSetting{ID: setting.ID, Enabled: setting.Enabled}, note, nil
+		},
+	})
+}
+
+func newSwitchSettingsPanel(browser *Browser, source switchSettingsSource) *pluginSettingsPanel {
 	p := &pluginSettingsPanel{
 		browser:   browser,
+		source:    source,
 		checks:    make(map[string]*widget.Check),
 		confirmed: make(map[string]bool),
 		status:    widget.NewLabel("Loading server settings…"),
 	}
 	p.status.Wrapping = fyne.TextWrapWord
-	rows := make([]fyne.CanvasObject, 0, len(storage.SwitchablePluginIDs())+2)
-	for _, id := range storage.SwitchablePluginIDs() {
-		check := widget.NewCheck(pluginSettingLabels[id], nil)
+	rows := make([]fyne.CanvasObject, 0, len(source.ids)+3)
+	for _, id := range source.ids {
+		check := widget.NewCheck(source.labels[id], nil)
 		check.Disable()
 		check.OnChanged = func(enabled bool) { p.setEnabled(id, enabled) }
 		p.checks[id] = check
 		rows = append(rows, check)
 	}
-	note := widget.NewLabel("Changes apply across this server. Automatic reviews apply to future completions; queued reviews remain available.")
+	note := widget.NewLabel(source.note)
 	note.Wrapping = fyne.TextWrapWord
 	rows = append(rows, note)
 	p.refresh = widget.NewButton("Reload settings", func() { p.reload(true) })
 	p.refresh.Disable()
 	rows = append(rows, p.refresh, p.status)
-	p.accordion = widget.NewAccordion(widget.NewAccordionItem("Server plugin settings", container.NewVBox(rows...)))
+	p.accordion = widget.NewAccordion(widget.NewAccordionItem(source.title, container.NewVBox(rows...)))
 	return p
 }
 
@@ -73,10 +139,10 @@ func (p *pluginSettingsPanel) reload(explicit bool) {
 	readGeneration := p.readGeneration
 	writeGeneration := p.writeGeneration
 	p.loading = true
-	p.setStatus("Loading server plugin settings…")
+	p.setStatus("Loading server " + p.source.noun + " settings…")
 	p.updateControls()
 	if !p.browser.launch(func(ctx context.Context) {
-		settings, err := p.browser.client.PluginSettings(ctx)
+		settings, err := p.source.load(ctx)
 		p.browser.dispatch(func() { p.finishReload(readGeneration, writeGeneration, settings, err) })
 	}) {
 		p.loading = false
@@ -92,21 +158,21 @@ func (p *pluginSettingsPanel) finishReload(readGeneration, writeGeneration uint6
 	p.loading = false
 	if err != nil {
 		p.uncertain = true
-		p.setStatus("Could not load server plugin settings: " + err.Error())
+		p.setStatus("Could not load server " + p.source.noun + " settings: " + err.Error())
 		p.updateControls()
 		return
 	}
-	ids := storage.SwitchablePluginIDs()
+	ids := p.source.ids
 	if len(settings) != len(ids) {
 		p.uncertain = true
-		p.setStatus("Could not load server plugin settings: incomplete server response.")
+		p.setStatus("Could not load server " + p.source.noun + " settings: incomplete server response.")
 		p.updateControls()
 		return
 	}
 	for i, id := range ids {
 		if settings[i].ID != id {
 			p.uncertain = true
-			p.setStatus("Could not load server plugin settings: invalid server response order.")
+			p.setStatus("Could not load server " + p.source.noun + " settings: invalid server response order.")
 			p.updateControls()
 			return
 		}
@@ -120,7 +186,7 @@ func (p *pluginSettingsPanel) finishReload(readGeneration, writeGeneration uint6
 	p.programmatic = false
 	p.loaded = true
 	p.uncertain = false
-	p.setStatus("Server plugin settings loaded.")
+	p.setStatus("Server " + p.source.noun + " settings loaded.")
 	p.updateControls()
 }
 
@@ -152,11 +218,11 @@ func (p *pluginSettingsPanel) setEnabled(id string, enabled bool) {
 	p.writing = true
 	p.writeGeneration++
 	writeGeneration := p.writeGeneration
-	p.setStatus("Saving server plugin setting…")
+	p.setStatus("Saving server " + p.source.noun + " setting…")
 	p.updateControls()
 	if !p.browser.launch(func(ctx context.Context) {
-		setting, err := p.browser.client.SetPluginEnabled(ctx, id, enabled)
-		p.browser.dispatch(func() { p.finishWrite(writeGeneration, id, enabled, setting, err) })
+		setting, note, err := p.source.save(ctx, id, enabled)
+		p.browser.dispatch(func() { p.finishWrite(writeGeneration, id, enabled, setting, note, err) })
 	}) {
 		p.writing = false
 		p.uncertain = true
@@ -165,14 +231,14 @@ func (p *pluginSettingsPanel) setEnabled(id string, enabled bool) {
 	}
 }
 
-func (p *pluginSettingsPanel) finishWrite(writeGeneration uint64, id string, enabled bool, setting *storage.PluginSetting, err error) {
+func (p *pluginSettingsPanel) finishWrite(writeGeneration uint64, id string, enabled bool, setting *storage.PluginSetting, note string, err error) {
 	if p.isClosed() || p.closed || writeGeneration != p.writeGeneration || !p.writing {
 		return
 	}
 	p.writing = false
 	if err != nil {
 		p.uncertain = true
-		p.setStatus(fmt.Sprintf("Could not confirm %s. Reload settings before changing it: %s", pluginSettingLabels[id], err))
+		p.setStatus(fmt.Sprintf("Could not confirm %s. Reload settings before changing it: %s", p.source.labels[id], err))
 		p.updateControls()
 		return
 	}
@@ -186,7 +252,7 @@ func (p *pluginSettingsPanel) finishWrite(writeGeneration uint64, id string, ena
 	p.programmatic = true
 	p.checks[id].SetChecked(enabled)
 	p.programmatic = false
-	p.setStatus("Server plugin setting saved.")
+	p.setStatus("Server " + p.source.noun + " setting saved." + note)
 	p.updateControls()
 }
 

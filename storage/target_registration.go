@@ -260,6 +260,10 @@ func readTargetDirectory(ctx context.Context, tx *sql.Tx, project string, now ti
 	if p == nil {
 		return TargetDirectory{}, ErrTaskNotFound
 	}
+	disabled, err := disabledProviders(ctx, tx)
+	if err != nil {
+		return TargetDirectory{}, err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT origin_json,generation,seen_at,canonical_remote,display_name,hostname
  FROM task_target_presence WHERE project_ident=? AND advertised=1 AND seen_at>=?
  ORDER BY instance_id,session_id`, project, now.UnixMilli()-targetRegistrationLease)
@@ -291,6 +295,9 @@ func readTargetDirectory(ctx context.Context, tx *sql.Tx, project string, now ti
 		if err := json.Unmarshal([]byte(originJSON), &origin); err != nil {
 			_ = rows.Close()
 			return TargetDirectory{}, err
+		}
+		if disabled[origin.Provider] {
+			continue
 		}
 		targets = append(targets, RegisteredTarget{Target: RegisteredTargetIdentity{Origin: origin, Generation: generation},
 			SeenAt: seenAt, ExpiresAt: seenAt + targetRegistrationLease, CanonicalRemote: boundRemote,

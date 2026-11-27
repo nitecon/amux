@@ -132,6 +132,7 @@ type Browser struct {
 	workspaceFiles                                      *workspaceFilesPane
 	newTaskAccordion                                    *widget.Accordion
 	pluginSettings                                      *pluginSettingsPanel
+	providerSettings                                    *pluginSettingsPanel
 	workSubmissionSettings                              *workSubmissionSettingsPanel
 	workPreferencesPath                                 string
 	gatewaySettings                                     *gatewaySettingsPanel
@@ -315,6 +316,7 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 	b.clusterID = config.Client.ClusterID()
 	migrateEndpointFavorites(prefs.Favorites, b.endpoint, b.clusterID)
 	b.pluginSettings = newPluginSettingsPanel(b)
+	b.providerSettings = newProviderSettingsPanel(b)
 	b.workPreferencesPath = workPreferencesPath
 	b.workSubmissionSettings = newWorkSubmissionSettingsPanel(workPreferencesPath, b)
 	if config.GatewaySetup != nil {
@@ -946,6 +948,7 @@ func (b *Browser) buildUI() {
 	b.shell = container.NewBorder(container.NewVBox(header, widget.NewSeparator(), b.approvalBanner), statusBar, nil, nil, b.root)
 	b.updateSelectedProjectStatus()
 	b.pluginSettings.setRoot(b.root)
+	b.providerSettings.setRoot(b.root)
 	b.workSubmissionSettings.setRoot(b.root)
 	b.refreshWorkspaceSelector()
 	if b.workerPanel != nil {
@@ -972,6 +975,7 @@ func (b *Browser) Start(parent context.Context) {
 	b.mu.Unlock()
 	b.dispatch(func() {
 		b.pluginSettings.reload(false)
+		b.providerSettings.reload(false)
 		b.scanProjectCheckouts()
 		b.syncWorkspaceFiles()
 		b.refreshWorktreeStatus()
@@ -1153,6 +1157,9 @@ func (b *Browser) Close() {
 	if b.pluginSettings != nil {
 		b.dispatch(b.pluginSettings.close)
 	}
+	if b.providerSettings != nil {
+		b.dispatch(b.providerSettings.close)
+	}
 	if b.workSubmissionSettings != nil {
 		b.dispatch(b.workSubmissionSettings.close)
 	}
@@ -1214,6 +1221,7 @@ func (b *Browser) launchWithTimeout(timeout time.Duration, run func(context.Cont
 func (b *Browser) Refresh() {
 	b.dispatch(func() {
 		b.pluginSettings.reload(true)
+		b.providerSettings.reload(true)
 		if b.clientConfigPath != "" {
 			b.scanProjectCheckouts()
 		}

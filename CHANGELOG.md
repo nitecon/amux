@@ -7,6 +7,12 @@
 - Exclude or allow agent execution of a project on this machine from the
   managed desktop project menu. The checkout stays bound and browsable, and
   active tasks finish before execution stops.
+- Settings → Automation → Agent providers can disable a provider (for example
+  Antigravity during a subscription problem). Disabled providers receive no
+  automatic assignments, are hidden from the task agent directory, and cannot
+  be targeted by reassignment. Disabling a provider returns its active tasks to
+  the automatic queue so enabled agents pick them up. API:
+  `GET /v1/providers`, `PUT /v1/providers/{id}`.
 
 ### Fixed
 

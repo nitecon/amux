@@ -129,6 +129,11 @@ func (s *Store) assignTask(ctx context.Context, project, id string, actor *Agent
 		if requiredOS != "" && requiredOS != target.Origin.OS {
 			return fmt.Errorf("%w: target agent OS does not match task labels", ErrTaskConflict)
 		}
+		if enabled, err := providerEnabled(ctx, tx, target.Origin.Provider); err != nil {
+			return err
+		} else if !enabled {
+			return fmt.Errorf("%w: target agent provider is disabled", ErrTaskConflict)
+		}
 		if _, err := validateRegisteredTaskTarget(ctx, tx, task.ProjectIdent, &target, nil, now); err != nil {
 			return err
 		}
