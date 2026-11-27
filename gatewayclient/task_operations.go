@@ -237,9 +237,8 @@ func validateTaskAcknowledgement(task *storage.Task, project, id string) error {
 	if task == nil || task.ID == "" || (id != "" && task.ID != id) || task.ProjectIdent != projects.NormalizeIdent(project) {
 		return fmt.Errorf("gateway task response did not match the requested scope")
 	}
-	switch task.Status {
-	case "todo", "in_progress", "stalled", "user_review", "done", "cancelled":
-		return nil
+	if !storage.IsValidTaskStatus(task.Status) {
+		return fmt.Errorf("gateway task response has an invalid status")
 	}
-	return fmt.Errorf("gateway task response has an invalid status")
+	return nil
 }

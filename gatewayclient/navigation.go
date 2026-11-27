@@ -55,7 +55,7 @@ func (c *Client) Tasks(ctx context.Context, project string, statuses []string) (
 
 // ReorderTasks atomically sets the order of every task in one status column.
 func (c *Client) ReorderTasks(ctx context.Context, project, status string, order []string) ([]storage.TaskSummary, error) {
-	if status != "todo" && status != "in_progress" && status != "stalled" && status != "user_review" && status != "done" {
+	if !storage.IsReorderableTaskStatus(status) {
 		return nil, fmt.Errorf("invalid task status %q", status)
 	}
 	query := url.Values{"status": {status}}

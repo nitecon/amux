@@ -29,6 +29,21 @@ func IsActiveTaskStatus(status string) bool {
 	return status == "in_progress" || status == "stalled"
 }
 
+// IsReorderableTaskStatus reports whether status is a board column whose tasks can be reordered.
+func IsReorderableTaskStatus(status string) bool {
+	return status == "todo" || IsActiveTaskStatus(status) || status == "user_review" || status == "done"
+}
+
+// IsValidTaskStatus reports whether status is a known task status.
+func IsValidTaskStatus(status string) bool {
+	return IsReorderableTaskStatus(status) || status == "cancelled"
+}
+
+// OpenTaskStatuses returns the statuses listed when no status filter is given.
+func OpenTaskStatuses() []string {
+	return []string{"todo", "in_progress", "stalled"}
+}
+
 type TaskParent struct {
 	ID           string `json:"id"`
 	ProjectIdent string `json:"project_ident"`

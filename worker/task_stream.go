@@ -60,7 +60,7 @@ func bootstrapAssignments(ctx context.Context, store *storage.Store, client *gat
 	}
 	var live []storage.Task
 	for project, bySession := range owners {
-		tasks, err := client.Tasks(ctx, project, []string{"todo", "in_progress", "stalled"})
+		tasks, err := client.Tasks(ctx, project, storage.OpenTaskStatuses())
 		if err != nil {
 			var response *gatewayclient.HTTPError
 			if errors.As(err, &response) && (response.Status == 404 || response.Status == 410) {

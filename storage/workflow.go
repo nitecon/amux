@@ -16,8 +16,6 @@ import (
 
 var ErrTaskGuidedQuestion = errors.New("task mutation confirmation required")
 
-var expectedTaskStatuses = [...]string{"todo", "in_progress", "stalled", "user_review", "done", "cancelled"}
-
 type TaskGuidedQuestion struct{ TaskID string }
 
 func (e *TaskGuidedQuestion) Error() string {
@@ -45,13 +43,8 @@ type TaskConfirmationResult struct {
 }
 
 func validateExpectedTaskStatus(expected *string) error {
-	if expected == nil {
+	if expected == nil || IsValidTaskStatus(*expected) {
 		return nil
-	}
-	for _, status := range expectedTaskStatuses {
-		if *expected == status {
-			return nil
-		}
 	}
 	return fmt.Errorf("%w: expected_status is not a known task status", ErrTaskMetadataInput)
 }

@@ -274,7 +274,7 @@ func ParseTaskListArgs(raw json.RawMessage) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	statuses := []string{"todo", "in_progress", "stalled"}
+	statuses := storage.OpenTaskStatuses()
 	if _, ok := fields["status"]; ok {
 		var status string
 		if err := decodeField(fields, "status", &status, true); err != nil {
@@ -288,7 +288,7 @@ func ParseTaskListArgs(raw json.RawMessage) ([]string, error) {
 		}
 	}
 	for _, status := range statuses {
-		if status != "todo" && status != "in_progress" && status != "stalled" && status != "user_review" && status != "done" && status != "cancelled" {
+		if !storage.IsValidTaskStatus(status) {
 			return nil, errors.New("invalid task tool arguments: invalid task status")
 		}
 	}

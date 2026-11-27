@@ -14,7 +14,7 @@ import (
 // updates preserve reservations and review state; column crossings use the
 // existing task workflow in the same mutation transaction.
 func (s *Store) ReorderTasks(ctx context.Context, project, status string, order []string, origin *AgentOrigin, policy TaskTransitionPolicy) ([]TaskSummary, error) {
-	if status != "todo" && status != "in_progress" && status != "stalled" && status != "user_review" && status != "done" {
+	if !IsReorderableTaskStatus(status) {
 		return nil, fmt.Errorf("%w: invalid task status", ErrTaskConflict)
 	}
 	project = projects.NormalizeIdent(project)

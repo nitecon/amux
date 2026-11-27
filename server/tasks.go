@@ -249,7 +249,7 @@ func (a *api) listTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	statuses := []string{"todo", "in_progress", "stalled"}
+	statuses := storage.OpenTaskStatuses()
 	if text := query.Get("status"); text != "" {
 		statuses = []string{}
 		for _, part := range strings.Split(text, ",") {
@@ -275,7 +275,7 @@ func (a *api) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, s := range statuses {
-		if s != "todo" && s != "in_progress" && s != "stalled" && s != "user_review" && s != "done" && s != "cancelled" {
+		if !storage.IsValidTaskStatus(s) {
 			writeError(w, 400, "invalid task status")
 			return
 		}
