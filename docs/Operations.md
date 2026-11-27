@@ -434,8 +434,8 @@ in `docs/go-parity.json`.
 
 CLI workers now register an `amux` MCP stdio server with their native provider.
 The standalone bundled catalog has 12 non-task tools. With a complete native
-configuration and the bundled executables available, those join the 19 native
-task and submission tools for 31 total. The native tools include the 15 server
+configuration and the bundled executables available, those join the 21 native
+task and submission tools for 33 total. The native tools include the 17 server
 tools, local `submit_work`, `agent_identity`, and the `task_agents` and `task_reassign` handoff tools.
 `project_message_thread` reads the full original message and its replies after
 inbox acknowledgement. The bundled tools use the pinned `agent-tools` and
