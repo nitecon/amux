@@ -116,7 +116,7 @@ func (s *Store) assignTask(ctx context.Context, project, id string, actor *Agent
 		if err := ensureTaskNotManagedDispatch(ctx, tx, task.ID); err != nil {
 			return err
 		}
-		if task.Status != "todo" && task.Status != "in_progress" {
+		if task.Status != "todo" && (task.Status != "in_progress" && task.Status != "stalled") {
 			return fmt.Errorf("%w: only active tasks can be reassigned", ErrTaskConflict)
 		}
 		if !human && (currentActor == nil || task.OwnerOrigin == nil || *task.OwnerOrigin != *currentActor) {

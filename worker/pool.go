@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -234,6 +235,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 			if activeCancel != nil {
 				if err := checkPoolTask(ctx, config, &slot, activeTask); err != nil {
 					if errors.Is(err, errPoolTaskFinished) {
+						reassigned := errors.Is(err, errPoolTaskReassigned)
 						activeCancel()
 						if workerErr := <-activeDone; workerErr != nil && ctx.Err() == nil {
 							return workerErr
@@ -241,6 +243,9 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 						activeCancel, activeDone = nil, nil
 						if err = retry(ctx, func() error { return Flush(ctx, config.Store, config.Client, slot.RunID) }); err != nil {
 							return err
+						}
+						if reassigned {
+							cleanupPoolWorktree(ctx, config, pool, slot.RunID)
 						}
 						if err = config.Store.FinishWorkerPoolRun(ctx, pool.ID, slot.ID, slot.RunID, time.Now().UTC()); err != nil {
 							return err
@@ -278,8 +283,12 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				activeTask = conv.TaskID
 				if err = checkPoolTask(ctx, config, &slot, activeTask); err != nil {
 					if errors.Is(err, errPoolTaskFinished) {
+						reassigned := errors.Is(err, errPoolTaskReassigned)
 						if err = retry(ctx, func() error { return Flush(ctx, config.Store, config.Client, run.ID) }); err != nil {
 							return err
+						}
+						if reassigned {
+							cleanupPoolWorktree(ctx, config, pool, run.ID)
 						}
 						if err = config.Store.FinishWorkerPoolRun(ctx, pool.ID, slot.ID, run.ID, time.Now().UTC()); err != nil {
 							return err
@@ -426,26 +435,27 @@ func pendingPoolFollowUp(ctx context.Context, config PoolConfig, pool storage.Wo
 }
 
 var errPoolTaskFinished = errors.New("worker pool task is no longer owned and active")
+var errPoolTaskReassigned = fmt.Errorf("%w: reassigned", errPoolTaskFinished)
 
 func checkPoolTask(ctx context.Context, config PoolConfig, slot *storage.WorkerPoolSlot, taskID string) error {
+	return checkRunTask(ctx, config.Store, config.Client, slot.RunID, taskID)
+}
+
+func checkRunTask(ctx context.Context, store *storage.Store, client *gatewayclient.Client, runID, taskID string) error {
 	if taskID == "" {
 		return fmt.Errorf("saved worker conversation has no task ID")
 	}
-	before, err := config.Store.WorkerRun(ctx, slot.RunID)
+	before, err := store.WorkerRun(ctx, runID)
 	if err != nil {
 		return err
 	}
-	pool, err := config.Store.WorkerPool(ctx, config.PoolID)
-	if err != nil {
-		return err
-	}
-	task, err := retryValue(ctx, func() (*storage.Task, error) { return config.Client.Task(ctx, pool.Project, taskID) })
+	task, err := retryValue(ctx, func() (*storage.Task, error) { return client.Task(ctx, before.Project, taskID) })
 	if err != nil {
 		return err
 	}
 	// Reload after the remote read. Run may have rotated the conversation owner
 	// while Task was in flight, so compare against the latest durable instance.
-	run, err := config.Store.WorkerRun(ctx, slot.RunID)
+	run, err := store.WorkerRun(ctx, runID)
 	if err != nil {
 		return err
 	}
@@ -459,7 +469,10 @@ func checkPoolTask(ctx context.Context, config PoolConfig, slot *storage.WorkerP
 	if run.PendingInstanceID != "" {
 		pendingOwner.InstanceID = run.PendingInstanceID
 	}
-	if task.Status != "in_progress" || !owned(task.OwnerOrigin, run.Owner) && !(run.PendingInstanceID != "" && owned(task.OwnerOrigin, pendingOwner)) {
+	if (task.Status != "in_progress" && task.Status != "stalled") || !owned(task.OwnerOrigin, run.Owner) && !(run.PendingInstanceID != "" && owned(task.OwnerOrigin, pendingOwner)) {
+		if task.Status == "todo" || task.Status == "in_progress" || task.Status == "stalled" {
+			return errPoolTaskReassigned
+		}
 		return errPoolTaskFinished
 	}
 	return nil
@@ -508,5 +521,17 @@ func omitPoolSlot(config PoolConfig, pool storage.WorkerPool, slot storage.Worke
 		if pause(ctx, 100*time.Millisecond) != nil {
 			return
 		}
+	}
+}
+
+// A saved run can use a task-specific linked checkout. Normal runs share the
+// pool checkout, which RemoveTaskWorktree always retains.
+func cleanupPoolWorktree(ctx context.Context, config PoolConfig, pool storage.WorkerPool, runID string) {
+	run, err := config.Store.WorkerRun(ctx, runID)
+	if err == nil {
+		err = projectidentity.RemoveTaskWorktree(ctx, pool.Directory, run.Directory)
+	}
+	if err != nil {
+		slog.Warn("task worktree cleanup needs inspection", "run", runID, "error", err)
 	}
 }

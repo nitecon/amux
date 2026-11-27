@@ -33,8 +33,8 @@ func (a *api) reorderTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := statusValues[0]
-	if status != "todo" && status != "in_progress" && status != "user_review" && status != "done" {
-		writeError(w, http.StatusBadRequest, "invalid status: must be todo|in_progress|user_review|done")
+	if status != "todo" && status != "in_progress" && status != "stalled" && status != "user_review" && status != "done" {
+		writeError(w, http.StatusBadRequest, "invalid status: must be todo|in_progress|stalled|user_review|done")
 		return
 	}
 	var req *struct {

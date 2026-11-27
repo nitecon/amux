@@ -28,7 +28,8 @@ func TestExecutionHistoryRouteReadsMigratedRustRuns(t *testing.T) {
 	if _, err := db.ExecContext(ctx, string(schema)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO execution_runs
+	if _, err := db.ExecContext(ctx, `INSERT INTO projects(ident,channel_name,room_id,created_at) VALUES('history-project','discord','',0);
+ INSERT INTO execution_runs
 		(id, project_ident, trigger, dedup_key, status, created_at, finished_at, output)
 		VALUES ('retained-run', 'history-project', 'manual', 'history-key', 'completed', 10, 20, 'retained output');
 		INSERT INTO execution_attempts (run_id, position, body)

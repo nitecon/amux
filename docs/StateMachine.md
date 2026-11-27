@@ -295,7 +295,7 @@ Rules carried over from the desktop:
   a delayed heartbeat may restore a session only while that report is fresh.
 - **Assignment:** every 30-second tick runs Presence first, then sweeps all
   reported sessions across every workspace/project. Each currently idle agent
-  that owns no in-progress task gets the oldest eligible queued task in its
+  that owns no in-progress or stalled task gets the oldest eligible queued task in its
   project (OS label, goal, delegation, owner and session
   routing). After each ordinary assignment, the project's next assignment
   goes to the oldest eligible queued `task-review`, if any. Queued
@@ -320,8 +320,8 @@ Rules carried over from the desktop:
   sessions are considered oldest terminal output first, then session ID. The
   sweep fills every eligible free session while work remains; empty or blocked
   projects do not stop other workspaces. Fresh Presence state is authoritative,
-  including sessions that stayed idle since the previous tick. Activity and task
-  events do not independently trigger assignment. The first clock tick is 30 s
+  including sessions that stayed idle since the previous tick. Task creation, unclaim and agent-idle events also trigger assignment against
+  fresh presence, so available capacity need not wait for the next tick. The first clock tick is 30 s
   after startup; missed ticks are skipped rather than replayed in a burst.
   Claim conflicts skip an ineligible task; storage failures fail the delivery
   for retry. A rejected notification consumes its offer and releases the task
@@ -392,8 +392,9 @@ Rules carried over from the desktop:
   event's completion marker commits with all notifications, so replay after a
   crash cannot emit a second set of notification UIDs. Retiring the source
   event also removes that marker.
-- **Reminder:** in-progress work with no task update, comment or reminder for
-  ten minutes prompts its connected exact owner. Delivery requires idle.
+- **Reminder:** startup continuity remains informational. The previous
+  ten-minute update reminder is suppressed for tasks tracked by Reclaim.
+  Stalled-work recovery prompts can be queued while the provider is busy.
   A new `client_run` also prompts a resumed
   session about its in-progress work, once per execution and desktop lifetime.
   A fresh instance gets an explicit prior-execution notice addressed to that
@@ -402,10 +403,21 @@ Rules carried over from the desktop:
   heartbeats cannot reintroduce one, and emission plus deduplication commit
   together. Clients sharing a reporting source retain independent run markers.
   Older clients without `client_run` keep periodic reminders.
-- **Reclaim:** claimed work returns to the queue after 15 minutes without task
-  activity, except while its owner is busy. With the router running, the
-  Clock-driven controller owns expiry. REST reads and task mutations never
-  perform an implicit reclaim, including API-only component instances.
+- **Reclaim and stalled progress:** owned work (including queued
+  reservations) becomes `stalled` after five minutes without exact-execution
+  output, provider messages/tool events, or a task update. Client heartbeats and
+  a busy flag do not renew progress. The controller sends a recovery prompt at
+  five minutes, a second after another five minutes, then requeues the task if
+  a further five minutes passes without activity. Pings and counters commit
+  together and survive restart. New activity restores `in_progress` and resets
+  the ping sequence. The old execution is excluded from automatic reassignment;
+  OS, goal and project eligibility still apply. Revoked conversations retain
+  transcripts but cannot resume, claim new prompts or mutate tasks. Native pools
+  stop and join the old provider before freeing its slot. Separate task-run
+  worktrees are removed with Git after shutdown; shared, dirty, locked, detached
+  or foreign checkouts are preserved for inspection. Claims without a routable execution receive recovery messages on the task
+  instead; they use the same timers and return to the executable queue.
+  With the router running, Clock owns recovery; reads never reclaim work.
 - **Retention:** cleans messages under the existing retention policy at
   startup and daily through Clock. Cleanup and its last-success marker commit
   together; failures retry through the router. Unfinished events are retained.

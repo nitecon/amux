@@ -112,7 +112,7 @@ func (s *Store) CancelTask(ctx context.Context, project, id string, reason strin
 		if err := ordinaryWorkflowTask(ctx, tx, task); err != nil {
 			return err
 		}
-		owned := task.OwnerAgentID != nil || task.Status == "in_progress"
+		owned := task.OwnerAgentID != nil || (task.Status == "in_progress" || task.Status == "stalled")
 		if task.OwnerOrigin != nil {
 			if task.OwnerOrigin.SessionID != actor.SessionID || task.OwnerOrigin.InstanceID != actor.InstanceID {
 				return ErrTaskOwnership

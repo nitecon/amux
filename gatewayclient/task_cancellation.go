@@ -111,7 +111,7 @@ func validateCancellation(cancellation *storage.Cancellation, project, id string
 		return fmt.Errorf("gateway cancellation response has an invalid prior start time")
 	}
 	switch cancellation.PriorStatus {
-	case "todo", "in_progress":
+	case "todo", "in_progress", "stalled":
 	default:
 		return fmt.Errorf("gateway cancellation response has an invalid prior status")
 	}

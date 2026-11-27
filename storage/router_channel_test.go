@@ -126,8 +126,8 @@ func TestOpenUpgradesLegacyRouterWithinFullRustSchema(t *testing.T) {
 	}
 	assertEqual(t, s.db, "SELECT COUNT(*) FROM router_deliveries WHERE event_seq=42", int64(0))
 	backups, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".task-status-backup-*", "database.sqlite"))
-	if len(backups) != 1 {
-		t.Fatalf("expected backup before rebuild: %v", backups)
+	if len(backups) != 2 {
+		t.Fatalf("expected backups before task-status and router rebuilds: %v", backups)
 	}
 }
 

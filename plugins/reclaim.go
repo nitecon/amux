@@ -8,13 +8,13 @@ import (
 
 const reclaimPluginID = "reclaim"
 
-// ReclaimStore applies the legacy stale-task reclaim policy at a clock tick.
+// ReclaimStore reconciles activity-driven recovery at a clock tick.
 type ReclaimStore interface {
 	PluginEnabled(context.Context, string) (bool, error)
-	ReconcileRouterReclaim(context.Context, router.Event) (int, error)
+	ReconcileRouterProgress(context.Context, *router.Registry, router.Event) error
 }
 
-// ReclaimPlugin reclaims eligible legacy claims after a presence snapshot.
+// ReclaimPlugin stalls, pings and requeues quiet work after a presence snapshot.
 func ReclaimPlugin(store ReclaimStore) router.Plugin {
 	return router.Plugin{
 		Definition: router.PluginDefinition{
@@ -25,11 +25,15 @@ func ReclaimPlugin(store ReclaimStore) router.Plugin {
 			}},
 		},
 		PreExec: []router.Step{enabledStep(store, reclaimPluginID, "reclaim plugin store is nil")},
-		Exec: []router.Step{func(ctx context.Context, event router.Event, _ *router.StepContext) router.Outcome {
+		Exec: []router.Step{func(ctx context.Context, event router.Event, step *router.StepContext) router.Outcome {
 			if store == nil {
 				return router.Outcome{Kind: router.Fail, Error: "reclaim plugin store is nil"}
 			}
-			if _, err := store.ReconcileRouterReclaim(ctx, event); err != nil {
+			var registry *router.Registry
+			if step != nil {
+				registry = step.Registry()
+			}
+			if err := store.ReconcileRouterProgress(ctx, registry, event); err != nil {
 				return router.Outcome{Kind: router.Fail, Error: err.Error()}
 			}
 			return router.Outcome{Kind: router.Continue}

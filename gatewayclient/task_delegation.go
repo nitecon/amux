@@ -123,7 +123,7 @@ func canonicalDelegationID(value string) bool {
 
 func validateDelegationReceipt(receipt *storage.TaskDelegationResult, project string, input TaskDelegateInput) error {
 	return validateDelegationLinks(receipt, project, input, func(status string) bool {
-		return status == "todo" || status == "in_progress" || status == "done"
+		return status == "todo" || status == "in_progress" || status == "stalled" || status == "done"
 	})
 }
 

@@ -35,7 +35,7 @@ func (c *Client) ReassignTask(ctx context.Context, project, id, recipient string
 	if err != nil {
 		return nil, err
 	}
-	if current.Task.Status != "todo" && current.Task.Status != "in_progress" {
+	if current.Task.Status != "todo" && (current.Task.Status != "in_progress" && current.Task.Status != "stalled") {
 		return nil, fmt.Errorf("only active tasks can be reassigned")
 	}
 	if current.Task.OwnerOrigin == nil || *current.Task.OwnerOrigin != actor {
@@ -97,7 +97,7 @@ func (c *Client) AssignTask(ctx context.Context, project, id string, target stor
 	if err != nil {
 		return nil, err
 	}
-	if detail.Task.Status != "todo" && detail.Task.Status != "in_progress" {
+	if detail.Task.Status != "todo" && (detail.Task.Status != "in_progress" && detail.Task.Status != "stalled") {
 		return nil, fmt.Errorf("only active tasks can be assigned")
 	}
 	requiredOS, err := taskplatform.RequiredOS(detail.Task.Labels)

@@ -138,7 +138,7 @@ func requesterFromTask(task storage.Task) *storage.RegisteredTargetIdentity {
 }
 
 func assignmentActive(d *taskAssignmentDraft) bool {
-	return d != nil && d.hasTask && (d.task.Status == "todo" || d.task.Status == "in_progress")
+	return d != nil && d.hasTask && (d.task.Status == "todo" || (d.task.Status == "in_progress" || d.task.Status == "stalled"))
 }
 
 func (a *taskAssignment) selectTarget(label string) {

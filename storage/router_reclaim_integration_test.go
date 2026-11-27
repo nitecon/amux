@@ -13,7 +13,7 @@ import (
 	"github.com/nitecon/amux/router"
 )
 
-func TestReclaimRuntimeUsesCommittedPresenceAndKeepsOfflineNativeWork(t *testing.T) {
+func TestReclaimRuntimeUsesCommittedPresenceAndStallsOfflineNativeWork(t *testing.T) {
 	ctx := context.Background()
 	s := presenceStore(t, filepath.Join(t.TempDir(), "reclaim-runtime.db"))
 	create := func(title string) *Task {
@@ -95,7 +95,7 @@ func TestReclaimRuntimeUsesCommittedPresenceAndKeepsOfflineNativeWork(t *testing
 		t.Fatalf("offline outbox fixture: %d %v", outboxCount, err)
 	}
 	gate := &gatedReminderPresence{Store: s, entered: make(chan struct{}), released: make(chan struct{})}
-	runtime, err := router.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []router.Plugin{
+	runtime, err := router.NewRuntime(s, s.EventBus(), append(nativePresenceDefinitions(), plugins.NotificationEventDefinitions()...), []router.Plugin{
 		plugins.PresencePlugin(gate), plugins.ReclaimPlugin(s),
 	}, router.RunConfig{Capacity: 4})
 	if err != nil {
@@ -112,19 +112,19 @@ func TestReclaimRuntimeUsesCommittedPresenceAndKeepsOfflineNativeWork(t *testing
 	assertEqual(t, s.db, "SELECT status FROM tasks WHERE id='"+legacy.ID+"'", "in_progress")
 	close(gate.released)
 	waitRouterDeliveryState(t, s, tick.Event.Seq, "reclaim", "completed")
-	assertEqual(t, s.db, "SELECT status FROM tasks WHERE id='"+legacy.ID+"'", "todo")
+	assertEqual(t, s.db, "SELECT status FROM tasks WHERE id='"+legacy.ID+"'", "stalled")
 	assertEqual(t, s.db, "SELECT status FROM tasks WHERE id='"+busyLegacy.ID+"'", "in_progress")
-	assertEqual(t, s.db, "SELECT COUNT(*) FROM task_comments WHERE task_id='"+legacy.ID+"' AND author='system' AND author_type='system'", int64(1))
+	assertEqual(t, s.db, "SELECT COUNT(*) FROM task_comments WHERE task_id='"+legacy.ID+"' AND author='amux' AND author_type='system'", int64(1))
 	assertEqual(t, s.db, "SELECT state FROM amux_presence_agents WHERE source='native:offline'", "gone")
 	detail, err := s.Task(ctx, "presence", native.ID)
-	if err != nil || detail.Task.Status != "in_progress" || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != owner || detail.Task.UpdatedAt != stale {
-		t.Fatalf("clock reclaimed potentially running native work: %+v %v", detail, err)
+	if err != nil || detail.Task.Status != "stalled" || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != owner || detail.Task.UpdatedAt != stale {
+		t.Fatalf("clock did not stall inactive native work: %+v %v", detail, err)
 	}
 	assertEqual(t, s.db, "SELECT state FROM amux_conversation_commands WHERE id='"+command.ID+"'", "claimed")
 	assertEqual(t, s.db, "SELECT COUNT(*) FROM amux_worker_outbox WHERE run_id='"+run.ID+"'", outboxCount)
 	assertEqual(t, s.db, "SELECT COUNT(*) FROM task_events WHERE json_extract(task_json,'$.id')='"+native.ID+"'", nativeEvents)
-	if count, err := s.ReconcileRouterReclaim(ctx, tick.Event); err != nil || count != 0 {
-		t.Fatalf("replayed reclaim: %d %v", count, err)
+	if err := s.ReconcileRouterProgress(ctx, runtime.Registry(), tick.Event); err != nil {
+		t.Fatal(err)
 	}
 	assertEqual(t, s.db, "SELECT COUNT(*) FROM task_comments WHERE task_id='"+legacy.ID+"'", int64(1))
 }

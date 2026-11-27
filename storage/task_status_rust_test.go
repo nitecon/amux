@@ -27,6 +27,7 @@ func TestOpenMigratesFullRustTaskStatusProfiles(t *testing.T) {
 	}{
 		{"old-three", `CHECK(status IN ('todo','in_progress','done'))`},
 		{"old-four", `CHECK(status IN ('todo','in_progress','done','cancelled'))`},
+		{"previous-five", current},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "rust-profile.sqlite")
@@ -78,7 +79,7 @@ func TestOpenMigratesFullRustTaskStatusProfiles(t *testing.T) {
 			if err := store.db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").Scan(&migratedDDL); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(migratedDDL, current) {
+			if !strings.Contains(migratedDDL, currentTaskStatusCheck) {
 				t.Fatalf("task status constraint not widened: %s", migratedDDL)
 			}
 

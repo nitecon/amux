@@ -128,8 +128,8 @@ func TestTaskReadsDoNotReclaimUntilClockTick(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &after); err != nil {
 			t.Fatal(err)
 		}
-		if after.Status == "todo" {
-			if after.OwnerAgentID != nil || len(after.Comments) != 1 || after.Comments[0].Author != "system" || after.Comments[0].AuthorType != "system" {
+		if after.Status == "stalled" {
+			if after.OwnerAgentID == nil || len(after.Comments) != 1 || after.Comments[0].Author != "amux" || after.Comments[0].AuthorType != "system" {
 				t.Fatalf("clock tick produced unexpected reclaim result (tick %s): %+v", tick.Event.UID, after)
 			}
 			break

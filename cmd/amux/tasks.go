@@ -447,7 +447,7 @@ func writeTaskHelp(w io.Writer, operation string) error {
 		return err
 	}
 	if operation == "list" {
-		_, err = fmt.Fprintln(w, "common options: --server URL (alias: --gateway-url URL) or --enrolled-profile PATH; --project IDENT [--api-key-env NAME] [--goal GOAL | --all-goals]; list filters include todo and in_progress by default")
+		_, err = fmt.Fprintln(w, "common options: --server URL (alias: --gateway-url URL) or --enrolled-profile PATH; --project IDENT [--api-key-env NAME] [--goal GOAL | --all-goals]; list filters include todo, in_progress and stalled by default")
 	}
 	return err
 }
@@ -592,7 +592,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 			if err := json.Unmarshal(raw, &task); err != nil {
 				return nil, fmt.Errorf("invalid task response")
 			}
-			if task.Status != "in_progress" || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
+			if (task.Status != "in_progress" && task.Status != "stalled") || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
 				return nil, fmt.Errorf("started requires an active task owned by this exact native session and instance")
 			}
 			return client.TaskComment(ctx, project, id, fmt.Sprintf("Agent reports execution started: session=%s instance=%s; recorded as a comment, not an atomic gateway lifecycle transition", origin.SessionID, origin.InstanceID), origin)
@@ -628,7 +628,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 				if json.Unmarshal(raw, &task) != nil {
 					return nil, fmt.Errorf("invalid task response")
 				}
-				if task.Status != "in_progress" || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
+				if (task.Status != "in_progress" && task.Status != "stalled") || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
 					return nil, fmt.Errorf("only the exact owning execution may release this active task; no status update was sent")
 				}
 			}

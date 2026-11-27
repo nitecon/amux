@@ -76,7 +76,7 @@ func captureNativeDeliveryAdoptionIn(ctx context.Context, tx *sql.Tx, task *Task
 		return nil
 	}
 	var current int
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE id=? AND project_ident=? AND status IN ('todo','in_progress')
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE id=? AND project_ident=? AND status IN ('todo','in_progress','stalled')
 	 AND owner_origin_json=json(?) )`, task.ID, project, string(ownerJSON)).Scan(&current); err != nil {
 		return err
 	}
@@ -354,7 +354,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err != nil && !errors.Is(err, ErrTaskNotFound) {
 			return false, err
 		}
-		ownerMatches := current != nil && current.Status == "in_progress" && current.OwnerOrigin != nil && *current.OwnerOrigin == identity.receiver.origin()
+		ownerMatches := current != nil && (current.Status == "in_progress" || current.Status == "stalled") && current.OwnerOrigin != nil && *current.OwnerOrigin == identity.receiver.origin()
 		if !ownerMatches {
 			if err := completeNativeNotice(ctx, tx, registry, event, identity, "skipped", "task-owner-changed", now); err != nil {
 				return false, err

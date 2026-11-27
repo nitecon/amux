@@ -28,7 +28,7 @@ func migrateAssignmentAdoption(ctx context.Context, tx *sql.Tx) error {
  UNIQUE(task_id,session_id));
  DROP TRIGGER IF EXISTS amux_assignment_run_claim_changed;
  CREATE TRIGGER amux_assignment_run_claim_changed AFTER UPDATE OF status ON tasks
- WHEN NEW.status IS NOT OLD.status AND NEW.status!='in_progress' BEGIN
+ WHEN NEW.status IS NOT OLD.status AND NEW.status NOT IN ('in_progress','stalled') BEGIN
  DELETE FROM amux_assignment_runs WHERE task_id=NEW.id;
  END;
  INSERT OR IGNORE INTO amux_go_migrations(version) VALUES(10);`)
@@ -75,7 +75,7 @@ func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, ori
 	if !active {
 		return nil, fmt.Errorf("%w: project is missing or archived", ErrTaskNotFound)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM tasks WHERE project_ident=? AND status IN ('todo','in_progress') AND owner_origin_json IS NOT NULL AND (id=? OR ?='') ORDER BY id`, project, taskID, taskID)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM tasks WHERE project_ident=? AND status IN ('todo','in_progress','stalled') AND owner_origin_json IS NOT NULL AND (id=? OR ?='') ORDER BY id`, project, taskID, taskID)
 	if err != nil {
 		return nil, err
 	}

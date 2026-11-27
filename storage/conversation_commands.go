@@ -226,6 +226,7 @@ const pendingTaskConversationsQuery = `SELECT c.id
 		CROSS JOIN amux_conversations c
 		WHERE c.project_ident=? AND c.task_id IS NOT NULL AND c.native_session_id!=''
 		  AND c.id=q.conversation_id
+ AND NOT EXISTS(SELECT 1 FROM task_revoked_conversations r WHERE r.conversation_id=c.id)
 		  AND json_extract(c.owner_json,'$.session_id')=?
 		  AND c.provider=? AND json_extract(c.owner_json,'$.os')=? AND c.principal=?
 		ORDER BY c.created_at,c.id`
@@ -326,6 +327,15 @@ func (s *Store) transitionConversationCommand(ctx context.Context, project, id, 
 	_, err := s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
 		if c.Owner != actor {
 			return ErrTaskOwnership
+		}
+		if state == "claimed" {
+			revoked, err := conversationRevoked(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if revoked {
+				return ErrTaskOwnership
+			}
 		}
 		command, err := readConversationCommand(ctx, tx, id, commandID)
 		if err != nil {

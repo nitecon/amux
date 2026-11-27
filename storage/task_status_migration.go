@@ -13,14 +13,14 @@ import (
 	"time"
 )
 
-const currentTaskStatusCheck = `CHECK(status IN ('todo','in_progress','user_review','done','cancelled'))`
+const currentTaskStatusCheck = `CHECK(status IN ('todo','in_progress','stalled','user_review','done','cancelled'))`
 
-var taskStatusCheckPattern = regexp.MustCompile(`(?i:CHECK\s*\(\s*status\s+IN\s*\()\s*('todo'\s*,\s*'in_progress'\s*,\s*'done'(?:\s*,\s*'cancelled')?)\s*\)\s*\)`)
-var currentTaskStatusPattern = regexp.MustCompile(`(?i:CHECK\s*\(\s*status\s+IN\s*\()\s*('todo'\s*,\s*'in_progress'\s*,\s*'user_review'\s*,\s*'done'\s*,\s*'cancelled')\s*\)\s*\)`)
+var taskStatusCheckPattern = regexp.MustCompile(`(?i:CHECK\s*\(\s*status\s+IN\s*\()\s*('todo'\s*,\s*'in_progress'\s*,\s*(?:'user_review'\s*,\s*)?'done'(?:\s*,\s*'cancelled')?)\s*\)\s*\)`)
+var currentTaskStatusPattern = regexp.MustCompile(`(?i:CHECK\s*\(\s*status\s+IN\s*\()\s*('todo'\s*,\s*'in_progress'\s*,\s*'stalled'\s*,\s*'user_review'\s*,\s*'done'\s*,\s*'cancelled')\s*\)\s*\)`)
 var statusConstraintPattern = regexp.MustCompile(`(?i)CHECK\s*\(\s*status\b`)
 
-// migrateLegacyTaskStatus widens only the two legacy tasks.status constraints
-// recognized by the Rust gateway. It leaves a restrictive VACUUM INTO snapshot
+// migrateLegacyTaskStatus widens the recognized legacy and pre-stalled
+// tasks.status constraints. It leaves a restrictive VACUUM INTO snapshot
 // beside the database before rebuilding. The caller must invoke it before
 // Store.migrate.
 func migrateLegacyTaskStatus(ctx context.Context, db *sql.DB, path string) error {
@@ -42,7 +42,7 @@ func migrateLegacyTaskStatus(ctx context.Context, db *sql.DB, path string) error
 	}
 
 	ddl := schema.String
-	if current := currentTaskStatusPattern.FindStringSubmatch(ddl); current != nil && compactSQL(current[1]) == compactSQL("'todo','in_progress','user_review','done','cancelled'") {
+	if current := currentTaskStatusPattern.FindStringSubmatch(ddl); current != nil && compactSQL(current[1]) == compactSQL("'todo','in_progress','stalled','user_review','done','cancelled'") {
 		if len(statusConstraintPattern.FindAllStringIndex(ddl, -1)) != 1 {
 			return fmt.Errorf("unrecognized additional tasks status constraint; refusing task status migration")
 		}
@@ -56,7 +56,7 @@ func migrateLegacyTaskStatus(ctx context.Context, db *sql.DB, path string) error
 		return fmt.Errorf("unrecognized additional tasks status constraint; refusing task status migration")
 	}
 	values := compactSQL(ddl[match[2]:match[3]])
-	if values != compactSQL("'todo','in_progress','done'") && values != compactSQL("'todo','in_progress','done','cancelled'") {
+	if values != compactSQL("'todo','in_progress','user_review','done','cancelled'") && values != compactSQL("'todo','in_progress','done'") && values != compactSQL("'todo','in_progress','done','cancelled'") {
 		return fmt.Errorf("unrecognized tasks status constraint; refusing task status migration")
 	}
 

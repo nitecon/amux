@@ -32,7 +32,7 @@ func (c *Client) SetTaskOS(ctx context.Context, project, id string, requiredOS *
 	if err != nil {
 		return nil, err
 	}
-	if (current.Task.Status != "todo" && current.Task.Status != "in_progress") || current.Task.OwnerOrigin == nil || *current.Task.OwnerOrigin != actor {
+	if (current.Task.Status != "todo" && (current.Task.Status != "in_progress" && current.Task.Status != "stalled")) || current.Task.OwnerOrigin == nil || *current.Task.OwnerOrigin != actor {
 		return nil, fmt.Errorf("only the exact owning agent may change the OS requirement of an active task")
 	}
 	labels, err := taskplatform.LabelsWithOS(current.Task.Labels, osValue)

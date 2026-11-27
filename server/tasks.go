@@ -249,7 +249,7 @@ func (a *api) listTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	statuses := []string{"todo", "in_progress"}
+	statuses := []string{"todo", "in_progress", "stalled"}
 	if text := query.Get("status"); text != "" {
 		statuses = []string{}
 		for _, part := range strings.Split(text, ",") {
@@ -275,7 +275,7 @@ func (a *api) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, s := range statuses {
-		if s != "todo" && s != "in_progress" && s != "user_review" && s != "done" && s != "cancelled" {
+		if s != "todo" && s != "in_progress" && s != "stalled" && s != "user_review" && s != "done" && s != "cancelled" {
 			writeError(w, 400, "invalid task status")
 			return
 		}
@@ -319,7 +319,7 @@ func taskActions(status string) []taskAction {
 	switch status {
 	case "todo":
 		return []taskAction{{"Claim", "primary", "in_progress"}, {"Done", "primary", "done"}, {"User review", "secondary", "user_review"}}
-	case "in_progress":
+	case "in_progress", "stalled":
 		return []taskAction{{"Release", "secondary", "todo"}, {"Done", "primary", "done"}, {"User review", "secondary", "user_review"}}
 	case "user_review":
 		return []taskAction{{"Return to TODO", "secondary", "todo"}, {"Close", "primary", "done"}}

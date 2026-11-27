@@ -141,6 +141,13 @@ func (s *Store) taskMutation(ctx context.Context, origin *AgentOrigin, mutate fu
 		if conversation.Owner != *origin {
 			return ErrTaskOwnership
 		}
+		revoked, err := conversationRevoked(ctx, tx, conversation.ID)
+		if err != nil {
+			return err
+		}
+		if revoked {
+			return ErrTaskOwnership
+		}
 	}
 	var raw any
 	if origin != nil {
@@ -402,13 +409,13 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	if policy.HumanRequest && actor != nil {
 		return nil, fmt.Errorf("%w: user controls require an ordinary human task request", ErrTaskConflict)
 	}
-	if t.Status != "todo" && t.Status != "in_progress" {
+	if t.Status != "todo" && (t.Status != "in_progress" && t.Status != "stalled") {
 		return nil, ErrTaskUnsupported
 	}
 	if err := ordinaryWorkflowTask(ctx, tx, t); err != nil {
 		return nil, err
 	}
-	if status == "in_progress" && t.Status != "in_progress" && t.Kind == "delegated" && actor != nil {
+	if status == "in_progress" && (t.Status != "in_progress" && t.Status != "stalled") && t.Kind == "delegated" && actor != nil {
 		ready, err := taskDelegationReady(ctx, tx, t.ProjectIdent, t.ID)
 		if err != nil {
 			return nil, err
@@ -419,7 +426,7 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	}
 
 	enforceOwner := !policy.HumanRequest || status == "in_progress"
-	if enforceOwner && t.OwnerOrigin == nil && (t.OwnerAgentID != nil || t.Status == "in_progress") {
+	if enforceOwner && t.OwnerOrigin == nil && (t.OwnerAgentID != nil || (t.Status == "in_progress" || t.Status == "stalled")) {
 		return nil, ErrTaskOwnership
 	}
 	if enforceOwner && t.OwnerOrigin != nil && (actor == nil || actor.SessionID != t.OwnerOrigin.SessionID || actor.InstanceID != t.OwnerOrigin.InstanceID) {
@@ -433,7 +440,7 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	}
 	var ownerID, ownerJSON, started any
 	if status == "in_progress" {
-		if t.Status != "in_progress" {
+		if t.Status != "in_progress" && t.Status != "stalled" {
 			if actor != nil && !taskplatform.Matches(t.Labels, actor.OS) {
 				return nil, fmt.Errorf("%w: claiming agent OS does not match the task os: label", ErrTaskConflict)
 			}
@@ -454,6 +461,9 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 			}
 		} else {
 			started = t.StartedAt
+			if t.StartedAt == nil {
+				started = time.Now().UnixMilli()
+			}
 			ownerID = t.OwnerAgentID
 			if t.OwnerOrigin != nil {
 				encoded, _ := json.Marshal(t.OwnerOrigin)
@@ -464,11 +474,18 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status=?,owner_agent_id=?,owner_origin_json=?,started_at=?,updated_at=? WHERE id=? AND project_ident=?", status, ownerID, ownerJSON, started, time.Now().UnixMilli(), id, t.ProjectIdent); err != nil {
 		return nil, err
 	}
+	// Imported release triggers predate stalled. Preserve those triggers while
+	// applying the same exact-execution guard to this new active state.
+	if status == "todo" && t.Status == "stalled" && actor != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO assignment_releases(task_id,session_id,instance_id) VALUES(?,?,?)", t.ID, actor.SessionID, actor.InstanceID); err != nil {
+			return nil, err
+		}
+	}
 	updated, err := readTask(ctx, tx, project, id)
 	if err != nil {
 		return nil, err
 	}
-	if t.Status != "in_progress" && status == "in_progress" && t.Kind == "delegated" {
+	if (t.Status != "in_progress" && t.Status != "stalled") && status == "in_progress" && t.Kind == "delegated" {
 		if err := recordDelegationInspection(ctx, tx, t, actor); err != nil {
 			return nil, err
 		}
@@ -581,6 +598,11 @@ func insertTaskComment(ctx context.Context, q queryer, id, author, authorType, c
 	}
 	if _, err := q.ExecContext(ctx, "UPDATE tasks SET updated_at=? WHERE id=?", now, id); err != nil {
 		return nil, err
+	}
+	if authorType == "agent" {
+		if _, err := resumeStalledTask(ctx, q, id, origin); err != nil {
+			return nil, err
+		}
 	}
 	return &TaskComment{ID: commentID.String(), TaskID: id, Author: author, AuthorType: authorType, Content: content, CreatedAt: now, Hostname: hostname, Origin: origin}, nil
 }

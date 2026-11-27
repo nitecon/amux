@@ -75,6 +75,64 @@ func (s *waitingPresenceSession) Close() error {
 	return nil
 }
 
+func TestStandaloneWorkerStopsWhenTaskIsReassigned(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	remote, local, _, host, pool, slot := poolRegistrationFixture(t, ctx, "", false, http.DefaultTransport)
+	defer remote.Close()
+	defer local.Close()
+	defer host.Close()
+	defer host.Config.Handler.(interface{ ShutdownStreams(context.Context) error }).ShutdownStreams(context.Background())
+	task, err := remote.InsertTask(ctx, storage.TaskInsert{Project: pool.Project, Title: "reassigned standalone", Reporter: "test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.TransitionTask(ctx, pool.Project, task.ID, "in_progress", &slot.Owner); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := remote.CreateConversation(ctx, pool.Project, task.ID, &slot.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := storage.WorkerRun{ID: uuid.NewString(), Server: host.URL, Project: pool.Project, ConversationID: conv.ID, Directory: pool.Directory, Owner: slot.Owner}
+	if err := local.SaveWorkerRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	provider := &waitingPresenceSession{done: make(chan struct{})}
+	opened := make(chan storage.AgentOrigin, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{Store: local, Client: mustPoolClient(t, host.URL, http.DefaultTransport), RunID: run.ID, AdvertisePresence: true, Open: func(_ context.Context, current storage.WorkerRun, _ conversation.Sink) (Session, error) {
+			opened <- current.Owner
+			return provider, nil
+		}})
+	}()
+	var owner storage.AgentOrigin
+	select {
+	case owner = <-opened:
+	case err := <-done:
+		t.Fatalf("worker exited: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if _, err := remote.TransitionTask(ctx, pool.Project, task.ID, "todo", &owner); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("standalone worker did not stop after reassignment")
+	}
+	select {
+	case <-provider.done:
+	default:
+		t.Fatal("provider was not closed")
+	}
+}
+
 func TestRunPresenceRetriesLostAckAndOmitsAfterProviderStops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()

@@ -78,7 +78,7 @@ func (s *Store) RecordWorkerTaskEvent(ctx context.Context, server string, event 
 		if _, err := tx.ExecContext(ctx, "DELETE FROM amux_worker_task_inbox WHERE server=? AND project=? AND task=?", server, event.ProjectIdent, task.ID); err != nil {
 			return false, err
 		}
-		if task.OwnerOrigin != nil && (task.Status == "todo" || task.Status == "in_progress") {
+		if task.OwnerOrigin != nil && (task.Status == "todo" || (task.Status == "in_progress" || task.Status == "stalled")) {
 			queued, err = queueWorkerTask(ctx, tx, server, task.ProjectIdent, task.ID, task.OwnerOrigin, event.ID)
 			if err != nil {
 				return false, err

@@ -53,7 +53,7 @@ func (s *Store) FinishSubmissionReview(ctx context.Context, project, id, outcome
 		if review == nil {
 			return ErrTaskNotFound
 		}
-		if actor == nil || review.Status != "in_progress" || review.OwnerOrigin == nil || *review.OwnerOrigin != *actor {
+		if actor == nil || (review.Status != "in_progress" && review.Status != "stalled") || review.OwnerOrigin == nil || *review.OwnerOrigin != *actor {
 			return ErrTaskOwnership
 		}
 		source, err := currentSubmissionReviewSource(ctx, tx, project, id)

@@ -59,7 +59,7 @@ type taskBoard struct {
 func newTaskBoard(b *Browser) *taskBoard {
 	board := &taskBoard{browser: b, message: widget.NewLabel("")}
 	lanes := []taskBoardLane{
-		{title: "Active", statuses: []string{browserStatusInProgress, browserStatusTodo}},
+		{title: "Active", statuses: []string{browserStatusInProgress, browserStatusStalled, browserStatusTodo}},
 		{title: "Blocked / User Review", statuses: browserTaskStatuses(browserStatusUserReview)},
 		{title: "Complete", statuses: browserTaskStatuses(browserStatusCompleted)},
 	}
@@ -256,7 +256,7 @@ func taskStatusColor(status string) color.Color {
 	switch status {
 	case browserStatusInProgress:
 		return theme.PrimaryColor()
-	case browserStatusUserReview:
+	case browserStatusUserReview, browserStatusStalled:
 		return theme.WarningColor()
 	case browserStatusDone:
 		return theme.SuccessColor()

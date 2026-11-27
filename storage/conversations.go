@@ -292,6 +292,13 @@ func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, projec
 func (s *Store) ResumeConversation(ctx context.Context, project, id, previousInstance string, origin *AgentOrigin) (*Conversation, error) {
 	taskOwnerChanged := false
 	c, err := s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
+		revoked, err := conversationRevoked(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if revoked {
+			return ErrTaskOwnership
+		}
 		if c.Owner.SessionID != actor.SessionID || c.Owner.Provider != actor.Provider || c.Owner.OS != actor.OS {
 			return ErrTaskOwnership
 		}
@@ -311,7 +318,7 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 				return err
 			}
 		}
-		if task != nil && task.Status == "in_progress" && task.OwnerOrigin != nil && *task.OwnerOrigin == c.Owner {
+		if task != nil && (task.Status == "in_progress" || task.Status == "stalled") && task.OwnerOrigin != nil && *task.OwnerOrigin == c.Owner {
 			ownerJSON, err := json.Marshal(actor)
 			if err != nil {
 				return err
@@ -328,7 +335,7 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 					return err
 				}
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE tasks SET owner_origin_json=?,routing_json=?,updated_at=? WHERE id=? AND project_ident=? AND status='in_progress'`, string(ownerJSON), string(routing), time.Now().UnixMilli(), c.TaskID, c.ProjectIdent); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE tasks SET owner_origin_json=?,routing_json=?,updated_at=? WHERE id=? AND project_ident=? AND status IN ('in_progress','stalled')`, string(ownerJSON), string(routing), time.Now().UnixMilli(), c.TaskID, c.ProjectIdent); err != nil {
 				return err
 			}
 			if err = transferTargetRegistration(ctx, tx, c.ProjectIdent, c.Owner, actor, string(ownerJSON)); err != nil {
@@ -396,6 +403,7 @@ func (s *Store) AppendConversationEvent(ctx context.Context, project, id, eventI
 		return nil, err
 	}
 	var result *ConversationEvent
+	resumed := false
 	_, err = s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
 		if c.Owner != actor {
 			return ErrTaskOwnership
@@ -421,9 +429,15 @@ func (s *Store) AppendConversationEvent(ctx context.Context, project, id, eventI
 		}
 		e.CreatedAt = time.Now().UnixMilli()
 		_, err = tx.ExecContext(ctx, "INSERT INTO amux_conversation_events(conversation_id,sequence,event_id,event_json,created_at,instance_id) VALUES(?,?,?,?,?,?)", id, e.Sequence, eventID, string(raw), e.CreatedAt, actor.InstanceID)
+		if err == nil && event.Kind != "user_message" && event.Kind != "session_ready" && event.Kind != "closed" {
+			resumed, err = resumeStalledTask(ctx, tx, c.TaskID, &actor)
+		}
 		result = &e
 		return err
 	})
+	if err == nil && resumed {
+		s.wakeTaskEvents()
+	}
 	return result, err
 }
 func (s *Store) ConversationEvents(ctx context.Context, project, id string, after int64, limit int) ([]ConversationEvent, error) {

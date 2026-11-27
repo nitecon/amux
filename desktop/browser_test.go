@@ -128,7 +128,7 @@ func TestBrowserStatusGenerationSearchFavoriteAndPreview(t *testing.T) {
 	fixture.mu.Lock()
 	initialStatus := fixture.statusQueries[0]
 	fixture.mu.Unlock()
-	if initialStatus != "todo,in_progress" {
+	if initialStatus != "todo,in_progress,stalled" {
 		t.Fatalf("default active status sent %q", initialStatus)
 	}
 	callbacks.dispatch(func() { browser.statusSelect.SetSelected("Queued") })
@@ -225,7 +225,7 @@ func TestBrowserStatusGroupsDefaultAndCompletedScope(t *testing.T) {
 	fixture.mu.Lock()
 	initial := fixture.statusQueries[0]
 	fixture.mu.Unlock()
-	if initial != "todo,in_progress" {
+	if initial != "todo,in_progress,stalled" {
 		t.Fatalf("Active scope = %q", initial)
 	}
 

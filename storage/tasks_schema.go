@@ -10,7 +10,7 @@ import (
 func migrateTasks(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS tasks(
  id TEXT PRIMARY KEY,project_ident TEXT NOT NULL REFERENCES projects(ident),title TEXT NOT NULL,description TEXT,details TEXT,
- status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','user_review','done','cancelled')),rank INTEGER NOT NULL DEFAULT 0,
+ status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','stalled','user_review','done','cancelled')),rank INTEGER NOT NULL DEFAULT 0,
  labels TEXT,hostname TEXT,owner_agent_id TEXT,reporter TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,started_at INTEGER,done_at INTEGER);
  CREATE TABLE IF NOT EXISTS task_comments(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,author TEXT NOT NULL,
  author_type TEXT NOT NULL CHECK(author_type IN ('agent','user','system')),content TEXT NOT NULL,created_at INTEGER NOT NULL);

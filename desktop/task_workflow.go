@@ -131,7 +131,7 @@ func (w *taskWorkflow) setTask(project, task string, current *storage.Task) {
 		w.reviewPrompt.Hide()
 	}
 	w.refreshWidgets()
-	if w.focusReviewAction && (current.Status == "todo" || current.Status == "in_progress") {
+	if w.focusReviewAction && (current.Status == "todo" || (current.Status == "in_progress" || current.Status == "stalled")) {
 		if canvas := fyne.CurrentApp().Driver().CanvasForObject(w.reviewAction); canvas != nil {
 			canvas.Focus(w.reviewAction)
 			w.focusReviewAction = false
@@ -151,7 +151,7 @@ func (w *taskWorkflow) setTask(project, task string, current *storage.Task) {
 
 func (w *taskWorkflow) requestReviewActionFocus() {
 	w.focusReviewAction = true
-	if draft := w.currentDraft(); draft != nil && (draft.status == "todo" || draft.status == "in_progress") {
+	if draft := w.currentDraft(); draft != nil && (draft.status == "todo" || (draft.status == "in_progress" || draft.status == "stalled")) {
 		if canvas := fyne.CurrentApp().Driver().CanvasForObject(w.reviewAction); canvas != nil {
 			canvas.Focus(w.reviewAction)
 			w.focusReviewAction = false
@@ -197,7 +197,7 @@ func (w *taskWorkflow) refreshWidgets() {
 	} else {
 		w.close.Show()
 	}
-	if draft.status != "todo" && draft.status != "in_progress" {
+	if draft.status != "todo" && (draft.status != "in_progress" && draft.status != "stalled") {
 		w.park.Hide()
 	} else {
 		w.park.Show()
@@ -207,12 +207,12 @@ func (w *taskWorkflow) refreshWidgets() {
 	} else {
 		w.resume.Show()
 	}
-	if draft.status != "todo" && draft.status != "in_progress" {
+	if draft.status != "todo" && (draft.status != "in_progress" && draft.status != "stalled") {
 		w.reviewAction.Hide()
 	} else {
 		w.reviewAction.Show()
 	}
-	if strings.TrimSpace(draft.reviewAction) == "" || len(strings.TrimSpace(draft.reviewAction)) > 4096 || (draft.status != "todo" && draft.status != "in_progress") {
+	if strings.TrimSpace(draft.reviewAction) == "" || len(strings.TrimSpace(draft.reviewAction)) > 4096 || (draft.status != "todo" && (draft.status != "in_progress" && draft.status != "stalled")) {
 		w.park.Disable()
 	} else if !draft.inFlight && !draft.unknown && !draft.resolving {
 		w.park.Enable()
@@ -256,7 +256,7 @@ func (w *taskWorkflow) submit(action string) {
 		b.mu.Unlock()
 		return
 	}
-	if action == "close" && (draft.status == "" || draft.status == "done") || action == "park" && (draft.status != "todo" && draft.status != "in_progress" || strings.TrimSpace(draft.reviewAction) == "" || len(strings.TrimSpace(draft.reviewAction)) > 4096) || action == "resume" && draft.status != "user_review" {
+	if action == "close" && (draft.status == "" || draft.status == "done") || action == "park" && (draft.status != "todo" && (draft.status != "in_progress" && draft.status != "stalled") || strings.TrimSpace(draft.reviewAction) == "" || len(strings.TrimSpace(draft.reviewAction)) > 4096) || action == "resume" && draft.status != "user_review" {
 		b.mu.Unlock()
 		return
 	}

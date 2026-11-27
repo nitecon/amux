@@ -178,7 +178,8 @@ func Run(parent context.Context, config Config) (runErr error) {
 	if config.AdvertisePresence {
 		clientRun = uuid.NewString()
 	}
-	ctx, stop := context.WithCancel(parent)
+	ctx, cancelRun := context.WithCancelCause(parent)
+	stop := func() { cancelRun(nil) }
 	var group sync.WaitGroup
 	var session Session
 	defer func() {
@@ -216,6 +217,40 @@ func Run(parent context.Context, config Config) (runErr error) {
 				stop()
 			}
 		}()
+	}
+	if config.AdvertisePresence && !config.followUp {
+		launch(func() error {
+			taskID := r.LocalTaskID
+			if taskID == "" {
+				conv, err := retryValue(ctx, func() (*storage.Conversation, error) {
+					return config.Client.Conversation(ctx, r.Project, r.ConversationID)
+				})
+				if err != nil {
+					return err
+				}
+				taskID = conv.TaskID
+			}
+			if taskID == "" {
+				return nil
+			}
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+				}
+				err := checkRunTask(ctx, config.Store, config.Client, r.ID, taskID)
+				if errors.Is(err, errPoolTaskFinished) {
+					cancelRun(errPoolTaskFinished)
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+			}
+		})
 	}
 	var archive conversation.Sink
 	if config.Archive != nil {
@@ -440,14 +475,14 @@ func Run(parent context.Context, config Config) (runErr error) {
 				return err
 			default:
 			}
-			if parent.Err() != nil {
+			if parent.Err() != nil || errors.Is(context.Cause(ctx), errPoolTaskFinished) {
 				return nil
 			}
 			return fmt.Errorf("worker stopped unexpectedly")
 		case err := <-failures:
 			return err
 		case <-session.Done():
-			if parent.Err() != nil {
+			if parent.Err() != nil || errors.Is(context.Cause(ctx), errPoolTaskFinished) {
 				return nil
 			}
 			if err := session.Err(); err != nil {
@@ -481,7 +516,7 @@ func Run(parent context.Context, config Config) (runErr error) {
 		return err
 	default:
 	}
-	if parent.Err() != nil {
+	if parent.Err() != nil || errors.Is(context.Cause(ctx), errPoolTaskFinished) {
 		return nil
 	}
 	return ctx.Err()

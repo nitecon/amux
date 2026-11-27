@@ -238,7 +238,7 @@ func validateTaskAcknowledgement(task *storage.Task, project, id string) error {
 		return fmt.Errorf("gateway task response did not match the requested scope")
 	}
 	switch task.Status {
-	case "todo", "in_progress", "user_review", "done", "cancelled":
+	case "todo", "in_progress", "stalled", "user_review", "done", "cancelled":
 		return nil
 	}
 	return fmt.Errorf("gateway task response has an invalid status")

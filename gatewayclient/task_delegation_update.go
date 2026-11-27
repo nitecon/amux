@@ -67,7 +67,7 @@ func validateDelegationUpdateReceipt(receipt *storage.TaskDelegationResult, proj
 	}
 	if err := validateDelegationLinks(receipt, project, expected, func(status string) bool {
 		switch status {
-		case "todo", "in_progress", "user_review", "done", "cancelled":
+		case "todo", "in_progress", "stalled", "user_review", "done", "cancelled":
 			return true
 		}
 		return false

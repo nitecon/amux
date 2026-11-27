@@ -41,7 +41,7 @@ func (s *Store) Tasks(ctx context.Context, project string, statuses []string, in
 	params := []any{projects.NormalizeIdent(project)}
 	placeholders := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		if status != "todo" && status != "in_progress" && status != "user_review" && status != "done" && status != "cancelled" {
+		if status != "todo" && status != "in_progress" && status != "stalled" && status != "user_review" && status != "done" && status != "cancelled" {
 			return nil, fmt.Errorf("invalid task status")
 		}
 		params = append(params, status)

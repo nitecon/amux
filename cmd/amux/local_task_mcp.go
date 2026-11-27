@@ -29,7 +29,7 @@ func verifyLocalGatewayTaskWrite(ctx context.Context, client *gatewayclient.Clie
 	if err != nil {
 		return err
 	}
-	if task == nil || task.Status != "in_progress" {
+	if task == nil || (task.Status != "in_progress" && task.Status != "stalled") {
 		return storage.ErrTaskOwnership
 	}
 	return nil

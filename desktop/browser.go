@@ -203,6 +203,7 @@ const (
 	browserStatusCompleted  = "completed"
 	browserStatusTodo       = "todo"
 	browserStatusInProgress = "in_progress"
+	browserStatusStalled    = "stalled"
 	browserStatusDone       = "done"
 	browserStatusCancelled  = "cancelled"
 	browserStatusAll        = "all"
@@ -219,6 +220,7 @@ var browserStatusOptions = []browserStatusOption{
 	{browserStatusCompleted, "Completed"},
 	{browserStatusTodo, "Queued"},
 	{browserStatusInProgress, "In Progress"},
+	{browserStatusStalled, "Stalled"},
 	{browserStatusDone, "Done"},
 	{browserStatusCancelled, "Cancelled"},
 	{browserStatusAll, "All"},
@@ -268,13 +270,13 @@ func normalizeBrowserStatus(status string) string {
 func browserTaskStatuses(status string) []string {
 	switch normalizeBrowserStatus(status) {
 	case browserStatusActive:
-		return []string{browserStatusTodo, browserStatusInProgress}
+		return []string{browserStatusTodo, browserStatusInProgress, browserStatusStalled}
 	case browserStatusUserReview:
 		return []string{browserStatusUserReview}
 	case browserStatusCompleted:
 		return []string{browserStatusDone, browserStatusCancelled}
 	case browserStatusAll:
-		return []string{browserStatusTodo, browserStatusInProgress, browserStatusUserReview, browserStatusDone, browserStatusCancelled}
+		return []string{browserStatusTodo, browserStatusInProgress, browserStatusStalled, browserStatusUserReview, browserStatusDone, browserStatusCancelled}
 	default:
 		return []string{normalizeBrowserStatus(status)}
 	}

@@ -14,12 +14,13 @@ type reclaimStoreFunc struct {
 	reconcile func(context.Context, router.Event) (int, error)
 }
 
-func (s reclaimStoreFunc) PluginEnabled(ctx context.Context, id string) (bool, error) {
-	return s.enabled(ctx, id)
+func (s reclaimStoreFunc) ReconcileRouterProgress(ctx context.Context, _ *router.Registry, event router.Event) error {
+	_, err := s.reconcile(ctx, event)
+	return err
 }
 
-func (s reclaimStoreFunc) ReconcileRouterReclaim(ctx context.Context, event router.Event) (int, error) {
-	return s.reconcile(ctx, event)
+func (s reclaimStoreFunc) PluginEnabled(ctx context.Context, id string) (bool, error) {
+	return s.enabled(ctx, id)
 }
 
 func TestReclaimPluginMetadataAndPreExec(t *testing.T) {

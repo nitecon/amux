@@ -238,7 +238,7 @@ func assignmentReadyCandidates(ctx context.Context, q queryer, observed int64) (
 		return nil, err
 	}
 	busy := make(map[string]bool)
-	rows, err := q.QueryContext(ctx, "SELECT DISTINCT json_extract(owner_origin_json,'$.session_id') FROM tasks WHERE status IN ('todo','in_progress') AND owner_origin_json IS NOT NULL")
+	rows, err := q.QueryContext(ctx, "SELECT DISTINCT json_extract(owner_origin_json,'$.session_id') FROM tasks WHERE (status IN ('in_progress','stalled') OR (status='todo' AND EXISTS(SELECT 1 FROM assignment_offers o WHERE o.task_id=tasks.id))) AND owner_origin_json IS NOT NULL")
 	if err != nil {
 		return nil, err
 	}
@@ -339,9 +339,19 @@ func assignmentEligible(ctx context.Context, q queryer, task Task, candidate ass
 		}
 	}
 	var routing struct {
-		Mode string `json:"mode"`
+		Mode   string                    `json:"mode"`
+		Target *RegisteredTargetIdentity `json:"target"`
 	}
-	if err := json.Unmarshal(task.Routing, &routing); err != nil || routing.Mode != "auto" {
+	if err := json.Unmarshal(task.Routing, &routing); err != nil {
+		return false, nil
+	}
+	switch routing.Mode {
+	case "auto":
+	case "session":
+		if routing.Target == nil || routing.Target.Origin != candidate.origin {
+			return false, nil
+		}
+	default:
 		return false, nil
 	}
 	if task.Goal != nil && (candidate.presence.Goal == nil || *candidate.presence.Goal != *task.Goal) {

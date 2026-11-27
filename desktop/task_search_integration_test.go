@@ -63,7 +63,7 @@ func TestBrowserTaskSearchCrossesStatusesWithoutChangingStatusFilter(t *testing.
 	}}
 	fixture := startEditorBrowser(t, search.wrap)
 	b := fixture.browser
-	allStatuses := []string{"todo", "in_progress", "user_review", "done", "cancelled"}
+	allStatuses := []string{"todo", "in_progress", "stalled", "user_review", "done", "cancelled"}
 	originalTasks, err := fixture.store.Tasks(context.Background(), "demo", allStatuses, false)
 	if err != nil {
 		t.Fatal(err)

@@ -19,7 +19,7 @@ const taskToolCreateDescription = "Create a subtask under a fitting existing par
 var agentTaskTools = []mcpstdio.Tool{
 	{Name: "task_get", Description: "Show a task with its specification and comments.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"}},"required":["id"],"additionalProperties":false}`)},
 	{Name: "project_message_thread", Description: "Read a full project message thread, including the original message and replies.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"integer","minimum":1,"description":"Project message ID"}},"required":["id"],"additionalProperties":false}`)},
-	{Name: "task_list", Description: "List this project's tasks (default: todo and in_progress).", InputSchema: schema(`{"type":"object","properties":{"status":{"type":"string","description":"Comma-separated statuses: todo, in_progress, user_review, done, cancelled"}},"additionalProperties":false}`)},
+	{Name: "task_list", Description: "List this project's tasks (default: todo, in_progress and stalled).", InputSchema: schema(`{"type":"object","properties":{"status":{"type":"string","description":"Comma-separated statuses: todo, in_progress, stalled, user_review, done, cancelled"}},"additionalProperties":false}`)},
 	{Name: "task_create", Description: taskToolCreateDescription, InputSchema: schema(`{"type":"object","properties":{"title":{"type":"string","description":"Task title"},"parent":{"type":"string","description":"Existing parent task UUID whose scope includes this work"},"root_reason":{"type":"string","enum":["user-directed","principle"],"description":"Create a root instead of a subtask; requires specification and cannot accompany parent"},"specification":{"type":"string","description":"Context and acceptance criteria"},"notify_results":{"type":"boolean","description":"Subscribe this exact execution to task results"}},"required":["title"],"additionalProperties":false}`)},
 	{Name: "task_delegate", Description: "Delegate cross-project work under a fitting source parent. The parent defaults to this conversation's task; inspect both projects before retrying an uncertain delegation.", InputSchema: schema(`{"type":"object","properties":{"title":{"type":"string","description":"Handoff title"},"target_project":{"type":"string","description":"Owning target project identifier"},"parent":{"type":"string","description":"Source parent UUID; defaults to this conversation's task"},"specification":{"type":"string","description":"Context and acceptance criteria"},"notify_results":{"type":"boolean","description":"Subscribe this exact execution to delegation results"}},"required":["title","target_project"],"additionalProperties":false}`)},
 	{Name: "task_update_delegation", Description: "Update the shared metadata contract for a delegated task. The request is fenced to the current native conversation, and storage enforces task-owner checks for OS changes.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Source delegated task ID"},"title":{"type":["string","null"]},"description":{"type":["string","null"]},"specification":{"type":["string","null"],"description":"Shared specification (takes precedence over details)"},"details":{"type":["string","null"],"description":"Alias for specification"},"labels":{"type":["array","null"],"items":{"type":"string"},"description":"Shared labels; an empty array clears them"}},"required":["id"],"additionalProperties":false}`)},
@@ -274,7 +274,7 @@ func ParseTaskListArgs(raw json.RawMessage) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	statuses := []string{"todo", "in_progress"}
+	statuses := []string{"todo", "in_progress", "stalled"}
 	if _, ok := fields["status"]; ok {
 		var status string
 		if err := decodeField(fields, "status", &status, true); err != nil {
@@ -288,7 +288,7 @@ func ParseTaskListArgs(raw json.RawMessage) ([]string, error) {
 		}
 	}
 	for _, status := range statuses {
-		if status != "todo" && status != "in_progress" && status != "user_review" && status != "done" && status != "cancelled" {
+		if status != "todo" && status != "in_progress" && status != "stalled" && status != "user_review" && status != "done" && status != "cancelled" {
 			return nil, errors.New("invalid task tool arguments: invalid task status")
 		}
 	}
@@ -566,7 +566,7 @@ func (a *api) executeTaskTool(ctx context.Context, project string, actor *storag
 		if detail == nil {
 			return nil, "", storage.ErrTaskNotFound
 		}
-		if detail.Task.Status != "in_progress" || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != *actor {
+		if (detail.Task.Status != "in_progress" && detail.Task.Status != "stalled") || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != *actor {
 			return nil, "", storage.ErrTaskOwnership
 		}
 		return detail.Task, "", nil

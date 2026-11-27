@@ -25,7 +25,14 @@ func migrateRouterReminders(ctx context.Context, tx *sql.Tx) error {
 		task_id TEXT PRIMARY KEY,
 		sent_at INTEGER NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS reminder_restarts (
+	CREATE TABLE IF NOT EXISTS task_progress (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+ owner_json TEXT NOT NULL, activity_at INTEGER NOT NULL, ping_count INTEGER NOT NULL DEFAULT 0, ping_at INTEGER NOT NULL DEFAULT 0
+ );
+ CREATE TABLE IF NOT EXISTS task_revoked_conversations (
+ conversation_id TEXT PRIMARY KEY REFERENCES amux_conversations(id) ON DELETE CASCADE, revoked_at INTEGER NOT NULL
+ );
+ CREATE TABLE IF NOT EXISTS reminder_restarts (
 		source TEXT NOT NULL,
 		session_id TEXT NOT NULL,
 		instance_id TEXT NOT NULL,
@@ -92,7 +99,7 @@ func (s *Store) remindQuietTasks(ctx context.Context, tx *sql.Tx, registry *rout
 	}
 	query := fmt.Sprintf(`SELECT %s FROM tasks t
 		LEFT JOIN reminder_nudges n ON n.task_id=t.id
-		WHERE t.status='in_progress' AND ? - MAX(t.updated_at,COALESCE(n.sent_at,0)) >= ?`, taskSnapshotSQL("t"))
+		WHERE t.status='in_progress' AND NOT EXISTS(SELECT 1 FROM task_progress p WHERE p.task_id=t.id) AND ? - MAX(t.updated_at,COALESCE(n.sent_at,0)) >= ?`, taskSnapshotSQL("t"))
 	tasks, err := readReminderTasks(ctx, tx, query, event.EmittedAt, reminderQuietForMS)
 	if err != nil {
 		return false, fmt.Errorf("read quiet in-progress tasks: %w", err)
