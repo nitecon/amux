@@ -124,10 +124,16 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 				if err != nil {
 					return err
 				}
+				heading := "Stalled task: progress requested"
+				instructions := fmt.Sprintf("No agent message or tool activity has been observed for five minutes. Recovery ping %d of 2. Explain why task %s is not completing and continue the work. If you need a user decision, use User review with the specific action required. Without new activity this task will be reassigned after two pings.", pings+1, task.ID)
+				if task.Status == "todo" {
+					heading = "Queued task reservation"
+					instructions = fmt.Sprintf("Task %s is reserved to you but has not started. Reservation reminder %d of 2. Claim it when available, or release the reservation if you are busy with other work. An unstarted reservation is released after two reminders so an available agent can take it.", task.ID, pings+1)
+				}
 				payload, err := json.Marshal(map[string]any{
 					"target": owner.SessionID, "project": task.ProjectIdent, "mode": "assigned", "require_idle": false,
-					"reminder": true, "heading": "Stalled task: progress requested",
-					"instructions": fmt.Sprintf("No agent message or tool activity has been observed for five minutes. Recovery ping %d of 2. Explain why task %s is not completing and continue the work. If you need a user decision, use User review with the specific action required. Without new activity this task will be reassigned after two pings.", pings+1, task.ID),
+					"reminder": true, "heading": heading,
+					"instructions": instructions,
 					"event":        map[string]any{"kind": "task_created", "project_ident": task.ProjectIdent, "created_at": now, "task": current, "comment": nil, "origin": nil},
 				})
 				if err != nil {
@@ -175,14 +181,18 @@ func requeueStalledTask(ctx context.Context, tx *sql.Tx, task *Task, owner Agent
 	 routing_json='{"mode":"auto"}',started_at=NULL,updated_at=? WHERE id=?`, now, task.ID); err != nil {
 		return err
 	}
-	if _, err := insertTaskComment(ctx, tx, task.ID, "amux", "system", "Task stalled without new agent activity after two recovery pings. Requeued for another agent; inspect prior progress before continuing.", nil, nil); err != nil {
+	reason := "Task stalled without new agent activity after two recovery pings. Requeued for another agent; inspect prior progress before continuing."
+	if task.Status == "todo" {
+		reason = "Unstarted task reservation released after two reminders. Any eligible idle agent, including the previous reserver, can take this queued task."
+	}
+	if _, err := insertTaskComment(ctx, tx, task.ID, "amux", "system", reason, nil, nil); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET updated_at=MAX(updated_at,?) WHERE id=?", now, task.ID); err != nil {
 		return err
 	}
 	// Insert after the routing edit/comment, whose triggers reset release guards.
-	if owner.SessionID != "" && owner.InstanceID != "" {
+	if IsActiveTaskStatus(task.Status) && owner.SessionID != "" && owner.InstanceID != "" {
 		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO assignment_releases(task_id,session_id,instance_id) VALUES(?,?,?)", task.ID, owner.SessionID, owner.InstanceID); err != nil {
 			return err
 		}

@@ -118,7 +118,19 @@ func TestTaskProgressQueuedReservationNeverBecomesStartedFromOwnerOutput(t *test
 		}
 	}
 	assertReclaimValue(t, s, "SELECT owner_origin_json FROM tasks WHERE id=?", nil, task.ID)
-	assertReclaimValue(t, s, "SELECT COUNT(*) FROM task_recovery_sessions WHERE task_id=? AND session_id=?", int64(1), task.ID, owner.SessionID)
+	assertReclaimValue(t, s, "SELECT COUNT(*) FROM task_recovery_sessions WHERE task_id=? AND session_id=?", int64(0), task.ID, owner.SessionID)
+	assertReclaimValue(t, s, "SELECT COUNT(*) FROM assignment_releases WHERE task_id=? AND session_id=?", int64(0), task.ID, owner.SessionID)
+	// The only agent was busy, not a failed execution. Once idle, it must
+	// consume the queued work rather than remain excluded indefinitely.
+	at := now.Add(16 * time.Minute)
+	reportAssignmentPresence(t, s, at, "reserved", 5, idleAssignmentAgent("tasks", owner, at))
+	if err := s.ReconcileAssignments(ctx, at); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := s.Task(ctx, "tasks", task.ID)
+	if err != nil || detail.Task.Status != "in_progress" || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != owner || detail.Task.StartedAt == nil {
+		t.Fatalf("sole idle reserver could not start queued task: %+v %v", detail, err)
+	}
 }
 
 func TestTaskProgressLegacyClaimsUseTheSameTwoPingRecovery(t *testing.T) {

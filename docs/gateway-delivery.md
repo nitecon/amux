@@ -133,13 +133,16 @@ for another execution. Any new activity resumes In Progress and resets both
 pings. Recovery is durable across server restarts. Queued reservations use the
 same ping/release schedule while remaining Queued
 until actually claimed. Output on another task cannot renew that reservation.
+Releasing an unstarted reservation does not exclude its owner; the same agent
+can take it once idle if no other agent has started it.
 An undelivered assignment cannot hold work forever.
 Idle agents can start session-reserved queued work; a queued reservation without
 a pending delivery is not itself evidence that the agent is executing.
 
 Reassignment revokes the old conversation's task-mutation and prompt authority.
 Native pools stop and join their provider before releasing the slot. Recovery
-excludes the old stable agent session, including after its instance rotates.
+excludes the old stable agent session only for work that actually started and
+stalled, including after its instance rotates.
 Amux currently does not track agent-created worktrees and cannot safely remove
 them on reassignment; their creator must clean them up until explicit ownership
 registration exists. Claims without a routable owner receive recovery messages
