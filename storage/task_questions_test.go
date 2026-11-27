@@ -125,6 +125,42 @@ func TestAnsweringOneQuestionLeavesSiblingOpen(t *testing.T) {
 	}
 }
 
+func TestAnswerIdentifiesQuestionWithIdenticalOptions(t *testing.T) {
+	s := taskStore(t)
+	ctx := context.Background()
+	actor := taskActor()
+	task := makeTask(t, s, nil)
+	if _, err := s.ApplyTaskTransition(ctx, "tasks", task.ID, "in_progress", actor, TaskTransitionPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AskTaskQuestion(ctx, "tasks", task.ID, "Drop the stale commits?", []string{"Yes", "No"}, actor); err != nil {
+		t.Fatal(err)
+	}
+	push, err := s.AskTaskQuestion(ctx, "tasks", task.ID, "Push to main?", []string{"Yes", "No"}, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := s.AnswerTaskQuestion(ctx, "tasks", task.ID, push.ID, "Yes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Answer to question:\n> Push to main?\n\nYes"
+	if answer.Content != want || answer.AuthorType != "user" {
+		t.Fatalf("answer does not identify its question: %q", answer.Content)
+	}
+	detail, err := s.Task(ctx, "tasks", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := detail.Comments[len(detail.Comments)-1]; last.ID != answer.ID || last.Content != want {
+		t.Fatalf("task thread does not identify the answered question: %+v", last)
+	}
+	open, err := s.OpenTaskQuestions(ctx, "")
+	if err != nil || len(open) != 1 || open[0].Question != "Drop the stale commits?" {
+		t.Fatalf("sibling question not left open: %+v %v", open, err)
+	}
+}
+
 func TestOpenTaskQuestionsSkipFinishedTasksNewestFirst(t *testing.T) {
 	s := taskStore(t)
 	ctx := context.Background()

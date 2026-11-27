@@ -115,6 +115,22 @@ func (s *Store) AskTaskQuestion(ctx context.Context, project, id, question strin
 	return result, err
 }
 
+// taskAnswerComment labels a user answer with the question it answers, so the
+// task thread and the owner notification identify the decision.
+func taskAnswerComment(question, answer string) string {
+	return "Answer to question:\n> " + strings.ReplaceAll(question, "\n", "\n> ") + "\n\n" + answer
+}
+
+// openTaskQuestionText returns the text of an open question on a task.
+func openTaskQuestionText(ctx context.Context, q queryer, taskID, questionID string) (string, error) {
+	var question string
+	err := q.QueryRowContext(ctx, "SELECT question FROM task_questions WHERE id=? AND task_id=? AND answered_at IS NULL", questionID, taskID).Scan(&question)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: question is not open on this task", ErrTaskConflict)
+	}
+	return question, err
+}
+
 // answerTaskQuestion closes one open question on a task with the given user
 // comment.
 func answerTaskQuestion(ctx context.Context, q queryer, taskID, questionID, commentID string, at int64) error {

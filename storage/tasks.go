@@ -658,14 +658,21 @@ func (s *Store) addTaskComment(ctx context.Context, project, id, author, authorT
 				return err
 			}
 		}
+		if questionID != "" {
+			if authorType != "user" || actor != nil {
+				return fmt.Errorf("%w: only the user can answer a question", ErrTaskOwnership)
+			}
+			question, err := openTaskQuestionText(ctx, tx, id, questionID)
+			if err != nil {
+				return err
+			}
+			content = taskAnswerComment(question, content)
+		}
 		result, err = insertTaskComment(ctx, tx, id, author, authorType, content, hostname, actor)
 		if err != nil || authorType == "system" {
 			return err
 		}
 		if questionID != "" {
-			if authorType != "user" || actor != nil {
-				return fmt.Errorf("%w: only the user can answer a question", ErrTaskOwnership)
-			}
 			if err := answerTaskQuestion(ctx, tx, id, questionID, result.ID, result.CreatedAt); err != nil {
 				return err
 			}
