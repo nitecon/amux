@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -37,6 +40,25 @@ type workerProcess struct {
 	stdoutDone     <-chan error
 }
 
+func TestWorkerProcessHelper(t *testing.T) {
+	if os.Getenv("AMUX_GO_WORKER_PROCESS_TEST") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg != "--" {
+			continue
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := run(ctx, os.Args[i+1:], os.Stdout, os.Stderr, os.Getenv); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	t.Fatal("worker process arguments missing")
+}
+
 func startWorkerProcess(t *testing.T, ctx context.Context, state string, env map[string]string, args ...string) *workerProcess {
 	return startWorkerProcessMode(t, ctx, state, env, "run", args...)
 }
@@ -47,7 +69,7 @@ func startWorkerProcessMode(t *testing.T, ctx context.Context, state string, env
 
 func startWorkerProcessModeWithTaskTools(t *testing.T, ctx context.Context, state string, env map[string]string, mode string, enableTaskTools bool, args ...string) *workerProcess {
 	t.Helper()
-	commandArgs := []string{"-test.run=^TestServerProcessHelper$", "--", "worker", mode, "--state", state}
+	commandArgs := []string{"-test.run=^TestWorkerProcessHelper$", "--", "worker", mode, "--state", state}
 	if !enableTaskTools {
 		commandArgs = append(commandArgs, "--no-task-tools")
 	}
@@ -122,11 +144,11 @@ func stopWorkerProcess(t *testing.T, ctx context.Context, process *workerProcess
 func workerTestEnvironment(t *testing.T, overrides map[string]string) []string {
 	t.Helper()
 	values := map[string]string{
-		"AMUX_GO_SERVER_TEST":      "1",
-		"DISPLAY":                  "",
-		"WAYLAND_DISPLAY":          "",
-		"DBUS_SESSION_BUS_ADDRESS": "",
-		"HOME":                     t.TempDir(),
+		"AMUX_GO_WORKER_PROCESS_TEST": "1",
+		"DISPLAY":                     "",
+		"WAYLAND_DISPLAY":             "",
+		"DBUS_SESSION_BUS_ADDRESS":    "",
+		"HOME":                        t.TempDir(),
 	}
 	for key, value := range overrides {
 		values[key] = value
