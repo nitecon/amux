@@ -192,7 +192,7 @@ func allocateAssignmentsWithOffers(ctx context.Context, tx *sql.Tx, nowMS int64,
 				return err
 			}
 			if registry != nil {
-				const comment = "Automatically assigned by amux to an idle agent. Evaluate whether this task is still required. If a user decision is needed, record the question and move the task to User review. Close obsolete work with a reason; otherwise start execution. Respect platform requirements."
+				const comment = "Automatically assigned by amux to an idle agent. Evaluate whether this task is still required. If a user decision is needed, claim it and ask with task_ask. Close obsolete work with a reason; otherwise start execution. Respect platform requirements."
 				if _, err := insertTaskComment(ctx, tx, task.ID, "amux", "system", comment, nil, nil); err != nil {
 					return err
 				}

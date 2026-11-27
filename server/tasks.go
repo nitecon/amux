@@ -464,6 +464,7 @@ func (a *api) commentTask(w http.ResponseWriter, r *http.Request) {
 		Hostname   *string `json:"hostname"`
 		Author     *string `json:"author"`
 		AuthorType *string `json:"author_type"`
+		QuestionID *string `json:"question_id"`
 	}
 	if !readTaskRequest(w, r, &req) {
 		return
@@ -491,7 +492,17 @@ func (a *api) commentTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "author_type must be agent or user")
 		return
 	}
-	comment, err := a.store.AddTaskComment(r.Context(), r.PathValue("ident"), r.PathValue("id"), resolveTaskIdentity(req.Author, r), kind, *req.Content, req.Hostname, origin)
+	var comment *storage.TaskComment
+	if req.QuestionID != nil {
+		// An answer is a user comment bound to one open question.
+		if kind != "user" || origin != nil {
+			writeError(w, 400, "only the user can answer a question")
+			return
+		}
+		comment, err = a.store.AnswerTaskQuestion(r.Context(), r.PathValue("ident"), r.PathValue("id"), *req.QuestionID, *req.Content)
+	} else {
+		comment, err = a.store.AddTaskComment(r.Context(), r.PathValue("ident"), r.PathValue("id"), resolveTaskIdentity(req.Author, r), kind, *req.Content, req.Hostname, origin)
+	}
 	if err != nil {
 		taskError(w, err)
 		return

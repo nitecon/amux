@@ -627,6 +627,19 @@ func insertTaskComment(ctx context.Context, q queryer, id, author, authorType, c
 	return &TaskComment{ID: commentID.String(), TaskID: id, Author: author, AuthorType: authorType, Content: content, CreatedAt: now, Hostname: hostname, Origin: origin}, nil
 }
 func (s *Store) AddTaskComment(ctx context.Context, project, id, author, authorType, content string, hostname *string, origin *AgentOrigin) (*TaskComment, error) {
+	return s.addTaskComment(ctx, project, id, author, authorType, content, hostname, origin, "")
+}
+
+// AnswerTaskQuestion posts a user comment that answers exactly one open
+// question on the task. Other open questions stay open.
+func (s *Store) AnswerTaskQuestion(ctx context.Context, project, taskID, questionID, content string) (*TaskComment, error) {
+	if strings.TrimSpace(questionID) == "" {
+		return nil, fmt.Errorf("%w: question_id is required", ErrTaskQuestionInput)
+	}
+	return s.addTaskComment(ctx, project, taskID, "user", "user", content, nil, nil, questionID)
+}
+
+func (s *Store) addTaskComment(ctx context.Context, project, id, author, authorType, content string, hostname *string, origin *AgentOrigin, questionID string) (*TaskComment, error) {
 	var result *TaskComment
 	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
 		t, err := readTask(ctx, tx, project, id)
@@ -649,8 +662,11 @@ func (s *Store) AddTaskComment(ctx context.Context, project, id, author, authorT
 		if err != nil || authorType == "system" {
 			return err
 		}
-		if authorType == "user" {
-			if err := answerTaskQuestions(ctx, tx, id, result.ID, result.CreatedAt); err != nil {
+		if questionID != "" {
+			if authorType != "user" || actor != nil {
+				return fmt.Errorf("%w: only the user can answer a question", ErrTaskOwnership)
+			}
+			if err := answerTaskQuestion(ctx, tx, id, questionID, result.ID, result.CreatedAt); err != nil {
 				return err
 			}
 		}

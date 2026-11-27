@@ -52,6 +52,25 @@ func (c *Client) AddTaskComment(ctx context.Context, project, taskID, content st
 	if err != nil {
 		return nil, err
 	}
+	return userCommentAcknowledgement(raw, taskID, content)
+}
+
+// AnswerTaskQuestion posts a user answer that closes one open question.
+func (c *Client) AnswerTaskQuestion(ctx context.Context, project, taskID, questionID, content string) (*storage.TaskComment, error) {
+	input := struct {
+		Content    string `json:"content"`
+		Author     string `json:"author"`
+		Kind       string `json:"author_type"`
+		QuestionID string `json:"question_id"`
+	}{content, "user", "user", questionID}
+	var raw json.RawMessage
+	if err := c.do(ctx, "POST", taskPath(project)+"/"+url.PathEscape(taskID)+"/comments", input, nil, &raw); err != nil {
+		return nil, err
+	}
+	return userCommentAcknowledgement(raw, taskID, content)
+}
+
+func userCommentAcknowledgement(raw json.RawMessage, taskID, content string) (*storage.TaskComment, error) {
 	var comment storage.TaskComment
 	if json.Unmarshal(raw, &comment) != nil || comment.TaskID != taskID || comment.Author != "user" || comment.AuthorType != "user" || comment.Content != content || comment.Origin != nil {
 		return nil, fmt.Errorf("gateway comment acknowledgement did not match the requested task, content, or human provenance")

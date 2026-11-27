@@ -14,9 +14,12 @@ import (
 const waitingOnUserLabel = "Waiting on you"
 
 // questionsView holds the cross-project list of agent questions that need a
-// user answer. Questions close when any user comment lands on their task.
+// user answer. Each question closes when the user answers it here.
 type questionsView struct {
-	items       []storage.TaskQuestion
+	items []storage.TaskQuestion
+	// cards keeps each open question's widgets so refreshes keep drafts,
+	// focus and in-flight send state.
+	cards       map[string]*questionCard
 	seen        map[string]bool
 	initialized bool
 	loading     bool
@@ -26,7 +29,7 @@ type questionsView struct {
 }
 
 func newQuestionsView() *questionsView {
-	view := &questionsView{seen: map[string]bool{}, status: widget.NewLabel("Loading questions…"), rows: container.NewVBox()}
+	view := &questionsView{cards: map[string]*questionCard{}, seen: map[string]bool{}, status: widget.NewLabel("Loading questions…"), rows: container.NewVBox()}
 	view.status.Wrapping = fyne.TextWrapWord
 	view.content = container.NewBorder(container.NewVBox(browserSectionHeading("QUESTIONS"), view.status), nil, nil, nil, container.NewVScroll(view.rows))
 	return view
@@ -101,7 +104,6 @@ func (b *Browser) applyQuestionsButton() {
 
 func (b *Browser) renderQuestions() {
 	view := b.questions
-	view.rows.RemoveAll()
 	switch len(view.items) {
 	case 0:
 		view.status.SetText("No agent is waiting on you.")
@@ -110,13 +112,30 @@ func (b *Browser) renderQuestions() {
 	default:
 		view.status.SetText(fmt.Sprintf("%d open questions, newest first. Answering posts your reply as a task comment and resumes the agent.", len(view.items)))
 	}
+	cards := make(map[string]*questionCard, len(view.items))
+	rows := make([]fyne.CanvasObject, 0, len(view.items))
 	for _, item := range view.items {
-		view.rows.Add(b.questionCard(item))
+		card := view.cards[item.ID]
+		if card == nil {
+			card = b.questionCard(item)
+		}
+		cards[item.ID] = card
+		rows = append(rows, card.object)
 	}
+	view.cards = cards
+	// Swap the slice instead of removing and re-adding children so unchanged
+	// cards are never detached.
+	view.rows.Objects = rows
 	view.rows.Refresh()
 }
 
-func (b *Browser) questionCard(item storage.TaskQuestion) fyne.CanvasObject {
+type questionCard struct {
+	object fyne.CanvasObject
+	answer *widget.Entry
+	send   func(string)
+}
+
+func (b *Browser) questionCard(item storage.TaskQuestion) *questionCard {
 	heading := widget.NewLabelWithStyle(item.ProjectIdent+" · "+item.TaskTitle, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	heading.Truncation = fyne.TextTruncateEllipsis
 	question := widget.NewLabel(item.Question)
@@ -135,7 +154,7 @@ func (b *Browser) questionCard(item storage.TaskQuestion) fyne.CanvasObject {
 			control.Disable()
 		}
 		b.launch(func(ctx context.Context) {
-			_, err := b.client.AddTaskComment(ctx, item.ProjectIdent, item.TaskID, text)
+			_, err := b.client.AnswerTaskQuestion(ctx, item.ProjectIdent, item.TaskID, item.ID, text)
 			b.dispatch(func() {
 				if err != nil {
 					for _, control := range controls {
@@ -161,5 +180,5 @@ func (b *Browser) questionCard(item storage.TaskQuestion) fyne.CanvasObject {
 	open := widget.NewButton("Open task", func() { b.openTaskFromProject(item.ProjectIdent, item.TaskID) })
 	controls = append(controls, reply)
 	body := container.NewVBox(heading, question, options, answer, container.NewHBox(reply, open))
-	return container.NewVBox(container.NewStack(browserCardSurface(), container.NewPadded(body)), widget.NewSeparator())
+	return &questionCard{object: container.NewVBox(container.NewStack(browserCardSurface(), container.NewPadded(body)), widget.NewSeparator()), answer: answer, send: send}
 }

@@ -67,9 +67,18 @@ func TestTaskQuestionRaiseListAnswerAndClear(t *testing.T) {
 	if open, _ := s.OpenTaskQuestions(ctx, ""); len(open) != 1 {
 		t.Fatal("an agent comment answered the question")
 	}
-	answer, err := s.AddTaskComment(ctx, "tasks", task.ID, "user", "user", "Drop them", nil, nil)
+	if _, err := s.AddTaskComment(ctx, "tasks", task.ID, "user", "user", "Unrelated note", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := s.OpenTaskQuestions(ctx, ""); len(open) != 1 {
+		t.Fatal("an unrelated user comment answered the question")
+	}
+	answer, err := s.AnswerTaskQuestion(ctx, "tasks", task.ID, question.ID, "Drop them")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.AnswerTaskQuestion(ctx, "tasks", task.ID, question.ID, "Again"); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("closed question answered twice: %v", err)
 	}
 	if open, _ := s.OpenTaskQuestions(ctx, ""); len(open) != 0 {
 		t.Fatalf("user answer did not clear the question: %+v", open)
@@ -81,6 +90,38 @@ func TestTaskQuestionRaiseListAnswerAndClear(t *testing.T) {
 	detail, _ = s.Task(ctx, "tasks", task.ID)
 	if detail.Task.WaitingOnUser || detail.Task.Status != "in_progress" {
 		t.Fatalf("answer did not clear waiting state: %+v", detail.Task)
+	}
+}
+
+func TestAnsweringOneQuestionLeavesSiblingOpen(t *testing.T) {
+	s := taskStore(t)
+	ctx := context.Background()
+	actor := taskActor()
+	task := makeTask(t, s, nil)
+	if _, err := s.ApplyTaskTransition(ctx, "tasks", task.ID, "in_progress", actor, TaskTransitionPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	branch, err := s.AskTaskQuestion(ctx, "tasks", task.ID, "Which branch?", nil, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := s.AskTaskQuestion(ctx, "tasks", task.ID, "Which release?", nil, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AnswerTaskQuestion(ctx, "tasks", task.ID, branch.ID, "Use main"); err != nil {
+		t.Fatal(err)
+	}
+	open, err := s.OpenTaskQuestions(ctx, "")
+	if err != nil || len(open) != 1 || open[0].ID != release.ID {
+		t.Fatalf("sibling question was closed: %+v %v", open, err)
+	}
+	if detail, _ := s.Task(ctx, "tasks", task.ID); !detail.Task.WaitingOnUser {
+		t.Fatal("task stopped waiting with a question still open")
+	}
+	other := makeTask(t, s, nil)
+	if _, err := s.AnswerTaskQuestion(ctx, "tasks", other.ID, release.ID, "v1"); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("question answered through another task: %v", err)
 	}
 }
 

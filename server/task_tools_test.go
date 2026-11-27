@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -387,8 +388,22 @@ func TestTaskAskToolRaisesQuestionListedUntilUserAnswers(t *testing.T) {
 	if questions := list(); len(questions) != 1 || questions[0].TaskID != task.ID || len(questions[0].Options) != 2 {
 		t.Fatalf("listed questions: %+v", questions)
 	}
-	if _, err := store.AddTaskComment(ctx, "tasks", task.ID, "user", "user", "Keep", nil, nil); err != nil {
-		t.Fatal(err)
+	mux := http.NewServeMux()
+	a.registerTaskRoutes(mux)
+	answer := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("POST", "/v1/projects/tasks/tasks/"+task.ID+"/comments", strings.NewReader(body)))
+		return w
+	}
+	questionID := list()[0].ID
+	if w := answer(`{"content":"Keep","author":"user","author_type":"agent","question_id":"` + questionID + `"}`); w.Code != 400 {
+		t.Fatalf("agent answered a question: HTTP %d %s", w.Code, w.Body.String())
+	}
+	if w := answer(`{"content":"Keep","author":"user","author_type":"user","question_id":"` + questionID + `"}`); w.Code != 200 {
+		t.Fatalf("answer HTTP %d: %s", w.Code, w.Body.String())
+	}
+	if w := answer(`{"content":"Again","author":"user","author_type":"user","question_id":"` + questionID + `"}`); w.Code != 409 {
+		t.Fatalf("closed question answered again: HTTP %d %s", w.Code, w.Body.String())
 	}
 	if questions := list(); len(questions) != 0 {
 		t.Fatalf("answered question still listed: %+v", questions)

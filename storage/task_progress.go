@@ -92,6 +92,11 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 				last = max(last, providerAt)
 			}
 			last = min(now, last)
+			// An open question means the owner is waiting on the user, not
+			// stalled. Keep the window fresh so an answer starts a new one.
+			if task.WaitingOnUser {
+				last = now
+			}
 			var previousOwner string
 			var previousActivity, pingAt int64
 			var pings int
@@ -125,7 +130,7 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 					return err
 				}
 				heading := "Stalled task: progress requested"
-				instructions := fmt.Sprintf("No agent message or tool activity has been observed for five minutes. Recovery ping %d of 2. Explain why task %s is not completing and continue the work. If you need a user decision, use User review with the specific action required. Without new activity this task will be reassigned after two pings.", pings+1, task.ID)
+				instructions := fmt.Sprintf("No agent message or tool activity has been observed for five minutes. Recovery ping %d of 2. Explain why task %s is not completing and continue the work. If you need a user decision, ask with task_ask. Without new activity this task will be reassigned after two pings.", pings+1, task.ID)
 				if task.Status == "todo" {
 					heading = "Queued task reservation"
 					instructions = fmt.Sprintf("Task %s is reserved to you but has not started. Reservation reminder %d of 2. Claim it when available, or release the reservation if you are busy with other work. An unstarted reservation is released after two reminders so an available agent can take it.", task.ID, pings+1)

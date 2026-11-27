@@ -19,10 +19,13 @@
   you" on the task list, board and detail. The desktop **Questions** view
   lists open questions across projects, newest first, with a count on its
   button and a desktop notification for each new one. Pick a suggested answer
-  or write your own: it is posted as your task comment, which closes the
-  question and notifies the owning agent to continue. Session guidance and the
+  or write your own: it is posted as your task comment, which closes only that
+  question and notifies the owning agent to continue. Drafts survive background
+  refreshes. A task waiting on you is not treated as stalled, so it keeps its
+  owner however long you take. Session guidance, recovery reminders and the
   submit_work rebase-conflict message tell agents to ask instead of stalling.
-  API: `POST /v1/projects/{ident}/tasks/{id}/questions`, `GET /v1/questions`.
+  API: `POST /v1/projects/{ident}/tasks/{id}/questions`, `GET /v1/questions`;
+  answer with `question_id` on `POST /v1/projects/{ident}/tasks/{id}/comments`.
 
 ### Fixed
 

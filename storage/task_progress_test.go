@@ -345,3 +345,62 @@ func TestAssignmentStartsSessionReservedQueueWithIdleCapacity(t *testing.T) {
 	}
 	assertReclaimValue(t, s, "SELECT status FROM tasks WHERE id=?", "in_progress", task.ID)
 }
+
+func TestTaskProgressOpenQuestionKeepsOwnerUntilAnsweredThenStartsFreshWindow(t *testing.T) {
+	ctx := context.Background()
+	s := taskStore(t)
+	registry := reminderTestRegistry(t)
+	// Ticks run in the past so the real-time answer lands after the wait.
+	base := time.Now().UTC().Truncate(time.Millisecond).Add(-31 * time.Minute)
+	owner := assignmentOrigin(uuid.NewString(), uuid.NewString(), "codex", "linux")
+	task := reminderInProgressTask(t, s, &owner, base.UnixMilli())
+	conv, err := s.CreateConversation(ctx, "tasks", task.ID, &owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	question, err := s.AskTaskQuestion(ctx, "tasks", task.ID, "Which branch?", nil, &owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE tasks SET updated_at=? WHERE id=?", base.UnixMilli(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	tick := func(at time.Time, sequence int64) {
+		t.Helper()
+		agent := idleAssignmentAgent("tasks", owner, at)
+		agent.LastActivityAt = ptrI64(base.UnixMilli())
+		reportAssignmentPresence(t, s, at, "waiting", sequence, agent)
+		if err := s.ReconcileRouterProgress(ctx, registry, reminderClock(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, offset := range []time.Duration{5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute} {
+		tick(base.Add(offset), int64(i+1))
+		assertReclaimValue(t, s, "SELECT status FROM tasks WHERE id=?", "in_progress", task.ID)
+		if count := reminderNoticeCount(t, s); count != 0 {
+			t.Fatalf("waiting task pinged at %s: %d", offset, count)
+		}
+	}
+	detail, err := s.Task(ctx, "tasks", task.ID)
+	if err != nil || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != owner || !detail.Task.WaitingOnUser {
+		t.Fatalf("waiting task lost its owner: %+v %v", detail, err)
+	}
+	assertReclaimValue(t, s, "SELECT COUNT(*) FROM task_revoked_conversations WHERE conversation_id=?", int64(0), conv.ID)
+
+	answer, err := s.AnswerTaskQuestion(ctx, "tasks", task.ID, question.ID, "Use main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.AuthorType != "user" {
+		t.Fatalf("answer is not a user comment: %+v", answer)
+	}
+	answeredAt := time.UnixMilli(answer.CreatedAt).UTC()
+	tick(answeredAt.Add(4*time.Minute), 5)
+	if count := reminderNoticeCount(t, s); count != 0 {
+		t.Fatalf("answer did not start a fresh progress window: %d pings", count)
+	}
+	tick(answeredAt.Add(6*time.Minute), 6)
+	if count := reminderNoticeCount(t, s); count != 1 {
+		t.Fatalf("answered task is exempt from recovery: %d pings", count)
+	}
+}

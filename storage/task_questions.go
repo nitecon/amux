@@ -22,7 +22,7 @@ const (
 var ErrTaskQuestionInput = errors.New("invalid task question")
 
 // TaskQuestion is a decision an owning agent needs from the user. It stays
-// open until any user comment is added to the task.
+// open until the user answers it by ID with AnswerTaskQuestion.
 type TaskQuestion struct {
 	ID           string       `json:"id"`
 	TaskID       string       `json:"task_id"`
@@ -115,11 +115,19 @@ func (s *Store) AskTaskQuestion(ctx context.Context, project, id, question strin
 	return result, err
 }
 
-// answerTaskQuestions closes every open question on a task with the given
-// user comment.
-func answerTaskQuestions(ctx context.Context, q queryer, taskID, commentID string, at int64) error {
-	_, err := q.ExecContext(ctx, "UPDATE task_questions SET answered_at=?,answer_comment_id=? WHERE task_id=? AND answered_at IS NULL", at, commentID, taskID)
-	return err
+// answerTaskQuestion closes one open question on a task with the given user
+// comment.
+func answerTaskQuestion(ctx context.Context, q queryer, taskID, questionID, commentID string, at int64) error {
+	result, err := q.ExecContext(ctx, "UPDATE task_questions SET answered_at=?,answer_comment_id=? WHERE id=? AND task_id=? AND answered_at IS NULL", at, commentID, questionID, taskID)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return err
+	} else if count == 0 {
+		return fmt.Errorf("%w: question is not open on this task", ErrTaskConflict)
+	}
+	return nil
 }
 
 // OpenTaskQuestions lists unanswered questions on tasks that are not finished,
