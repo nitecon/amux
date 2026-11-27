@@ -481,9 +481,6 @@ func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status s
 			}
 		} else {
 			started = t.StartedAt
-			if t.StartedAt == nil {
-				started = time.Now().UnixMilli()
-			}
 			ownerID = t.OwnerAgentID
 			if t.OwnerOrigin != nil {
 				encoded, _ := json.Marshal(t.OwnerOrigin)

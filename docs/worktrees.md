@@ -21,12 +21,10 @@ it, check for active processes, local-only commits, and files worth preserving,
 including untracked or ignored files. Use Git's worktree removal command after
 those checks. Retain the checkout when ownership or preservation is uncertain.
 
-When a native pool run uses a separate task checkout, reassignment first stops
-and joins the provider, then removes a clean linked worktree from the same
-repository using `git worktree remove`. The shared pool directory is never
-removed. Dirty, locked, detached and foreign checkouts are retained and logged
-for inspection; cleanup never forces removal or discards unpublished files.
-Amux does not infer ownership of manually created worktrees elsewhere.
+Amux currently has no registry linking agent-created worktrees to tasks. Task
+reassignment stops the old native worker, but does not remove untracked
+worktrees; their creator remains responsible for cleanup. Automatic cleanup
+requires an explicit ownership binding before any checkout can be removed.
 
 ## Validate checkout binding before rollout
 

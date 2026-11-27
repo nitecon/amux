@@ -25,7 +25,12 @@ func migrateRouterReminders(ctx context.Context, tx *sql.Tx) error {
 		task_id TEXT PRIMARY KEY,
 		sent_at INTEGER NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS task_progress (
+	CREATE TABLE IF NOT EXISTS task_recovery_sessions (
+ task_id TEXT NOT NULL,session_id TEXT NOT NULL,instance_id TEXT NOT NULL,
+ PRIMARY KEY(task_id,session_id),
+ FOREIGN KEY(task_id,session_id,instance_id) REFERENCES assignment_releases(task_id,session_id,instance_id) ON DELETE CASCADE
+ );
+ CREATE TABLE IF NOT EXISTS task_progress (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
  owner_json TEXT NOT NULL, activity_at INTEGER NOT NULL, ping_count INTEGER NOT NULL DEFAULT 0, ping_at INTEGER NOT NULL DEFAULT 0
  );

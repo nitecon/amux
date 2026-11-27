@@ -78,7 +78,9 @@ func TestTaskProgressTwoPingsRequeueAndAssignAnotherAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := now.Add(15 * time.Minute)
-	reportAssignmentPresence(t, s, at, "stalled", 6, idleAssignmentAgent("tasks", owner, at), idleAssignmentAgent("tasks", other, at))
+	rotated := owner
+	rotated.InstanceID = uuid.NewString()
+	reportAssignmentPresence(t, s, at, "stalled", 6, idleAssignmentAgent("tasks", rotated, at), idleAssignmentAgent("tasks", other, at))
 	if err := s.ReconcileAssignments(ctx, at); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +88,37 @@ func TestTaskProgressTwoPingsRequeueAndAssignAnotherAgent(t *testing.T) {
 	if err != nil || detail.Task.OwnerOrigin == nil || *detail.Task.OwnerOrigin != other || detail.Task.Status != "in_progress" {
 		t.Fatalf("reassignment: %+v %v", detail, err)
 	}
+}
+
+func TestTaskProgressQueuedReservationNeverBecomesStartedFromOwnerOutput(t *testing.T) {
+	s := taskStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	owner := assignmentOrigin(uuid.NewString(), uuid.NewString(), "codex", "linux")
+	task := makeTask(t, s, &owner)
+	if _, err := s.db.Exec("UPDATE tasks SET updated_at=? WHERE id=?", now.UnixMilli(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i, offset := range []time.Duration{5 * time.Minute, 6 * time.Minute, 10 * time.Minute, 15 * time.Minute} {
+		at := now.Add(offset)
+		agent := idleAssignmentAgent("tasks", owner, at)
+		agent.LastActivityAt = ptrI64(at.UnixMilli()) // output on unrelated work
+		reportAssignmentPresence(t, s, at, "reserved", int64(i+1), agent)
+		if err := s.ReconcileRouterProgress(ctx, reminderTestRegistry(t), reminderClock(at)); err != nil {
+			t.Fatal(err)
+		}
+		assertReclaimValue(t, s, "SELECT status FROM tasks WHERE id=?", "todo", task.ID)
+		assertReclaimValue(t, s, "SELECT started_at FROM tasks WHERE id=?", nil, task.ID)
+		want := 1
+		if i >= 2 {
+			want = 2
+		}
+		if count := reminderNoticeCount(t, s); count != want {
+			t.Fatalf("pings=%d want %d", count, want)
+		}
+	}
+	assertReclaimValue(t, s, "SELECT owner_origin_json FROM tasks WHERE id=?", nil, task.ID)
+	assertReclaimValue(t, s, "SELECT COUNT(*) FROM task_recovery_sessions WHERE task_id=? AND session_id=?", int64(1), task.ID, owner.SessionID)
 }
 
 func TestTaskProgressLegacyClaimsUseTheSameTwoPingRecovery(t *testing.T) {

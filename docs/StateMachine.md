@@ -403,19 +403,21 @@ Rules carried over from the desktop:
   heartbeats cannot reintroduce one, and emission plus deduplication commit
   together. Clients sharing a reporting source retain independent run markers.
   Older clients without `client_run` keep periodic reminders.
-- **Reclaim and stalled progress:** owned work (including queued
-  reservations) becomes `stalled` after five minutes without exact-execution
-  output, provider messages/tool events, or a task update. Client heartbeats and
+- **Reclaim and stalled progress:** in-progress work becomes `stalled` after
+  five minutes without exact-execution output, provider messages/tool events, or a task update. Client heartbeats and
   a busy flag do not renew progress. The controller sends a recovery prompt at
   five minutes, a second after another five minutes, then requeues the task if
   a further five minutes passes without activity. Pings and counters commit
   together and survive restart. New activity restores `in_progress` and resets
-  the ping sequence. The old execution is excluded from automatic reassignment;
-  OS, goal and project eligibility still apply. Revoked conversations retain
+  the ping sequence. The old agent session is excluded from automatic reassignment, even
+  after its execution instance rotates; OS, goal and project eligibility still apply. Revoked conversations retain
   transcripts but cannot resume, claim new prompts or mutate tasks. Native pools
-  stop and join the old provider before freeing its slot. Separate task-run
-  worktrees are removed with Git after shutdown; shared, dirty, locked, detached
-  or foreign checkouts are preserved for inspection. Claims without a routable execution receive recovery messages on the task
+  stop and join the old provider before freeing its slot. Amux does not track
+  agent-created worktrees, so their cleanup remains
+  the creator's responsibility until explicit task/worktree registration exists.
+  Queued reservations use the same ping/release schedule but stay `todo` until
+  explicitly claimed; unrelated owner output cannot promote or renew them.
+  Claims without a routable execution receive recovery messages on the task
   instead; they use the same timers and return to the executable queue.
   With the router running, Clock owns recovery; reads never reclaim work.
 - **Retention:** cleans messages under the existing retention policy at

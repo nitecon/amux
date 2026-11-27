@@ -125,21 +125,25 @@ If the desktop cannot deliver the offer (the agent became busy, started typing,
 or its process changed), it reports the outcome. The server releases an untouched
 offer only for its captured reporting source and target; a delayed result cannot
 undo subsequent progress or another claim. The next idle agent can then receive
-the task. Owned work becomes **Stalled** after five minutes without
+the task. In-progress work becomes **Stalled** after five minutes without
 agent output, provider messages/tool events or a task update. Heartbeats and
 busy flags do not count as progress. Recovery prompts are emitted at five and
 ten minutes; after another five silent minutes, the task returns to the queue
 for another execution. Any new activity resumes In Progress and resets both
-pings. Recovery is durable across server restarts. Queued reservations receive
-the same recovery policy, so an undelivered assignment cannot hold work forever.
+pings. Recovery is durable across server restarts. Queued reservations use the
+same ping/release schedule while remaining Queued
+until actually claimed. Output on another task cannot renew that reservation.
+An undelivered assignment cannot hold work forever.
 Idle agents can start session-reserved queued work; a queued reservation without
 a pending delivery is not itself evidence that the agent is executing.
 
 Reassignment revokes the old conversation's task-mutation and prompt authority.
-Native pools stop and join their provider before releasing the slot, then clean
-up any separate task-run linked worktree. The pool's shared checkout is retained;
-Git refuses removal of dirty/locked worktrees, and detached or foreign checkouts
-are retained for inspection. Claims without a routable owner receive recovery messages on the task and
+Native pools stop and join their provider before releasing the slot. Recovery
+excludes the old stable agent session, including after its instance rotates.
+Amux currently does not track agent-created worktrees and cannot safely remove
+them on reassignment; their creator must clean them up until explicit ownership
+registration exists. Claims without a routable owner receive recovery messages
+on the task and
 use the same five-minute timers before returning to the queue.
 
 After the desktop restarts, the server also reminds resumed sessions about

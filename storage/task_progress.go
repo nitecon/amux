@@ -74,7 +74,10 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 			if err != nil {
 				return err
 			}
-			last := max(task.UpdatedAt, activity[[3]string{task.ProjectIdent, owner.SessionID, owner.InstanceID}])
+			last := task.UpdatedAt
+			if task.Status != "todo" {
+				last = max(last, activity[[3]string{task.ProjectIdent, owner.SessionID, owner.InstanceID}])
+			}
 			// Server receipt time is authoritative. Only events from this exact
 			// execution count; old conversations and replayed events cannot renew it.
 			var providerAt int64
@@ -85,7 +88,10 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 				task.ProjectIdent, task.ID, owner.SessionID, owner.InstanceID).Scan(&providerAt); err != nil {
 				return err
 			}
-			last = min(now, max(last, providerAt))
+			if task.Status != "todo" {
+				last = max(last, providerAt)
+			}
+			last = min(now, last)
 			var previousOwner string
 			var previousActivity, pingAt int64
 			var pings int
@@ -109,8 +115,10 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 					}
 					continue
 				}
-				if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status='stalled' WHERE id=?", task.ID); err != nil {
-					return err
+				if task.Status != "todo" {
+					if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status='stalled' WHERE id=?", task.ID); err != nil {
+						return err
+					}
 				}
 				current, err := readTask(ctx, tx, task.ProjectIdent, task.ID)
 				if err != nil {
@@ -176,6 +184,9 @@ func requeueStalledTask(ctx context.Context, tx *sql.Tx, task *Task, owner Agent
 	// Insert after the routing edit/comment, whose triggers reset release guards.
 	if owner.SessionID != "" && owner.InstanceID != "" {
 		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO assignment_releases(task_id,session_id,instance_id) VALUES(?,?,?)", task.ID, owner.SessionID, owner.InstanceID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT OR REPLACE INTO task_recovery_sessions(task_id,session_id,instance_id) VALUES(?,?,?)", task.ID, owner.SessionID, owner.InstanceID); err != nil {
 			return err
 		}
 	}

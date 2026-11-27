@@ -372,7 +372,7 @@ func assignmentEligible(ctx context.Context, q queryer, task Task, candidate ass
 		return false, nil
 	}
 	var released bool
-	if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM assignment_releases WHERE task_id=? AND session_id=? AND instance_id=?)", task.ID, candidate.origin.SessionID, candidate.origin.InstanceID).Scan(&released); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM assignment_releases WHERE task_id=? AND session_id=? AND instance_id=?) OR EXISTS(SELECT 1 FROM task_recovery_sessions WHERE task_id=? AND session_id=?)", task.ID, candidate.origin.SessionID, candidate.origin.InstanceID, task.ID, candidate.origin.SessionID).Scan(&released); err != nil {
 		return false, err
 	}
 	return !released, nil
