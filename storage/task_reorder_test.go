@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,7 @@ func TestReorderTasksPreservesSameColumnReservationAndRollsBackBatch(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReorderTasks(ctx, "tasks", "todo", []string{task.ID}, nil, TaskTransitionPolicy{}); err != nil {
+	if _, err := s.ReorderTasks(ctx, "tasks", "todo", task.ID, []string{task.ID}, nil, TaskTransitionPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := s.Task(ctx, "tasks", task.ID)
@@ -46,7 +47,7 @@ func TestReorderTasksPreservesSameColumnReservationAndRollsBackBatch(t *testing.
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM task_events").Scan(&eventsBefore); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReorderTasks(ctx, "tasks", "in_progress", []string{second.ID, "missing"}, nil, TaskTransitionPolicy{HumanRequest: true}); !errors.Is(err, ErrTaskNotFound) {
+	if _, err := s.ReorderTasks(ctx, "tasks", "in_progress", second.ID, []string{second.ID, "missing"}, nil, TaskTransitionPolicy{HumanRequest: true}); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("missing ID error = %v", err)
 	}
 	var status string
@@ -82,7 +83,7 @@ func TestReorderTasksGoalPolicyRollsBackEarlierClaim(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM task_events").Scan(&eventsBefore); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.ReorderTasks(ctx, "tasks", "in_progress", []string{first.ID, second.ID}, apiStorageActor(), TaskTransitionPolicy{CheckGoal: true, SelectedGoal: "other"})
+	_, err = s.ReorderTasks(ctx, "tasks", "in_progress", first.ID, []string{first.ID, second.ID}, apiStorageActor(), TaskTransitionPolicy{CheckGoal: true, SelectedGoal: "other"})
 	if !errors.Is(err, ErrTaskConflict) {
 		t.Fatalf("goal policy error = %v", err)
 	}
@@ -119,7 +120,10 @@ func TestReorderCrossingEventCapturesFinalRank(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReorderTasks(ctx, "tasks", "done", []string{first.ID, second.ID}, nil, TaskTransitionPolicy{HumanRequest: true}); err != nil {
+	if _, err := s.UpdateTaskWorkflow(ctx, "tasks", first.ID, TaskWorkflowUpdate{Status: "done", Policy: TaskTransitionPolicy{HumanRequest: true}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReorderTasks(ctx, "tasks", "done", second.ID, []string{first.ID, second.ID}, nil, TaskTransitionPolicy{HumanRequest: true}); err != nil {
 		t.Fatal(err)
 	}
 	var rank int64
@@ -168,7 +172,7 @@ func TestReorderWorkflowFailuresRollBackRanksAndEvents(t *testing.T) {
 
 	// An agent's cross-column completion needs the changeset-aware PATCH path.
 	events := countEvents()
-	if _, err := s.ReorderTasks(ctx, "tasks", "done", []string{first.ID, second.ID}, apiStorageActor(), TaskTransitionPolicy{}); !errors.Is(err, ErrTaskConflict) || !strings.Contains(err.Error(), "changeset") {
+	if _, err := s.ReorderTasks(ctx, "tasks", "done", first.ID, []string{first.ID}, apiStorageActor(), TaskTransitionPolicy{}); !errors.Is(err, ErrTaskConflict) || !strings.Contains(err.Error(), "changeset") {
 		t.Fatalf("agent completion crossing error = %v", err)
 	}
 	assertTask(first.ID, "todo", first.Rank)
@@ -183,7 +187,7 @@ func TestReorderWorkflowFailuresRollBackRanksAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	events = countEvents()
-	if _, err := s.ReorderTasks(ctx, "tasks", "user_review", []string{first.ID, second.ID}, nil, TaskTransitionPolicy{HumanRequest: true}); !errors.Is(err, ErrTaskConflict) || !strings.Contains(err.Error(), "review_action") {
+	if _, err := s.ReorderTasks(ctx, "tasks", "user_review", second.ID, []string{first.ID, second.ID}, nil, TaskTransitionPolicy{HumanRequest: true}); !errors.Is(err, ErrTaskConflict) || !strings.Contains(err.Error(), "review_action") {
 		t.Fatalf("review entry error = %v", err)
 	}
 	assertTask(first.ID, "user_review", 22)
@@ -198,11 +202,68 @@ func TestReorderWorkflowFailuresRollBackRanksAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	events = countEvents()
-	if _, err := s.ReorderTasks(ctx, "tasks", "todo", []string{second.ID}, apiStorageActor(), TaskTransitionPolicy{}); !errors.Is(err, ErrTaskOwnership) {
+	if _, err := s.ReorderTasks(ctx, "tasks", "todo", second.ID, []string{second.ID}, apiStorageActor(), TaskTransitionPolicy{}); !errors.Is(err, ErrTaskOwnership) {
 		t.Fatalf("stale owner error = %v", err)
 	}
 	assertTask(second.ID, "in_progress", 31)
 	if countEvents() != events {
 		t.Fatal("stale owner rejection emitted durable events")
+	}
+}
+
+func TestReorderTasksRejectsConcurrentDestinationStatusChangeAtomically(t *testing.T) {
+	for _, destination := range []string{"todo", "in_progress"} {
+		t.Run(destination, func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			if err := s.InsertProject(ctx, fixtureProject("tasks")); err != nil {
+				t.Fatal(err)
+			}
+			dragged, err := s.InsertTask(ctx, TaskInsert{Project: "tasks", Title: "dragged", Reporter: "user"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resident, err := s.InsertTask(ctx, TaskInsert{Project: "tasks", Title: "destination row", Reporter: "user"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if destination != "todo" {
+				if _, err := s.UpdateTaskWorkflow(ctx, "tasks", resident.ID, TaskWorkflowUpdate{Status: destination, Policy: TaskTransitionPolicy{HumanRequest: true}}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The board renders this order, then another request completes the
+			// destination row before the drag request reaches storage.
+			order := []string{dragged.ID, resident.ID}
+			if _, err := s.UpdateTaskWorkflow(ctx, "tasks", resident.ID, TaskWorkflowUpdate{Status: "done", Policy: TaskTransitionPolicy{HumanRequest: true}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			before, err := s.Tasks(ctx, "tasks", nil, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var eventsBefore int
+			if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM task_events").Scan(&eventsBefore); err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.ReorderTasks(ctx, "tasks", destination, dragged.ID, order, nil, TaskTransitionPolicy{HumanRequest: true})
+			if !errors.Is(err, ErrTaskConflict) {
+				t.Fatalf("stale reorder error = %v, want conflict", err)
+			}
+			after, err := s.Tasks(ctx, "tasks", nil, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("stale reorder changed tasks: before=%+v after=%+v", before, after)
+			}
+			var eventsAfter int
+			if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM task_events").Scan(&eventsAfter); err != nil {
+				t.Fatal(err)
+			}
+			if eventsAfter != eventsBefore {
+				t.Fatalf("stale reorder leaked events: before=%d after=%d", eventsBefore, eventsAfter)
+			}
+		})
 	}
 }

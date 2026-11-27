@@ -244,7 +244,7 @@ func TestCancelAgainAfterCompleteAndReopenReplacesCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"done", "todo"} {
-		if _, err := s.ReorderTasks(ctx, "tasks", status, []string{task.ID}, nil, TaskTransitionPolicy{HumanRequest: true}); err != nil {
+		if _, err := s.ReorderTasks(ctx, "tasks", status, task.ID, []string{task.ID}, nil, TaskTransitionPolicy{HumanRequest: true}); err != nil {
 			t.Fatalf("reopen through %s: %v", status, err)
 		}
 	}

@@ -10,10 +10,11 @@ import (
 	"github.com/nitecon/amux/projects"
 )
 
-// ReorderTasks applies a client supplied order to one status column. Rank-only
-// updates preserve reservations and review state; column crossings use the
-// existing task workflow in the same mutation transaction.
-func (s *Store) ReorderTasks(ctx context.Context, project, status string, order []string, origin *AgentOrigin, policy TaskTransitionPolicy) ([]TaskSummary, error) {
+// ReorderTasks applies a client supplied order to one status column. Only
+// movedTaskID may cross status; any other stale row rejects the whole reorder.
+// Rank-only updates preserve reservations and review state; column crossings
+// use the existing task workflow in the same mutation transaction.
+func (s *Store) ReorderTasks(ctx context.Context, project, status, movedTaskID string, order []string, origin *AgentOrigin, policy TaskTransitionPolicy) ([]TaskSummary, error) {
 	if !IsReorderableTaskStatus(status) {
 		return nil, fmt.Errorf("%w: invalid task status", ErrTaskConflict)
 	}
@@ -42,6 +43,9 @@ func (s *Store) ReorderTasks(ctx context.Context, project, status string, order 
 					return err
 				}
 				continue
+			}
+			if t.ID != movedTaskID {
+				return fmt.Errorf("%w: task %s changed status; refresh the board before reordering", ErrTaskConflict, t.ID)
 			}
 			crossing = crossing || actor != nil
 			if status == "stalled" {

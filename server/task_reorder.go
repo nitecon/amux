@@ -38,7 +38,8 @@ func (a *api) reorderTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req *struct {
-		Order []string `json:"order"`
+		Order       []string `json:"order"`
+		MovedTaskID string   `json:"moved_task_id"`
 	}
 	if !readTaskRequest(w, r, &req) {
 		return
@@ -58,7 +59,7 @@ func (a *api) reorderTasks(w http.ResponseWriter, r *http.Request) {
 		responseGoal = selectedGoal
 		filterGoal = true
 	}
-	tasks, err := a.store.ReorderTasks(r.Context(), project, status, req.Order, origin, storage.TaskTransitionPolicy{
+	tasks, err := a.store.ReorderTasks(r.Context(), project, status, req.MovedTaskID, req.Order, origin, storage.TaskTransitionPolicy{
 		HumanRequest: origin == nil,
 		CheckGoal:    origin != nil,
 		SelectedGoal: selectedGoal,

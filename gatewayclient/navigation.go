@@ -54,13 +54,16 @@ func (c *Client) Tasks(ctx context.Context, project string, statuses []string) (
 }
 
 // ReorderTasks atomically sets the order of every task in one status column.
-func (c *Client) ReorderTasks(ctx context.Context, project, status string, order []string) ([]storage.TaskSummary, error) {
+func (c *Client) ReorderTasks(ctx context.Context, project, status, movedTaskID string, order []string) ([]storage.TaskSummary, error) {
 	if !storage.IsReorderableTaskStatus(status) {
 		return nil, fmt.Errorf("invalid task status %q", status)
 	}
 	query := url.Values{"status": {status}}
 	var result []storage.TaskSummary
-	err := c.do(ctx, "POST", "/v1/projects/"+url.PathEscape(project)+"/tasks/reorder?"+query.Encode(), map[string][]string{"order": order}, nil, &result)
+	err := c.do(ctx, "POST", "/v1/projects/"+url.PathEscape(project)+"/tasks/reorder?"+query.Encode(), struct {
+		Order       []string `json:"order"`
+		MovedTaskID string   `json:"moved_task_id"`
+	}{order, movedTaskID}, nil, &result)
 	if err == nil {
 		if len(result) != len(order) {
 			return nil, fmt.Errorf("gateway reorder acknowledgement contained %d tasks, want %d", len(result), len(order))

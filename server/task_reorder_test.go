@@ -53,7 +53,7 @@ func TestReorderTasksSelectedGoalAndResponseFiltering(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].ID != first.ID {
 		t.Fatalf("agent response was not filtered to selected goal: %+v", tasks)
 	}
-	wrongGoal := request("/v1/projects/tasks/tasks/reorder?status=in_progress", `{"order":["`+first.ID+`","`+second.ID+`"]}`, apiActor(), selected)
+	wrongGoal := request("/v1/projects/tasks/tasks/reorder?status=in_progress", `{"moved_task_id":"`+first.ID+`","order":["`+first.ID+`","`+second.ID+`"]}`, apiActor(), selected)
 	if wrongGoal.Code != http.StatusConflict {
 		t.Fatalf("wrong selected goal status %d %s", wrongGoal.Code, wrongGoal.Body.String())
 	}
@@ -79,5 +79,54 @@ func TestReorderTasksRejectsDuplicateQueryFields(t *testing.T) {
 		if res.Code != http.StatusBadRequest {
 			t.Errorf("duplicate query fields accepted for %s: %d %s", path, res.Code, res.Body.String())
 		}
+	}
+}
+
+func TestReorderTasksOnlyMovesExplicitTask(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		destination string
+		explicit    bool
+		want        int
+	}{
+		{"legacy rank only", "todo", false, http.StatusOK},
+		{"legacy crossing rejected", "in_progress", false, http.StatusConflict},
+		{"explicit crossing", "in_progress", true, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, h := taskAPI(t)
+			ctx := context.Background()
+			task, err := store.InsertTask(ctx, storage.TaskInsert{Project: "tasks", Title: "dragged", Reporter: "user"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := map[string]any{"order": []string{task.ID}}
+			if tc.explicit {
+				body["moved_task_id"] = task.ID
+			}
+			payload, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/projects/tasks/tasks/reorder?status="+tc.destination, strings.NewReader(string(payload)))
+			req.Header.Set("Authorization", "Bearer task-key")
+			req.Header.Set("Content-Type", "application/json")
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Fatalf("reorder status=%d body=%s", res.Code, res.Body.String())
+			}
+			detail, err := store.Task(ctx, "tasks", task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStatus := "todo"
+			if tc.want == http.StatusOK {
+				wantStatus = tc.destination
+			}
+			if detail.Task.Status != wantStatus {
+				t.Fatalf("task status=%s, want %s", detail.Task.Status, wantStatus)
+			}
+		})
 	}
 }

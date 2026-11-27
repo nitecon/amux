@@ -197,7 +197,7 @@ func (board *taskBoard) drop(task storage.TaskSummary, position fyne.Position) {
 	board.readGeneration++
 	board.loading = false
 	started := b.launch(func(ctx context.Context) {
-		rows, err := b.client.ReorderTasks(ctx, project, destination, order)
+		rows, err := b.client.ReorderTasks(ctx, project, destination, task.ID, order)
 		b.dispatch(func() {
 			if board.generation != generation || board.project != project || b.selectedProject != project {
 				board.writePending = false
