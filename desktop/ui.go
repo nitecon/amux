@@ -102,13 +102,14 @@ func New(config Config) (*UI, error) {
 		model: config.Model, dispatch: dispatch, transcriptEnd: -1, toolButtons: map[string]*widget.Button{}, permissionButtons: map[string]*widget.Button{}, permissionDetailButtons: map[string]*widget.Button{}, expandedPermissions: map[string]bool{},
 		toolApprovalsPath: config.ToolApprovalsPath, toolApprovalDirectory: config.ToolApprovalDirectory, approvalRuleDrafts: map[string]approvalRuleDraft{},
 		heading: selectableLabel(config.TaskTitle), connection: widget.NewLabel("Ready to connect"),
-		transcript: container.NewVBox(), status: widget.NewLabel(""),
+		transcript: container.NewVBox(), status: wrappedLabel(""),
 	}
 	if strings.TrimSpace(config.TaskTitle) == "" {
 		u.heading.SetText(config.Project + " · " + shortID(config.ConversationID))
 	}
 	u.ctx, u.cancel = context.WithCancel(context.Background())
 	u.heading.TextStyle = fyne.TextStyle{Bold: true}
+	u.heading.Wrapping = fyne.TextWrapWord
 	u.composer = &conversationComposer{Entry: widget.Entry{MultiLine: true}, submit: u.Submit}
 	u.composer.ExtendBaseWidget(u.composer)
 	u.composer.SetPlaceHolder("Message the agent…")
@@ -127,7 +128,7 @@ func New(config Config) (*UI, error) {
 	if !config.ReadOnly {
 		footer.Add(composerRow)
 	}
-	u.root = container.NewBorder(container.NewVBox(u.heading, u.connection, widget.NewSeparator()), footer, nil, nil, u.scroll)
+	u.root = container.NewBorder(container.NewVBox(u.heading, u.connection, widget.NewSeparator()), footer, nil, nil, browserPanel(u.scroll))
 	u.refresh()
 	u.updateButtons()
 	return u, nil
@@ -554,19 +555,16 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 					text = string(pretty)
 				}
 			}
-			detail := selectableLabel(text)
-			detail.Wrapping = fyne.TextWrapWord
+			detail := wrappedLabel(text)
 			detail.TextStyle = fyne.TextStyle{Monospace: true}
 			expanded := container.NewVBox(row)
 			if item.Command != "" {
-				command := selectableLabel(item.Command)
-				command.Wrapping = fyne.TextWrapWord
+				command := wrappedLabel(item.Command)
 				command.TextStyle = fyne.TextStyle{Monospace: true}
 				expanded.Add(command)
 			}
 			if item.Text != "" {
-				output := selectableLabel(item.Text)
-				output.Wrapping = fyne.TextWrapWord
+				output := wrappedLabel(item.Text)
 				output.TextStyle = fyne.TextStyle{Monospace: true}
 				expanded.Add(output)
 			}
@@ -594,7 +592,7 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return selectableLabel("•  " + text)
+		return wrappedLabel("•  " + text)
 	default:
 		if strings.TrimSpace(item.Text) == "" {
 			return nil
@@ -607,13 +605,12 @@ func (u *UI) renderItem(item chat.Item) fyne.CanvasObject {
 		}
 		header := selectableLabel(role)
 		header.TextStyle = fyne.TextStyle{Bold: true}
-		body := selectableLabel(item.Text)
-		body.Wrapping = fyne.TextWrapWord
+		body := wrappedLabel(item.Text)
 		if item.Kind == "reasoning" {
 			body.TextStyle = fyne.TextStyle{Italic: true}
 		}
 		if item.Status != "" {
-			return container.NewVBox(header, body, selectableLabel(item.Status))
+			return container.NewVBox(header, body, wrappedLabel(item.Status))
 		}
 		return container.NewVBox(header, body)
 	}
@@ -667,12 +664,12 @@ func (u *UI) renderPermission(permission chat.Permission) fyne.CanvasObject {
 				text = string(pretty)
 			}
 		}
-		detail := selectableLabel(text)
-		detail.Wrapping = fyne.TextWrapWord
+		detail := wrappedLabel(text)
 		detail.TextStyle = fyne.TextStyle{Monospace: true}
 		content = append(content, detail)
 	}
-	return widget.NewCard("Permission required", title, container.NewVBox(content...))
+	content = append([]fyne.CanvasObject{wrappedLabel(title)}, content...)
+	return widget.NewCard("Permission required", "", container.NewVBox(content...))
 }
 
 // renderApprovalRule offers an editable "Always allow" rule prefilled with the

@@ -371,3 +371,28 @@ func TestTranscriptReplayCoalescesUpdatesAndKeepsHistoryPageable(t *testing.T) {
 		t.Fatal("returning to the latest page lost history")
 	}
 }
+
+func TestTranscriptTextWrapsInsteadOfWideningThread(t *testing.T) {
+	app := fynetest.NewApp()
+	defer app.Quit()
+	client, err := gatewayclient.New("http://127.0.0.1:1", "fixture-token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := New(Config{Client: client, Project: testProject, ConversationID: testConv, TaskTitle: strings.Repeat("title ", 80), Dispatch: func(f func()) { f() }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("unwrapped conversation text ", 40)
+	objects := []fyne.CanvasObject{
+		view.renderItem(chat.Item{Kind: "state", Text: long}),
+		view.renderItem(chat.Item{Kind: "message", Role: "assistant", Text: long, Status: long}),
+		view.renderPermission(chat.Permission{EventID: "p1", Title: long}),
+		view.Content(),
+	}
+	for i, object := range objects {
+		if width := object.MinSize().Width; width > 400 {
+			t.Fatalf("object %d needs width %.0f; long text must wrap", i, width)
+		}
+	}
+}
