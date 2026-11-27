@@ -115,7 +115,7 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 			heading = "Task ready for user review"
 			instructions = "The task is waiting for a user decision. Read its review action and submitted result."
 		}
-		if kind == "task_commented" && !requesterResult && userComment(payload.Comment) {
+		if kind == "task_commented" && !requesterResult && userComment(payload.Comment) && routerNotifierTaskOwner(payload.Task, agent) {
 			const reply = "The user wrote this comment on the task and reads replies there, not in this conversation. Act on it, then answer with task_comment on this task."
 			if heading == "" {
 				heading = "User commented on task"
@@ -148,6 +148,11 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 		stored = stored || emitted.Stored
 	}
 	return stored, nil
+}
+
+func routerNotifierTaskOwner(raw json.RawMessage, agent notifierAgent) bool {
+	var task map[string]json.RawMessage
+	return json.Unmarshal(raw, &task) == nil && routerNotifierOwner(task, agent)
 }
 
 func userComment(raw json.RawMessage) bool {
@@ -251,14 +256,20 @@ func routerNotifierRecipient(kind string, taskRaw, actorRaw json.RawMessage, age
 			return false
 		}
 	}
-	if len(owner) > 0 && !isJSONNull(owner) {
-		return sameNotifierOrigin(owner, agent)
-	}
-	if len(ownerAgentID) == 0 || isJSONNull(ownerAgentID) {
+	if (len(owner) == 0 || isJSONNull(owner)) && (len(ownerAgentID) == 0 || isJSONNull(ownerAgentID)) {
 		return true
 	}
+	return routerNotifierOwner(task, agent)
+}
+
+// routerNotifierOwner reports whether agent is the task's recorded owner,
+// by typed owner origin or legacy owner agent ID. Ownerless tasks match no one.
+func routerNotifierOwner(task map[string]json.RawMessage, agent notifierAgent) bool {
+	if owner := task["owner_origin"]; len(owner) > 0 && !isJSONNull(owner) {
+		return sameNotifierOrigin(owner, agent)
+	}
 	var legacyID string
-	if json.Unmarshal(ownerAgentID, &legacyID) != nil {
+	if ownerAgentID := task["owner_agent_id"]; len(ownerAgentID) == 0 || json.Unmarshal(ownerAgentID, &legacyID) != nil || legacyID == "" {
 		return false
 	}
 	return (agent.AgentID != nil && legacyID == *agent.AgentID) || legacyID == agent.SessionID

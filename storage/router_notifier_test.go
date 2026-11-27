@@ -433,3 +433,41 @@ func TestUserCommentReplyCueOnlyForOwnerNotRequester(t *testing.T) {
 		t.Fatalf("requester delivered=%t instructions=%q", ok, instructions)
 	}
 }
+
+func TestUserCommentOnOwnerlessTerminalTaskSendsNoActionCue(t *testing.T) {
+	s := taskStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	registry := notifierRegistry(t)
+	agent := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{agent}}, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("presence accepted=%t err=%v", ok, err)
+	}
+	for _, status := range []string{"cancelled", "done"} {
+		payload := `{"project":"tasks","task":{"status":"` + status + `"},"comment":{"author_type":"user","content":"why?"},"actor":null}`
+		if err := s.ReconcileRouterNotifiers(ctx, registry, notifierCause(t, s, "task.commented", payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT payload FROM router_events WHERE id='agent.notify'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var notice struct {
+			Heading      string `json:"heading"`
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal([]byte(raw), &notice); err != nil {
+			t.Fatal(err)
+		}
+		if notice.Heading != "" || notice.Instructions != "" {
+			t.Fatalf("unrelated agent received action cue: %s", raw)
+		}
+	}
+}

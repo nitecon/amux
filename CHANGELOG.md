@@ -7,7 +7,8 @@
 - Tell agents notified of a user task comment to reply on the task with
   `task_comment`, so answers no longer stay only in the agent conversation.
   Only the responsible agent is asked to act; a separate requester just
-  receives the comment, and delegated tasks keep the reply cue.
+  receives the comment, and delegated tasks keep the reply cue. Comments on
+  ownerless tasks (for example cancelled before assignment) ask no agent to act.
 
 ## v0.9.2 - 2026-11-26
 
