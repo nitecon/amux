@@ -83,4 +83,4 @@ the download and package integrity before replacing the installation.
 To release, push a new `vMAJOR.MINOR.PATCH` tag on a validated commit on
 `main`. The [packaging workflow](../.github/workflows/go-packaging.yml) uses
 the tag as the package version and generates GitHub release notes from the
-commits since the previous reachable version tag.
+commits since the previous published version tag reachable from that commit.

@@ -105,14 +105,14 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             tag="$GITHUB_REF_NAME"
             package_id="$tag"
-            candidate_args=()
+            version_args=(--version "$tag")
           else
             tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*')"
             package_id="$GITHUB_SHA"
-            candidate_args=(--candidate-only)
+            version_args=(--version "$tag" --candidate-only)
           fi
           package_name="amux-${{ matrix.platform }}-$package_id.${{ matrix.archive }}"
-          go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --version "$tag" --output "dist/$package_name" "${candidate_args[@]}"
+          go run ./cmd/amux-release package --bundle dist/install --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output "dist/$package_name" "${version_args[@]}"
           go run ./cmd/amux-release smoke --bundle "dist/$package_name" --target "${{ matrix.target }}" --revision "$GITHUB_SHA" --output dist/installed
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
       - name: Verify upgrade with the shipped updater
@@ -163,7 +163,14 @@ jobs:
             cp "artifacts/amux-"*/"$asset" dist/
           done
           (cd dist && sha256sum amux-* > SHA256SUMS)
-          previous="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude "$TAG")"
+          published="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select((.draft or .prerelease) | not) | .tag_name')"
+          published_tags=(--match '')
+          while IFS= read -r tag; do
+            if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "$tag" != "$TAG" ]]; then
+              published_tags+=(--match "$tag")
+            fi
+          done <<< "$published"
+          previous="$(git describe --tags --abbrev=0 "${published_tags[@]}")"
           {
             printf '## Changes since %s\n\n' "$previous"
             git log --no-merges --format='- %s (%h)' "$previous..$TAG"
