@@ -443,9 +443,9 @@ inbox acknowledgement. The bundled tools use the pinned `agent-tools` and
 MCP environment allowlist. This establishes environment forwarding, not live
 Codex provider acceptance.
 The local `submit_work` tool runs Git on the worker checkout rather than on the
-gateway server. Task tools also read/list/create, claim/comment,
-release/park/complete tasks and answer the existing file-change confirmation
-workflow. Tool mutations recheck
+gateway server. Task tools also read/list/create, claim/comment, ask user questions
+(`task_ask`, MCP only), release/park/complete tasks and answer the existing
+file-change confirmation workflow. Tool mutations recheck
 the current conversation instance inside the SQLite transaction. Credentials
 remain in the inherited environment; the helper launch arguments contain the
 credential variable name. `--no-task-tools` disables registration for one launch.
@@ -463,11 +463,17 @@ official [MCP stdio specification](https://modelcontextprotocol.io/specification
 MCP input frames are limited to 4 MiB. Ordinary trusted local tool results are
 serialized in full for source-compatible output, without a 5 MiB cap.
 
-The Fyne desktop can browse gateway projects, task status lanes, task details and
-existing task conversations. The Board tab groups tasks by status and shows the
-parent task on each subtask card. Project favorites and exact-first filters are
-available for remote projects. Navigation refreshes through authenticated
-WebSocket notifications, with reconnect resynchronization and coalesced updates.
+The Fyne desktop can browse gateway projects, task status lanes, task details,
+existing task conversations and the cross-project **Questions** view. The Board
+tab groups tasks by status and shows the parent task on each subtask card. Tasks
+with an open `task_ask` question show **Waiting on you** in the task list, board
+and task details, and appear newest first in **Questions** (with a
+`Questions · N` button label and desktop notifications for newly arrived
+questions) where you can pick a suggested answer or send a custom reply; see
+[Questions](gateway-delivery.md#questions). Project favorites and exact-first
+filters are available for remote projects. Navigation refreshes through
+authenticated WebSocket notifications, with reconnect resynchronization and
+coalesced updates.
 Navigation preferences in the OS user configuration directory store device-local
 favorites, filters and selection without the gateway credential. Use
 `--preferences PATH` for another file or `--preferences=` for memory only.

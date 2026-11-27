@@ -37,7 +37,9 @@ Codex's configured developer instructions are preserved.
 Task assignments receive task identity, concise workflow hints and durable recall
 based on the task. Updates and results retain their existing ownership and
 informational boundaries. Hints cover reading and claiming work, fitting parent
-scope, cross-project delegation and submission through `amux submit-work`.
+scope, cross-project delegation, submission through `amux submit-work`, and
+asking the user with `task_ask` (rather than only a comment, conversation reply,
+or moving the task to User review) when a user decision is needed to continue.
 Substantive untracked work should be associated with a fitting task. Task output
 is read as normal text, without `--json` or parsing scripts.
 

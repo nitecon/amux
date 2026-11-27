@@ -92,8 +92,9 @@ sender agent comments with its conclusion and completes its owned tracker.
 That confirmation closes the delegation and notifies the destination owner.
 Sender comments also appear on the destination ticket, so incomplete results
 can be clarified without silently accepting them. Genuine unresolved user
-decisions may still use User review. Do not repeat completed deployments merely
-to reconcile ticket state.
+decisions should be raised with `task_ask`; **User review** remains available
+when parking a task for the user to take over or return later. Do not repeat
+completed deployments merely to reconcile ticket state.
 
 An explicit agent release also records that execution's session and instance for
 the task. Automatic assignment skips the unchanged task for that execution,
@@ -111,8 +112,9 @@ then `amux tasks release ID`. Read the dependency result when it arrives and
 explicitly claim the waiting task when ready. A readiness comment from the
 dependency owner on the waiting task also restores automatic pickup.
 A result on a different task remains informational;
-it does not establish readiness for every waiting task. User review remains for
-a specific human decision.
+it does not establish readiness for every waiting task. For a blocking human
+decision while keeping ownership, ask with `task_ask`; **User review** is for
+parking a task outside automatic assignment.
 
 Settings → General → **Clear context before new tasks** is off by default.
 When enabled, an agent that has been idle for at least 30 seconds receives
@@ -130,7 +132,10 @@ agent output, provider messages/tool events or a task update. Heartbeats and
 busy flags do not count as progress. Recovery prompts are emitted at five and
 ten minutes; after another five silent minutes, the task returns to the queue
 for another execution. Any new activity resumes In Progress and resets both
-pings. Recovery is durable across server restarts. Queued reservations use the
+pings. Tasks with an open `task_ask` question (`waiting_on_user: true`) keep
+their owner and progress window fresh while waiting on the user, so they are not
+marked **Stalled**, pinged or requeued; once answered, a fresh progress window
+starts. Recovery is durable across server restarts. Queued reservations use the
 same ping/release schedule while remaining Queued
 until actually claimed. Output on another task cannot renew that reservation.
 Releasing an unstarted reservation does not exclude its owner; the same agent
@@ -162,12 +167,52 @@ OS-restricted tasks use one explicit `os:windows`, `os:linux` or `os:macos`
 label; only agents on that OS receive them. See the project-agent and OS-routing
 commands in [gateway-cli.md](gateway-cli.md#project-agents-and-os-routing).
 
+## Questions
+
+When an owning agent needs a human decision to continue an active
+(`in_progress` or `stalled`) task, it calls the MCP tool `task_ask` instead of
+moving the task to User review. `task_ask` is MCP-only (there is no
+`amux tasks ask` CLI command) and accepts `id`, `question` (non-empty, at most
+8192 bytes) and optional `options` (at most 8 suggested answers, each a single
+non-empty line of at most 200 bytes). Only the task's active owner may ask. Task
+status and ownership stay unchanged, and the question is also posted as an agent
+comment on the task.
+
+Tasks with at least one unanswered question report `waiting_on_user: true` in
+task JSON (`false` for `done` and `cancelled` tasks) and display **Waiting on
+you** on the desktop task list, board and task details. While `waiting_on_user`
+is true, the task keeps its owner and is exempt from stalled-work pings and
+requeue.
+
+Open questions across projects appear newest first in the desktop **Questions**
+view. Its toolbar button displays the open count (`Questions · N`), and each
+newly arrived question sends a desktop notification. Choosing a suggested answer
+or submitting a typed reply posts a user task comment quoting the question
+(`Answer to question:`), closes only that question, notifies the task owner
+through the existing user-comment notification, and starts a fresh stalled-work
+progress window once no questions remain open.
+
+HTTP API routes for questions:
+
+- `POST /v1/projects/{ident}/tasks/{id}/questions`: record a question
+  (`question`, optional `options`); requires complete agent origin headers and
+  active task ownership.
+- `GET /v1/questions`: list unanswered questions on unfinished tasks, newest
+  first, with an optional `?project=` filter.
+- `POST /v1/projects/{ident}/tasks/{id}/comments`: accepts optional
+  `question_id` for user comments only (agent origin headers or non-user
+  `author_type` are rejected) to quote the question and close that open
+  question.
+
 ## User review
 
-Tasks awaiting a human decision use the gateway's `user_review` status (gateway
-v1.27.0 or newer). An agent can record its question in a task comment and run
-`amux tasks user-review <task-id> "Choose the release date: Monday or Friday"`;
-`review` is an alias. Each request must supply a concrete user action. The gateway
+**User review** (`user_review`, gateway v1.27.0 or newer) is the explicit parked
+state for work that must leave automatic assignment until a human returns or
+closes it. When an owning agent only needs a user decision to continue, it
+should use `task_ask` (see [Questions](#questions)) rather than parking the
+task. Parking via `task_user_review`, `amux tasks user-review <task-id> "<action>"`
+(`review` is an alias), or the desktop **Send to user review** control clears
+ownership and requires a concrete user action. The gateway
 requires `review_action` alongside `status: "user_review"` in PATCH requests;
 blank actions and actions over 4096 bytes are rejected. Reordering cannot enter
 review without that PATCH. The action is shown in bold directly below the task's
@@ -235,7 +280,8 @@ commits, pushes and speculative scope expansion. Results are posted on the sourc
 and review tasks, then the review task is marked done.
 
 A TODO finding is executable queued work; its `autoreview-finding` label is
-descriptive. Only explicit **User review** waits for a human decision.
+descriptive. Waiting on the user happens only for explicit **User review**
+(parked) or an owned task with an open `task_ask` question (`waiting_on_user`).
 
 Server plugins can be switched off with `PUT /v1/plugins/{id}`
 (`assignment`, `notifier`, `reminder`, `review`, `reclaim`); `GET /v1/plugins`

@@ -409,7 +409,10 @@ Rules carried over from the desktop:
   five minutes, a second after another five minutes, then requeues the task if
   a further five minutes passes without activity. Pings and counters commit
   together and survive restart. New activity restores `in_progress` and resets
-  the ping sequence. For work that actually started and stalled, the old agent
+  the ping sequence. While an owned task has an open `task_ask` question
+  (`waiting_on_user`), the controller keeps its progress window fresh so the
+  task keeps its owner and is exempt from stalled-work pings and requeue;
+  answering the question starts a fresh progress window. For work that actually started and stalled, the old agent
   session is excluded from automatic reassignment even after instance rotation;
   OS, goal and project eligibility still apply. Existing task-change and comment
   release-guard resets still apply. Revoked conversations retain

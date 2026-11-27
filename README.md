@@ -30,7 +30,9 @@ conversation on any machine, read what the agent is doing, and type to it.
   OS, so platform-specific work is built and tested where it belongs.
 - **Agents review each other.** Finished work with file changes can queue
   separate code and documentation reviews, preferring an independent reviewer
-  on the other provider. Decisions that need a human go to **User review**.
+  on the other provider. When an agent needs a human decision to continue, it
+  asks with `task_ask` and the question appears in the desktop **Questions**
+  view while the agent keeps the task.
 - **Built to survive restarts.** Tasks, conversations, and permission requests
   are stored on the server. Close the desktop, lose the network, or reboot a
   worker: agents keep running and resume their exact provider session.
