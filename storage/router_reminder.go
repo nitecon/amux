@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
@@ -14,10 +13,14 @@ import (
 
 const reminderQuietForMS int64 = 10 * 60_000
 
+// userDecisionGuidance keeps every owner-facing prompt on the Questions
+// workflow: ask with task_ask and keep ownership instead of parking the task.
+const userDecisionGuidance = " If you need a user decision to continue, ask with task_ask and keep ownership; do not move the task to User review. If a question is already open on the task, wait for its answer."
+
 const (
-	reminderOwnerInstructions  = "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux tasks user-review {task_id} \"<specific user action required>\"."
+	reminderOwnerInstructions  = "You still own this task. Continue it, mark it done if complete, or release it if you cannot continue." + userDecisionGuidance
 	reminderPreviousExecution  = "This conversation's previous execution still owns this task. Inspect its prior progress. This is an informational continuity reminder, not an ownership handoff. Use the existing recovery or reassignment flow before attempting task mutations or resuming execution."
-	reminderUpdateInstructions = "You still own this task and it has had no update for 10 minutes. Post a progress comment saying where you are, mark it done if complete, or release it if you cannot continue. If waiting for a user decision, comment with your question then run: amux tasks user-review {task_id} \"<specific user action required>\"."
+	reminderUpdateInstructions = "You still own this task and it has had no update for 10 minutes. Post a progress comment saying where you are, mark it done if complete, or release it if you cannot continue." + userDecisionGuidance
 )
 
 func migrateRouterReminders(ctx context.Context, tx *sql.Tx) error {
@@ -126,13 +129,10 @@ func (s *Store) remindQuietTasks(ctx context.Context, tx *sql.Tx, registry *rout
 		if _, live := connected[owner]; !live {
 			continue
 		}
-		instructions := reminderUpdateInstructions
-		// The template has one task-specific placeholder; preserving the task
-		// snapshot as RawMessage keeps all SQLite integer values exact.
-		instructions = replaceReminderTaskID(instructions, fields.ID)
+		// Preserving the task snapshot as RawMessage keeps SQLite integers exact.
 		payload, err := json.Marshal(map[string]any{
 			"target": owner[1], "project": fields.Project, "mode": "assigned", "require_idle": true,
-			"reminder": true, "heading": "Task update requested", "instructions": instructions,
+			"reminder": true, "heading": "Task update requested", "instructions": reminderUpdateInstructions,
 			"event": map[string]any{"kind": "task_created", "project_ident": fields.Project, "created_at": event.EmittedAt,
 				"task": task, "comment": nil, "origin": nil},
 		})
@@ -223,7 +223,7 @@ func (s *Store) remindRestartedExecutions(ctx context.Context, tx *sql.Tx, regis
 			}
 			instructions := reminderPreviousExecution
 			if owner[2] == live.Origin.InstanceID {
-				instructions = replaceReminderTaskID(reminderOwnerInstructions, fields.ID)
+				instructions = reminderOwnerInstructions
 			}
 			payload, err := json.Marshal(map[string]any{
 				"target": live.Origin.SessionID, "project": live.ProjectIdent, "mode": "recipient", "require_idle": true,
@@ -278,9 +278,4 @@ func reminderExecution(origin json.RawMessage, project string) ([3]string, bool)
 		return [3]string{}, false
 	}
 	return [3]string{project, identity.SessionID, identity.InstanceID}, true
-}
-
-func replaceReminderTaskID(template, taskID string) string {
-	const placeholder = "{task_id}"
-	return strings.ReplaceAll(template, placeholder, taskID)
 }

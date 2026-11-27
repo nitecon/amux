@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,6 +117,11 @@ func TestReconcileRouterRemindersPeriodicExactOwnerAndQuietReset(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT json_extract(payload,'$.require_idle') FROM router_events WHERE id='agent.notify'`).Scan(&requireIdle); err != nil || !requireIdle {
 		t.Fatalf("require_idle=%v err=%v", requireIdle, err)
 	}
+	var periodicInstructions string
+	if err := s.db.QueryRow(`SELECT json_extract(payload,'$.instructions') FROM router_events WHERE id='agent.notify'`).Scan(&periodicInstructions); err != nil {
+		t.Fatal(err)
+	}
+	assertQuestionDecisionGuidance(t, "periodic", periodicInstructions)
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM reminder_nudges WHERE task_id=?", oldOwnerTask.ID).Scan(&taskID); err != nil || taskID != "0" {
 		t.Fatalf("old instance nudge consumed: count=%q err=%v", taskID, err)
 	}
@@ -335,6 +341,40 @@ func TestReconcileRouterRemindersStartupFreshnessDisabledPeriodicAndDurableRun(t
 	if got := reminderNoticeCount(t, s); got != 1 {
 		t.Fatalf("durable replay notices=%d", got)
 	}
+}
+
+// assertQuestionDecisionGuidance verifies owner prompts route user decisions
+// to task_ask (the Questions center) rather than parking the task.
+func assertQuestionDecisionGuidance(t *testing.T, route, instructions string) {
+	t.Helper()
+	if !strings.Contains(instructions, "task_ask") || !strings.Contains(instructions, "wait for its answer") ||
+		strings.Contains(instructions, "user-review") || strings.Contains(instructions, "User review action") {
+		t.Fatalf("%s decision guidance=%q, want task_ask workflow", route, instructions)
+	}
+}
+
+func TestReconcileRouterRemindersRestartedOwnerGetsQuestionGuidance(t *testing.T) {
+	s := taskStore(t)
+	ctx := context.Background()
+	registry := reminderTestRegistry(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	owner := reminderOwner("12121212-1212-4212-8212-121212121212", "34343434-3434-4434-8434-343434343434")
+	task := reminderInProgressTask(t, s, owner, now.UnixMilli())
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('plugin.reminder.enabled','false')"); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := reminderHeartbeat(t, ctx, s, registry, "native:owner", 1, uuid.NewString(), []PresenceAgent{{ProjectIdent: "tasks", Origin: *owner}}, now)
+	if err := s.ReconcileRouterReminders(ctx, registry, heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	var taskID, instructions string
+	if err := s.db.QueryRow(`SELECT json_extract(payload,'$.event.task.id'),json_extract(payload,'$.instructions') FROM router_events WHERE id='agent.notify'`).Scan(&taskID, &instructions); err != nil {
+		t.Fatal(err)
+	}
+	if taskID != task.ID {
+		t.Fatalf("restart reminder task=%q, want %q", taskID, task.ID)
+	}
+	assertQuestionDecisionGuidance(t, "restart", instructions)
 }
 
 func TestReconcileRouterRemindersIndependentClientRunsAndReconnect(t *testing.T) {

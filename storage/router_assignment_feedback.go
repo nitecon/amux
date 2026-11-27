@@ -84,7 +84,7 @@ func createRouterAssignmentOffer(ctx context.Context, tx *sql.Tx, registry *rout
 	heading := "Queued task review"
 	instructions := ""
 	if !review {
-		instructions = "This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete. If waiting for a user decision, comment with your question and use the native task User review action."
+		instructions = "This task is already claimed by your amux identity. Check current code/comments and platform requirements; implement if needed, or close it with a reason if obsolete." + userDecisionGuidance
 	}
 	if review {
 		heading = "Queued review"

@@ -66,6 +66,7 @@ func TestAssignmentFeedbackRuntimeRefusalAndNativeAdoptionBoundary(t *testing.T)
 		RequireIdle  bool   `json:"require_idle"`
 		ClearContext bool   `json:"clear_context"`
 		Heading      string `json:"heading"`
+		Instructions string `json:"instructions"`
 		Event        struct {
 			Kind string `json:"kind"`
 		} `json:"event"`
@@ -73,6 +74,7 @@ func TestAssignmentFeedbackRuntimeRefusalAndNativeAdoptionBoundary(t *testing.T)
 	if err := json.Unmarshal(payload, &notification); err != nil || !notification.NewTask || !notification.RequireIdle || notification.ClearContext || notification.Heading != "Queued task review" || notification.Event.Kind != "task_created" {
 		t.Fatalf("assignment notification contract: %s %v", payload, err)
 	}
+	assertQuestionDecisionGuidance(t, "already-claimed", notification.Instructions)
 	assertEqual(t, s.db, "SELECT COUNT(*) FROM task_comments WHERE task_id='"+first.ID+"' AND author='amux' AND author_type='system'", int64(1))
 	var causeID, causeUID string
 	if err := s.db.QueryRow(`SELECT cause.id,cause.uid FROM router_events notice
