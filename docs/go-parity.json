@@ -6854,7 +6854,7 @@
   },
   "task_reorder": {
     "route": "POST /v1/projects/{ident}/tasks/reorder?status=todo|in_progress|user_review|done with order array and optional moved_task_id, returns bare fresh task summary array. moved_task_id names the single task allowed to cross status into the target column; omitting it permits rank-only reorders, and any listed row whose status differs returns 409 so the board refreshes. Optional goal query or X-Task-Goal filters response. Duplicate status/goal fields rejected.",
-    "invariants": "Rank-only changes preserve owner reservations. Column crossings share the ordinary workflow and transaction. Rank is written before lifecycle transition so durable snapshots include final position; rejected missing ID, goal/ownership/review/changeset policy rolls everything back. Agent crossings away from in_progress require the changeset-aware PATCH workflow.",
+    "invariants": "Rank-only changes preserve owner reservations. Column crossings share the ordinary workflow and transaction. Rank is written before lifecycle transition so durable snapshots include final position; rejected missing ID, goal/ownership/review/changeset policy rolls everything back. Any listed task other than moved_task_id whose current status differs from the target column returns 409 ErrTaskConflict and rolls back the whole reorder, even when moved_task_id is supplied. Agent crossings away from in_progress require the changeset-aware PATCH workflow.",
     "remaining": "Native origin API only; legacy actor-only identity, dispatch/handoff and full Rust reorder parity remain incomplete.",
     "verification": "Targeted workflow/HTTP tests, full go test -race ./..., go vet ./..., Linux/Windows headless cross-builds and native macOS Fyne build pass."
   },
