@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -559,7 +559,7 @@ func (d *Discord) runGatewayWork(ctx context.Context, work <-chan discordGateway
 				err = d.dispatchDiscordMessage(ctx, deliveries, item.message)
 			}
 			if err != nil && ctx.Err() == nil {
-				slog.WarnContext(ctx, "Discord inbound work failed")
+				log.Warn().Ctx(ctx).Msg("Discord inbound work failed")
 			}
 		}
 	}

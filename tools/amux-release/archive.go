@@ -16,7 +16,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/update"
 )
 
 const sizeLimit = 512 << 20
@@ -67,7 +67,7 @@ func seal(dir, target string, p platform, tag, revision string, candidate bool, 
 func addBuildMetadata(files map[string][]byte, target string, p platform, tag, revision string, candidate bool) error {
 	names := p.binaries()
 	cli, gui, tools, memory := names[0], names[1], names[2], names[3]
-	build := appupdate.Build{Revision: revision, Version: strings.TrimPrefix(tag, "v"), Tag: tag, Target: target, GoOS: p.os, GoArch: p.arch, GUIBinary: gui,
+	build := update.Build{Revision: revision, Version: strings.TrimPrefix(tag, "v"), Tag: tag, Target: target, GoOS: p.os, GoArch: p.arch, GUIBinary: gui,
 		BinarySHA256: digest(files[cli]), GUIBinarySHA256: digest(files[gui]), BundledSHA256: map[string]string{tools: digest(files[tools]), memory: digest(files[memory])}, ModelCatalogSHA256: digest(files["models.json"]), CandidateOnly: candidate}
 	if p.os == "darwin" {
 		// Signing the app replaces the desktop binary's signature. The app

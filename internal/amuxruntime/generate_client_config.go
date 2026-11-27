@@ -1,33 +1,37 @@
 package amuxruntime
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
+	"github.com/urfave/cli/v3"
 )
 
 func generateClientConfig(args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("amux --generate-client-config", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	profile := flags.String("enrolled-profile", "", "existing enrollment manifest path")
-	endpoint := flags.String("server", "", "gateway endpoint (optional with an enrollment manifest)")
-	keyEnv := flags.String("api-key-env", "", "environment variable for a bearer gateway")
-	directory := flags.String("projects-directory", "", "directory containing local Git checkouts")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	flags := commandFlags("amux --generate-client-config", stderr)
+	profile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "existing enrollment manifest path", Destination: profile})
+	endpoint := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "server", Value: "", Usage: "gateway endpoint (optional with an enrollment manifest)", Destination: endpoint})
+	keyEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "api-key-env", Value: "", Usage: "environment variable for a bearer gateway", Destination: keyEnv})
+	directory := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "projects-directory", Value: "", Usage: "directory containing local Git checkouts", Destination: directory})
+	if err := parseCommand(context.Background(), flags, args); err != nil {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
+	if flags.Args().Len() != 0 {
 		return fmt.Errorf("unexpected client configuration arguments")
 	}
-	path, err := clientconfig.DefaultPath()
+	path, err := config.DefaultClientPath()
 	if err != nil {
 		return err
 	}
@@ -47,7 +51,7 @@ func generateClientConfig(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	if err := clientconfig.Generate(path, clientconfig.Config{
+	if err := config.GenerateClient(path, config.Client{
 		EnrolledProfile: *profile, GatewayEndpoint: *endpoint, APIKeyEnv: *keyEnv,
 		ProjectsDirectory: *directory, Providers: []string{"antigravity", "claude", "codex"},
 	}); err != nil {

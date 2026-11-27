@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,49 +16,57 @@ import (
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/taskplatform"
+	"github.com/urfave/cli/v3"
 )
 
 func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
-	global := flag.NewFlagSet("amux tasks", flag.ContinueOnError)
-	global.SetOutput(stderr)
-	serverURL := global.String("server", "", "gateway server URL (required)")
-	gatewayURL := global.String("gateway-url", "", "alias for --server")
-	project := global.String("project", "", "gateway project identifier (required)")
-	keyEnv := global.String("api-key-env", "GATEWAY_API_KEY", "credential environment variable (falls back to AMUX_GATEWAY_KEY unless explicitly set)")
-	enrolledProfile := global.String("enrolled-profile", "", "enrolled gateway credential manifest")
-	workPreferences := global.String("work-preferences", "", "work preference JSON path (default: user config directory)")
-	goalFlag := global.String("goal", "", "select a task goal")
-	allGoals := global.Bool("all-goals", false, "list tasks across all goals (list only)")
-	session := global.String("session", "", "native agent session UUID")
-	instance := global.String("instance", "", "native agent instance UUID")
-	provider := global.String("provider", "", "native provider: codex, claude, or antigravity")
-	hostOS := global.String("os", "", "native agent OS: linux, windows, or macos")
-	human := global.Bool("human", false, "perform the operation as a human")
-	jsonOutput := global.Bool("json", false, "write JSON output")
-	if err := global.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	global := commandFlags("amux tasks", stderr)
+	stopAfterOperation := 1
+	global.StopOnNthArg = &stopAfterOperation
+	serverURL := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "server", Value: "", Usage: "gateway server URL (required)", Destination: serverURL})
+	gatewayURL := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "gateway-url", Value: "", Usage: "alias for --server", Destination: gatewayURL})
+	project := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "project", Value: "", Usage: "gateway project identifier (required)", Destination: project})
+	keyEnv := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "api-key-env", Value: "GATEWAY_API_KEY", Usage: "credential environment variable (falls back to AMUX_GATEWAY_KEY unless explicitly set)", Destination: keyEnv})
+	enrolledProfile := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "enrolled gateway credential manifest", Destination: enrolledProfile})
+	workPreferences := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "work-preferences", Value: "", Usage: "work preference JSON path (default: user config directory)", Destination: workPreferences})
+	goalFlag := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "goal", Value: "", Usage: "select a task goal", Destination: goalFlag})
+	allGoals := new(bool)
+	global.Flags = append(global.Flags, &cli.BoolFlag{Name: "all-goals", Value: false, Usage: "list tasks across all goals (list only)", Destination: allGoals})
+	session := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "session", Value: "", Usage: "native agent session UUID", Destination: session})
+	instance := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "instance", Value: "", Usage: "native agent instance UUID", Destination: instance})
+	provider := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "provider", Value: "", Usage: "native provider: codex, claude, or antigravity", Destination: provider})
+	hostOS := new(string)
+	global.Flags = append(global.Flags, &cli.StringFlag{Name: "os", Value: "", Usage: "native agent OS: linux, windows, or macos", Destination: hostOS})
+	human := new(bool)
+	global.Flags = append(global.Flags, &cli.BoolFlag{Name: "human", Value: false, Usage: "perform the operation as a human", Destination: human})
+	jsonOutput := new(bool)
+	global.Flags = append(global.Flags, &cli.BoolFlag{Name: "json", Value: false, Usage: "write JSON output", Destination: jsonOutput})
+	if err := parseCommand(ctx, global, args); err != nil {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
 	}
 	operation, opArgs := "", []string(nil)
-	if global.NArg() > 0 {
-		operation, opArgs = global.Arg(0), global.Args()[1:]
+	if global.Args().Len() > 0 {
+		operation, opArgs = global.Args().First(), global.Args().Tail()
 	}
 	if hasTaskHelp(opArgs) {
 		return writeTaskHelp(stderr, operation)
 	}
-	serverWasSet, gatewayURLWasSet, keyEnvWasSet := false, false, false
-	global.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "server":
-			serverWasSet = true
-		case "gateway-url":
-			gatewayURLWasSet = true
-		case "api-key-env":
-			keyEnvWasSet = true
-		}
-	})
+	serverWasSet := global.IsSet("server")
+	gatewayURLWasSet := global.IsSet("gateway-url")
+	keyEnvWasSet := global.IsSet("api-key-env")
 	if serverWasSet && gatewayURLWasSet && *serverURL != *gatewayURL {
 		return fmt.Errorf("--server and --gateway-url conflict; supply one URL or matching values")
 	}
@@ -77,16 +84,11 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	if operation == "report" {
 		return runTaskReport(ctx, opArgs, *jsonOutput, selectedServerURL, *project, apiKey, *enrolledProfile, stdout, stderr)
 	}
-	goalWasSet := false
-	global.Visit(func(f *flag.Flag) {
-		if f.Name == "goal" {
-			goalWasSet = true
-		}
-	})
+	goalWasSet := global.IsSet("goal")
 	if (selectedServerURL == "" && *enrolledProfile == "") || *project == "" {
 		return fmt.Errorf("--server and --project are required (--gateway-url is an alias for --server)")
 	}
-	if global.NArg() == 0 {
+	if global.Args().Len() == 0 {
 		return fmt.Errorf("task operation is required")
 	}
 	goal := strings.TrimSpace(*goalFlag)
@@ -100,7 +102,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	if *allGoals && goalWasSet {
 		return fmt.Errorf("--goal and --all-goals are mutually exclusive")
 	}
-	if *allGoals && global.Arg(0) != "list" {
+	if *allGoals && global.Args().First() != "list" {
 		return fmt.Errorf("--all-goals is supported for readonly list only")
 	}
 	providedOrigin := *session != "" || *instance != "" || *provider != "" || *hostOS != ""
@@ -154,10 +156,12 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	case "agents":
 		return runTaskAgents(ctx, client, *project, opArgs, stdout, stderr)
 	case "list":
-		fs := taskFlags("tasks list", stderr)
-		status := fs.String("status", "", "comma-separated task statuses")
-		includeStale := fs.Bool("include-stale", false, "include older completed tasks")
-		pos, err := parseTaskFlagsArgs(fs, opArgs, map[string]bool{"include-stale": true})
+		fs := commandFlags("tasks list", stderr)
+		status := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "status", Value: "", Usage: "comma-separated task statuses", Destination: status})
+		includeStale := new(bool)
+		fs.Flags = append(fs.Flags, &cli.BoolFlag{Name: "include-stale", Value: false, Usage: "include older completed tasks", Destination: includeStale})
+		pos, err := parseOperation(ctx, fs, opArgs)
 		if err != nil {
 			return err
 		}
@@ -170,9 +174,10 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.TaskList(ctx, *project, gatewayclient.TaskListOptions{Statuses: statuses, IncludeStale: *includeStale, AllGoals: *allGoals}, origin, goalPtr)
 	case "get":
-		fs := taskFlags("tasks get", stderr)
-		comments := fs.Uint64("comments", 50, "newest comments to include")
-		pos, e := parseTaskFlagsArgs(fs, opArgs, nil)
+		fs := commandFlags("tasks get", stderr)
+		comments := new(uint64)
+		fs.Flags = append(fs.Flags, &cli.Uint64Flag{Name: "comments", Value: 50, Usage: "newest comments to include", Destination: comments})
+		pos, e := parseOperation(ctx, fs, opArgs)
 		if e != nil {
 			return e
 		}
@@ -185,7 +190,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.TaskRead(ctx, *project, id, *comments)
 	case "cancellation":
-		pos, e := parseTaskFlagsArgs(taskFlags("tasks cancellation", stderr), opArgs, nil)
+		pos, e := parseOperation(ctx, commandFlags("tasks cancellation", stderr), opArgs)
 		if e != nil {
 			return e
 		}
@@ -198,16 +203,23 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.TaskCancellation(ctx, *project, id)
 	case "create":
-		fs := taskFlags("tasks create", stderr)
-		parent := fs.String("parent", "", "parent task UUID")
-		rootReason := fs.String("root-reason", "", "user-directed or principle")
-		spec := fs.String("specification", "", "task specification")
-		details := fs.String("details", "", "alias for --specification")
-		taskOS := fs.String("task-os", "", "required task OS (distinct from global native --os)")
-		fs.StringVar(taskOS, "os", "", "required task OS for this new task")
-		reviewFinding := fs.Bool("review-finding", false, "create an unassigned review finding")
-		notifyResults := fs.Bool("notify-results", false, "subscribe this execution to task results")
-		pos, err := parseTaskFlagsArgs(fs, opArgs, map[string]bool{"review-finding": true, "notify-results": true})
+		fs := commandFlags("tasks create", stderr)
+		parent := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "parent", Value: "", Usage: "parent task UUID", Destination: parent})
+		rootReason := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "root-reason", Value: "", Usage: "user-directed or principle", Destination: rootReason})
+		spec := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "specification", Value: "", Usage: "task specification", Destination: spec})
+		details := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "details", Value: "", Usage: "alias for --specification", Destination: details})
+		taskOS := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "task-os", Value: "", Usage: "required task OS (distinct from global native --os)", Destination: taskOS, Aliases: []string{"os"}})
+
+		reviewFinding := new(bool)
+		fs.Flags = append(fs.Flags, &cli.BoolFlag{Name: "review-finding", Value: false, Usage: "create an unassigned review finding", Destination: reviewFinding})
+		notifyResults := new(bool)
+		fs.Flags = append(fs.Flags, &cli.BoolFlag{Name: "notify-results", Value: false, Usage: "subscribe this execution to task results", Destination: notifyResults})
+		pos, err := parseOperation(ctx, fs, opArgs)
 		if err != nil {
 			return err
 		}
@@ -260,12 +272,16 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.TaskCreate(ctx, *project, input, origin, goalPtr)
 	case "delegate":
-		fs := taskFlags("tasks delegate", stderr)
-		parent := fs.String("parent", "", "source parent task UUID")
-		targetProject := fs.String("target-project", "", "owning target project identifier")
-		specification := fs.String("specification", "", "delegation context and acceptance criteria")
-		notifyResults := fs.Bool("notify-results", false, "subscribe this execution to delegation results")
-		pos, parseErr := parseTaskFlagsArgs(fs, opArgs, map[string]bool{"notify-results": true})
+		fs := commandFlags("tasks delegate", stderr)
+		parent := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "parent", Value: "", Usage: "source parent task UUID", Destination: parent})
+		targetProject := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "target-project", Value: "", Usage: "owning target project identifier", Destination: targetProject})
+		specification := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "specification", Value: "", Usage: "delegation context and acceptance criteria", Destination: specification})
+		notifyResults := new(bool)
+		fs.Flags = append(fs.Flags, &cli.BoolFlag{Name: "notify-results", Value: false, Usage: "subscribe this execution to delegation results", Destination: notifyResults})
+		pos, parseErr := parseOperation(ctx, fs, opArgs)
 		if parseErr != nil {
 			return parseErr
 		}
@@ -291,9 +307,10 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.DelegateTask(ctx, *project, input, origin, goalPtr)
 	case "watch":
-		fs := taskFlags("tasks watch", stderr)
-		clear := fs.Bool("clear", false, "remove this execution's task result subscription")
-		pos, parseErr := parseTaskFlagsArgs(fs, opArgs, map[string]bool{"clear": true})
+		fs := commandFlags("tasks watch", stderr)
+		clear := new(bool)
+		fs.Flags = append(fs.Flags, &cli.BoolFlag{Name: "clear", Value: false, Usage: "remove this execution's task result subscription", Destination: clear})
+		pos, parseErr := parseOperation(ctx, fs, opArgs)
 		if parseErr != nil {
 			return parseErr
 		}
@@ -313,13 +330,18 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.SetTaskRequester(ctx, *project, id, requester, origin)
 	case "update-delegation":
-		fs := taskFlags("tasks update-delegation", stderr)
-		title := fs.String("title", "", "new shared title (literal)")
-		description := fs.String("description", "", "new shared description (literal)")
-		specification := fs.String("specification", "", "new shared specification (literal; takes precedence over --details)")
-		details := fs.String("details", "", "alias for --specification (literal)")
-		labelsJSON := fs.String("labels", "", "replacement shared labels as a JSON string array (use [] to clear)")
-		pos, parseErr := parseTaskFlagsArgs(fs, opArgs, nil)
+		fs := commandFlags("tasks update-delegation", stderr)
+		title := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "title", Value: "", Usage: "new shared title (literal)", Destination: title})
+		description := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "description", Value: "", Usage: "new shared description (literal)", Destination: description})
+		specification := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "specification", Value: "", Usage: "new shared specification (literal; takes precedence over --details)", Destination: specification})
+		details := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "details", Value: "", Usage: "alias for --specification (literal)", Destination: details})
+		labelsJSON := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "labels", Value: "", Usage: "replacement shared labels as a JSON string array (use [] to clear)", Destination: labelsJSON})
+		pos, parseErr := parseOperation(ctx, fs, opArgs)
 		if parseErr != nil {
 			return parseErr
 		}
@@ -331,18 +353,18 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 			return parseErr
 		}
 		update := storage.TaskDelegationUpdate{}
-		if flagWasSet(fs, "title") {
+		if fs.IsSet("title") {
 			update.Title = title
 		}
-		if flagWasSet(fs, "description") {
+		if fs.IsSet("description") {
 			update.Description = description
 		}
-		if flagWasSet(fs, "specification") {
+		if fs.IsSet("specification") {
 			update.Specification = specification
-		} else if flagWasSet(fs, "details") {
+		} else if fs.IsSet("details") {
 			update.Details = details
 		}
-		if flagWasSet(fs, "labels") {
+		if fs.IsSet("labels") {
 			if err = json.Unmarshal([]byte(*labelsJSON), &update.Labels); err != nil {
 				return fmt.Errorf("--labels must be a JSON string array")
 			}
@@ -352,10 +374,11 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		}
 		value, err = client.UpdateTaskDelegation(ctx, *project, id, update, origin)
 	case "reassign":
-		fs := taskFlags("tasks reassign", stderr)
-		recipient := fs.String("to-agent", "", "recipient agent session UUID")
-		fs.StringVar(recipient, "to", "", "alias for --to-agent")
-		pos, parseErr := parseTaskFlagsArgs(fs, opArgs, nil)
+		fs := commandFlags("tasks reassign", stderr)
+		recipient := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "to-agent", Value: "", Usage: "recipient agent session UUID", Destination: recipient, Aliases: []string{"to"}})
+
+		pos, parseErr := parseOperation(ctx, fs, opArgs)
 		if parseErr != nil {
 			return parseErr
 		}
@@ -392,12 +415,6 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		return taskError(err)
 	}
 	return json.NewEncoder(stdout).Encode(value)
-}
-
-func taskFlags(name string, stderr io.Writer) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	return fs
 }
 
 func hasTaskHelp(args []string) bool {
@@ -477,21 +494,23 @@ func runTaskCancel(ctx context.Context, client *gatewayclient.Client, project st
 	if origin == nil {
 		return nil, fmt.Errorf("tasks cancel requires a complete native agent origin and does not support --human")
 	}
-	fs := taskFlags("tasks cancel", stderr)
-	reason := fs.String("reason", "", "cancellation reason")
-	changeset := fs.String("changeset", "", "JSON array of changed files or null")
-	pos, err := parseTaskFlagsArgs(fs, args, nil)
+	fs := commandFlags("tasks cancel", stderr)
+	reason := new(string)
+	fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "reason", Value: "", Usage: "cancellation reason", Destination: reason})
+	changeset := new(string)
+	fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "changeset", Value: "", Usage: "JSON array of changed files or null", Destination: changeset})
+	pos, err := parseOperation(ctx, fs, args)
 	if err != nil {
 		return nil, err
 	}
-	if len(pos) != 1 || strings.TrimSpace(*reason) == "" || !flagWasSet(fs, "reason") {
+	if len(pos) != 1 || strings.TrimSpace(*reason) == "" || !fs.IsSet("reason") {
 		return nil, fmt.Errorf("usage: tasks cancel TASK_ID --reason TEXT [--changeset JSON]")
 	}
 	id, err := canonicalTaskID(pos[0])
 	if err != nil {
 		return nil, err
 	}
-	change, err := parseOptionalChangeset(changeset, flagWasSet(fs, "changeset"))
+	change, err := parseOptionalChangeset(changeset, fs.IsSet("changeset"))
 	if err != nil {
 		return nil, err
 	}
@@ -506,55 +525,6 @@ func canonicalTaskID(value string) (string, error) {
 	return id.String(), nil
 }
 
-// parseTaskFlagsArgs restores Rust clap's ability to accept operation flags
-// after positionals while retaining Go's standard flag validation and -- handling.
-func parseTaskFlagsArgs(fs *flag.FlagSet, args []string, boolFlags map[string]bool) ([]string, error) {
-	var flags, positional []string
-	terminated := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if terminated {
-			positional = append(positional, a)
-			continue
-		}
-		if a == "--" {
-			terminated = true
-			continue
-		}
-		if !strings.HasPrefix(a, "-") || a == "-" {
-			positional = append(positional, a)
-			continue
-		}
-		name, _, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if fs.Lookup(name) == nil {
-			if strings.HasPrefix(a, "--") {
-				return nil, fmt.Errorf("unknown flag %q", a)
-			}
-			if _, err := strconv.ParseInt(a, 10, 64); err != nil {
-				return nil, fmt.Errorf("unknown flag %q", a)
-			}
-			positional = append(positional, a)
-			continue
-		}
-		flags = append(flags, a)
-		if boolFlags[name] || hasValue {
-			continue
-		}
-		if i+1 >= len(args) {
-			continue
-		}
-		i++
-		flags = append(flags, args[i])
-	}
-	if terminated {
-		flags = append(flags, "--")
-	}
-	if err := fs.Parse(flags); err != nil {
-		return nil, err
-	}
-	return append(fs.Args(), positional...), nil
-}
-
 func optionalString(value string) *string {
 	if value == "" {
 		return nil
@@ -563,18 +533,19 @@ func optionalString(value string) *string {
 }
 
 func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, operation string, args []string, origin *storage.AgentOrigin, goal *string, stderr io.Writer) (json.RawMessage, error) {
-	fs := taskFlags("tasks "+operation, stderr)
+	fs := commandFlags("tasks "+operation, stderr)
 	switch operation {
 	case "claim", "started", "done", "release", "confirm-mutation":
 		var changeset *string
 		if operation == "done" || operation == "release" {
-			changeset = fs.String("changeset", "", "JSON array of changed files or null")
+			changeset = new(string)
+			fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "changeset", Value: "", Usage: "JSON array of changed files or null", Destination: changeset})
 		}
-		pos, err := parseTaskFlagsArgs(fs, args, nil)
+		pos, err := parseOperation(ctx, fs, args)
 		if err != nil {
 			return nil, err
 		}
-		changesetProvided := flagWasSet(fs, "changeset")
+		changesetProvided := fs.IsSet("changeset")
 		if len(pos) != 1 {
 			return nil, fmt.Errorf("tasks %s requires TASK_ID", operation)
 		}
@@ -642,7 +613,13 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 			return client.TaskConfirm(ctx, project, id, &taskType, nil, origin)
 		}
 	case "rank":
-		pos, err := parseTaskFlagsArgs(fs, args, nil)
+		rankArgs := args
+		if len(args) == 2 && strings.HasPrefix(args[1], "-") {
+			if _, err := strconv.ParseInt(args[1], 10, 64); err == nil {
+				rankArgs = []string{args[0], "--", args[1]}
+			}
+		}
+		pos, err := parseOperation(ctx, fs, rankArgs)
 		if err != nil {
 			return nil, err
 		}
@@ -659,9 +636,11 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		}
 		return client.TaskUpdate(ctx, project, id, storage.TaskWorkflowUpdate{TaskMetadataUpdate: storage.TaskMetadataUpdate{Rank: &v}}, origin, goal)
 	case "set-os":
-		osFlag := fs.String("os", "", "required task OS: linux, windows, or macos")
-		clear := fs.Bool("clear", false, "remove task OS requirement")
-		pos, err := parseTaskFlagsArgs(fs, args, map[string]bool{"clear": true})
+		osFlag := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "os", Value: "", Usage: "required task OS: linux, windows, or macos", Destination: osFlag})
+		clear := new(bool)
+		fs.Flags = append(fs.Flags, &cli.BoolFlag{Name: "clear", Value: false, Usage: "remove task OS requirement", Destination: clear})
+		pos, err := parseOperation(ctx, fs, args)
 		if err != nil {
 			return nil, err
 		}
@@ -681,7 +660,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		}
 		return client.SetTaskOS(ctx, project, id, requiredOS, *origin, goal)
 	case "comment":
-		pos, err := parseTaskFlagsArgs(fs, args, nil)
+		pos, err := parseOperation(ctx, fs, args)
 		if err != nil {
 			return nil, err
 		}
@@ -694,8 +673,9 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		}
 		return client.TaskComment(ctx, project, id, strings.Join(pos[1:], " "), origin)
 	case "user-review", "review":
-		changeset := fs.String("changeset", "", "JSON array of changed files or null")
-		pos, err := parseTaskFlagsArgs(fs, args, nil)
+		changeset := new(string)
+		fs.Flags = append(fs.Flags, &cli.StringFlag{Name: "changeset", Value: "", Usage: "JSON array of changed files or null", Destination: changeset})
+		pos, err := parseOperation(ctx, fs, args)
 		if err != nil {
 			return nil, err
 		}
@@ -706,14 +686,14 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if err != nil {
 			return nil, err
 		}
-		change, err := parseOptionalChangeset(changeset, flagWasSet(fs, "changeset"))
+		change, err := parseOptionalChangeset(changeset, fs.IsSet("changeset"))
 		if err != nil {
 			return nil, err
 		}
 		action := pos[1]
 		return client.TaskUpdate(ctx, project, id, storage.TaskWorkflowUpdate{Status: "user_review", ReviewAction: &action, Changeset: change}, origin, goal)
 	case "set-changeset":
-		pos, err := parseTaskFlagsArgs(fs, args, nil)
+		pos, err := parseOperation(ctx, fs, args)
 		if err != nil {
 			return nil, err
 		}
@@ -731,16 +711,6 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		return client.TaskConfirm(ctx, project, id, nil, change, origin)
 	}
 	return nil, fmt.Errorf("unsupported tasks operation %q", operation)
-}
-
-func flagWasSet(fs *flag.FlagSet, name string) bool {
-	set := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			set = true
-		}
-	})
-	return set
 }
 
 func parseOptionalChangeset(value *string, present bool) (json.RawMessage, error) {

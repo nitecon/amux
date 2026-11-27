@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,35 +12,50 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
+	"github.com/urfave/cli/v3"
 )
 
 func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
-	flags := flag.NewFlagSet("amux worker run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	state := flags.String("state", "", "local durable worker SQLite path (required)")
-	endpoint := flags.String("server", "", "gateway HTTP(S) origin (required for a new run)")
-	enrolledProfile := flags.String("enrolled-profile", "", "enrolled gateway credential manifest")
-	runID := flags.String("run-id", "", "resume a saved worker run with its exact native session")
-	project := flags.String("project", "", "server project identifier for a new run")
-	task := flags.String("task", "", "server task UUID for a new run")
-	directory := flags.String("directory", "", "existing checkout directory for a new run")
-	provider := flags.String("provider", "antigravity", "native provider (antigravity, codex or claude)")
-	command := flags.String("agent-command", "", "optional native stdio command as a JSON string array; no shell")
-	prompt := flags.String("prompt", "", "initial prompt for a new run; further commands arrive from the gateway")
-	goalFlag := flags.String("goal", "", "select the conversation task goal for this run")
-	keyEnv := flags.String("api-key-env", "GATEWAY_API_KEY", "environment variable containing the gateway API credential")
-	taskTools := flags.String("task-tools-command", "", "optional Amux MCP executable override")
-	noTaskTools := flags.Bool("no-task-tools", false, "disable native amux task tools for this launch")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	flags := commandFlags("amux worker run", stderr)
+	state := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "state", Value: "", Usage: "local durable worker SQLite path (required)", Destination: state})
+	endpoint := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "server", Value: "", Usage: "gateway HTTP(S) origin (required for a new run)", Destination: endpoint})
+	enrolledProfile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "enrolled gateway credential manifest", Destination: enrolledProfile})
+	runID := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "run-id", Value: "", Usage: "resume a saved worker run with its exact native session", Destination: runID})
+	project := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "project", Value: "", Usage: "server project identifier for a new run", Destination: project})
+	task := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "task", Value: "", Usage: "server task UUID for a new run", Destination: task})
+	directory := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "directory", Value: "", Usage: "existing checkout directory for a new run", Destination: directory})
+	provider := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "provider", Value: "antigravity", Usage: "native provider (antigravity, codex or claude)", Destination: provider})
+	command := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "agent-command", Value: "", Usage: "optional native stdio command as a JSON string array; no shell", Destination: command})
+	prompt := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "prompt", Value: "", Usage: "initial prompt for a new run; further commands arrive from the gateway", Destination: prompt})
+	goalFlag := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "goal", Value: "", Usage: "select the conversation task goal for this run", Destination: goalFlag})
+	keyEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "api-key-env", Value: "GATEWAY_API_KEY", Usage: "environment variable containing the gateway API credential", Destination: keyEnv})
+	taskTools := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "task-tools-command", Value: "", Usage: "optional Amux MCP executable override", Destination: taskTools})
+	noTaskTools := new(bool)
+	flags.Flags = append(flags.Flags, &cli.BoolFlag{Name: "no-task-tools", Value: false, Usage: "disable native amux task tools for this launch", Destination: noTaskTools})
+	if err := parseCommand(ctx, flags, args); err != nil {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
+	if flags.Args().Len() != 0 {
 		return fmt.Errorf("unexpected worker arguments")
 	}
 	if *enrolledProfile != "" {
@@ -51,16 +65,9 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer, get
 			return err
 		}
 	}
-	providerSet := false
-	goalWasSet := false
-	flags.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "provider":
-			providerSet = true
-		case "goal":
-			goalWasSet = true
-		}
-	})
+	providerSet := flags.IsSet("provider")
+	goalWasSet := flags.IsSet("goal")
+
 	if *state == "" {
 		return fmt.Errorf("--state is required")
 	}
@@ -150,4 +157,14 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer, get
 		return nil
 	}
 	return err
+}
+
+func RunSavedWorker(ctx context.Context, store *storage.Store, client *gatewayclient.Client, runID, preferences, keyEnv, profile string) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	open := worker.OpenWithNativeTools(worker.NativeToolsConfig{Executable: executable, Server: client.Endpoint(),
+		EnrolledProfile: profile, APIKeyEnv: keyEnv, WorkPreferencesPath: preferences, ManagedMCPEnv: ManagedMCPEnv})
+	return worker.Run(ctx, worker.Config{Store: store, Client: client, RunID: runID, Open: open, AdvertisePresence: true})
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nitecon/amux/providers/acp"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
@@ -21,6 +22,14 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(ManagedMCPEnv) == "1" {
+		if err := ServeManagedMCP(context.Background(), os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	testfixture.RunGH()
 	if os.Getenv("AMUX_BUNDLED_RUNNER_FIXTURE") == "1" {
 		switch filepath.Base(os.Args[0]) {
@@ -270,4 +279,32 @@ func TestNativeWorkerTaskToolsCompleteAssignedTask(t *testing.T) {
 		}
 	}
 	stopWorkerProcess(t, ctx, p)
+}
+
+func TestManagedMCPUsesSDKStdioAndScopesAgentIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const identity = "a0000000-0000-4000-8000-000000000001"
+	cmd := exec.CommandContext(ctx, os.Args[0], "--server", "http://127.0.0.1:1",
+		"--project", "example", "--conversation", "b0000000-0000-4000-8000-000000000001",
+		"--session", identity, "--instance", "c0000000-0000-4000-8000-000000000001",
+		"--provider", "codex", "--os", "linux", "--directory", t.TempDir())
+	cmd.Env = append(os.Environ(), ManagedMCPEnv+"=1", "GATEWAY_API_KEY=test-key")
+	client := sdk.NewClient(&sdk.Implementation{Name: "amux-test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "agent_identity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || len(result.Content) != 1 {
+		t.Fatalf("unexpected agent identity result: %+v", result)
+	}
+	content, ok := result.Content[0].(*sdk.TextContent)
+	if !ok || !strings.Contains(content.Text, identity) {
+		t.Fatalf("wrong agent identity: %+v", result.Content[0])
+	}
 }

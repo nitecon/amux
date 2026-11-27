@@ -165,8 +165,11 @@ def verify_source_handoff(archive, directory, expected, source_bin, tag):
     (stage / "verified.json").write_text(json.dumps({
         "tag": tag, "digest": sha(staged),
     }), encoding="utf-8")
+    helper = directory / f"amux-handoff-fixture{suffix}"
+    shutil.copy2(cli, helper)
     subprocess.run([
-        cli, "--apply-update", staged, "--restart-desktop", "--", "--help",
+        helper, "update", "--staged", staged, "--executable", cli, "--parent-pid", "0",
+        "--wait-pids", "[]", "--restart-args", '["--help"]', "--cache-root", cache,
     ], env=env, check=True, timeout=60)
     log = stage / "install.log"
     deadline = time.monotonic() + 60

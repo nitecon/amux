@@ -1,4 +1,4 @@
-package appupdate
+package update
 
 import (
 	"bytes"
@@ -23,7 +23,7 @@ func Stage(ctx context.Context, executable string) (string, UpdateInfo, error) {
 		return "", UpdateInfo{}, err
 	}
 	if executable != "" {
-		if err := checkAppStoreInstall(filepath.Dir(executable)); err != nil {
+		if err := checkInstallRestrictions(filepath.Dir(executable)); err != nil {
 			return "", UpdateInfo{}, err
 		}
 	}
@@ -107,8 +107,9 @@ func verifyArchiveAt(data []byte, root, expectedTag, expectedTarget string) (Bui
 		return build, err
 	}
 	binaries := root
-	if triple == "aarch64-apple-darwin" {
-		binaries = filepath.Join(root, "amux.app", "Contents", "MacOS")
+	bundle, hasBundle := native.(bundleUpdater)
+	if hasBundle {
+		binaries = bundle.ArchiveBinaryDir(root)
 	}
 	build, err = readInstalled(binaries)
 	if err != nil {
@@ -123,7 +124,7 @@ func verifyArchiveAt(data []byte, root, expectedTag, expectedTarget string) (Bui
 	if err := verifyInstalled(binaries, build, cli, gui); err != nil {
 		return build, err
 	}
-	if triple == "aarch64-apple-darwin" {
+	if hasBundle {
 		return build, nil
 	}
 	if _, err := os.Stat(filepath.Join(root, "LICENSE")); err != nil {

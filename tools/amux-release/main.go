@@ -1,13 +1,15 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/rs/zerolog/log"
+	"github.com/urfave/cli/v3"
 )
 
 var tagPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -37,52 +39,74 @@ func (p platform) archiveName(id string) string {
 }
 
 func main() {
-	log.SetFlags(0)
 	if err := run(os.Args[1:]); err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err).Msg("amux-release")
 	}
 }
 
 func run(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: amux-release tools|package|smoke|check-tag")
+	command := &cli.Command{
+		Name:  "amux-release",
+		Usage: "Prepare and verify Amux releases",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 0 {
+				return fmt.Errorf("unknown release operation %q", cmd.Args().First())
+			}
+			return cli.ShowRootCommandHelp(cmd)
+		},
+		Commands: []*cli.Command{
+			releaseCommand("tools", "Fetch bundled tools", nil, func(cmd *cli.Command, p platform) error {
+				return fetchTools(cmd.String("target"), p, cmd.String("output"))
+			}),
+			releaseCommand("package", "Package a release", []cli.Flag{
+				&cli.StringFlag{Name: "bundle", Usage: "Staged executables, license and model catalog"},
+				&cli.StringFlag{Name: "version", Usage: "Release version (vMAJOR.MINOR.PATCH)"},
+				&cli.StringFlag{Name: "revision", Usage: "Source commit"},
+				&cli.BoolFlag{Name: "candidate-only", Usage: "Exclude from stable updates"},
+			}, func(cmd *cli.Command, p platform) error {
+				version, revision := cmd.String("version"), cmd.String("revision")
+				if !tagPattern.MatchString(version) || !revisionPattern.MatchString(revision) {
+					return fmt.Errorf("invalid release version or revision")
+				}
+				return seal(cmd.String("bundle"), cmd.String("target"), p, version, revision, cmd.Bool("candidate-only"), cmd.String("output"))
+			}),
+			releaseCommand("smoke", "Verify a packaged release", []cli.Flag{
+				&cli.StringFlag{Name: "bundle", Usage: "Packaged release"},
+				&cli.StringFlag{Name: "revision", Usage: "Source commit"},
+			}, func(cmd *cli.Command, p platform) error {
+				return smoke(cmd.String("target"), p, cmd.String("output"), cmd.String("bundle"), cmd.String("revision"))
+			}),
+			{
+				Name:  "check-tag",
+				Usage: "Validate a release tag",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() != 1 || !tagPattern.MatchString(cmd.Args().First()) {
+						return fmt.Errorf("version must use vMAJOR.MINOR.PATCH")
+					}
+					return nil
+				},
+			},
+		},
 	}
-	switch args[0] {
-	case "check-tag":
-		if len(args) != 2 || !tagPattern.MatchString(args[1]) {
-			return fmt.Errorf("version must use vMAJOR.MINOR.PATCH")
-		}
-		return nil
-	case "tools", "package", "smoke":
-	default:
-		return fmt.Errorf("unknown release operation %q", args[0])
+	return command.Run(context.Background(), append([]string{command.Name}, args...))
+}
+
+func releaseCommand(name, usage string, flags []cli.Flag, action func(*cli.Command, platform) error) *cli.Command {
+	return &cli.Command{
+		Name:  name,
+		Usage: usage,
+		Flags: append([]cli.Flag{
+			&cli.StringFlag{Name: "target", Usage: "Release target"},
+			&cli.StringFlag{Name: "output", Usage: "Output path"},
+		}, flags...),
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			p, ok := platforms[cmd.String("target")]
+			if !ok || cmd.String("output") == "" || cmd.Args().Len() != 0 {
+				return fmt.Errorf("valid --target and --output required")
+			}
+			return action(cmd, p)
+		},
 	}
-	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
-	target := flags.String("target", "", "release target")
-	output := flags.String("output", "", "output path")
-	bundle := flags.String("bundle", "", "staged executables, license and model catalog")
-	version := flags.String("version", "", "release version (vMAJOR.MINOR.PATCH)")
-	revision := flags.String("revision", "", "source commit")
-	candidate := flags.Bool("candidate-only", false, "exclude from stable updates")
-	if err := flags.Parse(args[1:]); err != nil {
-		return err
-	}
-	p, ok := platforms[*target]
-	if !ok || *output == "" || flags.NArg() != 0 {
-		return fmt.Errorf("valid --target and --output required")
-	}
-	switch args[0] {
-	case "tools":
-		return fetchTools(*target, p, *output)
-	case "package":
-		if !tagPattern.MatchString(*version) || !revisionPattern.MatchString(*revision) {
-			return fmt.Errorf("invalid release version or revision")
-		}
-		return seal(*bundle, *target, p, *version, *revision, *candidate, *output)
-	case "smoke":
-		return smoke(*target, p, *output, *bundle, *revision)
-	}
-	return nil
 }
 
 func writeFiles(dir string, files map[string][]byte) error {

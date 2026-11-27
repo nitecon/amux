@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/channels"
 	"github.com/nitecon/amux/router"
+	"github.com/rs/zerolog/log"
 )
 
 const inboundSourceRetryDelay = time.Second
@@ -67,7 +67,7 @@ func RunInboundSource(ctx context.Context, emitter EventEmitter, registry *route
 				if emitErr == nil {
 					emitErr = errors.New("router did not durably accept inbound event")
 				}
-				slog.WarnContext(ctx, "inbound channel event persist failed", "source", request.Source, "error", emitErr)
+				log.Warn().Ctx(ctx).Str("source", request.Source).Err(emitErr).Msg("inbound channel event persist failed")
 				timer := time.NewTimer(inboundSourceRetryDelay)
 				select {
 				case <-ctx.Done():

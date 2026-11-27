@@ -46,14 +46,9 @@ If you are still running the previous desktop, use its update bell, choose
 **Update now**, then choose **Restart amux**. The first release built from the
 rebuild uses the same public release channel and package layout.
 
-From a portable CLI installation, close the desktop and any running local
-amux client, then run `amux --update`. The helper installs the verified update
-after the command exits. Launch the desktop to use the installed version.
-
-You can also rerun the [install script](../README.md#get-started) for your
-platform. It replaces only an installation at its default location (`~/amux`,
-`~/Applications/amux.app` or `%LOCALAPPDATA%\amux`) with the latest release.
-For an installation elsewhere, use **Settings → Updates** or `amux --update`.
+Use `amux update` from a portable installation after closing the desktop and
+any local client process. The update subprocess installs the verified bundle
+after the command exits.
 
 Source builds with the CLI and desktop together in a writable directory can
 also update to the stable release. A loose macOS source build installs and opens

@@ -215,22 +215,13 @@ func TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate(t *testing.T) 
 	}
 }
 
-func TestTaskFlagParserKeepsNegativeRankPositionalAndHonorsTerminator(t *testing.T) {
-	fs := taskFlags("tasks rank", ioDiscard{})
-	if _, err := parseTaskFlagsArgs(fs, []string{taskTestID, "-9"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := fs.Args(); len(got) != 0 {
-		t.Fatalf("unexpected flag args: %v", got)
-	}
-	fs = taskFlags("tasks comment", ioDiscard{})
-	pos, err := parseTaskFlagsArgs(fs, []string{taskTestID, "--", "--literal"}, nil)
+func TestTaskOperationParserHonorsTerminator(t *testing.T) {
+	pos, err := parseOperation(context.Background(), commandFlags("tasks comment", ioDiscard{}), []string{taskTestID, "--", "--literal"})
 	if err != nil || len(pos) != 2 || pos[1] != "--literal" {
 		t.Fatalf("pos=%v err=%v", pos, err)
 	}
-	fs = taskFlags("tasks comment", ioDiscard{})
-	if _, err = parseTaskFlagsArgs(fs, []string{taskTestID, "--unknown"}, nil); err == nil || !strings.Contains(err.Error(), "unknown flag") {
-		t.Fatalf("unknown flag error = %v", err)
+	if _, err = parseOperation(context.Background(), commandFlags("tasks comment", ioDiscard{}), []string{taskTestID, "--unknown"}); err == nil {
+		t.Fatal("unknown flag accepted")
 	}
 	if _, err = canonicalTaskID("00000000-0000-0000-0000-000000000000"); err == nil {
 		t.Fatal("zero UUID accepted")

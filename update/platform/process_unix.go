@@ -1,6 +1,6 @@
 //go:build !windows
 
-package appupdate
+package platform
 
 import (
 	"errors"
@@ -10,11 +10,13 @@ import (
 	"time"
 )
 
-func lockUpdateFile(file *os.File) error {
+type UnixProcess struct{}
+
+func (UnixProcess) LockUpdateFile(file *os.File) error {
 	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }
 
-func waitForProcessExit(pid int) error {
+func (UnixProcess) WaitForProcessExit(pid int) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
 		err := syscall.Kill(pid, 0)

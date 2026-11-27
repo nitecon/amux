@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -17,14 +16,15 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/internal/amuxruntime"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/internal/gatewayprocess"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/update"
 	"github.com/nitecon/amux/worksubmission"
 	"net/http"
 )
@@ -46,7 +46,7 @@ func relaunchDesktop(args []string) error {
 	if err != nil {
 		return fmt.Errorf("locate desktop for restart: %w", err)
 	}
-	if err := appupdate.RelaunchDesktop(executable, args); err != nil {
+	if err := update.RelaunchDesktop(executable, args); err != nil {
 		return fmt.Errorf("restart desktop: %w", err)
 	}
 	return nil
@@ -83,7 +83,6 @@ func run(parent context.Context, options Options, args []string) error {
 	enrolledProfile := &options.EnrolledProfile
 	state := &options.State
 	runID := &options.RunID
-	toolsCommand := &options.ToolsCommand
 	if *projectDir != "" {
 		if err := os.Chdir(*projectDir); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("set launch working directory: %w", err)
@@ -121,31 +120,32 @@ func run(parent context.Context, options Options, args []string) error {
 	connectionExplicit := serverExplicit || profileExplicit || databaseExplicit
 	clientConfigPath := options.ConfigPath
 	existingClientConfig := false
-	var selectedHostedGateway *clientconfig.HostedGateway
+	var selectedHostedGateway *config.HostedGateway
 	if !connectionExplicit && !gatewayPreferencesExplicit && *conversationID == "" {
 		if clientConfigPath == "" {
-			clientConfigPath, err = clientconfig.DefaultPath()
+			clientConfigPath, err = config.DefaultClientPath()
 			if err != nil {
 				return err
 			}
 		}
-		config, loadErr := clientconfig.Load(clientConfigPath)
+		loadErr := config.InitConfig(clientConfigPath)
 		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 			probeCtx, stop := context.WithTimeout(parent, time.Second)
 			accepted, probeErr := clientcontrol.LoadProfile(probeCtx, clientConfigPath)
 			stop()
 			if probeErr == nil {
-				config, loadErr = accepted, nil
+				loadErr = config.UseClient(accepted)
 			}
 		}
 		if loadErr == nil {
-			*enrolledProfile = config.EnrolledProfile
-			*serverURL = config.GatewayEndpoint
-			if config.APIKeyEnv != "" {
-				*keyEnv = config.APIKeyEnv
+			settings := config.Get().Client
+			*enrolledProfile = settings.EnrolledProfile
+			*serverURL = settings.GatewayEndpoint
+			if settings.APIKeyEnv != "" {
+				*keyEnv = settings.APIKeyEnv
 			}
 			existingClientConfig = true
-			selectedHostedGateway = config.HostedGateway
+			selectedHostedGateway = settings.HostedGateway
 			gatewayPrefs.Mode = desktop.GatewayModeClient
 			gatewayPrefs.Endpoint, gatewayPrefs.EnrolledProfile = *serverURL, *enrolledProfile
 			if selectedHostedGateway != nil {
@@ -189,11 +189,13 @@ func run(parent context.Context, options Options, args []string) error {
 			}
 		}
 	}
-	if *toolsCommand != "" && *state == "" {
-		return fmt.Errorf("--task-tools-command requires a local worker journal")
-	}
+
 	configuredWorkPreferences := os.Getenv("AMUX_WORK_SUBMISSION_PREFERENCES")
-	workPreferencesPath, err := worksubmission.OptionalPreferencesPath(*workPreferences, configuredWorkPreferences)
+	preferencesOverride := *workPreferences
+	if preferencesOverride == "" && existingClientConfig {
+		preferencesOverride = config.Get().Client.WorkPreferences
+	}
+	workPreferencesPath, err := worksubmission.OptionalPreferencesPath(preferencesOverride, configuredWorkPreferences)
 	if err != nil {
 		return fmt.Errorf("resolve work submission preferences: %w", err)
 	}
@@ -201,7 +203,7 @@ func run(parent context.Context, options Options, args []string) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	managedClient := false
-	attachClient := func(endpoint string, hosted *clientconfig.HostedGateway) error {
+	attachClient := func(endpoint string, hosted *config.HostedGateway) error {
 		journal := *state
 		if !stateExplicit {
 			if _, statErr := os.Stat(journal); errors.Is(statErr, os.ErrNotExist) {
@@ -223,6 +225,11 @@ func run(parent context.Context, options Options, args []string) error {
 		if err := startOrAttachClient(ctx, cli, clientConfigPath, endpoint, journal); err != nil {
 			return err
 		}
+		if !existingClientConfig {
+			if err := config.InitConfig(clientConfigPath); err != nil {
+				return err
+			}
+		}
 		managedClient = true
 		return nil
 	}
@@ -241,7 +248,7 @@ func run(parent context.Context, options Options, args []string) error {
 			return err
 		}
 		advertisedHost := hosted.AdvertisedHost
-		*serverURL = clientconfig.LocalGatewayEndpoint
+		*serverURL = config.LocalGatewayEndpoint
 		*enrolledProfile = filepath.Join(serverProfile, "local-client.json")
 		serverEndpoint = "https://" + net.JoinHostPort(advertisedHost, "7913")
 		if clientConfigPath != "" && *state != "" {
@@ -257,7 +264,7 @@ func run(parent context.Context, options Options, args []string) error {
 		}
 	} else if selectedHostedGateway != nil && clientConfigPath != "" && *state != "" {
 		serverProfile = filepath.Dir(*enrolledProfile)
-		*serverURL = clientconfig.LocalGatewayEndpoint
+		*serverURL = config.LocalGatewayEndpoint
 		serverEndpoint = "https://" + net.JoinHostPort(selectedHostedGateway.AdvertisedHost, "7913")
 		if err := attachClient(*serverURL, selectedHostedGateway); err != nil {
 			return err
@@ -302,18 +309,27 @@ func run(parent context.Context, options Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *conversationID != "" {
+		settings := config.Client{GatewayEndpoint: client.Endpoint(), EnrolledProfile: *enrolledProfile, WorkPreferences: workPreferencesPath}
+		if settings.EnrolledProfile == "" {
+			settings.APIKeyEnv = *keyEnv
+		}
+		if err := config.UseClient(settings); err != nil {
+			return err
+		}
+	}
 	if serverEndpoint == "" {
 		serverEndpoint = client.Endpoint()
 	}
 	if !managedClient && *conversationID == "" {
-		if clientConfigPath != "" && (existingClientConfig || *enrolledProfile != "") && *state != "" && *toolsCommand == "" && *workPreferences == "" {
+		if clientConfigPath != "" && (existingClientConfig || *enrolledProfile != "") && *state != "" && *workPreferences == "" {
 			if err := attachClient(client.Endpoint(), nil); err != nil {
 				return err
 			}
 		} else {
-			override := clientconfig.Config{
+			override := config.Client{
 				EnrolledProfile: *enrolledProfile, GatewayEndpoint: client.Endpoint(),
-				TaskToolsCommand: *toolsCommand, WorkPreferences: workPreferencesPath,
+				WorkPreferences: workPreferencesPath,
 			}
 			if *enrolledProfile == "" {
 				override.APIKeyEnv = *keyEnv
@@ -341,6 +357,9 @@ func run(parent context.Context, options Options, args []string) error {
 			if err := startOrAttachClient(ctx, cli, clientConfigPath, client.Endpoint(), ""); err != nil {
 				return err
 			}
+			if err := config.InitConfig(clientConfigPath); err != nil {
+				return err
+			}
 			managedClient = true
 			if localGatewayStarted || serverProfile != "" {
 				defer func() {
@@ -359,23 +378,19 @@ func run(parent context.Context, options Options, args []string) error {
 	if *conversationID != "" && (*state == "") != (*runID == "") {
 		return fmt.Errorf("--state and --run-id must be supplied together")
 	}
-	if *toolsCommand != "" && *runID == "" && *conversationID != "" {
-		return fmt.Errorf("--task-tools-command requires a hosted --run-id")
-	}
+
 	if *runID != "" && *conversationID == "" {
 		return fmt.Errorf("hosting a saved worker requires --project and --conversation")
 	}
 
 	var local *storage.Store
-	var releaseProfile func()
 	var workerDone chan error
 	if *runID != "" {
 		lock, lockErr := server.LockProfile(*state)
 		if lockErr != nil {
 			return lockErr
 		}
-		releaseProfile = func() { _ = lock.Close() }
-		defer releaseProfile()
+		defer lock.Close()
 		local, err = storage.Open(ctx, *state)
 		if err != nil {
 			return err
@@ -425,7 +440,7 @@ func run(parent context.Context, options Options, args []string) error {
 	}
 	if managedClient && !connectionExplicit && !gatewayPreferencesExplicit && *state != "" {
 		setupConfig.Apply = func(changeCtx context.Context, prefs desktop.GatewayPreferences) (desktop.GatewayPreferences, error) {
-			var hosted *clientconfig.HostedGateway
+			var hosted *config.HostedGateway
 			enrollment, endpoint := prefs.EnrolledProfile, prefs.Endpoint
 			if prefs.Mode == desktop.GatewayModeServer {
 				var err error
@@ -434,7 +449,7 @@ func run(parent context.Context, options Options, args []string) error {
 					return prefs, err
 				}
 				enrollment = filepath.Join(gatewayStateDirectory, "local-client.json")
-				endpoint = clientconfig.LocalGatewayEndpoint
+				endpoint = config.LocalGatewayEndpoint
 			}
 			err := writeClientConfig(changeCtx, clientConfigPath, enrollment, endpoint, *preferences, "", true, hosted)
 			return prefs, err
@@ -470,40 +485,9 @@ func run(parent context.Context, options Options, args []string) error {
 		if saved.Server != client.Endpoint() || saved.Project != *project || saved.ConversationID != *conversationID {
 			return fmt.Errorf("saved worker does not match --server, --project and --conversation")
 		}
-		if err := local.Close(); err != nil {
-			return err
-		}
-		releaseProfile()
-		cli, err := amuxCLIPath()
-		if err != nil {
-			return err
-		}
-		workerArgs := []string{"worker", "run", "--state", *state, "--run-id", *runID, "--server", client.Endpoint(), "--api-key-env", *keyEnv}
-		if *enrolledProfile != "" {
-			workerArgs = append(workerArgs, "--enrolled-profile", *enrolledProfile)
-		}
-		if *toolsCommand != "" {
-			workerArgs = append(workerArgs, "--task-tools-command", *toolsCommand)
-		}
-		command := exec.CommandContext(ctx, cli, workerArgs...)
-		hideClientWindow(command)
-		command.Cancel = func() error {
-			if err := command.Process.Signal(os.Interrupt); err != nil {
-				return command.Process.Kill()
-			}
-			return nil
-		}
-		command.WaitDelay = 8 * time.Second
-		command.Stdout, command.Stderr = os.Stdout, os.Stderr
-		if workPreferencesPath != "" {
-			command.Env = append(os.Environ(), "AMUX_WORK_SUBMISSION_PREFERENCES="+workPreferencesPath)
-		}
-		if err := command.Start(); err != nil {
-			return fmt.Errorf("start saved worker: %w", err)
-		}
 		workerDone = make(chan error, 1)
 		go func() {
-			err := command.Wait()
+			err := amuxruntime.RunSavedWorker(ctx, local, client, *runID, workPreferencesPath, *keyEnv, *enrolledProfile)
 			if ctx.Err() != nil {
 				err = nil
 			}
@@ -520,7 +504,7 @@ func run(parent context.Context, options Options, args []string) error {
 		window.Close()
 	})
 	view.Start(ctx)
-	if failure := appupdate.TakeFailure(); failure != "" {
+	if failure := update.TakeFailure(); failure != "" {
 		message := widget.NewLabel(failure)
 		message.Wrapping = fyne.TextWrapWord
 		var notice *widget.PopUp

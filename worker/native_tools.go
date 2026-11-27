@@ -26,6 +26,7 @@ type NativeToolsConfig struct {
 	EnrolledProfile               string
 	WorkPreferencesPath           string
 	LocalConversation             bool
+	ManagedMCPEnv                 string
 }
 
 // OpenWithNativeTools returns an opener that registers one scoped amux MCP
@@ -66,12 +67,21 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 		args := nativeMCPArgs(config, run)
 		env := nativeProviderEnv(os.Environ(), run, config.APIKeyEnv, config.EnrolledProfile != "")
 		mcp := providerprocess.MCPConfig{Command: config.Executable, Args: args, Env: nativeMCPEnvironment()}
+		acpEnv := nativeACPEnvironment()
+		if config.ManagedMCPEnv != "" {
+			mcp.Args = args[1:]
+			if mcp.Env == nil {
+				mcp.Env = make(map[string]string)
+			}
+			mcp.Env[config.ManagedMCPEnv] = "1"
+			acpEnv = append(acpEnv, acp.EnvVar{Name: config.ManagedMCPEnv, Value: "1"})
+		}
 		var session Session
 		switch run.Owner.Provider {
 		case "antigravity":
 			session, err = acp.Start(ctx, acp.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
 				Command: run.Command, Env: env,
-				MCPServers:      []acp.MCPServer{{Name: "amux", Command: config.Executable, Args: args, Env: nativeACPEnvironment()}},
+				MCPServers:      []acp.MCPServer{{Name: "amux", Command: config.Executable, Args: mcp.Args, Env: acpEnv}},
 				AutoApproveTool: antigravityAmuxTool}, sink)
 		case "codex":
 			mcp.EnvVars = nativeMCPEnvVars(nativeMCPAPIKeyEnv(config))

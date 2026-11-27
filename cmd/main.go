@@ -27,7 +27,14 @@ func main() {
 	setLogger()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := newCommand().Run(ctx, commandArgs(os.Args)); err != nil {
+	if os.Getenv(amuxruntime.ManagedMCPEnv) == "1" {
+		if err := amuxruntime.ServeManagedMCP(ctx, os.Args[1:]); err != nil {
+			log.Error().Err(err).Msg("amux MCP")
+			os.Exit(1)
+		}
+		return
+	}
+	if err := newCommand().Run(ctx, os.Args); err != nil {
 		log.Error().Err(err).Msg("amux")
 		os.Exit(1)
 	}
@@ -61,13 +68,12 @@ func newCommand() *cli.Command {
 			// Start the client and desktop with the same shutdown context.
 			return startDesktop(ctx, cmd)
 		},
-		Commands: []*cli.Command{
+		Commands: []*cli.Command{updateCommand(),
 			{
-				Name:     "server",
-				Aliases:  []string{"s"},
-				Usage:    "Run the server",
-				Flags:    serverFlags(),
-				Commands: []*cli.Command{legacyCommand("peering-key", "server", "peering-key")},
+				Name:    "server",
+				Aliases: []string{"s"},
+				Usage:   "Run the server",
+				Flags:   serverFlags(),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					// Run one server until shutdown.
 					return startServer(ctx, cmd)
@@ -91,7 +97,7 @@ func newCommand() *cli.Command {
 			},
 		},
 	}
-	return addCompatibilityCommands(cmd)
+	return cmd
 }
 
 func noArguments(cmd *cli.Command) error {

@@ -3,24 +3,28 @@ package amuxruntime
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
 	"github.com/nitecon/amux/worksubmission"
+	"github.com/urfave/cli/v3"
 )
 
 func runTaskReport(ctx context.Context, args []string, jsonOutput bool, serverURL, project, apiKey, enrolledProfile string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("tasks report", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	rangeValue := flags.String("range", "", "Git commit range FROM..TO")
-	since := flags.String("since", "", "inclusive start date (YYYY-MM-DD or RFC3339)")
-	until := flags.String("until", "", "exclusive end date (YYYY-MM-DD or RFC3339)")
-	offline := flags.Bool("offline", false, "use local Git data only")
-	format := flags.String("format", "human", "output format: human or json")
-	pos, err := parseTaskFlagsArgs(flags, args, map[string]bool{"offline": true})
+	flags := commandFlags("tasks report", stderr)
+	rangeValue := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "range", Value: "", Usage: "Git commit range FROM..TO", Destination: rangeValue})
+	since := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "since", Value: "", Usage: "inclusive start date (YYYY-MM-DD or RFC3339)", Destination: since})
+	until := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "until", Value: "", Usage: "exclusive end date (YYYY-MM-DD or RFC3339)", Destination: until})
+	offline := new(bool)
+	flags.Flags = append(flags.Flags, &cli.BoolFlag{Name: "offline", Value: false, Usage: "use local Git data only", Destination: offline})
+	format := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "format", Value: "human", Usage: "output format: human or json", Destination: format})
+	pos, err := parseOperation(ctx, flags, args)
 	if err != nil {
 		return err
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
+	"github.com/urfave/cli/v3"
 )
 
 func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
@@ -22,26 +22,32 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		_, _ = fmt.Fprintln(stderr, usage)
 		return nil
 	}
-	flags := flag.NewFlagSet("amux messages", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.Usage = func() { _, _ = fmt.Fprintln(stderr, usage); flags.PrintDefaults() }
+	flags := commandFlags("amux messages", stderr)
+
 	gatewayDefault := getenv("AMUX_GATEWAY_URL")
-	gatewayURL := flags.String("gateway-url", gatewayDefault, "gateway URL (defaults to AMUX_GATEWAY_URL)")
-	flags.StringVar(gatewayURL, "server", gatewayDefault, "alias for --gateway-url")
-	project := flags.String("project", getenv("AMUX_GATEWAY_PROJECT"), "gateway project identifier (defaults to AMUX_GATEWAY_PROJECT)")
+	gatewayURL := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "gateway-url", Value: gatewayDefault, Usage: "gateway URL (defaults to AMUX_GATEWAY_URL)", Destination: gatewayURL, Aliases: []string{"server"}})
+
+	project := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "project", Value: getenv("AMUX_GATEWAY_PROJECT"), Usage: "gateway project identifier (defaults to AMUX_GATEWAY_PROJECT)", Destination: project})
 	nativeKeyEnv := getenv("AMUX_GATEWAY_API_KEY_ENV")
 	keyEnvDefault := nativeKeyEnv
 	if keyEnvDefault == "" {
 		keyEnvDefault = "GATEWAY_API_KEY"
 	}
-	keyEnv := flags.String("api-key-env", keyEnvDefault, "environment variable containing the gateway API credential")
-	enrolledProfile := flags.String("enrolled-profile", "", "enrolled gateway credential manifest")
-	limit := flags.Uint64("limit", 50, "message list page size (1 to 500)")
-	offset := flags.Uint64("offset", 0, "message list offset")
-	subject := flags.String("subject", "", "optional publication subject")
-	positional, err := parseTaskFlagsArgs(flags, args, nil)
+	keyEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "api-key-env", Value: keyEnvDefault, Usage: "environment variable containing the gateway API credential", Destination: keyEnv})
+	enrolledProfile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "enrolled gateway credential manifest", Destination: enrolledProfile})
+	limit := new(uint64)
+	flags.Flags = append(flags.Flags, &cli.Uint64Flag{Name: "limit", Value: 50, Usage: "message list page size (1 to 500)", Destination: limit})
+	offset := new(uint64)
+	flags.Flags = append(flags.Flags, &cli.Uint64Flag{Name: "offset", Value: 0, Usage: "message list offset", Destination: offset})
+	subject := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "subject", Value: "", Usage: "optional publication subject", Destination: subject})
+	positional, err := parseOperation(ctx, flags, args)
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
@@ -61,14 +67,14 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 	)
 	switch operation {
 	case "list":
-		if len(opArgs) != 0 || flagWasSet(flags, "subject") {
+		if len(opArgs) != 0 || flags.IsSet("subject") {
 			return fmt.Errorf("usage: amux messages list [--limit N] [--offset N]")
 		}
 		if *limit < 1 || *limit > 500 {
 			return fmt.Errorf("message limit must be between 1 and 500")
 		}
 	case "get":
-		if len(opArgs) != 1 || flagWasSet(flags, "limit") || flagWasSet(flags, "offset") || flagWasSet(flags, "subject") {
+		if len(opArgs) != 1 || flags.IsSet("limit") || flags.IsSet("offset") || flags.IsSet("subject") {
 			return fmt.Errorf("usage: amux messages get ID")
 		}
 		parsedID, parseErr := strconv.ParseInt(opArgs[0], 10, 64)
@@ -77,7 +83,7 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		}
 		messageID = parsedID
 	case "send":
-		if len(opArgs) != 1 || flagWasSet(flags, "limit") || flagWasSet(flags, "offset") {
+		if len(opArgs) != 1 || flags.IsSet("limit") || flags.IsSet("offset") {
 			return fmt.Errorf("usage: amux messages send [--subject TEXT] [--] BODY")
 		}
 		var identityErr error
@@ -91,7 +97,7 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 	}
 	apiKey := ""
 	if *enrolledProfile == "" {
-		apiKey, err = messageAPIKey(getenv, *keyEnv, nativeKeyEnv, flagWasSet(flags, "api-key-env"))
+		apiKey, err = messageAPIKey(getenv, *keyEnv, nativeKeyEnv, flags.IsSet("api-key-env"))
 		if err != nil {
 			return err
 		}
@@ -110,7 +116,7 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		value, err = client.GetProjectMessageThread(ctx, *project, messageID)
 	case "send":
 		input := gatewayclient.ProjectMessageInput{Body: &body}
-		if flagWasSet(flags, "subject") {
+		if flags.IsSet("subject") {
 			input.Subject = subject
 		}
 		value, err = client.SendProjectMessage(ctx, *project, input, origin)

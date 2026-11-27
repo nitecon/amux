@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -17,9 +16,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/internal/clientconfig"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/internal/gatewayprocess"
 	"github.com/nitecon/amux/internal/localconversation"
@@ -51,13 +50,13 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		return err
 	}
 	defer owner.Close()
-	config, err := clientconfig.Load(path)
-	if err != nil {
+	if err := config.InitConfig(path); err != nil {
 		return fmt.Errorf("load client configuration: %w", err)
 	}
 
+	settings := config.Get().Client
 	if state == "" {
-		state = config.WorkerJournal
+		state = settings.WorkerJournal
 	}
 	if state == "" {
 		state = filepath.Join(filepath.Dir(path), "workers.db")
@@ -78,16 +77,16 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	if err != nil {
 		return fmt.Errorf("identify running client binary: %w", err)
 	}
-	if hosted := config.HostedGateway; hosted != nil {
+	if hosted := settings.HostedGateway; hosted != nil {
 		startup, stopStartup := context.WithTimeout(ctx, 20*time.Second)
-		_, _, stopGateway, err := gatewayprocess.Start(startup, executable, filepath.Dir(config.EnrolledProfile), hosted.InstanceID, hosted.AdvertisedHost, hosted.RemoteHosting, stderr)
+		_, _, stopGateway, err := gatewayprocess.Start(startup, executable, filepath.Dir(settings.EnrolledProfile), hosted.InstanceID, hosted.AdvertisedHost, hosted.RemoteHosting, stderr)
 		stopStartup()
 		if err != nil {
 			return fmt.Errorf("start configured local gateway: %w", err)
 		}
 		defer stopGateway()
 	}
-	client, _, err := gatewayClientForProfile(config.GatewayEndpoint, config.EnrolledProfile, os.Getenv(config.APIKeyEnv))
+	client, _, err := gatewayClientForProfile(settings.GatewayEndpoint, settings.EnrolledProfile, os.Getenv(settings.APIKeyEnv))
 	if err != nil {
 		return err
 	}
@@ -96,7 +95,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		return err
 	}
 	defer store.Close()
-	if config.HostedGateway != nil && client.Endpoint() == clientconfig.LocalGatewayEndpoint {
+	if settings.HostedGateway != nil && client.Endpoint() == config.LocalGatewayEndpoint {
 		if err := store.UpgradeLoopbackWorkerOrigins(ctx); err != nil {
 			return fmt.Errorf("upgrade local gateway worker journal: %w", err)
 		}
@@ -112,20 +111,10 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 	conversationRoot := filepath.Join(home, ".amux", "conversations")
 	archive := localconversation.ArchiveTaskWorker(conversationRoot, client)
-	if config.TaskToolsCommand != "" {
-		executable, err = exec.LookPath(config.TaskToolsCommand)
-		if err != nil {
-			return err
-		}
-		executable, err = filepath.Abs(executable)
-		if err != nil {
-			return err
-		}
-	}
-	open := worker.OpenWithNativeTools(worker.NativeToolsConfig{
-		Executable: executable, Server: client.Endpoint(), EnrolledProfile: config.EnrolledProfile,
-		APIKeyEnv: config.APIKeyEnv, WorkPreferencesPath: config.WorkPreferences,
-	})
+	tools := worker.NativeToolsConfig{Executable: executable, Server: client.Endpoint(),
+		EnrolledProfile: settings.EnrolledProfile, APIKeyEnv: settings.APIKeyEnv,
+		WorkPreferencesPath: settings.WorkPreferences, ManagedMCPEnv: ManagedMCPEnv}
+	open := worker.OpenWithNativeTools(tools)
 	active := make(map[configuredPoolKey]*configuredPoolRun)
 	exits := make(chan configuredPoolExit)
 	watchDone := make(chan struct{})
@@ -141,7 +130,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		<-watchDone
 	}()
 
-	bindings, bindingErr := configuredBindings(ctx, client, config)
+	bindings, bindingErr := configuredBindings(ctx, client, settings)
 	if bindingErr != nil {
 		fmt.Fprintf(stderr, "waiting for client project bindings: %v\n", bindingErr)
 	}
@@ -167,9 +156,9 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 	legacyWorker := localconversation.LegacyTaskWorker{Store: store, Client: client, TranscriptRoot: conversationRoot, Open: open, Approvals: taskApprovals}
 	capabilityKnown, native := false, false
-	profile := clientconfig.Config{
-		EnrolledProfile: config.EnrolledProfile, GatewayEndpoint: client.Endpoint(), APIKeyEnv: config.APIKeyEnv,
-		HostedGateway: config.HostedGateway,
+	profile := config.Client{
+		EnrolledProfile: settings.EnrolledProfile, GatewayEndpoint: client.Endpoint(), APIKeyEnv: settings.APIKeyEnv,
+		HostedGateway: settings.HostedGateway,
 	}
 	type workspaceSnapshot struct {
 		clientcontrol.Workspace
@@ -183,17 +172,17 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 	var currentWorkspace atomic.Value
 	fleetChanged := make(chan struct{}, 1)
-	publishWorkspace := func() {
+	publishWorkspace := func(settings config.Client) {
 		currentWorkspace.Store(workspaceSnapshot{clientcontrol.Workspace{
-			ProjectsDirectory: config.ProjectsDirectory, Projects: bindings, ExcludedProjects: config.ExcludedProjects,
-		}, config.Providers})
+			ProjectsDirectory: settings.ProjectsDirectory, Projects: bindings, ExcludedProjects: settings.ExcludedProjects,
+		}, settings.Providers})
 		select {
 		case fleetChanged <- struct{}{}:
 		default:
 		}
 	}
-	publishWorkspace()
-	if config.EnrolledProfile != "" {
+	publishWorkspace(settings)
+	if settings.EnrolledProfile != "" {
 		fleetCtx, stopFleet := context.WithCancel(ctx)
 		fleetDone := make(chan struct{})
 		go func() {
@@ -228,12 +217,11 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			_ = http.NewResponseController(w).Flush()
 			cancel()
 		})
+		localTools := tools
+		localTools.LocalConversation = true
 		return localconversation.RegisterControl(mux, ctx, conversationRoot, func(project string) string {
 			return executionCheckout(currentWorkspace.Load().(workspaceSnapshot).Workspace, project)
-		}, worker.OpenWithNativeTools(worker.NativeToolsConfig{
-			Executable: executable, Server: client.Endpoint(), EnrolledProfile: config.EnrolledProfile,
-			APIKeyEnv: config.APIKeyEnv, WorkPreferencesPath: config.WorkPreferences, LocalConversation: true,
-		}), taskApprovals)
+		}, worker.OpenWithNativeTools(localTools), taskApprovals)
 	})
 	if err != nil {
 		return err
@@ -248,7 +236,8 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 	checks := make(map[string]providerCheck)
 	reconcile := func() string {
-		publishWorkspace()
+		settings := config.Get().Client
+		publishWorkspace(settings)
 		wanted := make(map[configuredPoolKey]string)
 		report := make([]storage.CheckoutReportItem, 0, len(bindings))
 		var failures []string
@@ -264,10 +253,10 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 				item.Origin = &checkout.Upstream
 			}
 			report = append(report, item)
-			if config.ExcludedProjects[project] {
+			if settings.ExcludedProjects[project] {
 				continue
 			}
-			for _, provider := range config.Providers {
+			for _, provider := range settings.Providers {
 				wanted[configuredPoolKey{project, provider}] = checkout.Directory
 			}
 		}
@@ -364,12 +353,13 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 
 	reload := func(change *clientcontrol.CheckoutChange) string {
-		candidate, err := clientconfig.Load(path)
-		if err == nil && (candidate.EnrolledProfile != config.EnrolledProfile || candidate.GatewayEndpoint != config.GatewayEndpoint ||
-			candidate.APIKeyEnv != config.APIKeyEnv || candidate.TaskToolsCommand != config.TaskToolsCommand || candidate.WorkPreferences != config.WorkPreferences) {
+		settings := config.Get().Client
+		candidate, err := config.ReadClient(path)
+		if err == nil && (candidate.EnrolledProfile != settings.EnrolledProfile || candidate.GatewayEndpoint != settings.GatewayEndpoint ||
+			candidate.APIKeyEnv != settings.APIKeyEnv || candidate.TaskToolsCommand != settings.TaskToolsCommand || candidate.WorkPreferences != settings.WorkPreferences) {
 			err = fmt.Errorf("changing gateway credentials or task tool settings requires restarting the client")
 		}
-		if err == nil && !clientconfig.SameHostedGateway(config.HostedGateway, candidate.HostedGateway) {
+		if err == nil && !config.SameHostedGateway(settings.HostedGateway, candidate.HostedGateway) {
 			err = fmt.Errorf("changing hosted_gateway requires restarting the client")
 		}
 		if err == nil && change != nil {
@@ -394,7 +384,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			}
 			err = candidate.Validate()
 		}
-		if err == nil && candidate.WorkerJournal != config.WorkerJournal {
+		if err == nil && candidate.WorkerJournal != settings.WorkerJournal {
 			err = fmt.Errorf("changing worker_journal requires restarting the client")
 		}
 		var candidateBindings map[string]string
@@ -409,11 +399,14 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			return "Rejected configuration: " + err.Error()
 		}
 		if change != nil {
-			if err := clientconfig.Save(path, candidate); err != nil {
+			if err := config.SaveClient(path, candidate); err != nil {
 				return "Rejected configuration: " + err.Error()
 			}
 		}
-		config, bindings, bindingErr = candidate, candidateBindings, nil
+		if err := config.UseClient(candidate); err != nil {
+			return "Rejected configuration: " + err.Error()
+		}
+		bindings, bindingErr = candidateBindings, nil
 		return reconcile()
 	}
 	if bindingErr == nil {
@@ -430,7 +423,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			fmt.Fprintln(stdout, result)
 			request.reply <- result
 		case <-tick.C:
-			if updated, err := configuredBindings(ctx, client, config); err == nil {
+			if updated, err := configuredBindings(ctx, client, config.Get().Client); err == nil {
 				bindings, bindingErr = updated, nil
 			}
 			if bindingErr == nil {
@@ -449,14 +442,14 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 }
 
-func configuredBindings(parent context.Context, client *gatewayclient.Client, config clientconfig.Config) (map[string]string, error) {
-	return resolveConfiguredBindings(parent, client, config, "")
+func configuredBindings(parent context.Context, client *gatewayclient.Client, settings config.Client) (map[string]string, error) {
+	return resolveConfiguredBindings(parent, client, settings, "")
 }
 
-func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Client, config clientconfig.Config, recreate string) (map[string]string, error) {
-	bindings := make(map[string]string, len(config.Projects))
-	if config.ProjectsDirectory != "" {
-		info, err := os.Stat(config.ProjectsDirectory)
+func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Client, settings config.Client, recreate string) (map[string]string, error) {
+	bindings := make(map[string]string, len(settings.Projects))
+	if settings.ProjectsDirectory != "" {
+		info, err := os.Stat(settings.ProjectsDirectory)
 		if err != nil {
 			return nil, err
 		}
@@ -464,7 +457,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 			return nil, fmt.Errorf("projects_directory is not a directory")
 		}
 	}
-	if config.ProjectsDirectory == "" && len(config.Projects) == 0 && len(config.ProjectURLs) == 0 {
+	if settings.ProjectsDirectory == "" && len(settings.Projects) == 0 && len(settings.ProjectURLs) == 0 {
 		return bindings, nil
 	}
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
@@ -474,7 +467,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		return nil, fmt.Errorf("read gateway projects: %w", err)
 	}
 	checkouts := make(map[string]string)
-	for _, checkout := range projectidentity.DiscoverLocalCheckouts(ctx, config.ProjectsDirectory) {
+	for _, checkout := range projectidentity.DiscoverLocalCheckouts(ctx, settings.ProjectsDirectory) {
 		if checkout.CanonicalRemote != nil && checkouts[*checkout.CanonicalRemote] == "" {
 			checkouts[*checkout.CanonicalRemote] = checkout.Directory
 		}
@@ -498,7 +491,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		}
 	}
 	pending := make(map[string]string)
-	for id, path := range config.Projects {
+	for id, path := range settings.Projects {
 		checkout, err := projectidentity.ResolveCheckout(ctx, path)
 		if err != nil {
 			return nil, fmt.Errorf("project %s: %w", id, err)
@@ -519,7 +512,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		}
 		bindings[id] = checkout.Directory
 	}
-	for _, url := range config.ProjectURLs {
+	for _, url := range settings.ProjectURLs {
 		repo, err := projects.ParseRemote(url)
 		if err != nil {
 			return nil, err

@@ -6,11 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
 	"github.com/nitecon/amux/router"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -67,7 +67,7 @@ func runReconciliationSource(ctx context.Context, registry *router.Registry, bus
 				}
 				if err != nil {
 					failures++
-					slog.WarnContext(ctx, "router outbox drain failed", "source", sourceName, "error", err)
+					log.Warn().Ctx(ctx).Str("source", sourceName).Err(err).Msg("router outbox drain failed")
 					retryDeadline = time.Now().Add(router.RetryDelay(failures))
 					break
 				}
@@ -219,7 +219,7 @@ func runClockSource(ctx context.Context, emitter EventEmitter, registry *router.
 				At int64 `json:"at"`
 			}{At: now().UnixMilli()})
 			if err != nil { // The fixed payload cannot normally fail to encode.
-				slog.WarnContext(ctx, "router clock event encoding failed", "source", "clock", "error", err)
+				log.Warn().Ctx(ctx).Str("source", "clock").Err(err).Msg("router clock event encoding failed")
 				continue
 			}
 			_, err = emitter.EmitRouterEvent(ctx, registry, router.EmitRequest{
@@ -229,7 +229,7 @@ func runClockSource(ctx context.Context, emitter EventEmitter, registry *router.
 				if ctx.Err() != nil {
 					return nil
 				}
-				slog.WarnContext(ctx, "router clock event emit failed", "source", "clock", "error", err)
+				log.Warn().Ctx(ctx).Str("source", "clock").Err(err).Msg("router clock event emit failed")
 			}
 		}
 	}

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/internal/clientcontrol"
 )
 
@@ -24,7 +24,7 @@ type clientReload struct {
 	reply  chan string
 }
 
-func serveClientControl(config, endpoint, build string, reloads chan<- clientReload, done <-chan struct{}, register func(*http.ServeMux) func()) (func(), error) {
+func serveClientControl(settings, endpoint, build string, reloads chan<- clientReload, done <-chan struct{}, register func(*http.ServeMux) func()) (func(), error) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -35,7 +35,7 @@ func serveClientControl(config, endpoint, build string, reloads chan<- clientRel
 		return nil, err
 	}
 	token := hex.EncodeToString(secret[:])
-	path := config + ".control"
+	path := settings + ".control"
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if os.IsExist(err) {
 		if err = os.Remove(path); err == nil {
@@ -130,7 +130,7 @@ func submitClientReload(ctx context.Context, reloads chan<- clientReload, stoppe
 }
 
 func requestClientReload(ctx context.Context, stdout io.Writer) error {
-	path, err := clientconfig.DefaultPath()
+	path, err := config.DefaultClientPath()
 	if err != nil {
 		return err
 	}

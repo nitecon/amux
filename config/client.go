@@ -1,5 +1,4 @@
-// Package clientconfig defines the machine-local configuration shared by Amux clients.
-package clientconfig
+package config
 
 import (
 	"errors"
@@ -23,7 +22,7 @@ type HostedGateway struct {
 	RemoteHosting  bool   `yaml:"remote_hosting,omitempty"`
 }
 
-type Config struct {
+type Client struct {
 	HostedGateway     *HostedGateway    `yaml:"hosted_gateway,omitempty"`
 	WorkerJournal     string            `yaml:"worker_journal,omitempty"`
 	EnrolledProfile   string            `yaml:"enrolled_profile,omitempty"`
@@ -38,7 +37,7 @@ type Config struct {
 	Providers         []string          `yaml:"providers"`
 }
 
-func DefaultPath() (string, error) {
+func DefaultClientPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -46,36 +45,36 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".amux", "config.yml"), nil
 }
 
-func Load(path string) (Config, error) {
+func ReadClient(path string) (Client, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return Config{}, err
+		return Client{}, err
 	}
 	defer file.Close()
-	return Decode(file)
+	return DecodeClient(file)
 }
 
-func Decode(reader io.Reader) (Config, error) {
-	var config Config
+func DecodeClient(reader io.Reader) (Client, error) {
+	var config Client
 	decoder := yaml.NewDecoder(reader)
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&config); err != nil {
-		return Config{}, err
+		return Client{}, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
-			return Config{}, err
+			return Client{}, err
 		}
-		return Config{}, errors.New("expected a single YAML document")
+		return Client{}, errors.New("expected a single YAML document")
 	}
 	if err := config.Validate(); err != nil {
-		return Config{}, err
+		return Client{}, err
 	}
 	return config, nil
 }
 
-func (config Config) Validate() error {
+func (config Client) Validate() error {
 	if config.EnrolledProfile != "" {
 		if !filepath.IsAbs(config.EnrolledProfile) || config.APIKeyEnv != "" {
 			return errors.New("enrolled_profile must be an absolute path and cannot use api_key_env")
@@ -145,8 +144,8 @@ func (config Config) Validate() error {
 	return nil
 }
 
-// Save validates the new configuration before replacing the previous file.
-func Save(path string, config Config) error {
+// SaveClient validates the new configuration before replacing the previous file.
+func SaveClient(path string, config Client) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
@@ -154,20 +153,7 @@ func Save(path string, config Config) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(dir, ".config-*.yml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(file.Name())
-	_, writeErr := file.Write(data)
-	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return err
-	}
-	return os.Rename(file.Name(), path)
+	return WriteFile(path, data)
 }
 
 func SameHostedGateway(a, b *HostedGateway) bool {
@@ -177,20 +163,9 @@ func SameHostedGateway(a, b *HostedGateway) bool {
 	return *a == *b
 }
 
-// Generate creates a commented, editable YAML template without replacing an existing file.
-func Generate(path string, config Config) error {
+// GenerateClient creates a commented, editable YAML template without replacing an existing file.
+func GenerateClient(path string, config Client) error {
 	if err := config.Validate(); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
 		return err
 	}
 	const notes = `# Enrolled clients use the gateway recorded in their enrollment manifest.
@@ -201,6 +176,21 @@ func Generate(path string, config Config) error {
 # Example: project_urls: [https://github.com/example/project.git]
 # Use projects: {gateway-project-id: /absolute/path} for explicit checkout paths.
 `
+	return generateYAML(path, config, notes)
+}
+
+func generateYAML(path string, value any, notes string) error {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
 	_, writeErr := file.Write(append([]byte(notes), data...))
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		_ = os.Remove(path)

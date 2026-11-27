@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -18,18 +17,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/appupdate"
 	"github.com/nitecon/amux/channels"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/plugins"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/update"
+	"github.com/urfave/cli/v3"
 )
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
-	return Run(ctx, args, stdout, stderr, getenv)
-}
-
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
 	if len(args) > 0 && args[0] == "--generate-client-config" {
 		return generateClientConfig(args[1:], stdout, stderr)
 	}
@@ -50,18 +47,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		if err != nil {
 			return err
 		}
-		archive, update, err := appupdate.Stage(ctx, executable)
+		archive, info, err := update.Stage(ctx, executable)
 		if err != nil {
 			return err
 		}
-		if !update.Available {
-			_, err = fmt.Fprintf(stdout, "amux %s is up to date.\n", update.Version)
+		if !info.Available {
+			_, err = fmt.Fprintf(stdout, "amux %s is up to date.\n", info.Version)
 			return err
 		}
-		if err := appupdate.StartApply(executable, archive, nil, nil); err != nil {
+		if err := update.StartApply(executable, archive, nil, nil); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(stdout, "Installing verified amux %s after this command exits.\n", update.Version)
+		_, err = fmt.Fprintf(stdout, "Installing verified amux %s after this command exits.\n", info.Version)
 		return err
 	}
 	if len(args) > 0 && args[0] == "--apply-update" {
@@ -96,14 +93,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		if err != nil {
 			return err
 		}
-		if err := appupdate.StartApply(executable, args[1], waitPIDs, restartArgs); err != nil {
+		if err := update.StartApply(executable, args[1], waitPIDs, restartArgs); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(stdout, "Update helper started. The previous desktop and CLI will close before the verified package is installed.")
 		return err
 	}
 	if len(args) > 0 && args[0] == "--finish-update" {
-		if err := appupdate.FinishHelper(args); err != nil {
+		if err := update.FinishHelper(args); err != nil {
 			return err
 		}
 		return nil
@@ -155,88 +152,57 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	if !generateServerConfig && (len(args) < 2 || args[0] != "server" || args[1] != "run") {
 		return fmt.Errorf("usage: amux --generate-server-config | amux server run (--config PATH | --database PATH | --profile DIR) [--listen 127.0.0.1:7913] | amux server peering-key [--profile DIR] [--copy] | amux worker run --state PATH --server URL --project IDENT --task UUID --directory PATH | amux worker pool --state PATH --server URL --project IDENT --directory PATH | amux tasks --server URL --project IDENT [actor options] OPERATION | amux messages [--gateway-url URL] [--project IDENT] list|get|send | amux submit-work [common task options] --directory PATH TASK MESSAGE PATHS... | amux work-submission show|set")
 	}
-	flags := flag.NewFlagSet("amux server run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	database := flags.String("database", "", "durable SQLite database path (required)")
-	profile := flags.String("profile", "", "explicit Rust-compatible server profile directory")
-	secureInstance := flags.String("secure-instance-id", "", "enable enrolled-certificate TLS using this stable local administrator instance UUID")
-	discoveryBind := flags.String("discovery-bind", "", "public enrollment discovery address (defaults to secure listen host on port 24181)")
+	flags := commandFlags("amux server run", stderr)
+	database := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "database", Value: "", Usage: "durable SQLite database path (required)", Destination: database})
+	profile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "profile", Value: "", Usage: "explicit Rust-compatible server profile directory", Destination: profile})
+	secureInstance := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "secure-instance-id", Value: "", Usage: "enable enrolled-certificate TLS using this stable local administrator instance UUID", Destination: secureInstance})
+	discoveryBind := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "discovery-bind", Value: "", Usage: "public enrollment discovery address (defaults to secure listen host on port 24181)", Destination: discoveryBind})
 	var profileTLSNames []string
-	flags.Func("profile-tls-name", "DNS or IP name for the profile-managed TLS certificate (repeatable)", func(value string) error {
-		profileTLSNames = append(profileTLSNames, value)
-		return nil
-	})
-	listen := flags.String("listen", "127.0.0.1:7913", "TCP address to listen on")
-	keyEnv := flags.String("api-key-env", "GATEWAY_API_KEY", "environment variable containing the server API credential")
-	certPath := flags.String("tls-cert", "", "TLS server certificate PEM file")
-	keyPath := flags.String("tls-key", "", "TLS server private key PEM file")
-	retentionDays := flags.Uint64("message-retention-days", 30, "message history retention in days")
-	botRetentionDays := flags.Uint64("bot-message-retention-days", 7, "bot message history retention in days")
-	discordTokenEnv := flags.String("discord-token-env", "", "enable Discord messaging and inbound room ingestion using the token in this environment variable")
-	discordGuildID := flags.String("discord-guild-id", "", "Discord guild ID (required with --discord-token-env)")
-	discordCategoryID := flags.String("discord-category-id", "", "optional Discord category ID for newly created rooms")
+	flags.Flags = append(flags.Flags, &cli.StringSliceFlag{Name: "profile-tls-name", Usage: "DNS or IP name for the profile-managed TLS certificate (repeatable)", Destination: &profileTLSNames})
+	listen := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "listen", Value: "127.0.0.1:7913", Usage: "TCP address to listen on", Destination: listen})
+	keyEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "api-key-env", Value: "GATEWAY_API_KEY", Usage: "environment variable containing the server API credential", Destination: keyEnv})
+	certPath := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "tls-cert", Value: "", Usage: "TLS server certificate PEM file", Destination: certPath})
+	keyPath := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "tls-key", Value: "", Usage: "TLS server private key PEM file", Destination: keyPath})
+	retentionDays := new(uint64)
+	flags.Flags = append(flags.Flags, &cli.Uint64Flag{Name: "message-retention-days", Value: 30, Usage: "message history retention in days", Destination: retentionDays})
+	botRetentionDays := new(uint64)
+	flags.Flags = append(flags.Flags, &cli.Uint64Flag{Name: "bot-message-retention-days", Value: 7, Usage: "bot message history retention in days", Destination: botRetentionDays})
+	discordTokenEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "discord-token-env", Value: "", Usage: "enable Discord messaging and inbound room ingestion using the token in this environment variable", Destination: discordTokenEnv})
+	discordGuildID := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "discord-guild-id", Value: "", Usage: "Discord guild ID (required with --discord-token-env)", Destination: discordGuildID})
+	discordCategoryID := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "discord-category-id", Value: "", Usage: "optional Discord category ID for newly created rooms", Destination: discordCategoryID})
 	if generateServerConfig {
 		return writeServerConfig(flags, stdout)
 	}
-	configPath := flags.String("config", "", "YAML server configuration file")
-	if err := flags.Parse(args[2:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	configPath := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "config", Value: "", Usage: "YAML server configuration file", Destination: configPath})
+	if err := parseCommand(ctx, flags, args[2:]); err != nil {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
+	if flags.Args().Len() != 0 {
 		return fmt.Errorf("unexpected server arguments")
 	}
-	if *configPath != "" {
-		configuredEnv, err := applyServerConfig(flags, *configPath)
-		if err != nil {
-			return err
-		}
-		originalEnv := getenv
-		getenv = func(key string) string {
-			if value, ok := configuredEnv[key]; ok {
-				return value
-			}
-			return originalEnv(key)
-		}
+	options, err := config.ReadServer(*configPath, flags)
+	if err != nil {
+		return err
 	}
-	return Serve(ctx, ServerOptions{
-		Database:          *database,
-		Profile:           *profile,
-		SecureInstance:    *secureInstance,
-		DiscoveryBind:     *discoveryBind,
-		ProfileTLSNames:   profileTLSNames,
-		Listen:            *listen,
-		KeyEnv:            *keyEnv,
-		CertPath:          *certPath,
-		KeyPath:           *keyPath,
-		RetentionDays:     *retentionDays,
-		BotRetentionDays:  *botRetentionDays,
-		DiscordTokenEnv:   *discordTokenEnv,
-		DiscordGuildID:    *discordGuildID,
-		DiscordCategoryID: *discordCategoryID,
-	}, stdout, stderr, getenv)
+	return Serve(ctx, options, stdout, stderr, getenv)
 }
 
-type ServerOptions struct {
-	Database          string
-	Profile           string
-	SecureInstance    string
-	DiscoveryBind     string
-	ProfileTLSNames   []string
-	Listen            string
-	KeyEnv            string
-	CertPath          string
-	KeyPath           string
-	RetentionDays     uint64
-	BotRetentionDays  uint64
-	DiscordTokenEnv   string
-	DiscordGuildID    string
-	DiscordCategoryID string
-}
-
-func Serve(ctx context.Context, options ServerOptions, stdout, stderr io.Writer, getenv func(string) string) error {
+func Serve(ctx context.Context, options config.Server, stdout, stderr io.Writer, getenv func(string) string) error {
 	database := options.Database
 	profile := options.Profile
 	secureInstance := options.SecureInstance
@@ -251,34 +217,16 @@ func Serve(ctx context.Context, options ServerOptions, stdout, stderr io.Writer,
 	discordTokenEnv := options.DiscordTokenEnv
 	discordGuildID := options.DiscordGuildID
 	discordCategoryID := options.DiscordCategoryID
-	artifactAuthEnforced, err := readServerBool(getenv, "GATEWAY_ARTIFACT_AUTH_ENFORCED", defaultArtifactAuthEnforced)
+	artifactAuthEnforced, err := serverBool(options.ArtifactAuthEnforced, getenv, "GATEWAY_ARTIFACT_AUTH_ENFORCED", defaultArtifactAuthEnforced)
 	if err != nil {
 		return err
 	}
-	artifactBodySchemaEnabled, err := readServerBool(getenv, "GATEWAY_ARTIFACT_BODY_SCHEMA_ENABLED", defaultArtifactBodySchemaEnabled)
+	artifactBodySchemaEnabled, err := serverBool(options.ArtifactBodySchemaEnabled, getenv, "GATEWAY_ARTIFACT_BODY_SCHEMA_ENABLED", defaultArtifactBodySchemaEnabled)
 	if err != nil {
 		return err
 	}
-	if (database == "") == (profile == "") {
-		return fmt.Errorf("supply exactly one of --database or --profile")
-	}
-	if discoveryBind != "" && secureInstance == "" {
-		return fmt.Errorf("--discovery-bind requires --secure-instance-id")
-	}
-	if secureInstance != "" {
-		instance, err := uuid.Parse(secureInstance)
-		if err != nil || instance == uuid.Nil || instance.String() != secureInstance {
-			return fmt.Errorf("--secure-instance-id requires a canonical nonzero UUID")
-		}
-		if profile == "" || certPath != "" || keyPath != "" {
-			return fmt.Errorf("--secure-instance-id requires --profile and profile-managed TLS")
-		}
-	}
-	if len(profileTLSNames) > 0 && profile == "" {
-		return fmt.Errorf("--profile-tls-name requires --profile")
-	}
-	if len(profileTLSNames) > 0 && (certPath != "" || keyPath != "") {
-		return fmt.Errorf("--profile-tls-name cannot be combined with --tls-cert or --tls-key")
+	if err := options.Validate(); err != nil {
+		return err
 	}
 	if secureInstance != "" || len(profileTLSNames) > 0 {
 		profileTLSNames = storage.ProfileServerTLSNames(ctx, profileTLSNames)
@@ -298,15 +246,9 @@ func Serve(ctx context.Context, options ServerOptions, stdout, stderr io.Writer,
 		}
 		apiKey = internalKey.String()
 	}
-	if (certPath == "") != (keyPath == "") {
-		return fmt.Errorf("--tls-cert and --tls-key must be supplied together")
-	}
 	var outbound map[string]channels.Outbound
 	var discord *channels.Discord
 	if discordTokenEnv != "" || discordGuildID != "" || discordCategoryID != "" {
-		if discordTokenEnv == "" || discordGuildID == "" {
-			return fmt.Errorf("--discord-token-env and --discord-guild-id must be supplied together")
-		}
 		configuredDiscord, err := channels.NewDiscord(channels.DiscordConfig{
 			Token: getenv(discordTokenEnv), GuildID: discordGuildID, CategoryID: discordCategoryID,
 		})
@@ -316,10 +258,7 @@ func Serve(ctx context.Context, options ServerOptions, stdout, stderr io.Writer,
 		discord = configuredDiscord
 		outbound = map[string]channels.Outbound{"discord": discord}
 	}
-	host, _, err := net.SplitHostPort(listen)
-	if err != nil {
-		return fmt.Errorf("invalid listen address")
-	}
+	host, _, _ := net.SplitHostPort(listen)
 	ip := net.ParseIP(host)
 	if certPath == "" && len(profileTLSNames) == 0 && (ip == nil || !ip.IsLoopback()) {
 		return fmt.Errorf("non-loopback server listeners require --tls-cert and --tls-key")
@@ -546,4 +485,11 @@ func readServerBool(getenv func(string) string, key string, defaultValue bool) (
 	default:
 		return false, fmt.Errorf("%s must be a boolean flag", key)
 	}
+}
+
+func serverBool(configured *bool, getenv func(string) string, name string, fallback bool) (bool, error) {
+	if configured != nil {
+		return *configured, nil
+	}
+	return readServerBool(getenv, name, fallback)
 }

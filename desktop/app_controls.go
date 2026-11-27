@@ -11,10 +11,10 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/update"
 )
 
-type updateStage func(context.Context, string) (string, appupdate.UpdateInfo, error)
+type updateStage func(context.Context, string) (string, update.UpdateInfo, error)
 
 type appControlsPanel struct {
 	content       *fyne.Container
@@ -42,7 +42,7 @@ func NewAppControlsPanel(cliPath string, installUpdate func(string) error) fyne.
 
 func newAppControlsPanel(cliPath string, installUpdate func(string) error, stage updateStage) *appControlsPanel {
 	if stage == nil {
-		stage = appupdate.Stage
+		stage = update.Stage
 	}
 	p := &appControlsPanel{
 		status: widget.NewLabel(""), cliPath: cliPath, installUpdate: installUpdate, stageUpdate: stage,

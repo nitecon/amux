@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/storage"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -160,7 +160,7 @@ func (a *api) enroll(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &rejection) && rejection.Message() != "" {
 			code, message = rejection.Error(), rejection.Message()
 		}
-		slog.Warn("Secure enrollment rejected", "reason", code)
+		log.Warn().Str("reason", code).Msg("Secure enrollment rejected")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		writeJSON(w, map[string]string{"error": code, "message": message})

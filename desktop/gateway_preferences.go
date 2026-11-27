@@ -8,8 +8,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/nitecon/amux/config"
 )
 
 type GatewayMode string
@@ -134,32 +135,7 @@ func SaveGatewayPreferences(path string, prefs GatewayPreferences) error {
 		return err
 	}
 	data = append(data, '\n')
-	parent := filepath.Dir(path)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return fmt.Errorf("create gateway preferences directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(parent, ".gateway-preferences-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create gateway preferences temporary file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := config.WriteFile(path, data); err != nil {
 		return fmt.Errorf("save gateway preferences: %w", err)
 	}
 	return nil

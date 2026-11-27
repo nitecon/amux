@@ -14,7 +14,6 @@ type Options struct {
 	EnrolledProfile        string
 	State                  string
 	RunID                  string
-	ToolsCommand           string
 	ConfigPath             string
 	IsSet                  func(string) bool
 }

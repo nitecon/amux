@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
 // InboundMessage is a Discord message adapted for the durable channel event.
@@ -33,7 +34,7 @@ type discordInboundState struct {
 	botID string
 }
 
-const discordUnknownRoomNotice = "This is not a project channel — I don't forward mail here."
+const discordUnknownRoomNotice = "This is not a project channel â€” I don't forward mail here."
 
 // RegisterRoom adds a room once. Its initial cursor is retained for gateway
 // Ready backfill; later ensure_room calls with a nil cursor do not erase it.
@@ -141,7 +142,7 @@ func (d *Discord) backfillDiscordRooms(ctx context.Context, sink chan<- InboundE
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			slog.WarnContext(ctx, "Discord room backfill failed", "room_id", room.id)
+			log.Warn().Ctx(ctx).Str("room_id", room.id).Msg("Discord room backfill failed")
 			continue
 		}
 		for _, message := range messages {
@@ -185,7 +186,7 @@ func (d *Discord) dispatchDiscordMessage(ctx context.Context, sink chan<- Inboun
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				slog.WarnContext(ctx, "Discord non-project mention reply failed", "room_id", roomID)
+				log.Warn().Ctx(ctx).Str("room_id", roomID).Msg("Discord non-project mention reply failed")
 			}
 		}
 		return nil

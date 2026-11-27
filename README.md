@@ -109,14 +109,8 @@ can open either machine's agents from either desktop.
 
 ### Run a headless worker
 
-A machine with no display can host agents with just the `amux` CLI from the
-same bundle:
-
-```sh
-amux client enroll --server https://gateway.example:24182 --state-dir ~/.amux/cluster  # peering key on stdin
-amux --generate-client-config   # then list your projects and providers in ~/.amux/config.yml
-amux headless
-```
+On a machine with a configured client profile, run `amux headless`. Use
+`--config PATH` to select a profile. The client registers the same stdio MCP server for each managed agent, scoped to its session.
 
 To run the server itself without a desktop, see the
 [deployment guide](deploy/README.md) for systemd, Docker, and TLS setup.
@@ -125,10 +119,8 @@ To run the server itself without a desktop, see the
 
 | I want to… | How |
 | --- | --- |
-| Update amux | **Settings → Updates**, or `amux --update` from the CLI. See [updates](docs/updates.md). |
-| Enroll another machine | **Generate peering key** in Settings, or `amux server peering-key` on a headless host. |
-| Create and manage tasks from a shell | `amux tasks --server URL --project IDENT list`. See [task commands](docs/Operations.md#task-and-project-commands). |
-| Run agents from a shell | `amux worker pool --provider codex --slots 2 …`. See [worker pools](docs/Operations.md#worker-pools). |
+| Update amux | **Settings → Updates**. See [updates](docs/updates.md). |
+| Enroll another machine | **Generate peering key** in Settings. |
 | Stop approving the same command | Choose **Always allow…** on a permission card. See [tool approval rules](docs/Operations.md#tool-approval-rules). |
 | Choose how agents publish work | Direct commit and push, or a pull request per task, under **Work submission settings**. |
 | Turn automatic reviews on or off | **Server plugin settings** in the desktop app. |

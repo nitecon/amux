@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/storage"
+	"github.com/rs/zerolog/log"
 )
 
 // PoolConfig connects a saved native worker pool to its gateway and local
@@ -194,7 +194,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 				return nil
 			}
 			if err != nil {
-				slog.Warn("task conversation follow-up stopped", "project", pool.Project, "session", slot.Owner.SessionID, "error", err)
+				log.Warn().Str("project", pool.Project).Str("session", slot.Owner.SessionID).Err(err).Msg("task conversation follow-up stopped")
 			}
 			select {
 			case <-config.Drain:
@@ -316,7 +316,7 @@ func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool
 			if polled {
 				id, err := pendingPoolFollowUp(ctx, config, pool, slot)
 				if err != nil {
-					slog.Warn("could not check task conversation follow-ups", "project", pool.Project, "error", err)
+					log.Warn().Str("project", pool.Project).Err(err).Msg("could not check task conversation follow-ups")
 				}
 				if id != "" {
 					if err := poolPresence(ctx, config, pool, slot, true); err != nil {

@@ -20,7 +20,7 @@ func Start(ctx context.Context, cli, profile, instanceID, address string, remote
 	if remoteHosting {
 		listen = "0.0.0.0:7913"
 	}
-	args := []string{"server", "run", "--profile", profile, "--secure-instance-id", instanceID,
+	args := []string{"server", "--profile", profile, "--secure-instance-id", instanceID,
 		"--listen", listen, "--profile-tls-name", address}
 	if !remoteHosting {
 		args = append(args, "--discovery-bind", "127.0.0.1:0")
@@ -33,7 +33,7 @@ func Start(ctx context.Context, cli, profile, instanceID, address string, remote
 }
 
 func StartHTTP(ctx context.Context, cli, database, address, keyEnv string, stderr io.Writer) (string, func(), error) {
-	args := []string{"server", "run", "--database", database, "--listen", address, "--api-key-env", keyEnv}
+	args := []string{"server", "--database", database, "--listen", address, "--api-key-env", keyEnv}
 	bound, stop, err := start(ctx, cli, args, stderr)
 	if err != nil {
 		return "", nil, err

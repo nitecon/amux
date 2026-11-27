@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2/test"
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/update"
 )
 
 func TestUpdateNowAutomaticallySchedulesVerifiedArchive(t *testing.T) {
@@ -19,8 +19,8 @@ func TestUpdateNowAutomaticallySchedulesVerifiedArchive(t *testing.T) {
 	panel := newAppControlsPanel("amux", func(archive string) error {
 		installed <- archive
 		return nil
-	}, func(context.Context, string) (string, appupdate.UpdateInfo, error) {
-		return "bundle.zip", appupdate.UpdateInfo{Available: true, Version: "v0.9.1"}, nil
+	}, func(context.Context, string) (string, update.UpdateInfo, error) {
+		return "bundle.zip", update.UpdateInfo{Available: true, Version: "v0.9.1"}, nil
 	})
 	test.Tap(panel.update)
 	select {

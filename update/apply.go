@@ -1,4 +1,4 @@
-package appupdate
+package update
 
 import (
 	"encoding/json"
@@ -9,11 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/internal/hidewindow"
+	"github.com/nitecon/amux/update/platform"
 )
 
 // StartApply schedules a verified update helper, then lets the running desktop
@@ -62,9 +61,10 @@ func startApplyAt(executable, archivePath, cacheRoot string, waitPIDs []int, res
 	if err != nil {
 		return err
 	}
-	commandArgs := []string{"--finish-update", archivePath, executable, fmt.Sprint(parentPID), string(waitJSON), string(argsJSON), cacheRoot}
+	commandArgs := []string{"update", "--staged", archivePath, "--executable", executable,
+		"--parent-pid", fmt.Sprint(parentPID), "--wait-pids", string(waitJSON), "--restart-args", string(argsJSON), "--cache-root", cacheRoot}
 	command := exec.Command(helper, commandArgs...)
-	hidewindow.Apply(command)
+	native.PrepareHelper(command)
 	command.Stdout = nil
 	command.Stderr = nil
 	if err := command.Start(); err != nil {
@@ -82,7 +82,7 @@ func FinishHelper(args []string) error {
 		}
 		return err
 	}
-	return finishUpdate(request, waitForProcessExit, launchDesktop)
+	return finishUpdate(request, native.WaitForProcessExit, launchDesktop)
 }
 
 func recordResult(archivePath, message string) {
@@ -281,23 +281,6 @@ func ensureNewerInstall(dir string, build Build) error {
 	return nil
 }
 
-func checkAppStoreInstall(dir string) error {
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
-	if os.Getenv("APP_SANDBOX_CONTAINER_ID") != "" {
-		return errors.New("this installation is managed by the Mac App Store")
-	}
-	if app := appBundle(dir); app != "" {
-		for _, name := range []string{"_MASReceipt", "embedded.provisionprofile"} {
-			if _, err := os.Lstat(filepath.Join(app, "Contents", name)); !os.IsNotExist(err) {
-				return errors.New("this installation is managed by the Mac App Store")
-			}
-		}
-	}
-	return nil
-}
-
 // Resolve the installation directory before replacing files, but require that
 // both executable entries themselves are regular files in that directory.
 func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string, err error) {
@@ -305,10 +288,7 @@ func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string,
 	if err != nil {
 		return "", "", "", "", err
 	}
-	localCLI, localGUI = cli, gui
-	if runtime.GOOS == "linux" && filepath.Base(executable) == cli+".bin" {
-		localCLI, localGUI = cli+".bin", gui+".bin"
-	}
+	localCLI, localGUI = native.LocalNames(executable, cli, gui)
 	if !strings.EqualFold(filepath.Base(executable), localCLI) {
 		return "", "", "", "", errors.New("update target must be the installed amux CLI")
 	}
@@ -316,7 +296,8 @@ func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string,
 	if err != nil {
 		return "", "", "", "", err
 	}
-	if err := checkAppStoreInstall(dir); err != nil {
+	bundle, hasBundle := native.(bundleUpdater)
+	if err := checkInstallRestrictions(dir); err != nil {
 		return "", "", "", "", err
 	}
 	app = appBundle(dir)
@@ -338,7 +319,7 @@ func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string,
 	}
 	dir = resolved
 	app = appBundle(dir)
-	if err := checkAppStoreInstall(dir); err != nil {
+	if err := checkInstallRestrictions(dir); err != nil {
 		return "", "", "", "", err
 	}
 	for _, name := range []string{localCLI, localGUI} {
@@ -346,9 +327,9 @@ func updateInstallPaths(executable string) (dir, app, localCLI, localGUI string,
 			return "", "", "", "", fmt.Errorf("update target is missing regular file %s", name)
 		}
 	}
-	if runtime.GOOS == "darwin" && app == "" {
-		if _, err := os.Lstat(filepath.Join(dir, "amux.app")); !os.IsNotExist(err) {
-			return "", "", "", "", errors.New("an app already exists at the amux.app update destination")
+	if hasBundle {
+		if err := bundle.CheckDestination(dir, app); err != nil {
+			return "", "", "", "", err
 		}
 	}
 	return dir, app, localCLI, localGUI, nil
@@ -376,16 +357,13 @@ func CheckInstallable(executable string) error {
 		err = errors.Join(err, lock.Close())
 	}
 	if errors.Is(err, fs.ErrPermission) {
-		fix := "Give your user write access to that directory"
-		if runtime.GOOS != "windows" {
-			fix = "Make your user the owner of that directory with chown"
-		}
+		fix := native.WriteAccessAdvice()
 		return fmt.Errorf("your user cannot write to the amux installation directory %s. %s, or move amux to a directory you own, then update again", stageParent, fix)
 	}
 	if err != nil {
 		return fmt.Errorf("amux cannot update the installation in %s: %w", stageParent, err)
 	}
-	if runtime.GOOS == "darwin" {
+	if _, ok := native.(bundleUpdater); ok {
 		return nil
 	}
 	triple, _, _, _, err := target()
@@ -455,11 +433,8 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 	if err := ensureNewerInstall(dir, build); err != nil {
 		return empty, err
 	}
-	if app != "" {
-		return build, replaceApp(app, filepath.Join(stageDir, "amux.app"))
-	}
-	if runtime.GOOS == "darwin" {
-		return build, installNewMacApp(filepath.Join(stageDir, "amux.app"), filepath.Join(dir, "amux.app"))
+	if bundle, ok := native.(bundleUpdater); ok {
+		return build, bundle.InstallBundle(dir, app, stageDir)
 	}
 	if cli != localCLI {
 		if err := os.Rename(filepath.Join(stageDir, cli), filepath.Join(stageDir, localCLI)); err != nil {
@@ -473,17 +448,6 @@ func applyStagedAt(executable, archivePath, cacheRoot string) (Build, error) {
 		return empty, err
 	}
 	return build, nil
-}
-
-func installNewMacApp(staged, destination string) error {
-	// Reserve a new app directory so an existing application is never replaced.
-	if err := os.Mkdir(destination, 0o755); err != nil {
-		return fmt.Errorf("could not create the amux app destination: %w", err)
-	}
-	if err := os.Rename(filepath.Join(staged, "Contents"), filepath.Join(destination, "Contents")); err != nil {
-		return errors.Join(err, os.Remove(destination))
-	}
-	return nil
 }
 
 func acquireUpdateLock(dir string) (*os.File, error) {
@@ -500,7 +464,7 @@ func acquireUpdateLock(dir string) (*os.File, error) {
 		_ = file.Close()
 		return nil, errors.New("update lock must be a regular file")
 	}
-	if err := lockUpdateFile(file); err != nil {
+	if err := native.LockUpdateFile(file); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("cannot acquire update lock: %w", err)
 	}
@@ -534,35 +498,25 @@ func installFiles(dir, stageDir string, files []string, verify func() error, ren
 		info, err := os.Lstat(destination)
 		if !os.IsNotExist(err) {
 			if err != nil || !info.Mode().IsRegular() {
-				return rollbackFailure(backupDir, rollback(), fmt.Errorf("installed file %s is not regular", name))
+				return platform.RollbackFailure(backupDir, rollback(), fmt.Errorf("installed file %s is not regular", name))
 			}
 			if err := rename(destination, filepath.Join(backupDir, name)); err != nil {
-				return rollbackFailure(backupDir, rollback(), fmt.Errorf("cannot stage old %s: %w", name, err))
+				return platform.RollbackFailure(backupDir, rollback(), fmt.Errorf("cannot stage old %s: %w", name, err))
 			}
 			backedUp = append(backedUp, name)
 		}
 		if err := rename(filepath.Join(stageDir, name), destination); err != nil {
-			return rollbackFailure(backupDir, rollback(), fmt.Errorf("cannot install %s: %w", name, err))
+			return platform.RollbackFailure(backupDir, rollback(), fmt.Errorf("cannot install %s: %w", name, err))
 		}
 		installedNew = append(installedNew, name)
 	}
 	if err := verify(); err != nil {
-		return rollbackFailure(backupDir, rollback(), fmt.Errorf("new bundle failed verification: %w", err))
+		return platform.RollbackFailure(backupDir, rollback(), fmt.Errorf("new bundle failed verification: %w", err))
 	}
 	if err := os.RemoveAll(backupDir); err != nil {
 		return fmt.Errorf("update installed, but old files remain in %s: %w", backupDir, err)
 	}
 	return nil
-}
-
-func rollbackFailure(backupDir string, rollbackErr, originalErr error) error {
-	if rollbackErr != nil {
-		return fmt.Errorf("%w; rollback also failed: %v; previous files are retained in %s", originalErr, rollbackErr, backupDir)
-	}
-	if err := os.RemoveAll(backupDir); err != nil {
-		return fmt.Errorf("%w; rollback completed, but backup cleanup failed at %s: %v", originalErr, backupDir, err)
-	}
-	return originalErr
 }
 
 func readBoundedArchive(path string) ([]byte, error) {
@@ -594,22 +548,11 @@ func copyHelper(executable string) (string, error) {
 		return "", err
 	}
 	defer input.Close()
-	// Avoid names that Windows' installer detection treats as an elevated
-	// installer when the executable lacks a requestedExecutionLevel manifest.
-	file, err := os.CreateTemp("", "amux-handoff-*")
+	file, err := os.CreateTemp("", native.HelperPattern())
 	if err != nil {
 		return "", err
 	}
 	path := file.Name()
-	if runtime.GOOS == "windows" {
-		path += ".exe"
-		_ = file.Close()
-		_ = os.Remove(file.Name())
-		file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
-		if err != nil {
-			return "", err
-		}
-	}
 	if _, err := io.Copy(file, input); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
@@ -628,35 +571,19 @@ func copyHelper(executable string) (string, error) {
 }
 
 func launchDesktop(executable string, args []string) error {
-	_, _, gui, _, err := target()
+	_, cli, gui, _, err := target()
 	if err != nil {
 		return err
 	}
 	dir := filepath.Dir(executable)
-	if runtime.GOOS == "darwin" && appBundle(dir) == "" {
-		dir = filepath.Join(dir, "amux.app", "Contents", "MacOS")
+	if bundle, ok := native.(bundleUpdater); ok && bundle.AppBundle(dir) == "" {
+		dir = bundle.ArchiveBinaryDir(dir)
 	}
-	if runtime.GOOS == "linux" && filepath.Ext(executable) == ".bin" {
-		gui += ".bin"
-	}
+	_, gui = native.LocalNames(executable, cli, gui)
 	return RelaunchDesktop(filepath.Join(dir, gui), args)
 }
 
 // RelaunchDesktop starts the desktop as a new application instance.
 func RelaunchDesktop(executable string, args []string) error {
-	if bundle := appBundle(filepath.Dir(executable)); bundle != "" {
-		openArgs := []string{"-n", bundle}
-		if len(args) > 0 {
-			openArgs = append(openArgs, "--args")
-			openArgs = append(openArgs, args...)
-		}
-		return exec.Command("/usr/bin/open", openArgs...).Run()
-	}
-	command := exec.Command(executable, args...)
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	if err := command.Start(); err != nil {
-		return err
-	}
-	_ = command.Process.Release()
-	return nil
+	return native.Relaunch(executable, args)
 }

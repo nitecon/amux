@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/nitecon/amux/projects"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worksubmission"
+	"github.com/urfave/cli/v3"
 )
 
 const maxTaskCommentBytes = 65536
@@ -29,22 +29,20 @@ func submissionPreferencesPath(override, configuredEnv string) (string, error) {
 }
 
 func runWorkSubmissionSettings(args []string, stdout, stderr io.Writer, getenv func(string) string) error {
-	flags := flag.NewFlagSet("amux work-submission", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	pathOverride := flags.String("work-preferences", "", "work preference JSON path (default: user config directory)")
-	mode := flags.String("mode", "", "submission mode: commit_and_push or pull_request")
-	branchPrefix := flags.String("branch-prefix", "", "prefix used for pull request branches")
-	flags.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "usage: amux work-submission [--work-preferences PATH] show | set [--mode commit_and_push|pull_request] [--branch-prefix PREFIX]")
-		flags.PrintDefaults()
-	}
+	flags := commandFlags("amux work-submission", stderr)
+	pathOverride := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "work-preferences", Value: "", Usage: "work preference JSON path (default: user config directory)", Destination: pathOverride})
+	mode := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "mode", Value: "", Usage: "submission mode: commit_and_push or pull_request", Destination: mode})
+	branchPrefix := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "branch-prefix", Value: "", Usage: "prefix used for pull request branches", Destination: branchPrefix})
 	if hasTaskHelp(args) {
-		flags.Usage()
+		_, _ = fmt.Fprintln(stderr, "usage: amux work-submission [--work-preferences PATH] show | set [--mode commit_and_push|pull_request] [--branch-prefix PREFIX]")
 		return nil
 	}
-	pos, err := parseTaskFlagsArgs(flags, args, nil)
+	pos, err := parseOperation(context.Background(), flags, args)
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
@@ -64,15 +62,15 @@ func runWorkSubmissionSettings(args []string, stdout, stderr io.Writer, getenv f
 		}
 		return json.NewEncoder(stdout).Encode(worksubmission.PreferencesDocument{WorkSubmission: &preferences})
 	case "set":
-		if !flagWasSet(flags, "mode") && !flagWasSet(flags, "branch-prefix") {
+		if !flags.IsSet("mode") && !flags.IsSet("branch-prefix") {
 			return fmt.Errorf("set requires --mode or --branch-prefix")
 		}
 		var change worksubmission.PreferencesChange
-		if flagWasSet(flags, "mode") {
+		if flags.IsSet("mode") {
 			selected := worksubmission.Mode(*mode)
 			change.Mode = &selected
 		}
-		if flagWasSet(flags, "branch-prefix") {
+		if flags.IsSet("branch-prefix") {
 			change.BranchPrefix = branchPrefix
 		}
 		preferences, err := worksubmission.UpdatePreferences(path, change)
@@ -421,11 +419,14 @@ func validateWorkSubmissionRoot(root string) error {
 }
 
 func runTaskSubmitWork(ctx context.Context, client *gatewayclient.Client, project string, goal *string, origin *storage.AgentOrigin, args []string, preferencesPath string, stdout, stderr io.Writer) error {
-	flags := taskFlags("tasks submit-work", stderr)
-	directory := flags.String("directory", "", "explicit checkout directory to submit from (required)")
-	resume := flags.String("resume-commit", "", "publish this existing task commit without committing files again")
-	pathsFile := flags.String("paths-file", "", "JSON array of exact changed paths, for lists too large for command-line arguments")
-	pos, err := parseTaskFlagsArgs(flags, args, nil)
+	flags := commandFlags("tasks submit-work", stderr)
+	directory := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "directory", Value: "", Usage: "explicit checkout directory to submit from (required)", Destination: directory})
+	resume := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "resume-commit", Value: "", Usage: "publish this existing task commit without committing files again", Destination: resume})
+	pathsFile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "paths-file", Value: "", Usage: "JSON array of exact changed paths, for lists too large for command-line arguments", Destination: pathsFile})
+	pos, err := parseOperation(ctx, flags, args)
 	if err != nil {
 		return err
 	}
@@ -449,29 +450,38 @@ func runTaskSubmitWork(ctx context.Context, client *gatewayclient.Client, projec
 }
 
 func runSubmitWorkAlias(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
-	flags := taskFlags("amux submit-work", stderr)
-	serverURL := flags.String("server", "", "gateway server URL (required unless --enrolled-profile is used)")
-	enrolledProfile := flags.String("enrolled-profile", "", "enrolled gateway credential manifest")
-	project := flags.String("project", "", "gateway project identifier (required)")
-	keyEnv := flags.String("api-key-env", "GATEWAY_API_KEY", "environment variable containing the gateway API credential")
-	goalFlag := flags.String("goal", "", "select a task goal")
-	session := flags.String("session", "", "native agent session UUID")
-	instance := flags.String("instance", "", "native agent instance UUID")
-	provider := flags.String("provider", "", "native provider")
-	hostOS := flags.String("os", "", "native agent OS")
-	directory := flags.String("directory", "", "explicit checkout directory to submit from (required)")
-	resume := flags.String("resume-commit", "", "publish this existing task commit without committing files again")
-	pathsFile := flags.String("paths-file", "", "JSON array of exact changed paths, for lists too large for command-line arguments")
-	preferencesOverride := flags.String("work-preferences", "", "work preference JSON path (default: user config directory)")
-	flags.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "usage: amux submit-work (--server URL | --enrolled-profile PATH) --project IDENT --directory CHECKOUT --session UUID --instance UUID --provider NAME --os OS TASK_UUID MESSAGE [PATHS...]")
-		flags.PrintDefaults()
-	}
+	flags := commandFlags("amux submit-work", stderr)
+	serverURL := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "server", Value: "", Usage: "gateway server URL (required unless --enrolled-profile is used)", Destination: serverURL})
+	enrolledProfile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "enrolled gateway credential manifest", Destination: enrolledProfile})
+	project := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "project", Value: "", Usage: "gateway project identifier (required)", Destination: project})
+	keyEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "api-key-env", Value: "GATEWAY_API_KEY", Usage: "environment variable containing the gateway API credential", Destination: keyEnv})
+	goalFlag := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "goal", Value: "", Usage: "select a task goal", Destination: goalFlag})
+	session := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "session", Value: "", Usage: "native agent session UUID", Destination: session})
+	instance := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "instance", Value: "", Usage: "native agent instance UUID", Destination: instance})
+	provider := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "provider", Value: "", Usage: "native provider", Destination: provider})
+	hostOS := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "os", Value: "", Usage: "native agent OS", Destination: hostOS})
+	directory := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "directory", Value: "", Usage: "explicit checkout directory to submit from (required)", Destination: directory})
+	resume := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "resume-commit", Value: "", Usage: "publish this existing task commit without committing files again", Destination: resume})
+	pathsFile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "paths-file", Value: "", Usage: "JSON array of exact changed paths, for lists too large for command-line arguments", Destination: pathsFile})
+	preferencesOverride := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "work-preferences", Value: "", Usage: "work preference JSON path (default: user config directory)", Destination: preferencesOverride})
 	if hasTaskHelp(args) {
-		flags.Usage()
+		_, _ = fmt.Fprintln(stderr, "usage: amux submit-work (--server URL | --enrolled-profile PATH) --project IDENT --directory CHECKOUT --session UUID --instance UUID --provider NAME --os OS [--paths-file JSON] [--resume-commit SHA] TASK_UUID MESSAGE [PATHS...]")
 		return nil
 	}
-	pos, err := parseTaskFlagsArgs(flags, args, nil)
+	pos, err := parseOperation(ctx, flags, args)
 	if err != nil {
 		return err
 	}
@@ -508,7 +518,7 @@ func runSubmitWorkAlias(ctx context.Context, args []string, stdout, stderr io.Wr
 		return err
 	}
 	var selectedGoal *string
-	if flagWasSet(flags, "goal") {
+	if flags.IsSet("goal") {
 		selectedGoal = goalFlag
 	}
 	receipt, err := submitWork(ctx, client, submitWorkInput{

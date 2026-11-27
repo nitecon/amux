@@ -1,4 +1,4 @@
-package appupdate
+package update
 
 import (
 	"fmt"

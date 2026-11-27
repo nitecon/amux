@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 )
 
 func TestGenerateClientConfig(t *testing.T) {
@@ -22,16 +22,16 @@ func TestGenerateClientConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, ".amux", "config.yml")
-	config, err := clientconfig.Load(path)
-	if err != nil || config.GatewayEndpoint != "https://gateway.example" || config.APIKeyEnv != "GATEWAY_API_KEY" || config.ProjectsDirectory != home || !strings.Contains(output.String(), path) {
-		t.Fatalf("generated config %+v, output %q, error %v", config, output.String(), err)
+	settings, err := config.ReadClient(path)
+	if err != nil || settings.GatewayEndpoint != "https://gateway.example" || settings.APIKeyEnv != "GATEWAY_API_KEY" || settings.ProjectsDirectory != home || !strings.Contains(output.String(), path) {
+		t.Fatalf("generated settings %+v, output %q, error %v", settings, output.String(), err)
 	}
 	before, err := os.ReadFile(path)
 	if err != nil || !bytes.Contains(before, []byte("project_urls: []")) {
 		t.Fatalf("missing editable URL list: %v", err)
 	}
 	if err := run(context.Background(), []string{"--generate-client-config"}, io.Discard, io.Discard, os.Getenv); err == nil {
-		t.Fatal("generation overwrote an existing config")
+		t.Fatal("generation overwrote an existing configuration")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) {

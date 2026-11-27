@@ -21,4 +21,4 @@ WORKDIR /data
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/local/bin/amux"]
-CMD ["server", "run", "--database", "/data/amux.db"]
+CMD ["server", "--database", "/data/amux.db"]

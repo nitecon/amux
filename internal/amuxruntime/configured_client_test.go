@@ -19,7 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/projectidentity"
@@ -62,29 +62,29 @@ func TestConfiguredBindingsMatchFirstCheckoutAndRegisterOnlyExplicitProjects(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := clientconfig.Config{ProjectsDirectory: root}
+	settings := config.Client{ProjectsDirectory: root}
 	ctx := context.Background()
-	bindings, err := configuredBindings(ctx, client, config)
+	bindings, err := configuredBindings(ctx, client, settings)
 	if err != nil || len(bindings) != 1 || bindings["sample"] != first {
 		t.Fatalf("discovery did not select the first matching checkout only: %v, %v", bindings, err)
 	}
-	config.ProjectURLs = []string{remote + ".git"}
-	bindings, err = configuredBindings(ctx, client, config)
+	settings.ProjectURLs = []string{remote + ".git"}
+	bindings, err = configuredBindings(ctx, client, settings)
 	if err != nil || bindings["sample"] != first {
 		t.Fatalf("URL did not resolve existing checkout: %v, %v", bindings, err)
 	}
-	config.Projects = map[string]string{"sample": second}
-	bindings, err = configuredBindings(ctx, client, config)
+	settings.Projects = map[string]string{"sample": second}
+	bindings, err = configuredBindings(ctx, client, settings)
 	if err != nil || bindings["sample"] != second {
 		t.Fatalf("moved %v, %v; expected %s", bindings, err, second)
 	}
-	config.Projects["sample"] = wrong
-	if _, err := configuredBindings(ctx, client, config); err == nil {
+	settings.Projects["sample"] = wrong
+	if _, err := configuredBindings(ctx, client, settings); err == nil {
 		t.Fatal("accepted a checkout for a different repository")
 	}
-	config.Projects = nil
-	config.ProjectURLs = []string{newRemote}
-	bindings, err = configuredBindings(ctx, client, config)
+	settings.Projects = nil
+	settings.ProjectURLs = []string{newRemote}
+	bindings, err = configuredBindings(ctx, client, settings)
 	if err != nil || len(bindings) != 2 || bindings["new-repo"] != newCheckout {
 		t.Fatalf("explicit registration did not bind its checkout: %v, %v", bindings, err)
 	}
@@ -180,8 +180,8 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 	}
 	workerStore.Close()
 	configPath := filepath.Join(home, ".amux", "config.yml")
-	config := clientconfig.Config{EnrolledProfile: workerProfile, WorkerJournal: journal, Providers: []string{"antigravity"}}
-	if err := clientconfig.Save(configPath, config); err != nil {
+	settings := config.Client{EnrolledProfile: workerProfile, WorkerJournal: journal, Providers: []string{"antigravity"}}
+	if err := config.SaveClient(configPath, settings); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,14 +251,14 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 	if _, err := clientcontrol.Request(ctx, configPath, http.MethodPatch, "/checkout", update); err != nil {
 		t.Fatalf("desktop settings update: %v", err)
 	}
-	config, err = clientconfig.Load(configPath)
-	if err != nil || config.ProjectsDirectory != projectsRoot {
-		t.Fatalf("desktop settings were not saved to YAML: %+v, %v", config, err)
+	settings, err = config.ReadClient(configPath)
+	if err != nil || settings.ProjectsDirectory != projectsRoot {
+		t.Fatalf("desktop settings were not saved to YAML: %+v, %v", settings, err)
 	}
 	applyBindings := func(bindings map[string]string) string {
 		t.Helper()
-		config.Projects = bindings
-		if err := clientconfig.Save(configPath, config); err != nil {
+		settings.Projects = bindings
+		if err := config.SaveClient(configPath, settings); err != nil {
 			t.Fatal(err)
 		}
 		var result bytes.Buffer
@@ -348,7 +348,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		saved, err := clientconfig.Load(configPath)
+		saved, err := config.ReadClient(configPath)
 		if err != nil || saved.ExcludedProjects[project] != excluded || saved.Projects[project] != second {
 			t.Fatalf("execution setting or checkout was not saved: %+v, %v", saved, err)
 		}
@@ -383,7 +383,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 	}
 	resumedTask, resumedThread := beginTask("Task runs again after allowing execution", owners[1], second)
 	finishTask(resumedTask, resumedThread, second, owners[1])
-	config.ProjectsDirectory = ""
+	settings.ProjectsDirectory = ""
 	if result := applyBindings(nil); !strings.Contains(result, "Applied 0 project bindings") {
 		t.Fatalf("remove checkout: %s", result)
 	}

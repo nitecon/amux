@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/update"
 )
 
 var httpClient = &http.Client{Timeout: 2 * time.Minute}
@@ -167,8 +167,8 @@ func verifiedAsset(a asset) ([]byte, error) {
 	return data, nil
 }
 
-func previousBundle(target string, p platform) (map[string][]byte, appupdate.Build, error) {
-	var empty appupdate.Build
+func previousBundle(target string, p platform) (map[string][]byte, update.Build, error) {
+	var empty update.Build
 	r, err := readRelease("nitecon/amux/releases/latest")
 	if err != nil {
 		return nil, empty, err
@@ -201,7 +201,7 @@ func previousBundle(target string, p platform) (map[string][]byte, appupdate.Bui
 	if err != nil {
 		return nil, empty, err
 	}
-	var build appupdate.Build
+	var build update.Build
 	payload := bundlePayload(files, p)
 	if err = json.Unmarshal(payload["BUILD.json"], &build); err != nil {
 		return nil, empty, err

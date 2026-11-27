@@ -4,8 +4,6 @@ package desktopapp
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -13,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/internal/amuxruntime"
 	"github.com/nitecon/amux/internal/gatewayprocess"
-	"github.com/nitecon/amux/internal/hidewindow"
 )
 
 func amuxCLIPath() (string, error) {
@@ -38,25 +36,7 @@ func startSecureGateway(ctx context.Context, profile, instanceID, advertisedHost
 }
 
 func requestServerPeeringKey(ctx context.Context, profile string, copyCurrent bool) (string, error) {
-	cli, err := amuxCLIPath()
-	if err != nil {
-		return "", err
-	}
-	args := []string{"server", "peering-key", "--profile", profile}
-	if copyCurrent {
-		args = append(args, "--copy")
-	}
-	command := exec.CommandContext(ctx, cli, args...)
-	hidewindow.Apply(command)
-	output, err := command.Output()
-	if err != nil {
-		return "", fmt.Errorf("request server peering key: %w", err)
-	}
-	key := strings.TrimSpace(string(output))
-	if key == "" {
-		return "", errors.New("server returned an empty peering key")
-	}
-	return key, nil
+	return amuxruntime.ServerPeeringKey(ctx, profile, copyCurrent)
 }
 
 // endpointIsThisHost reports whether a gateway endpoint names this machine:

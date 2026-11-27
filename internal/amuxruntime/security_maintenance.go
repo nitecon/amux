@@ -3,12 +3,12 @@ package amuxruntime
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
+	"github.com/rs/zerolog/log"
 )
 
 func maintainSecureCredentials(ctx context.Context, bus *eventbus.Bus, connections *server.SecureConnections, enrollment *storage.SecurityEnrollment, localURL, instanceID, profile, clusterID string, names []string) {
@@ -17,7 +17,7 @@ func maintainSecureCredentials(ctx context.Context, bus *eventbus.Bus, connectio
 		retireErr := connections.RetireCredentials(ctx, enrollment, now)
 		rotationErr := connections.RefreshServerCertificate(enrollment, profile, clusterID, names, now)
 		if err := errors.Join(provisionErr, retireErr, rotationErr); err != nil && ctx.Err() == nil {
-			log.Printf("secure credential maintenance failed: %v", err)
+			log.Warn().Ctx(ctx).Err(err).Msg("secure credential maintenance failed")
 		}
 	}
 	for ctx.Err() == nil {

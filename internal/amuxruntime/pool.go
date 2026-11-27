@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
+	"github.com/urfave/cli/v3"
 )
 
 func runPool(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) error {
@@ -25,27 +25,38 @@ func runPool(ctx context.Context, args []string, stdout, stderr io.Writer, geten
 }
 
 func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string, registerOnly bool) error {
-	flags := flag.NewFlagSet("amux worker pool", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	state := flags.String("state", "", "durable local worker SQLite path (required)")
-	poolID := flags.String("pool-id", "", "resume a saved pool and its active native sessions")
-	endpoint := flags.String("server", "", "gateway HTTP(S) origin for a new pool")
-	enrolledProfile := flags.String("enrolled-profile", "", "enrolled gateway credential manifest")
-	project := flags.String("project", "", "project identifier for a new pool")
-	directory := flags.String("directory", "", "existing checkout directory for a new pool")
-	provider := flags.String("provider", "antigravity", "native provider: antigravity, codex or claude")
-	slots := flags.Int("slots", 1, "number of concurrent native workers (1-32)")
-	command := flags.String("agent-command", "", "native stdio command as a JSON string array; no shell")
-	goalFlag := flags.String("goal", "", "select a task goal for this pool")
-	keyEnv := flags.String("api-key-env", "GATEWAY_API_KEY", "environment variable containing the gateway credential")
-	noTaskTools := flags.Bool("no-task-tools", false, "disable native amux task tools for this launch")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	flags := commandFlags("amux worker pool", stderr)
+	state := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "state", Value: "", Usage: "durable local worker SQLite path (required)", Destination: state})
+	poolID := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "pool-id", Value: "", Usage: "resume a saved pool and its active native sessions", Destination: poolID})
+	endpoint := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "server", Value: "", Usage: "gateway HTTP(S) origin for a new pool", Destination: endpoint})
+	enrolledProfile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "enrolled gateway credential manifest", Destination: enrolledProfile})
+	project := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "project", Value: "", Usage: "project identifier for a new pool", Destination: project})
+	directory := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "directory", Value: "", Usage: "existing checkout directory for a new pool", Destination: directory})
+	provider := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "provider", Value: "antigravity", Usage: "native provider: antigravity, codex or claude", Destination: provider})
+	slots := new(int)
+	flags.Flags = append(flags.Flags, &cli.IntFlag{Name: "slots", Value: 1, Usage: "number of concurrent native workers (1-32)", Destination: slots})
+	command := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "agent-command", Value: "", Usage: "native stdio command as a JSON string array; no shell", Destination: command})
+	goalFlag := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "goal", Value: "", Usage: "select a task goal for this pool", Destination: goalFlag})
+	keyEnv := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "api-key-env", Value: "GATEWAY_API_KEY", Usage: "environment variable containing the gateway credential", Destination: keyEnv})
+	noTaskTools := new(bool)
+	flags.Flags = append(flags.Flags, &cli.BoolFlag{Name: "no-task-tools", Value: false, Usage: "disable native amux task tools for this launch", Destination: noTaskTools})
+	if err := parseCommand(ctx, flags, args); err != nil {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
+	if flags.Args().Len() != 0 {
 		return fmt.Errorf("unexpected worker pool arguments")
 	}
 	if *enrolledProfile != "" {
@@ -55,12 +66,7 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 			return err
 		}
 	}
-	goalWasSet := false
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "goal" {
-			goalWasSet = true
-		}
-	})
+	goalWasSet := flags.IsSet("goal")
 	if *state == "" {
 		return fmt.Errorf("--state is required")
 	}
@@ -68,15 +74,10 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		return fmt.Errorf("-add-project registers an existing checkout, not a saved pool ID")
 	}
 	if *poolID != "" {
-		var conflict string
-		flags.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "project", "directory", "provider", "slots", "agent-command", "goal":
-				conflict = f.Name
+		for _, name := range []string{"project", "directory", "provider", "slots", "agent-command", "goal"} {
+			if flags.IsSet(name) {
+				return fmt.Errorf("--pool-id resumes saved configuration; --%s cannot replace it", name)
 			}
-		})
-		if conflict != "" {
-			return fmt.Errorf("--pool-id resumes saved configuration; --%s cannot replace it", conflict)
 		}
 	} else if (*endpoint == "" && *enrolledProfile == "") || (!registerOnly && *project == "") || *directory == "" {
 		return fmt.Errorf("new pools require --server or --enrolled-profile, --project and --directory")

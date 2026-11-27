@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/update"
 	"github.com/nitecon/amux/desktop"
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/server"
 )
@@ -52,24 +52,24 @@ func desktopCLI() (string, error) {
 	return packaged, nil
 }
 
-func scheduleDesktopUpdate(ctx context.Context, cli, config, endpoint, archive string, args []string) error {
+func scheduleDesktopUpdate(ctx context.Context, cli, settings, endpoint, archive string, args []string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	// Refuse before stopping the client, so a refused update disturbs nothing.
-	if err := appupdate.CheckInstallable(cli); err != nil {
+	if err := update.CheckInstallable(cli); err != nil {
 		return fmt.Errorf("schedule update: %w", err)
 	}
-	if config != "" {
-		if err := stopClientForUpdate(ctx, config); err != nil {
+	if settings != "" {
+		if err := stopClientForUpdate(ctx, settings); err != nil {
 			return err
 		}
 	}
-	if err := appupdate.StartApply(cli, archive, nil, append([]string{}, args...)); err != nil {
-		if config != "" {
+	if err := update.StartApply(cli, archive, nil, append([]string{}, args...)); err != nil {
+		if settings != "" {
 			clientCLI, resolveErr := amuxCLIPath()
 			if resolveErr == nil {
-				resolveErr = startOrAttachClient(ctx, clientCLI, config, endpoint, "")
+				resolveErr = startOrAttachClient(ctx, clientCLI, settings, endpoint, "")
 			}
 			if resolveErr != nil {
 				return fmt.Errorf("schedule update: %w; restart local client: %v", err, resolveErr)
@@ -80,19 +80,19 @@ func scheduleDesktopUpdate(ctx context.Context, cli, config, endpoint, archive s
 	return nil
 }
 
-func stopClientForUpdate(ctx context.Context, config string) error {
-	if lock, err := server.LockProfile(config); err == nil {
+func stopClientForUpdate(ctx context.Context, settings string) error {
+	if lock, err := server.LockProfile(settings); err == nil {
 		return lock.Close()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := clientcontrol.Request(ctx, config, http.MethodPost, "/shutdown", nil); err != nil {
+	if _, err := clientcontrol.Request(ctx, settings, http.MethodPost, "/shutdown", nil); err != nil {
 		return fmt.Errorf("stop local client for update: %w", err)
 	}
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if lock, err := server.LockProfile(config); err == nil {
+		if lock, err := server.LockProfile(settings); err == nil {
 			return lock.Close()
 		}
 		select {
@@ -104,12 +104,12 @@ func stopClientForUpdate(ctx context.Context, config string) error {
 }
 
 // Switch an existing client only when the desktop's gateway selection changed.
-func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferences, journal string, switchGateway bool, hosted *clientconfig.HostedGateway) error {
-	existing, err := clientconfig.Load(path)
+func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferences, journal string, switchGateway bool, hosted *config.HostedGateway) error {
+	existing, err := config.ReadClient(path)
 	hadConfig := err == nil
 	switch {
 	case err == nil:
-		if filepath.Clean(existing.EnrolledProfile) == filepath.Clean(enrollment) && clientconfig.SameHostedGateway(existing.HostedGateway, hosted) {
+		if filepath.Clean(existing.EnrolledProfile) == filepath.Clean(enrollment) && config.SameHostedGateway(existing.HostedGateway, hosted) {
 			return nil
 		}
 		if !switchGateway {
@@ -127,10 +127,10 @@ func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferen
 			return err
 		}
 	}
-	config := clientconfig.Config{EnrolledProfile: enrollment, HostedGateway: hosted, WorkerJournal: journal, Providers: []string{"antigravity", "codex", "claude"}}
+	settings := config.Client{EnrolledProfile: enrollment, HostedGateway: hosted, WorkerJournal: journal, Providers: []string{"antigravity", "codex", "claude"}}
 	if hadConfig {
-		config.Providers = existing.Providers
-		config.ProjectsDirectory = existing.ProjectsDirectory
+		settings.Providers = existing.Providers
+		settings.ProjectsDirectory = existing.ProjectsDirectory
 	}
 	if preferences != "" {
 		prefs, err := desktop.LoadNavigationPreferences(preferences)
@@ -150,15 +150,15 @@ func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferen
 			}
 		}
 		if !hadConfig {
-			config.ProjectsDirectory = directory
+			settings.ProjectsDirectory = directory
 		}
-		config.Projects = bindings
+		settings.Projects = bindings
 	}
 	if filepath.Clean(existing.EnrolledProfile) == filepath.Clean(enrollment) {
-		config.Projects = existing.Projects
-		config.ProjectURLs = existing.ProjectURLs
+		settings.Projects = existing.Projects
+		settings.ProjectURLs = existing.ProjectURLs
 	}
-	if err := config.Validate(); err != nil {
+	if err := settings.Validate(); err != nil {
 		return err
 	}
 	lock, lockErr := server.LockProfile(path)
@@ -181,18 +181,18 @@ func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferen
 		return lockErr
 	}
 	defer lock.Close()
-	if latest, err := clientconfig.Load(path); err == nil {
-		if filepath.Clean(latest.EnrolledProfile) == filepath.Clean(enrollment) && clientconfig.SameHostedGateway(latest.HostedGateway, hosted) {
+	if latest, err := config.ReadClient(path); err == nil {
+		if filepath.Clean(latest.EnrolledProfile) == filepath.Clean(enrollment) && config.SameHostedGateway(latest.HostedGateway, hosted) {
 			return nil
 		}
-		if !switchGateway || latest.EnrolledProfile != existing.EnrolledProfile || !clientconfig.SameHostedGateway(latest.HostedGateway, existing.HostedGateway) {
+		if !switchGateway || latest.EnrolledProfile != existing.EnrolledProfile || !config.SameHostedGateway(latest.HostedGateway, existing.HostedGateway) {
 			return fmt.Errorf("local client configuration changed during gateway selection")
 		}
-		config.ExcludedProjects = latest.ExcludedProjects
+		settings.ExcludedProjects = latest.ExcludedProjects
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return clientconfig.Save(path, config)
+	return config.SaveClient(path, settings)
 }
 
 func startOrAttachClient(ctx context.Context, cli, path, endpoint, journal string) error {
@@ -243,7 +243,7 @@ func startOrAttachClient(ctx context.Context, cli, path, endpoint, journal strin
 			}
 		}
 	}
-	args := []string{"client", "run", "--config", path}
+	args := []string{"headless", "--config", path}
 	if journal != "" {
 		args = append(args, "--state", journal)
 	}
@@ -282,17 +282,17 @@ func startOrAttachClient(ctx context.Context, cli, path, endpoint, journal strin
 
 // Explicit connection options get their own profile and journal. They can
 // coexist with the default desktop or a headless service.
-func writeOverrideClient(ctx context.Context, root, preferences string, config clientconfig.Config) (string, error) {
-	encoded, err := json.Marshal(config)
+func writeOverrideClient(ctx context.Context, root, preferences string, settings config.Client) (string, error) {
+	encoded, err := json.Marshal(settings)
 	if err != nil {
 		return "", err
 	}
 	key := sha256.Sum256(encoded)
 	path := filepath.Join(root, "client-overrides", hex.EncodeToString(key[:16])+".yml")
-	if config.WorkerJournal == "" {
-		config.WorkerJournal = path + ".workers.db"
+	if settings.WorkerJournal == "" {
+		settings.WorkerJournal = path + ".workers.db"
 	}
-	if _, err := clientconfig.Load(path); err == nil {
+	if _, err := config.ReadClient(path); err == nil {
 		return path, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -302,7 +302,7 @@ func writeOverrideClient(ctx context.Context, root, preferences string, config c
 		if err != nil {
 			return "", err
 		}
-		config.ProjectsDirectory, config.Projects = prefs.ClientCheckoutSettings(config.GatewayEndpoint)
+		settings.ProjectsDirectory, settings.Projects = prefs.ClientCheckoutSettings(settings.GatewayEndpoint)
 	}
 	lock, err := server.LockProfile(path)
 	if err != nil {
@@ -312,14 +312,14 @@ func writeOverrideClient(ctx context.Context, root, preferences string, config c
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if _, err := clientconfig.Load(path); errors.Is(err, os.ErrNotExist) {
-		return path, clientconfig.Save(path, config)
+	if _, err := config.ReadClient(path); errors.Is(err, os.ErrNotExist) {
+		return path, config.SaveClient(path, settings)
 	} else {
 		return path, err
 	}
 }
 
-func hostedGatewaySettings(prefs *desktop.GatewayPreferences) (*clientconfig.HostedGateway, error) {
+func hostedGatewaySettings(prefs *desktop.GatewayPreferences) (*config.HostedGateway, error) {
 	host := "127.0.0.1"
 	if prefs.RemoteHosting {
 		var err error
@@ -335,5 +335,5 @@ func hostedGatewaySettings(prefs *desktop.GatewayPreferences) (*clientconfig.Hos
 		}
 		prefs.ServerInstanceID = id.String()
 	}
-	return &clientconfig.HostedGateway{InstanceID: prefs.ServerInstanceID, AdvertisedHost: host, RemoteHosting: prefs.RemoteHosting}, nil
+	return &config.HostedGateway{InstanceID: prefs.ServerInstanceID, AdvertisedHost: host, RemoteHosting: prefs.RemoteHosting}, nil
 }

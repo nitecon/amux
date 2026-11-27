@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/server"
@@ -336,14 +336,14 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 
 	configPath := filepath.Join(home, ".amux", "config.yml")
 	journal := filepath.Join(t.TempDir(), "workers.db")
-	cfg := clientconfig.Config{
+	cfg := config.Client{
 		GatewayEndpoint: gateway.URL,
 		APIKeyEnv:       "LOCAL_CHAT_MCP_KEY",
 		WorkerJournal:   journal,
 		Projects:        map[string]string{project: checkoutDir},
 		Providers:       []string{},
 	}
-	if err := clientconfig.Save(configPath, cfg); err != nil {
+	if err := config.SaveClient(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -403,19 +403,20 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 	}
 	var claudeMCP struct {
 		Servers map[string]struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal([]byte(mcpConfigJSON), &claudeMCP); err != nil {
 		t.Fatalf("invalid Claude --mcp-config JSON %q: %v", mcpConfigJSON, err)
 	}
 	amuxServer, ok := claudeMCP.Servers["amux"]
-	if !ok || amuxServer.Command == "" {
+	if !ok || amuxServer.Command == "" || amuxServer.Env[ManagedMCPEnv] != "1" {
 		t.Fatalf("Claude --mcp-config missing amux server: %+v", claudeMCP)
 	}
 	claudeJoined := strings.Join(amuxServer.Args, "\x00")
-	for _, want := range []string{"mcp", "--server\x00" + gateway.URL, "--project\x00" + project, "--directory\x00" + checkoutDir, "--local-conversation", "--api-key-env\x00LOCAL_CHAT_MCP_KEY"} {
+	for _, want := range []string{"--server\x00" + gateway.URL, "--project\x00" + project, "--directory\x00" + checkoutDir, "--local-conversation", "--api-key-env\x00LOCAL_CHAT_MCP_KEY"} {
 		if !strings.Contains(claudeJoined, want) {
 			t.Fatalf("Claude amux MCP args missing %q: %q", want, amuxServer.Args)
 		}
@@ -426,6 +427,7 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 	for _, want := range []string{
 		"mcp_servers.amux.command=",
 		"mcp_servers.amux.args=[",
+		`mcp_servers.amux.env={"` + ManagedMCPEnv + `" = "1"}`,
 		`"--local-conversation"`,
 		`"--project","` + project + `"`,
 		`mcp_servers.amux.default_tools_approval_mode="approve"`,

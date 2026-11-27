@@ -23,7 +23,6 @@ func desktopFlags() []cli.Flag {
 		&cli.StringFlag{Local: true, Name: "enrolled-profile", Value: "", Usage: "enrolled gateway credential manifest"},
 		&cli.StringFlag{Local: true, Name: "state", Value: "", Usage: "local worker journal (OS config directory by default in browser mode; --state= disables workers)"},
 		&cli.StringFlag{Local: true, Name: "run-id", Value: "", Usage: "resume this saved worker run alongside the chat"},
-		&cli.StringFlag{Local: true, Name: "task-tools-command", Value: "", Usage: "amux MCP executable (sibling or PATH amux by default for worker pools)"},
 	}
 }
 
@@ -45,7 +44,6 @@ func startDesktop(ctx context.Context, cmd *cli.Command) error {
 		EnrolledProfile:        cmd.String("enrolled-profile"),
 		State:                  cmd.String("state"),
 		RunID:                  cmd.String("run-id"),
-		ToolsCommand:           cmd.String("task-tools-command"),
 		ConfigPath:             cmd.String("config"),
 		IsSet:                  cmd.IsSet,
 	}, os.Args[1:])

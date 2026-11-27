@@ -17,7 +17,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/internal/amuxruntime"
+	"github.com/nitecon/amux/config"
 	"github.com/urfave/cli/v3"
 )
 
@@ -29,11 +29,41 @@ func TestServerConfigIsLoadedWithCommandLineOverrides(t *testing.T) {
 	command := newCommand()
 	// Replacing the startup action isolates config binding from the listener.
 	command.Command("server").Action = func(_ context.Context, server *cli.Command) error {
-		if _, err := amuxruntime.LoadServerConfig(server, server.String("config"), os.Getenv); err != nil {
+		if err := config.InitServer(server.String("config"), server); err != nil {
 			return err
 		}
-		if server.String("database") != "unused.db" || server.Uint64("message-retention-days") != 15 {
-			t.Fatalf("database = %q, retention = %d", server.String("database"), server.Uint64("message-retention-days"))
+		if settings := config.Get().Server; settings.Database != "unused.db" || settings.RetentionDays != 15 {
+			t.Fatalf("database = %q, retention = %d", settings.Database, settings.RetentionDays)
+		}
+		if err := os.WriteFile(path, []byte("database: replacement.db\nmessage-retention-days: 20\n"), 0600); err != nil {
+			return err
+		}
+		if err := config.InitServer(path, server); err != nil {
+			return err
+		}
+		if settings := config.Get().Server; settings.Database != "replacement.db" || settings.RetentionDays != 15 {
+			t.Fatalf("reloaded settings = %+v", settings)
+		}
+		if err := os.WriteFile(path, []byte("database: replacement.db\nprofile: conflicting\n"), 0600); err != nil {
+			return err
+		}
+		if err := config.InitServer(path, server); err == nil {
+			t.Fatal("accepted conflicting server settings")
+		}
+		if settings := config.Get().Server; settings.Database != "replacement.db" || settings.Profile != "" {
+			t.Fatalf("failed reload replaced snapshot: %+v", settings)
+		}
+		settings := config.Get().Server
+		settings.Database = "saved.db"
+		if err := config.SaveServer(path, settings); err != nil {
+			return err
+		}
+		saved, err := config.ReadServer(path, server)
+		if err != nil {
+			return err
+		}
+		if saved.Database != "saved.db" || config.Get().Server.Database != "saved.db" {
+			t.Fatalf("server save did not update file and snapshot: %+v", saved)
 		}
 		return nil
 	}

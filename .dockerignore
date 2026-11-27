@@ -2,8 +2,11 @@
 !go.mod
 !go.sum
 !cmd
-!cmd/amux
-!cmd/amux/*.go
+!cmd/*.go
+!config
+!config/*.go
+!internal
+!internal/**
 !conversation
 !conversation/*.go
 !eventbus
@@ -35,8 +38,8 @@
 !worker/*.go
 
 bin/
-!appupdate
-!appupdate/*.go
+!update
+!update/**
 !browserauth
 !browserauth/*.go
 !bundledtools

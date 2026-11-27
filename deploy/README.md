@@ -2,11 +2,9 @@
 
 The `amux server` command runs the Go server without the desktop application or an interactive login. It defaults to `127.0.0.1:7913`. Bearer mode requires a nonempty API key in `GATEWAY_API_KEY` and TLS for a non-loopback listener. Choose `--database PATH` for a standalone SQLite database or `--profile DIR` to keep `application.sqlite` and the installation identity in `security.sqlite` under one directory. Profile mode retains an existing Rust installation ID and valid root certificate and key, creates a root pair for a fresh profile, and holds the security owner lock for the lifetime of the process. Incomplete or mismatched root material prevents startup.
 
-Run `amux --generate-server-config` to create `amux-server.yml` in the
-current directory. Choose an absolute `database` or `profile` path and
-edit the listener, TLS, and retention settings as needed. The template
-references credential environment variables. It does not contain the
-credentials themselves.
+Create `amux-server.yml` with an absolute `database` or `profile` path.
+Use the option names shown by `amux server --help` as YAML keys.
+Keep credentials in the environment variables referenced by the configuration.
 
 Start the server with `amux server --config /absolute/path/to/amux-server.yml`.
 For systemd, use that command as `ExecStart` and keep the existing
@@ -15,17 +13,15 @@ arguments for Windows or macOS. Explicit CLI flags override the matching YAML
 settings. For the repeatable `profile-tls-name` setting, YAML takes a list and
 explicit CLI names replace that list.
 
-The Go server currently provides the server API and its server-owned workers. Native provider workers are a separate `amux worker pool` process; this deployment does not start a provider pool or claim full desktop or gateway deployment parity.
+Run native providers through a configured Amux client.
 
 With `--profile`, supply `--profile-tls-name NAME` once per DNS name or IP address to serve HTTPS with a server certificate signed by the profile root. Clients must trust the public `root.pem` and connect using a configured name. Configure profile TLS names or a manual certificate/key pair. Keep all private keys in the profile directory.
 
 For certificate authentication, add `--secure-instance-id UUID` to profile mode and reuse that administrator instance ID across restarts. Profile-managed TLS includes localhost, loopback IPs, and the system hostname (`hostname -f` when available). For remote enrollment, add any additional DNS names or IPs clients use with `--profile-tls-name` and bind both listeners to reachable addresses. Restart the server to apply SAN changes. The public discovery listener serves the profile CA and secure port. It defaults to the secure listen host on port 24181 and can be set with `--discovery-bind`.
 
-From the server host, `amux server peering-key` prints a short-lived peering key. It uses the desktop server profile in the OS config directory (for example `~/.config/amux` on Linux); add `--profile DIR` for a different profile. Add `--copy` to retrieve the current key without replacing it. The command uses the loopback administrator certificate in the profile.
-
-On the client, run `amux client enroll --server https://NAME:PORT --state-dir DIR` and supply the peering key on stdin. The command prints the saved `client-profile.json` path. Pass that path with `--enrolled-profile` to the headless worker, desktop, or console commands. Keep the client state directory private because it contains the client private key.
-
-Run `amux client renew --enrolled-profile PATH` to renew the certificate for that client identity.
+Generate a peering key in the desktop gateway settings. Enroll from the
+client desktop and keep the resulting credential manifest and private key
+readable only by the account that runs Amux.
 
 For a Rust-to-Go gateway cutover, stop the Rust gateway and back up its full
 profile directory. Start the Go gateway with that profile, retaining
@@ -134,13 +130,12 @@ enrollment manifest and its private key readable only by the service account.
 
 ```sh
 sudo install -d -m 0700 -o amux -g amux /var/lib/amux-client /var/lib/amux-client/.amux
-sudo -u amux /usr/local/bin/amux client enroll --server https://GATEWAY:PORT \
-  --state-dir /var/lib/amux-client
 ```
 
-Supply the peering key on stdin. Save the following configuration as
-`/var/lib/amux-client/.amux/config.yml`, owned by the `amux` account. Replace
-the enrollment path with the manifest path printed by enrollment.
+Save the following configuration as `/var/lib/amux-client/.amux/config.yml`,
+owned by the `amux` account. Set the manifest path to the account's existing
+enrollment.
+
 
 ```yaml
 enrolled_profile: '/var/lib/amux-client/client-profile.json'
@@ -159,15 +154,14 @@ Install [amux-client.service](amux-client.service) under
 `/etc/systemd/system`, run `systemctl daemon-reload`, then run
 `systemctl enable --now amux-client`. Edit the YAML and use
 `systemctl reload amux-client` to reload without restarting. Use
-`journalctl -u amux-client` for the reload result, or request it directly with
-`sudo -u amux env HOME=/var/lib/amux-client /usr/local/bin/amux --reload-config`.
+`journalctl -u amux-client` for the reload result.
 The project’s Alerts tab shows which hosts last reported an unavailable checkout.
 Keep one client per service account and machine for checkout reporting.
 
 ### Agent tools on desktop and headless hosts
 
 Both entry points give Codex, Claude, and Antigravity the same project-scoped
-`amux mcp` stdio server. Task operations and `submit_work` use the Go gateway.
+stdio MCP server registered by the local Amux client. Task operations and `submit_work` use the Go gateway.
 The current code navigation and knowledge-graph tools are exposed when
 `agent-tools` is installed, and the memory tools when the `memory` executable
 is installed. Put those executables beside `amux` or set `AMUX_BUNDLED_DIR`.
@@ -196,12 +190,10 @@ providers: [codex, antigravity]
 ```
 
 Point `enrolled_profile` at the manifest from your actual enrollment.
-Run `amux --generate-client-config` to create the default file without
-replacing one that already exists. For an existing enrollment in another
-directory, pass `--enrolled-profile /absolute/path/to/client-profile.json`.
-The client reads the gateway endpoint from that manifest unless you set
-`gateway_endpoint`. To use a bearer gateway, generate with
-`--server URL --api-key-env ENV_NAME`.
+The client reads its gateway endpoint from the manifest unless you set
+`gateway_endpoint`. For bearer authentication, set `gateway_endpoint` and
+`api_key_env` in YAML.
+
 
 The client matches Git origins directly under `projects_directory` to
 active gateway projects. If multiple checkouts share an origin, it uses the
@@ -219,17 +211,14 @@ excluded_projects:
 ```
 
 The checkout stays bound and reported, but this client runs no workers or local
-chats for that project. Apply the edit with `amux --reload-config`, or use
-`amux --reload-config --config PATH` for a separate profile. On Unix, you can
-also send `SIGHUP` to the client. Existing workers drain after the reload.
+chats for that project. Restart the client or send it `SIGHUP` on Unix. Existing workers drain after the reload.
 The desktop menu action writes the same key. Switching gateways preserves the
 exclusion entries when the desktop rewrites the same profile.
 
 Start the client with `amux headless`. It keeps its worker journal alongside
 the YAML as `workers.db`. Set `worker_journal` to the absolute path of an
 existing journal to reuse it across desktop and service starts.
-After editing projects or providers, use `amux --reload-config` or send the
-client `SIGHUP` on Unix. Invalid configurations leave the last accepted bindings
+After editing projects or providers, restart the client or send it `SIGHUP` on Unix. Invalid configurations leave the last accepted bindings
 in effect. Removed or moved workers drain their current runs before a replacement
 can take work. Changing the enrollment manifest path requires a client restart.
 
@@ -238,6 +227,5 @@ local enrollment and starts the client. The client starts the gateway as a
 separate `amux server` process. Closing the desktop leaves the client and
 gateway running. Reopening the desktop reuses the services.
 
-Use `amux headless --config PATH` and `amux --reload-config --config PATH`
-for a separate client profile. Explicit desktop gateway overrides use their
+Use `amux headless --config PATH` for a separate client profile. Explicit desktop gateway overrides use their
 own profile and journal, so they can coexist with the default client.

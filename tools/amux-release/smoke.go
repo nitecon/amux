@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,11 +11,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/nitecon/amux/appupdate"
+	"github.com/nitecon/amux/update"
 )
 
-func verifyBundle(files map[string][]byte, target string, p platform) (appupdate.Build, error) {
-	var b appupdate.Build
+func verifyBundle(files map[string][]byte, target string, p platform) (update.Build, error) {
+	var b update.Build
 	if err := json.Unmarshal(files["BUILD.json"], &b); err != nil {
 		return b, err
 	}
@@ -80,7 +79,7 @@ func smoke(target string, p platform, directory, archivePath, revision string) e
 	if err = writeFiles(baselineDir, previous); err != nil {
 		return err
 	}
-	if err = smokeExecutables(baselineDir, p, baseline.GoOS == ""); err != nil {
+	if err = smokeExecutables(baselineDir, p, baseline.GoOS == "", true); err != nil {
 		return err
 	}
 	file, err := os.Open(archivePath)
@@ -111,10 +110,10 @@ func smoke(target string, p platform, directory, archivePath, revision string) e
 		return err
 	}
 	fmt.Printf("Verified baseline %s (%s) and package %s (%s)\n", baseline.Version, baseline.Revision, b.Version, b.Revision)
-	return smokeExecutables(directory, p, false)
+	return smokeExecutables(directory, p, false, false)
 }
 
-func smokeExecutables(dir string, p platform, rust bool) error {
+func smokeExecutables(dir string, p platform, rust, baseline bool) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -126,9 +125,9 @@ func smokeExecutables(dir string, p platform, rust bool) error {
 		dir = filepath.Join(dir, macExecutables)
 	}
 	names := p.binaries()
-	cli := exec.Command(filepath.Join(dir, names[0]))
+	cli := exec.Command(filepath.Join(dir, names[0]), "--help")
 	if rust {
-		cli.Args = append(cli.Args, "--version")
+		cli.Args = []string{cli.Path, "--version"}
 	}
 	output, err := cli.CombinedOutput()
 	if rust {
@@ -136,8 +135,10 @@ func smokeExecutables(dir string, p platform, rust bool) error {
 			return fmt.Errorf("Rust CLI smoke failed: %s (%v)", output, err)
 		}
 	} else {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !bytes.Contains(output, []byte("usage: amux")) {
+		if baseline && err != nil {
+			output, err = exec.Command(cli.Path, "server", "run", "--help").CombinedOutput()
+		}
+		if err != nil || !bytes.Contains(bytes.ToLower(output), []byte("amux")) {
 			return fmt.Errorf("Go CLI smoke failed: %s (%v)", output, err)
 		}
 	}

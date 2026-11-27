@@ -8,7 +8,8 @@ import (
 	"github.com/nitecon/amux/internal/localconversation"
 	"io"
 	"os"
-	"path/filepath"
+
+	"github.com/nitecon/amux/config"
 )
 
 const maxNavigationPreferencesSize = 1 << 20
@@ -141,33 +142,8 @@ func SaveNavigationPreferences(path string, prefs NavigationPreferences) error {
 	if len(data) > maxNavigationPreferencesSize {
 		return errors.New("navigation preferences file exceeds 1 MiB")
 	}
-	parent := filepath.Dir(path)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return fmt.Errorf("create navigation preferences directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(parent, ".navigation-preferences-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create navigation preferences temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("set navigation preferences permissions: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write navigation preferences: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("sync navigation preferences: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close navigation preferences: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace navigation preferences: %w", err)
+	if err := config.WriteFile(path, data); err != nil {
+		return fmt.Errorf("save navigation preferences: %w", err)
 	}
 	return nil
 }

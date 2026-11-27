@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nitecon/amux/config"
 )
 
 const maxPreferencesBytes = 1 << 20
@@ -171,32 +173,7 @@ func writePreferencesFile(path string, data []byte) error {
 	if len(data) > maxPreferencesBytes {
 		return errors.New("work preferences exceed 1 MiB")
 	}
-	parent := filepath.Dir(path)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return fmt.Errorf("create work preference directory: %w", err)
-	}
-	file, err := os.CreateTemp(parent, ".work-preferences-*")
-	if err != nil {
-		return fmt.Errorf("create work preference file: %w", err)
-	}
-	tempPath := file.Name()
-	defer os.Remove(tempPath)
-	if err := file.Chmod(0o600); err != nil {
-		file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := config.WriteFile(path, data); err != nil {
 		return fmt.Errorf("save work submission preferences: %w", err)
 	}
 	return nil

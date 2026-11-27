@@ -3,32 +3,35 @@ package amuxruntime
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
+	"github.com/urfave/cli/v3"
 )
 
 func runHeadlessClient(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("amux client run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	configPath := flags.String("config", "", "client configuration YAML (default ~/.amux/config.yml)")
-	state := flags.String("state", "", "durable worker journal")
-	profile := flags.String("enrolled-profile", "", "enrolled gateway manifest")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+	flags := commandFlags("amux client run", stderr)
+	configPath := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "config", Value: "", Usage: "client configuration YAML (default ~/.amux/config.yml)", Destination: configPath})
+	state := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "state", Value: "", Usage: "durable worker journal", Destination: state})
+	profile := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "enrolled-profile", Value: "", Usage: "enrolled gateway manifest", Destination: profile})
+	if err := parseCommand(ctx, flags, args); err != nil {
+		if errors.Is(err, errCommandHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
+	if flags.Args().Len() != 0 {
 		return fmt.Errorf("unexpected headless client arguments")
 	}
 	return StartClient(ctx, *configPath, *state, *profile, stdout, stderr)
@@ -39,7 +42,7 @@ func StartClient(ctx context.Context, configPath, state, profile string, stdout,
 		path := configPath
 		if path == "" {
 			var err error
-			path, err = clientconfig.DefaultPath()
+			path, err = config.DefaultClientPath()
 			if err != nil {
 				return err
 			}
@@ -47,22 +50,30 @@ func StartClient(ctx context.Context, configPath, state, profile string, stdout,
 		return runConfiguredClient(ctx, path, state, stdout, stderr)
 	}
 	if state == "" || configPath != "" {
-		return fmt.Errorf("usage: amux client run --state PATH --enrolled-profile PATH")
+		return fmt.Errorf("usage: amux headless --state PATH --enrolled-profile PATH")
 	}
 	manifest, err := absoluteEnrolledManifest(profile)
 	if err != nil {
 		return err
 	}
-	client, _, err := gatewayClientForProfile("", manifest, "")
+	state, err = filepath.Abs(state)
 	if err != nil {
 		return err
 	}
-	lock, err := server.LockProfile(state)
+	if err := config.UseClient(config.Client{EnrolledProfile: manifest, WorkerJournal: state}); err != nil {
+		return err
+	}
+	settings := config.Get().Client
+	client, _, err := gatewayClientForProfile("", settings.EnrolledProfile, "")
+	if err != nil {
+		return err
+	}
+	lock, err := server.LockProfile(settings.WorkerJournal)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	store, err := storage.Open(ctx, state)
+	store, err := storage.Open(ctx, settings.WorkerJournal)
 	if err != nil {
 		return err
 	}
@@ -79,9 +90,10 @@ func StartClient(ctx context.Context, configPath, state, profile string, stdout,
 	if err != nil {
 		return err
 	}
-	open := worker.OpenWithNativeTools(worker.NativeToolsConfig{Executable: executable, Server: client.Endpoint(), EnrolledProfile: manifest})
+	open := worker.OpenWithNativeTools(worker.NativeToolsConfig{Executable: executable, Server: client.Endpoint(),
+		EnrolledProfile: settings.EnrolledProfile, ManagedMCPEnv: ManagedMCPEnv})
 	if len(pools) == 0 {
-		return fmt.Errorf("no checkouts registered for the enrolled gateway; register one with -add-project")
+		return fmt.Errorf("no checkouts registered for the enrolled gateway")
 	}
 	type runningPool struct {
 		cancel context.CancelFunc

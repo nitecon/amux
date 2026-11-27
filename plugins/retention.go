@@ -2,9 +2,9 @@ package plugins
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/nitecon/amux/router"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -42,7 +42,7 @@ func RetentionPlugin(store RetentionStore, retentionDays, botRetentionDays uint6
 				return router.Outcome{Kind: router.Fail, Error: err.Error()}
 			}
 			if ran {
-				slog.InfoContext(ctx, "Purged old messages", "count", deleted)
+				log.Info().Ctx(ctx).Int64("count", deleted).Msg("Purged old messages")
 			}
 			return router.Outcome{Kind: router.Continue}
 		}},

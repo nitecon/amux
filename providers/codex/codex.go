@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -182,6 +183,18 @@ func appendMCPConfig(command []string, mcp *providerprocess.MCPConfig) []string 
 		envVars[i] = tomlString(name)
 	}
 	add("env_vars", "["+strings.Join(envVars, ",")+"]")
+	keys := make([]string, 0, len(mcp.Env))
+	for name := range mcp.Env {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	if len(keys) != 0 {
+		entries := make([]string, 0, len(keys))
+		for _, name := range keys {
+			entries = append(entries, tomlString(name)+" = "+tomlString(mcp.Env[name]))
+		}
+		add("env", "{"+strings.Join(entries, ", ")+"}")
+	}
 	if !hasConfigOverride(command, "mcp_servers.amux.default_tools_approval_mode") {
 		add("default_tools_approval_mode", tomlString("approve"))
 	}

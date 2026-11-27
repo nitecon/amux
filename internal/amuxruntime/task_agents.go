@@ -3,23 +3,23 @@ package amuxruntime
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/projectidentity"
+	"github.com/urfave/cli/v3"
 )
 
 func runTaskAgents(ctx context.Context, client *gatewayclient.Client, project string, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("tasks agents", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	osFilter := flags.String("os", "", "filter live agents by OS: linux, windows, or macos")
-	if err := flags.Parse(args); err != nil {
+	flags := commandFlags("tasks agents", stderr)
+	osFilter := new(string)
+	flags.Flags = append(flags.Flags, &cli.StringFlag{Name: "os", Value: "", Usage: "filter live agents by OS: linux, windows, or macos", Destination: osFilter})
+	if err := parseCommand(ctx, flags, args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 {
+	if flags.Args().Len() != 0 {
 		return fmt.Errorf("tasks agents does not accept positional arguments")
 	}
 	directory, err := os.Getwd()

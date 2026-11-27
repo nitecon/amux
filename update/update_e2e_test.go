@@ -1,6 +1,6 @@
 //go:build !windows
 
-package appupdate
+package update
 
 import (
 	"archive/tar"
@@ -36,7 +36,7 @@ func TestStagedFlatUpdateRunsHelperAndRestartsDesktop(t *testing.T) {
 	}
 	cli := filepath.Join(installDir, cliName)
 	projectRoot := projectRoot(t)
-	cliBuild := exec.Command("go", "build", "-trimpath", "-o", cli, "./cmd/amux")
+	cliBuild := exec.Command("go", "build", "-trimpath", "-o", cli, "./cmd")
 	cliBuild.Dir = projectRoot
 	if output, err := cliBuild.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI helper: %v\n%s", err, output)

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/nitecon/amux/channels"
 	"github.com/nitecon/amux/plugins"
 	"github.com/nitecon/amux/router"
 	"github.com/nitecon/amux/storage"
+	"github.com/rs/zerolog/log"
 )
 
 const discordInboundQueueSize = 256
@@ -38,7 +38,7 @@ func registerDiscordRooms(ctx context.Context, store *storage.Store, discord dis
 			continue
 		}
 		if err := discord.RegisterRoom(project.RoomID, project.LastMsgID); err != nil {
-			slog.WarnContext(ctx, "skip invalid Discord project room", "project", project.Ident, "error", err)
+			log.Warn().Ctx(ctx).Str("project", project.Ident).Err(err).Msg("skip invalid Discord project room")
 		}
 	}
 	return nil
@@ -59,9 +59,9 @@ func startDiscordIngress(ctx context.Context, discord discordInboundProvider, em
 		err := discord.Run(ctx, events)
 		close(events)
 		if err != nil && !(ctx.Err() != nil && errors.Is(err, context.Canceled)) {
-			slog.ErrorContext(ctx, "Discord inbound source stopped", "error", err)
+			log.Error().Ctx(ctx).Err(err).Msg("Discord inbound source stopped")
 		} else if err == nil && ctx.Err() == nil {
-			slog.ErrorContext(ctx, "Discord inbound source stopped unexpectedly")
+			log.Error().Ctx(ctx).Msg("Discord inbound source stopped unexpectedly")
 		}
 		run.providerDone <- err
 	}()

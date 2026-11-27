@@ -1,4 +1,4 @@
-package appupdate
+package update
 
 import (
 	"bytes"
@@ -130,8 +130,10 @@ func findReleaseAssets(latest release, prefix, triple string) (releaseAsset, rel
 }
 
 func readInstalled(dir string) (Build, error) {
-	if app := appBundle(dir); app != "" {
-		dir = filepath.Join(app, "Contents", "Resources")
+	if bundle, ok := native.(bundleUpdater); ok {
+		if app := bundle.AppBundle(dir); app != "" {
+			dir = bundle.MetadataDir(app)
+		}
 	}
 	return readBuild(dir)
 }
@@ -170,14 +172,14 @@ func verifyInstalled(dir string, build Build, cli, gui string) error {
 	if err != nil {
 		return err
 	}
-	flatSourceNames := runtime.GOOS == "linux" && cli == canonicalCLI+".bin" && gui == canonicalGUI+".bin"
-	if (!flatSourceNames && (cli != canonicalCLI || gui != canonicalGUI)) || build.Target != triple || build.GUIBinary != canonicalGUI || !revisionPattern.MatchString(build.Revision) {
+	localCLI, localGUI := native.LocalNames(cli, canonicalCLI, canonicalGUI)
+	if (cli != localCLI || gui != localGUI) || build.Target != triple || build.GUIBinary != canonicalGUI || !revisionPattern.MatchString(build.Revision) {
 		return errors.New("installed build platform or revision metadata differs")
 	}
-	if app := appBundle(dir); app != "" {
-		return verifyApp(app, cli, gui)
-	}
-	if triple == "aarch64-apple-darwin" {
+	if bundle, ok := native.(bundleUpdater); ok {
+		if app := bundle.AppBundle(dir); app != "" {
+			return bundle.VerifyApp(app, cli, gui)
+		}
 		return errors.New("macOS updates require an amux app bundle")
 	}
 	files := map[string]string{cli: build.BinarySHA256, gui: build.GUIBinarySHA256,

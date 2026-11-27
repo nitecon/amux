@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/nitecon/amux/internal/clientconfig"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/projectidentity"
 )
 
@@ -54,8 +54,8 @@ func PrepareCheckout(ctx context.Context, configPath string, input CheckoutReque
 }
 
 // LoadProfile returns the connection settings accepted by the running client.
-func LoadProfile(ctx context.Context, configPath string) (clientconfig.Config, error) {
-	var profile clientconfig.Config
+func LoadProfile(ctx context.Context, configPath string) (config.Client, error) {
+	var profile config.Client
 	data, err := Request(ctx, configPath, http.MethodGet, "/profile", nil)
 	if err == nil {
 		err = json.Unmarshal(data, &profile)

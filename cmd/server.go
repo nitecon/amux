@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/internal/amuxruntime"
 	"github.com/urfave/cli/v3"
 )
@@ -31,24 +32,8 @@ func startServer(ctx context.Context, cmd *cli.Command) error {
 	if err := noArguments(cmd); err != nil {
 		return err
 	}
-	getenv, err := amuxruntime.LoadServerConfig(cmd, cmd.String("config"), os.Getenv)
-	if err != nil {
+	if err := config.InitServer(cmd.String("config"), cmd); err != nil {
 		return err
 	}
-	return amuxruntime.Serve(ctx, amuxruntime.ServerOptions{
-		Database:          cmd.String("database"),
-		Profile:           cmd.String("profile"),
-		SecureInstance:    cmd.String("secure-instance-id"),
-		DiscoveryBind:     cmd.String("discovery-bind"),
-		ProfileTLSNames:   cmd.StringSlice("profile-tls-name"),
-		Listen:            cmd.String("listen"),
-		KeyEnv:            cmd.String("api-key-env"),
-		CertPath:          cmd.String("tls-cert"),
-		KeyPath:           cmd.String("tls-key"),
-		RetentionDays:     cmd.Uint64("message-retention-days"),
-		BotRetentionDays:  cmd.Uint64("bot-message-retention-days"),
-		DiscordTokenEnv:   cmd.String("discord-token-env"),
-		DiscordGuildID:    cmd.String("discord-guild-id"),
-		DiscordCategoryID: cmd.String("discord-category-id"),
-	}, cmd.Writer, cmd.ErrWriter, getenv)
+	return amuxruntime.Serve(ctx, config.Get().Server, cmd.Writer, cmd.ErrWriter, os.Getenv)
 }

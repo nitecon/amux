@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/nitecon/amux/router"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type retentionStoreFunc func(context.Context, router.Event, uint64, uint64) (bool, int64, error)
@@ -60,9 +61,9 @@ func TestRetentionPluginForwardsEventConfigAndLogsOnlyDeletedCount(t *testing.T)
 	var gotEvent router.Event
 	var gotRetentionDays, gotBotRetentionDays uint64
 	var logs bytes.Buffer
-	originalLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(originalLogger) })
+	originalLogger := log.Logger
+	log.Logger = zerolog.New(&logs)
+	t.Cleanup(func() { log.Logger = originalLogger })
 	plugin := RetentionPlugin(retentionStoreFunc(func(ctx context.Context, event router.Event, retentionDays, botRetentionDays uint64) (bool, int64, error) {
 		gotContext, gotEvent = ctx, event
 		gotRetentionDays, gotBotRetentionDays = retentionDays, botRetentionDays
