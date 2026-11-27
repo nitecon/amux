@@ -188,6 +188,7 @@ func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferen
 		if !switchGateway || latest.EnrolledProfile != existing.EnrolledProfile || !clientconfig.SameHostedGateway(latest.HostedGateway, existing.HostedGateway) {
 			return fmt.Errorf("local client configuration changed during gateway selection")
 		}
+		config.ExcludedProjects = latest.ExcludedProjects
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

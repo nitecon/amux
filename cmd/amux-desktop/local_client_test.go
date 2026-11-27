@@ -176,10 +176,11 @@ func TestChangingGatewayStopsPreviousClientBeforeReplacingConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")
 	current := clientconfig.Config{
-		EnrolledProfile: filepath.Join(dir, "old", "client-profile.json"),
-		WorkerJournal:   filepath.Join(dir, "workers.db"),
-		Projects:        map[string]string{"old-project": filepath.Join(dir, "old-checkout")},
-		Providers:       []string{"codex"},
+		EnrolledProfile:  filepath.Join(dir, "old", "client-profile.json"),
+		WorkerJournal:    filepath.Join(dir, "workers.db"),
+		Projects:         map[string]string{"old-project": filepath.Join(dir, "old-checkout")},
+		Providers:        []string{"codex"},
+		ExcludedProjects: map[string]bool{"old-project": true},
 	}
 	if err := clientconfig.Save(path, current); err != nil {
 		t.Fatal(err)
@@ -212,7 +213,8 @@ func TestChangingGatewayStopsPreviousClientBeforeReplacingConfig(t *testing.T) {
 	}
 	config, err := clientconfig.Load(path)
 	if err != nil || config.EnrolledProfile != replacement || config.WorkerJournal != current.WorkerJournal ||
-		len(config.Projects) != 0 || len(config.Providers) != 1 || config.Providers[0] != "codex" {
+		len(config.Projects) != 0 || len(config.Providers) != 1 || config.Providers[0] != "codex" ||
+		!config.ExcludedProjects["old-project"] {
 		t.Fatalf("unexpected replacement configuration: %+v, %v", config, err)
 	}
 }
