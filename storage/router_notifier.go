@@ -109,14 +109,20 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 			continue
 		}
 		newTask := routerNotifierNewTask(event.ID, payload.Task)
+		requesterResult := routerNotifierRequesterResult(kind, payload.Task, agent)
 		heading, instructions := delegatedInspectionGuidance(payload.Task)
 		if kind == "task_user_review" {
 			heading = "Task ready for user review"
 			instructions = "The task is waiting for a user decision. Read its review action and submitted result."
 		}
-		if kind == "task_commented" && heading == "" && userComment(payload.Comment) {
-			heading = "User commented on task"
-			instructions = "The user wrote this comment on the task and reads replies there, not in this conversation. Act on it, then answer with task_comment on this task."
+		if kind == "task_commented" && !requesterResult && userComment(payload.Comment) {
+			const reply = "The user wrote this comment on the task and reads replies there, not in this conversation. Act on it, then answer with task_comment on this task."
+			if heading == "" {
+				heading = "User commented on task"
+				instructions = reply
+			} else {
+				instructions += " " + reply
+			}
 		}
 		notificationEvent := struct {
 			Kind      string          `json:"kind"`
@@ -128,7 +134,7 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 		}{Kind: kind, Project: payload.Project, CreatedAt: event.EmittedAt, Task: payload.Task, Comment: payload.Comment, Origin: payload.Actor}
 		notice, err := json.Marshal(map[string]any{
 			"target": presence.Origin.SessionID, "project": payload.Project, "mode": "recipient",
-			"require_idle": routerNotifierRequesterResult(kind, payload.Task, agent),
+			"require_idle": requesterResult,
 			"new_task":     newTask, "heading": heading, "instructions": instructions,
 			"event": notificationEvent,
 		})

@@ -390,3 +390,46 @@ func TestUserCommentNotificationAsksForTaskReply(t *testing.T) {
 		}
 	}
 }
+
+func TestUserCommentReplyCueOnlyForOwnerNotRequester(t *testing.T) {
+	s := taskStore(t)
+	defer s.Close()
+	ctx := context.Background()
+	registry := notifierRegistry(t)
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	requester := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: "7c2f7a10-1111-4111-8111-111111111111", InstanceID: "7c2f7a10-2222-4222-8222-222222222222", Provider: "claude", OS: "linux"}}
+	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{owner, requester}}, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("presence accepted=%t err=%v", ok, err)
+	}
+	task := `{"status":"in_progress","owner_origin":{"session_id":"` + notifierOwnerSession + `","instance_id":"` + notifierOwnerInstance + `"},"requester":{"origin":{"session_id":"7c2f7a10-1111-4111-8111-111111111111","instance_id":"7c2f7a10-2222-4222-8222-222222222222"}}}`
+	payload := `{"project":"tasks","task":` + task + `,"comment":{"author_type":"user","content":"done?"},"actor":null}`
+	if err := s.ReconcileRouterNotifiers(ctx, registry, notifierCause(t, s, "task.commented", payload)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT payload FROM router_events WHERE id='agent.notify'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var notice struct {
+			Target       string `json:"target"`
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal([]byte(raw), &notice); err != nil {
+			t.Fatal(err)
+		}
+		got[notice.Target] = notice.Instructions
+	}
+	if !strings.Contains(got[notifierOwnerSession], "task_comment") {
+		t.Fatalf("owner instructions=%q", got[notifierOwnerSession])
+	}
+	if instructions, ok := got["7c2f7a10-1111-4111-8111-111111111111"]; !ok || instructions != "" {
+		t.Fatalf("requester delivered=%t instructions=%q", ok, instructions)
+	}
+}
