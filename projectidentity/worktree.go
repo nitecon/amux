@@ -30,15 +30,15 @@ func ReadWorktreeStatus(ctx context.Context, directory string) (WorktreeStatus, 
 	}
 	commits, err := observe(ctx, checkout.Directory, "log", "-8", "--format=%h  %s")
 	if err != nil {
-		if ctx.Err() != nil {
-			return WorktreeStatus{}, ctx.Err()
+		if observeContextError(err) {
+			return WorktreeStatus{}, err
 		}
 		// Git treats log on an unborn branch as an error; the branch and short
 		// status remain useful, with no recent commits to display.
 		if _, headErr := observe(ctx, checkout.Directory, "rev-parse", "--verify", "--quiet", "HEAD"); headErr == nil {
 			return WorktreeStatus{}, err
-		} else if ctx.Err() != nil {
-			return WorktreeStatus{}, ctx.Err()
+		} else if observeContextError(headErr) {
+			return WorktreeStatus{}, headErr
 		}
 		commits = ""
 	}

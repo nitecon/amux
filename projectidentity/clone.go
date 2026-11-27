@@ -151,6 +151,9 @@ func CloneOrigin(ctx context.Context, directory string) (*string, error) {
 	}
 	origin, err := observe(ctx, identity.Directory, "config", "--local", "--get", "remote.origin.url")
 	if err != nil {
+		if observeContextError(err) {
+			return nil, err
+		}
 		// Git exits nonzero when a checkout has no configured origin.
 		return nil, nil
 	}
@@ -278,6 +281,9 @@ func reusableCheckout(ctx context.Context, destination, repository, parent strin
 	}
 	root, err := observe(ctx, path, "rev-parse", "--show-toplevel")
 	if err != nil {
+		if observeContextError(err) {
+			return "", fmt.Errorf("verify checkout %s: %w", destination, err)
+		}
 		return "", fmt.Errorf("%s already exists and is not a checkout of the requested repository", destination)
 	}
 	root = strings.TrimRight(root, "\r\n")
@@ -291,7 +297,13 @@ func reusableCheckout(ctx context.Context, destination, repository, parent strin
 		return path, nil
 	}
 	origin, originErr := observe(ctx, path, "config", "--local", "--get", "remote.origin.url")
-	if originErr != nil || !sameRepository(parent, repository, strings.TrimRight(origin, "\r\n"), path) {
+	if originErr != nil {
+		if observeContextError(originErr) {
+			return "", fmt.Errorf("verify checkout %s: %w", destination, originErr)
+		}
+		return "", fmt.Errorf("%s already exists and is not a checkout of the requested repository", destination)
+	}
+	if !sameRepository(parent, repository, strings.TrimRight(origin, "\r\n"), path) {
 		return "", fmt.Errorf("%s already exists and is not a checkout of the requested repository", destination)
 	}
 	return completeCheckout(ctx, path, destination)
@@ -299,6 +311,9 @@ func reusableCheckout(ctx context.Context, destination, repository, parent strin
 
 func completeCheckout(ctx context.Context, path, destination string) (string, error) {
 	_, headErr := observe(ctx, path, "rev-parse", "--verify", "HEAD^{commit}")
+	if observeContextError(headErr) {
+		return "", fmt.Errorf("verify checkout %s: %w", destination, headErr)
+	}
 	marker, markerErr := os.Stat(filepath.Join(path, filepath.FromSlash(cloneMarker)))
 	if headErr != nil && (markerErr != nil || !marker.Mode().IsRegular()) {
 		return "", fmt.Errorf("%s is incomplete; inspect or remove it before retrying", destination)

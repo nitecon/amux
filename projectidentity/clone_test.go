@@ -2,6 +2,7 @@ package projectidentity
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -513,5 +514,29 @@ func TestValidateCloneSourceRejectsCommandTransport(t *testing.T) {
 		if err := validateCloneSource(source); err != nil {
 			t.Errorf("rejected supported source %q: %v", source, err)
 		}
+	}
+}
+
+func TestObserveTimeoutReportedDistinctlyFromNonCheckout(t *testing.T) {
+	if observeTimeout < 10*time.Second {
+		t.Fatalf("observeTimeout = %v, want at least 10s for loaded hosts", observeTimeout)
+	}
+	parent := t.TempDir()
+	checkout := filepath.Join(parent, "project")
+	cloneGit(t, parent, "init", checkout)
+	cloneGit(t, checkout, "remote", "add", "origin", "git@example.org:team/project.git")
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	_, err := CloneRepository(expired, parent, "https://example.org/team/project.git")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloneRepository deadline error = %v, want context.DeadlineExceeded", err)
+	}
+	if strings.Contains(err.Error(), "not a checkout of the requested repository") {
+		t.Fatalf("CloneRepository misreported deadline as non-checkout: %v", err)
+	}
+	_, err = ResolveCheckout(expired, checkout)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ResolveCheckout deadline error = %v, want context.DeadlineExceeded", err)
 	}
 }

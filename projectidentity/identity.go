@@ -7,6 +7,7 @@ import (
 	"crypto/sha1" // UUID v5 compatibility, not authentication or password hashing.
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -132,7 +133,14 @@ func Resolve(ctx context.Context, directory string) (Identity, error) {
 		return Identity{}, err
 	}
 	root, err := observe(ctx, local.Directory, "rev-parse", "--show-toplevel")
-	if err == nil {
+	if ctx.Err() != nil {
+		return Identity{}, ctx.Err()
+	}
+	if err != nil {
+		if observeContextError(err) {
+			return Identity{}, err
+		}
+	} else {
 		root = strings.TrimRight(root, "\r\n")
 		if len(root) <= 4096 && filepath.IsAbs(root) {
 			local, err = FromParts(root, "")
@@ -141,19 +149,7 @@ func Resolve(ctx context.Context, directory string) (Identity, error) {
 			}
 		}
 	}
-	upstream, err := observe(ctx, local.Directory, "config", "--local", "--get", "remote.origin.url")
-	if ctx.Err() != nil {
-		return Identity{}, ctx.Err()
-	}
-	if err != nil {
-		return local, nil
-	}
-	upstream = strings.TrimRight(upstream, "\r\n")
-	canonical, err := projects.CanonicalRemote(upstream)
-	if err != nil {
-		return local, nil
-	}
-	return FromParts(local.Directory, canonical)
+	return resolveOrigin(ctx, local)
 }
 
 // ResolveCheckout requires directory to belong to a Git checkout. Unlike
@@ -165,13 +161,39 @@ func ResolveCheckout(ctx context.Context, directory string) (Identity, error) {
 	}
 	root, err := observe(ctx, local.Directory, "rev-parse", "--show-toplevel")
 	if err != nil {
+		if observeContextError(err) {
+			return Identity{}, fmt.Errorf("inspect Git checkout: %w", err)
+		}
 		return Identity{}, fmt.Errorf("directory is not an available Git checkout")
 	}
 	root = strings.TrimRight(root, "\r\n")
 	if root == "" || !filepath.IsAbs(root) || len(root) > 4096 {
 		return Identity{}, fmt.Errorf("Git checkout root is invalid")
 	}
-	return Resolve(ctx, root)
+	local, err = FromParts(root, "")
+	if err != nil {
+		return Identity{}, err
+	}
+	return resolveOrigin(ctx, local)
+}
+
+func resolveOrigin(ctx context.Context, local Identity) (Identity, error) {
+	upstream, err := observe(ctx, local.Directory, "config", "--local", "--get", "remote.origin.url")
+	if ctx.Err() != nil {
+		return Identity{}, ctx.Err()
+	}
+	if err != nil {
+		if observeContextError(err) {
+			return Identity{}, err
+		}
+		return local, nil
+	}
+	upstream = strings.TrimRight(upstream, "\r\n")
+	canonical, err := projects.CanonicalRemote(upstream)
+	if err != nil {
+		return local, nil
+	}
+	return FromParts(local.Directory, canonical)
 }
 
 // boundedOutput drains command stdout while retaining only the accepted limit.
@@ -189,11 +211,19 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// observeTimeout bounds individual read-only Git queries while leaving room for
+// Windows process creation and antivirus overhead under parallel load.
+var observeTimeout = 10 * time.Second
+
+func observeContextError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
 func observe(ctx context.Context, directory string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	observeCtx, cancel := context.WithTimeout(ctx, observeTimeout)
 	defer cancel()
 	base := []string{"--no-optional-locks", "-c", "core.hooksPath=" + os.DevNull, "-C", directory}
-	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
+	cmd := exec.CommandContext(observeCtx, "git", append(base, args...)...)
 	hidewindow.Apply(cmd)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "GIT_") {
@@ -206,6 +236,9 @@ func observe(ctx context.Context, directory string, args ...string) (string, err
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = 100 * time.Millisecond
 	if err := cmd.Run(); err != nil {
+		if observeCtx.Err() != nil {
+			return "", fmt.Errorf("cannot observe Git checkout: %w", observeCtx.Err())
+		}
 		return "", fmt.Errorf("cannot observe Git checkout")
 	}
 	if len(out.data) > 4098 {

@@ -45,6 +45,16 @@ type automaticWorkerRun struct {
 	draining bool
 }
 
+var (
+	automaticWorkerSteadyInterval = 30 * time.Second
+	automaticWorkerRetryInterval  = time.Second
+	resolveAutomaticCheckout      = projectidentity.ResolveCheckout
+)
+
+func automaticWorkerID(endpoint, project, provider string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(strings.Join([]string{"amux-auto-worker", endpoint, project, provider}, "\x00"))).String()
+}
+
 func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan []automaticWorkerScope, report func(string), probe func(context.Context, string, string) bool) {
 	active := make(map[string]*automaticWorkerRun)
 	providers := make(map[string]bool)
@@ -52,8 +62,17 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 	var workers sync.WaitGroup
 	var presence *localconversation.RustPresence
 	defer workers.Wait()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(automaticWorkerSteadyInterval)
+	defer timer.Stop()
+	resetTimer := func(interval time.Duration) {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(interval)
+	}
 	var checked time.Time
 	capabilitiesKnown, native := false, false
 	for {
@@ -61,7 +80,7 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 		case <-ctx.Done():
 			return
 		case scopes = <-updates:
-		case <-ticker.C:
+		case <-timer.C:
 		}
 		if !capabilitiesKnown {
 			check, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -69,10 +88,12 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 			cancel()
 			if err != nil {
 				report("Automatic agents: could not check gateway support.")
+				resetTimer(automaticWorkerRetryInterval)
 				continue
 			}
 			if !available && (!m.useTaskStream || m.taskConversationRoot == "") {
 				report("Automatic agents: the gateway does not support native worker assignment.")
+				resetTimer(automaticWorkerSteadyInterval)
 				continue
 			}
 			capabilitiesKnown, native = true, available
@@ -103,16 +124,30 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 			}
 		}
 		wanted := make(map[string]bool)
+		retrySoon := false
 		for _, scope := range scopes {
-			identity, err := projectidentity.ResolveCheckout(ctx, scope.directory)
-			if err != nil || validateWorkspaceCheckoutProject(scope.project, identity) != nil {
+			identity, err := resolveAutomaticCheckout(ctx, scope.directory)
+			if err != nil {
+				if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+					retrySoon = true
+					lastError = err
+					for _, provider := range defaultChatProviders {
+						id := automaticWorkerID(m.client.Endpoint(), scope.project.Ident, provider)
+						if active[id] != nil {
+							wanted[id] = true
+						}
+					}
+				}
+				continue
+			}
+			if validateWorkspaceCheckoutProject(scope.project, identity) != nil {
 				continue
 			}
 			for _, provider := range defaultChatProviders {
 				if !providers[provider] {
 					continue
 				}
-				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(strings.Join([]string{"amux-auto-worker", m.client.Endpoint(), scope.project.Ident, provider}, "\x00"))).String()
+				id := automaticWorkerID(m.client.Endpoint(), scope.project.Ident, provider)
 				wanted[id] = true
 				existing := active[id]
 				if existing != nil {
@@ -145,9 +180,15 @@ func (m *WorkerManager) runAutomaticWorkers(ctx context.Context, updates <-chan 
 			}
 		}
 		if lastError != nil {
+			retrySoon = true
 			report("Automatic agents: " + lastError.Error())
 		} else {
 			report(fmt.Sprintf("Automatic agents: %d local workers started.", len(active)))
+		}
+		if retrySoon {
+			resetTimer(automaticWorkerRetryInterval)
+		} else {
+			resetTimer(automaticWorkerSteadyInterval)
 		}
 	}
 }

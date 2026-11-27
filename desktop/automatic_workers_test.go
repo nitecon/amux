@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -33,7 +35,7 @@ func TestAutomaticWorkerRegistersAndArchivesAssignedTask(t *testing.T) {
 }
 
 func testAutomaticAssignment(t *testing.T, native bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var streams, adoptionRequests, opens atomic.Int32
 	manager, local, remote, client, _ := workerManagerFixture(t, func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
@@ -80,16 +82,18 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 	}
 	updates := make(chan []automaticWorkerScope, 1)
 	updates <- []automaticWorkerScope{{storage.ProjectOverview{Project: storage.Project{Ident: "demo", Kind: "adhoc"}}, checkout}}
+	var lastStatus atomic.Value
+	lastStatus.Store("")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		manager.runAutomaticWorkers(ctx, updates, func(string) {}, func(_ context.Context, provider, _ string) bool {
+		manager.runAutomaticWorkers(ctx, updates, func(status string) { lastStatus.Store(status) }, func(_ context.Context, provider, _ string) bool {
 			return provider == "codex" || provider == "antigravity"
 		})
 	}()
 	defer func() { cancel(); <-done }()
 	var target storage.RegisteredTargetIdentity
-	waitFor := func(condition func() bool) {
+	waitFor := func(phase string, condition func() bool) {
 		t.Helper()
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
@@ -97,11 +101,11 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 			select {
 			case <-ticker.C:
 			case <-ctx.Done():
-				t.Fatal("timed out waiting for automatic agent workflow")
+				t.Fatalf("timed out waiting for automatic agent workflow (%s; last status: %q)", phase, lastStatus.Load())
 			}
 		}
 	}
-	waitFor(func() bool {
+	waitFor("worker registration", func() bool {
 		targets, err := client.Targets(ctx, "demo")
 		if err != nil || len(targets) != 2 {
 			return false
@@ -120,6 +124,7 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 		}
 		return target.Origin.SessionID != ""
 	})
+	waitFor("initial task stream connection", func() bool { return streams.Load() >= 1 })
 	if streams.Load() != 1 {
 		t.Fatalf("task stream connections: %d, want 1", streams.Load())
 	}
@@ -132,7 +137,7 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(func() bool {
+	waitFor("consumer cursor advance", func() bool {
 		_, cursor, err := local.WorkerTaskConsumer(ctx, client.Endpoint())
 		return err == nil && cursor > 0
 	})
@@ -140,7 +145,7 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 	<-manager.taskStreamDone
 	// The gateway releases the consumer lease asynchronously; reconnecting
 	// before then is rejected and retried, which would add a connection.
-	waitFor(func() bool {
+	waitFor("consumer lease release", func() bool {
 		statuses, err := remote.TaskConsumerStatuses(ctx)
 		if err != nil {
 			return false
@@ -162,7 +167,7 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 	}()
 	defer func() { cancel(); <-reconnectDone }()
 	path := filepath.Join(root, "demo", "tasks", task.ID, target.Origin.SessionID+".md")
-	waitFor(func() bool {
+	waitFor("archived task transcript", func() bool {
 		content, err := os.ReadFile(path)
 		return err == nil && strings.Contains(string(content), "> Local reply") && strings.Contains(string(content), "Assigned fixture task")
 	})
@@ -213,5 +218,88 @@ func TestAssignmentStreamBootstrapsAlreadyOwnedTasks(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("current assignment was skipped at the stream boundary")
 		}
+	}
+}
+
+func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	origRetry := automaticWorkerRetryInterval
+	origResolve := resolveAutomaticCheckout
+	automaticWorkerRetryInterval = 50 * time.Millisecond
+	defer func() {
+		automaticWorkerRetryInterval = origRetry
+		resolveAutomaticCheckout = origResolve
+	}()
+
+	checkout := t.TempDir()
+	if output, err := exec.Command("git", "-C", checkout, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("initialize fixture checkout: %v: %s", err, output)
+	}
+	resolved, err := projectidentity.ResolveCheckout(ctx, checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var attempts atomic.Int32
+	resolveAutomaticCheckout = func(ctx context.Context, directory string) (projectidentity.Identity, error) {
+		n := attempts.Add(1)
+		if n == 1 || n == 3 {
+			return projectidentity.Identity{}, fmt.Errorf("inspect Git checkout: %w", context.DeadlineExceeded)
+		}
+		return resolved, nil
+	}
+
+	manager, _, _, client, _ := workerManagerFixture(t, nil)
+	scope := []automaticWorkerScope{{storage.ProjectOverview{Project: storage.Project{Ident: "demo", Kind: "adhoc"}}, checkout}}
+	updates := make(chan []automaticWorkerScope, 1)
+	updates <- scope
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.runAutomaticWorkers(ctx, updates, func(string) {}, func(_ context.Context, provider, _ string) bool {
+			return provider == "codex"
+		})
+	}()
+	defer func() { cancel(); <-done }()
+
+	waitFor := func(phase string, condition func() bool) {
+		t.Helper()
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for !condition() {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				t.Fatalf("timed out waiting for %s (attempts=%d)", phase, attempts.Load())
+			}
+		}
+	}
+
+	var initial storage.RegisteredTargetIdentity
+	waitFor("worker registration after transient timeout", func() bool {
+		targets, err := client.Targets(ctx, "demo")
+		if err != nil || len(targets) != 1 {
+			return false
+		}
+		initial = targets[0].Target
+		return initial.Origin.SessionID != ""
+	})
+	if attempts.Load() < 2 {
+		t.Fatalf("checkout resolution attempts = %d, want >= 2", attempts.Load())
+	}
+
+	// Trigger another pass that hits a transient checkout timeout and ensure
+	// the running worker is preserved instead of drained and restarted.
+	updates <- scope
+	waitFor("recovery pass after mid-flight transient timeout", func() bool {
+		return attempts.Load() >= 4
+	})
+	targets, err := client.Targets(ctx, "demo")
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("targets after transient timeout = %+v, err=%v", targets, err)
+	}
+	if targets[0].Target.Origin != initial.Origin {
+		t.Fatalf("worker restarted after transient timeout: got %+v, want %+v", targets[0].Target.Origin, initial.Origin)
 	}
 }
