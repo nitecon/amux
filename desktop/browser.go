@@ -50,6 +50,7 @@ type BrowserConfig struct {
 
 type Browser struct {
 	clientConfigPath                                         string
+	excludedProjects                                         map[string]bool
 	client                                                   *gatewayclient.Client
 	appControls                                              fyne.CanvasObject
 	projectOverride, prefsPath, endpoint, prefKey, clusterID string

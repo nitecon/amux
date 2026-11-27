@@ -79,7 +79,8 @@ func serveClientControl(config, endpoint, build string, reloads chan<- clientRel
 		if err := decoder.Decode(&change); err != nil ||
 			(change.ProjectsDirectory == nil) == (change.Project == "") ||
 			(change.Project == "" && change.Checkout != "") ||
-			(change.Recreate && change.Checkout == "") {
+			(change.Recreate && change.Checkout == "") ||
+			(change.ExcludeExecution != nil && (change.Project == "" || change.Checkout != "")) {
 			http.Error(w, "invalid checkout change", http.StatusBadRequest)
 			return
 		}

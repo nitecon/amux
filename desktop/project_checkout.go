@@ -75,6 +75,14 @@ func (b *Browser) showProjectMenu(row *projectMenuRow, event *fyne.PointEvent, p
 	if localDirectory != "" && b.clientConfigPath != "" {
 		options.Add(action("Register with server", nil, func() { b.registerLocalProject(localDirectory) }))
 	} else if localDirectory == "" && project.Ident != "" {
+		if b.clientConfigPath != "" {
+			exclude := !b.excludedProjects[project.Ident]
+			label := "Exclude execution from this machine"
+			if !exclude {
+				label = "Allow execution on this machine"
+			}
+			options.Add(action(label, nil, func() { b.setProjectExecutionExcluded(project.Ident, exclude) }))
+		}
 		options.Add(action("Delete project…", theme.DeleteIcon(), func() { b.confirmDeleteProject(project.Ident) }))
 	}
 	surface := browserCardSurface()
@@ -182,6 +190,7 @@ func (b *Browser) scanProjectCheckouts() {
 }
 
 func (b *Browser) applyClientWorkspace(workspace clientcontrol.Workspace) {
+	b.excludedProjects = workspace.ExcludedProjects
 	previous := b.prefs.ProjectCheckouts
 	previousDirectory := b.projectsDirectory()
 	b.prefs.ProjectsDirectory = workspace.ProjectsDirectory
@@ -466,6 +475,28 @@ func (b *Browser) updateClientCheckout(ctx context.Context, change clientcontrol
 	}
 	_, err = clientcontrol.Request(ctx, b.clientConfigPath, http.MethodPatch, "/checkout", payload)
 	return err
+}
+
+func (b *Browser) setProjectExecutionExcluded(project string, excluded bool) {
+	b.launch(func(ctx context.Context) {
+		err := b.updateClientCheckout(ctx, clientcontrol.CheckoutChange{Project: project, ExcludeExecution: &excluded})
+		b.dispatch(func() {
+			if err != nil {
+				b.browserStatus.SetText("Update project execution: " + err.Error())
+				return
+			}
+			if b.excludedProjects == nil {
+				b.excludedProjects = make(map[string]bool)
+			}
+			b.excludedProjects[project] = excluded
+			if excluded {
+				b.browserStatus.SetText("Project execution excluded from this machine. Active tasks can finish.")
+			} else {
+				b.browserStatus.SetText("Project execution allowed on this machine.")
+			}
+			b.scanProjectCheckouts()
+		})
+	})
 }
 
 func (b *Browser) registerLocalProject(directory string) {

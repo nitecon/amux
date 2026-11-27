@@ -259,6 +259,10 @@ func RegisterControl(mux *http.ServeMux, ctx context.Context, root string, check
 		})
 	}))
 	mux.HandleFunc("POST /chats/{project}/{id}/commands", withSession(func(w http.ResponseWriter, r *http.Request, s *Session) {
+		if checkout(r.PathValue("project")) == "" {
+			http.Error(w, "project execution requires an enabled local checkout", http.StatusConflict)
+			return
+		}
 		input, err := readControl[chatCommand](w, r)
 		if err != nil || input.ID == "" {
 			http.Error(w, "invalid chat command", http.StatusBadRequest)

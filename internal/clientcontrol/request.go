@@ -69,4 +69,5 @@ type CheckoutChange struct {
 	Project           string  `json:"project,omitempty"`
 	Checkout          string  `json:"checkout,omitempty"`
 	Recreate          bool    `json:"recreate,omitempty"`
+	ExcludeExecution  *bool   `json:"exclude_execution,omitempty"`
 }

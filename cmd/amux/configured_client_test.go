@@ -105,12 +105,13 @@ func makeConfiguredCheckout(t *testing.T, root, name, remote string) string {
 	return checkout.Directory
 }
 
-func TestConfiguredClientMovesCheckoutAfterActiveTask(t *testing.T) {
-	if os.PathSeparator != '/' {
-		t.Skip("uses a POSIX test home")
-	}
+func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	if os.PathSeparator == '\\' {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		t.Setenv("HOME", home)
+	}
 	t.Setenv("AMUX_GO_ACP_TEST", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
@@ -336,16 +337,34 @@ func TestConfiguredClientMovesCheckoutAfterActiveTask(t *testing.T) {
 	}
 	finishTask(firstTask, firstThread, first, owners[0])
 	secondTask, secondThread := beginTask("Next task runs in the new checkout", owners[1], second)
-	config.ProjectsDirectory = ""
-	if result := applyBindings(nil); !strings.Contains(result, "Applied 0 project bindings; draining ["+project+"/antigravity]") {
-		t.Fatalf("remove checkout: %s", result)
+	setExcluded := func(excluded bool) string {
+		t.Helper()
+		payload, err := json.Marshal(clientcontrol.CheckoutChange{Project: project, ExcludeExecution: &excluded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := clientcontrol.Request(ctx, configPath, http.MethodPatch, "/checkout", payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved, err := clientconfig.Load(configPath)
+		if err != nil || saved.ExcludedProjects[project] != excluded || saved.Projects[project] != second {
+			t.Fatalf("execution setting or checkout was not saved: %+v, %v", saved, err)
+		}
+		return string(result)
+	}
+	if result := setExcluded(true); !strings.Contains(result, "draining ["+project+"/antigravity]") {
+		t.Fatalf("exclude execution: %s", result)
 	}
 	finishTask(secondTask, secondThread, second, owners[1])
 	snapshot, err = clientcontrol.LoadWorkspace(ctx, configPath)
-	if err != nil || len(snapshot.Projects) != 0 || len(snapshot.LocalCheckouts) != 0 {
-		t.Fatalf("removed binding was not kept separate from discovered checkouts: %+v, %v", snapshot, err)
+	if err != nil || !snapshot.ExcludedProjects[project] || snapshot.Projects[project] != second || len(snapshot.LocalCheckouts) != 2 {
+		t.Fatalf("excluded checkout was not preserved in the workspace: %+v, %v", snapshot, err)
 	}
-	waitFor("removed worker still advertised itself for assignments", func() bool {
+	if _, err := (localconversation.Remote{ConfigPath: configPath}).Create(ctx, project, "antigravity", "", localconversation.Preferences{}); err == nil {
+		t.Fatal("excluded project accepted a new local chat")
+	}
+	waitFor("excluded worker still advertised itself for assignments", func() bool {
 		workers, err := operator.Presence(ctx, project)
 		if err != nil {
 			return false
@@ -357,6 +376,20 @@ func TestConfiguredClientMovesCheckoutAfterActiveTask(t *testing.T) {
 		}
 		return true
 	})
+	setExcluded(false)
+	if err := os.Remove(filepath.Join(second, "prompts")); err != nil {
+		t.Fatal(err)
+	}
+	resumedTask, resumedThread := beginTask("Task runs again after allowing execution", owners[1], second)
+	finishTask(resumedTask, resumedThread, second, owners[1])
+	config.ProjectsDirectory = ""
+	if result := applyBindings(nil); !strings.Contains(result, "Applied 0 project bindings") {
+		t.Fatalf("remove checkout: %s", result)
+	}
+	snapshot, err = clientcontrol.LoadWorkspace(ctx, configPath)
+	if err != nil || len(snapshot.Projects) != 0 || len(snapshot.LocalCheckouts) != 0 {
+		t.Fatalf("removed binding was not kept separate from discovered checkouts: %+v, %v", snapshot, err)
+	}
 	applyBindings(map[string]string{project: first})
 	var chat *storage.FleetConversation
 	waitFor("operator could not open an enrolled fleet chat", func() bool {

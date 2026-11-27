@@ -175,10 +175,18 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		clientcontrol.Workspace
 		providers []string
 	}
+	executionCheckout := func(workspace clientcontrol.Workspace, project string) string {
+		if workspace.ExcludedProjects[project] {
+			return ""
+		}
+		return workspace.Projects[project]
+	}
 	var currentWorkspace atomic.Value
 	fleetChanged := make(chan struct{}, 1)
 	publishWorkspace := func() {
-		currentWorkspace.Store(workspaceSnapshot{clientcontrol.Workspace{ProjectsDirectory: config.ProjectsDirectory, Projects: bindings}, config.Providers})
+		currentWorkspace.Store(workspaceSnapshot{clientcontrol.Workspace{
+			ProjectsDirectory: config.ProjectsDirectory, Projects: bindings, ExcludedProjects: config.ExcludedProjects,
+		}, config.Providers})
 		select {
 		case fleetChanged <- struct{}{}:
 		default:
@@ -194,7 +202,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 				workspace := currentWorkspace.Load().(workspaceSnapshot)
 				for _, enabled := range workspace.providers {
 					if enabled == provider {
-						return workspace.Projects[project]
+						return executionCheckout(workspace.Workspace, project)
 					}
 				}
 				return ""
@@ -221,7 +229,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			cancel()
 		})
 		return localconversation.RegisterControl(mux, ctx, conversationRoot, func(project string) string {
-			return currentWorkspace.Load().(workspaceSnapshot).Workspace.Projects[project]
+			return executionCheckout(currentWorkspace.Load().(workspaceSnapshot).Workspace, project)
 		}, worker.OpenWithNativeTools(worker.NativeToolsConfig{
 			Executable: executable, Server: client.Endpoint(), EnrolledProfile: config.EnrolledProfile,
 			APIKeyEnv: config.APIKeyEnv, WorkPreferencesPath: config.WorkPreferences, LocalConversation: true,
@@ -256,6 +264,9 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 				item.Origin = &checkout.Upstream
 			}
 			report = append(report, item)
+			if config.ExcludedProjects[project] {
+				continue
+			}
 			for _, provider := range config.Providers {
 				wanted[configuredPoolKey{project, provider}] = checkout.Directory
 			}
@@ -362,7 +373,16 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			err = fmt.Errorf("changing hosted_gateway requires restarting the client")
 		}
 		if err == nil && change != nil {
-			if change.ProjectsDirectory != nil {
+			if change.ExcludeExecution != nil {
+				if *change.ExcludeExecution {
+					if candidate.ExcludedProjects == nil {
+						candidate.ExcludedProjects = make(map[string]bool)
+					}
+					candidate.ExcludedProjects[change.Project] = true
+				} else {
+					delete(candidate.ExcludedProjects, change.Project)
+				}
+			} else if change.ProjectsDirectory != nil {
 				candidate.ProjectsDirectory = *change.ProjectsDirectory
 			} else if change.Checkout == "" {
 				delete(candidate.Projects, change.Project)

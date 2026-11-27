@@ -33,6 +33,7 @@ type Config struct {
 	WorkPreferences   string            `yaml:"work_preferences,omitempty"`
 	ProjectsDirectory string            `yaml:"projects_directory,omitempty"`
 	Projects          map[string]string `yaml:"projects,omitempty"`
+	ExcludedProjects  map[string]bool   `yaml:"excluded_projects,omitempty"`
 	ProjectURLs       []string          `yaml:"project_urls"`
 	Providers         []string          `yaml:"providers"`
 }
@@ -108,6 +109,11 @@ func (config Config) Validate() error {
 		}
 		if !filepath.IsAbs(directory) {
 			return fmt.Errorf("project %q must have an absolute checkout path", id)
+		}
+	}
+	for id := range config.ExcludedProjects {
+		if id == "" || strings.TrimSpace(id) != id {
+			return fmt.Errorf("invalid excluded project ID %q", id)
 		}
 	}
 	if len(config.ProjectURLs) != 0 && config.ProjectsDirectory == "" {

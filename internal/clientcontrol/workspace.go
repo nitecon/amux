@@ -12,6 +12,7 @@ import (
 type Workspace struct {
 	ProjectsDirectory string
 	Projects          map[string]string
+	ExcludedProjects  map[string]bool
 	LocalCheckouts    []projectidentity.LocalCheckout
 }
 
