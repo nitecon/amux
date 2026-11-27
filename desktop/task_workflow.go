@@ -69,9 +69,13 @@ func newTaskWorkflow(browser *Browser) *taskWorkflow {
 	return w
 }
 
+// actions returns the primary workflow buttons shown in the static task header.
+func (w *taskWorkflow) actions() fyne.CanvasObject {
+	return container.NewHBox(w.close, w.resume)
+}
+
 func (w *taskWorkflow) panel() fyne.CanvasObject {
 	return container.NewVBox(
-		container.NewHBox(w.close, w.resume),
 		w.reviewPrompt,
 		container.NewBorder(nil, nil, nil, w.park, w.reviewAction),
 		w.status,

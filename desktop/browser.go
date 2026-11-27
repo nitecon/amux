@@ -125,6 +125,7 @@ type Browser struct {
 	loadMoreConversations                               *widget.Button
 	taskComposer                                        *taskComposer
 	taskWorkflow                                        *taskWorkflow
+	taskHeaderActions                                   fyne.CanvasObject
 	taskAssignment                                      *taskAssignment
 	workerPanel                                         *workerPanel
 	worktreeStatus                                      *worktreeStatusView
@@ -872,7 +873,8 @@ func (b *Browser) buildUI() {
 	b.taskParent = container.NewVBox()
 	settings := widget.NewAccordion(widget.NewAccordionItem("Task settings", container.NewVBox(b.taskAssignment.panel(), widget.NewSeparator(), b.taskEditor.form)))
 	copyTask := copyTaskIDButton(func() string { return b.selectedTask })
-	detailsBody := container.NewVBox(container.NewThemeOverride(container.NewBorder(nil, nil, nil, copyTask, b.taskWorkflow.panel()), controls), b.taskParent, b.taskSubtasks, widget.NewSeparator(), browserSectionHeading("SPECIFICATION"), b.taskSpec, settings, widget.NewSeparator(), browserSectionHeading("COMMENTS"), b.taskComments)
+	b.taskHeaderActions = container.NewThemeOverride(container.NewBorder(nil, nil, nil, copyTask, b.taskWorkflow.actions()), controls)
+	detailsBody := container.NewVBox(container.NewThemeOverride(b.taskWorkflow.panel(), controls), b.taskParent, b.taskSubtasks, widget.NewSeparator(), browserSectionHeading("SPECIFICATION"), b.taskSpec, settings, widget.NewSeparator(), browserSectionHeading("COMMENTS"), b.taskComments)
 	b.taskDetailScroll = container.NewVScroll(detailsBody)
 	b.chatHost = container.NewMax(widget.NewLabel("Select an existing conversation to open its live chat."))
 	conversationHeading := browserSectionHeading("CONVERSATIONS")
@@ -889,7 +891,7 @@ func (b *Browser) buildUI() {
 	b.showTaskHistory(false)
 	detailHeading := browserSectionHeading("TASK DETAIL")
 	refresh.Importance = widget.LowImportance
-	b.taskDetailPage = container.NewPadded(container.NewBorder(container.NewVBox(container.NewBorder(nil, nil, detailHeading, container.NewThemeOverride(refresh, controls), b.projectLabel), b.taskTitle, b.taskMeta), container.NewVBox(widget.NewSeparator(), b.browserStatus), nil, nil, detailContent))
+	b.taskDetailPage = container.NewPadded(container.NewBorder(container.NewVBox(container.NewBorder(nil, nil, detailHeading, container.NewThemeOverride(refresh, controls), b.projectLabel), b.taskTitle, b.taskMeta, b.taskHeaderActions), container.NewVBox(widget.NewSeparator(), b.browserStatus), nil, nil, detailContent))
 	back := widget.NewButton("Back to task details", b.backToTaskDetail)
 	b.taskChatPage = container.NewBorder(container.NewThemeOverride(container.NewHBox(back, copyTaskIDButton(func() string { return b.selectedTask })), controls), nil, nil, nil, b.chatHost)
 	b.taskChatPage.Hide()
@@ -1840,8 +1842,10 @@ func (b *Browser) showTaskHistory(selected bool) {
 	if selected {
 		b.emptyDetailPrompt.Hide()
 		b.taskHistory.Show()
+		b.taskHeaderActions.Show()
 	} else {
 		b.taskHistory.Hide()
+		b.taskHeaderActions.Hide()
 		b.emptyDetailPrompt.Show()
 	}
 	b.detailHost.Refresh()
