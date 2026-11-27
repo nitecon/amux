@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -141,6 +140,7 @@ func (b *Browser) loadProjectConversations() {
 	b.projectConversationsLoading = true
 	if !b.launch(func(ctx context.Context) {
 		var items []storage.Conversation
+		var selectedTaskThreads []storage.Conversation
 		var err error
 		if b.localConversationsDirectory != "" {
 			items, err = listMarkdownChats(b.localConversationsDirectory, project)
@@ -152,8 +152,33 @@ func (b *Browser) loadProjectConversations() {
 				}
 			}
 			if err == nil && selected != "" && !found {
-				if chat, readErr := b.client.Conversation(ctx, project, selected); readErr == nil && chat.FleetHostname != nil {
-					items = append(items, *chat)
+				if chat, readErr := b.client.Conversation(ctx, project, selected); readErr == nil {
+					if chat.FleetHostname != nil {
+						items = append(items, *chat)
+					} else if chat.TaskID != "" {
+						threads, _, _, threadErr := loadConversationWindow(ctx, b.client, project, chat.TaskID, browserConversationPage)
+						if threadErr != nil {
+							var response *gatewayclient.HTTPError
+							if errors.As(threadErr, &response) && response.Status == http.StatusNotFound {
+								threads, threadErr = listLocalTaskThreads(b.localConversationsDirectory, project, chat.TaskID)
+							}
+						}
+						if threadErr == nil && len(threads) > 0 {
+							selectedTaskThreads = threads
+							hasSelected := false
+							for _, thread := range threads {
+								if thread.ID == chat.ID {
+									hasSelected = true
+									break
+								}
+							}
+							if !hasSelected {
+								selectedTaskThreads = append(selectedTaskThreads, *chat)
+							}
+						} else {
+							selectedTaskThreads = []storage.Conversation{*chat}
+						}
+					}
 				}
 			}
 		}
@@ -186,9 +211,7 @@ func (b *Browser) loadProjectConversations() {
 				b.pendingConversationProvider = ""
 				return
 			}
-			sort.SliceStable(items, func(i, j int) bool {
-				return items[i].UpdatedAt > items[j].UpdatedAt
-			})
+			sortTaskThreads(items)
 			b.conversationHistory = items
 			b.defaultChats = make(map[string]storage.Conversation)
 			for _, chat := range items {
@@ -207,13 +230,24 @@ func (b *Browser) loadProjectConversations() {
 				return
 			}
 			if b.selection.ProjectConversation != "" {
+				opened := false
 				for _, chat := range items {
 					if chat.ID == b.selection.ProjectConversation {
 						b.openStandaloneConversation(chat)
 						if chat.TaskID == "" && chat.FleetHostname == nil {
 							b.resumeDefaultConversation(chat)
 						}
+						opened = true
 						break
+					}
+				}
+				if !opened {
+					for _, chat := range selectedTaskThreads {
+						if chat.ID == b.selection.ProjectConversation {
+							b.taskThreadItems = selectedTaskThreads
+							b.openStandaloneConversation(chat)
+							break
+						}
 					}
 				}
 			}

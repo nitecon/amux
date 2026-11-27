@@ -158,6 +158,7 @@ type Browser struct {
 	taskItems                                           []storage.TaskSummary
 	visibleTasks                                        []storage.TaskSummary
 	conversationItems                                   []storage.Conversation
+	taskThreadItems                                     []storage.Conversation
 	conversationAfter                                   string
 	conversationsMore, conversationsLoading             bool
 	selectedProject, selectedTask, selectedConversation string
@@ -1396,6 +1397,7 @@ func (b *Browser) selectProject(project string) {
 	b.selectedConversation = ""
 	b.selectedTaskDetail = nil
 	b.conversationItems = nil
+	b.taskThreadItems = nil
 	b.conversationAfter = ""
 	b.conversationsMore = false
 	b.conversationsLoading = false
@@ -2034,12 +2036,12 @@ func (b *Browser) applyTaskDetail(project, task string, generation uint64, detai
 	b.taskEditor.setAuthoritative(project, task, detail.Task)
 	b.taskWorkflow.setTask(project, task, &detail.Task)
 	b.taskAssignment.setTask(project, task, detail.Task)
-	b.conversationItems = conversations
-	if len(b.conversationItems) > 0 {
-		b.conversationAfter = b.conversationItems[len(b.conversationItems)-1].ID
-	} else {
-		b.conversationAfter = after
+	if after == "" && len(conversations) > 0 {
+		after = conversations[len(conversations)-1].ID
 	}
+	b.conversationAfter = after
+	b.conversationItems = append([]storage.Conversation(nil), conversations...)
+	sortTaskThreads(b.conversationItems)
 	b.conversationsMore = more || len(conversations) == browserConversationPage
 	b.conversationsLoading = false
 	if len(conversations) > 0 || b.conversationsMore {
@@ -2149,10 +2151,11 @@ func (b *Browser) applyMoreConversations(project, task string, generation uint64
 		b.browserStatus.SetText("More conversations unavailable: " + err.Error())
 		return
 	}
-	b.conversationItems = mergeConversations(b.conversationItems, items)
 	if len(items) > 0 {
 		b.conversationAfter = items[len(items)-1].ID
 	}
+	b.conversationItems = mergeConversations(b.conversationItems, items)
+	sortTaskThreads(b.conversationItems)
 	b.conversationsMore = len(items) == browserConversationPage
 	if b.conversationsMore {
 		b.loadMoreConversations.Show()

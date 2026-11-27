@@ -44,6 +44,9 @@ func listLocalTaskThreads(root, project, task string) ([]storage.Conversation, e
 			return nil, err
 		}
 		if header.Info.TaskID == task && header.Info.ProjectIdent == project && header.Info.Owner.SessionID == agent {
+			if info, infoErr := entry.Info(); infoErr == nil && info.ModTime().UnixMilli() > header.Info.UpdatedAt {
+				header.Info.UpdatedAt = info.ModTime().UnixMilli()
+			}
 			result = append(result, header.Info)
 		}
 	}
