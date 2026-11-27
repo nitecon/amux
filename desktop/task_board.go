@@ -116,7 +116,9 @@ func newTaskBoard(b *Browser) *taskBoard {
 
 func (board *taskBoard) drop(task storage.TaskSummary, position fyne.Position) {
 	b := board.browser
-	if board.loading || board.writePending || board.project == "" || b.selectedProject != board.project {
+	// A read in flight must not discard the drop: background refreshes start at
+	// any time, and the readGeneration bump below supersedes that read.
+	if board.writePending || board.project == "" || b.selectedProject != board.project {
 		return
 	}
 	var target *taskBoardLane

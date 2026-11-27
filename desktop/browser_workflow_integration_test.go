@@ -461,6 +461,12 @@ func TestTaskBoardCardCanReorderWithinUserReview(t *testing.T) {
 	dropAt := fyne.NewPos(pos.X+target.Size().Width/2, pos.Y+1)
 	card := newTaskBoardCard(b.taskBoard)
 	card.task = storage.TaskSummary{ID: fixture.second.ID, Status: "user_review"}
+	// The periodic navigation refresh may have a board read in flight at any
+	// time; force that overlap so the drop is always exercised against it.
+	b.taskBoard.refresh()
+	if !b.taskBoard.loading {
+		t.Fatal("board refresh did not start")
+	}
 	card.Dragged(&fyne.DragEvent{PointEvent: fyne.PointEvent{AbsolutePosition: dropAt}})
 	card.DragEnd()
 	waitBrowser(t, fixture.callbacks, func() bool {
