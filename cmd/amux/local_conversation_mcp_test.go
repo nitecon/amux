@@ -296,6 +296,9 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("LOCAL_CHAT_MCP_KEY", "test-key")
+	// Codex startup runs bundled memory recall first; skip it so a slow recall
+	// cannot delay the shim past the stream window below.
+	t.Setenv("AMUX_BUNDLED_DIR", filepath.Join(t.TempDir(), "missing"))
 
 	const project = "local-mcp-demo"
 	remoteURL := "https://github.com/nitecon/local-mcp-demo"
