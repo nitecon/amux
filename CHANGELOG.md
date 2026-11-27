@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.9.3 - 2026-11-27
+
 ### Added
 
 - Exclude or allow agent execution of a project on this machine from the
@@ -29,6 +31,12 @@
   API: `POST /v1/projects/{ident}/tasks/{id}/questions`, `GET /v1/questions`;
   answer with `question_id` on `POST /v1/projects/{ident}/tasks/{id}/comments`.
 
+### Changed
+
+- Format and sort task thread tabs consistently in the Conversations view, and
+  wrap long conversation text instead of cutting it off.
+- Keep **Close task** and **Copy task ID** pinned in the task detail header.
+
 ### Fixed
 
 - Tell agents notified of a user task comment to reply on the task with
@@ -36,6 +44,19 @@
   Only the responsible agent is asked to act; a separate requester just
   receives the comment, and delegated tasks keep the reply cue. Comments on
   ownerless tasks (for example cancelled before assignment) ask no agent to act.
+- Recover stalled tasks and run reserved queue entries. Recovered work stays
+  unstarted in the queue and is not handed back to the prior agent session.
+  Idle creators can reclaim their released, unstarted reservations.
+- Accept task board drops while a refresh is in flight, and reject stale
+  reorders that would move unrelated tasks.
+- Limit automatic worker fast retries to transient checkout and capability
+  errors, and make Git checkout observation reliable under Windows load.
+- Preserve project execution exclusions when switching gateways.
+
+### Upgrade notes
+
+- [Task worktrees](docs/worktrees.md) are a design proposal. This release does
+  not create task branches or worktrees, and does not merge on completion.
 
 ## v0.9.2 - 2026-11-26
 
