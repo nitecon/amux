@@ -199,6 +199,12 @@ Confirmed paths accumulate on the task: each array adds its paths without
 duplicates, and a later null keeps files confirmed by an earlier release, park
 or cancellation.
 
+`POST /v1/projects/{ident}/tasks/reorder` takes an `order` array and an
+optional `moved_task_id`. `moved_task_id` names the single task allowed to cross
+status into the target column. Omitting it permits rank-only reorders: any
+listed task whose status differs from the column returns 409, and the client
+should refresh the board before retrying.
+
 A completed main task with confirmed file changes queues one code review and
 one documentation review under the original task when automatic reviews are
 enabled. A task whose confirmations were all null queues neither. Generated
