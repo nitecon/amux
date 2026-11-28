@@ -51,6 +51,7 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 	}()
 
 	type runExit struct {
+		ctx     context.Context
 		id      string
 		run     string
 		project string
@@ -131,7 +132,7 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				defer jobs.Done()
 				err := worker.Run(runCtx, worker.Config{Store: store, Client: client, RunID: id, Open: open, Archive: archive, Observe: observe})
 				select {
-				case exits <- runExit{chat.ID, id, chat.ProjectIdent, started, err}:
+				case exits <- runExit{runCtx, chat.ID, id, chat.ProjectIdent, started, err}:
 				case <-ctx.Done():
 				}
 			}()
@@ -159,6 +160,10 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 		case <-ticker.C:
 			reconcile()
 		case exit := <-exits:
+			// Check for a requested stop before cancelling the context ourselves.
+			if exit.ctx.Err() != nil {
+				exit.err = nil
+			}
 			active[exit.id]()
 			delete(active, exit.id)
 			retry := retries[exit.id]

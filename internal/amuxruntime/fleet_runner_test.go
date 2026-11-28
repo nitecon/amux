@@ -1,6 +1,7 @@
 package amuxruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -247,13 +248,24 @@ func (s *blockingCloseSession) ResolvePermission(context.Context, string, string
 func (s *blockingCloseSession) Close() error { <-s.release; return nil }
 
 func TestFleetRestartsConversationDesiredAgainDuringStop(t *testing.T) {
+	t.Run("running", func(t *testing.T) { testFleetRestartDuringStop(t, false) })
+	t.Run("starting", func(t *testing.T) { testFleetRestartDuringStop(t, true) })
+}
+
+func testFleetRestartDuringStop(t *testing.T, duringStartup bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	fixture := newFleetFixture(t, ctx)
 	starts := make(chan struct{}, 10)
 	release := make(chan struct{})
-	open := func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
+	open := func(ctx context.Context, _ storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		starts <- struct{}{}
+		if duringStartup {
+			<-ctx.Done()
+			<-release
+			return nil, ctx.Err()
+		}
 		return &blockingCloseSession{done: make(chan struct{}), release: release}, nil
 	}
 	// Every reconcile resolves the pool checkout once.
@@ -263,11 +275,18 @@ func TestFleetRestartsConversationDesiredAgainDuringStop(t *testing.T) {
 		return fixture.directory
 	}
 	done := make(chan struct{})
+	var stderr bytes.Buffer
 	go func() {
 		defer close(done)
-		runFleetConversations(ctx, fixture.local, fixture.client, open, nil, nil, checkout, nil, io.Discard)
+		runFleetConversations(ctx, fixture.local, fixture.client, open, nil, nil, checkout, nil, &stderr)
 	}()
-	defer func() { cancel(); <-done }()
+	defer func() {
+		cancel()
+		<-done
+		if strings.Contains(stderr.String(), "Fleet conversation stopped:") {
+			t.Errorf("deliberate stop reported as a failure: %s", stderr.String())
+		}
+	}()
 	defer close(release)
 	desired := []storage.FleetConversation{{Conversation: *fixture.chat}}
 	send := func(chats []storage.FleetConversation) {
