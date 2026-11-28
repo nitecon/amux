@@ -107,7 +107,7 @@ func Start(ctx context.Context, transport sdk.Transport, binding Binding) error 
 	if binding.Directory != nil {
 		directory = *binding.Directory
 	}
-	catalog := mcpTools(client, binding.Project, id.String(), binding.LocalTask, directory, workingDirectory, settings.WorkPreferences, origin, selectedGoal, binding.LocalConversation)
+	catalog := mcpTools(ctx, client, binding.Project, id.String(), binding.LocalTask, directory, workingDirectory, settings.WorkPreferences, origin, selectedGoal, binding.LocalConversation)
 	server := sdk.NewServer(&sdk.Implementation{Name: "amux", Version: "1.0.0"}, &sdk.ServerOptions{Instructions: catalog.instructions})
 	for _, tool := range catalog.tools {
 		server.AddTool(&sdk.Tool{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
@@ -139,7 +139,7 @@ type toolCatalog struct {
 	call         func(context.Context, string, json.RawMessage) (storage.ToolResult, error)
 }
 
-func mcpTools(client *gatewayclient.Client, project, conversationID, localTask, directory, workingDirectory, workPreferences string, origin agent.Origin, selectedGoal *string, localConversation bool) toolCatalog {
+func mcpTools(ctx context.Context, client *gatewayclient.Client, project, conversationID, localTask, directory, workingDirectory, workPreferences string, origin agent.Origin, selectedGoal *string, localConversation bool) toolCatalog {
 	nativeRequested := client != nil
 	executable, err := os.Executable()
 	if err != nil {
@@ -147,7 +147,7 @@ func mcpTools(client *gatewayclient.Client, project, conversationID, localTask, 
 	}
 	runner := bundledToolRunner{Executable: executable, OverrideDirectory: os.Getenv("AMUX_BUNDLED_DIR"), Directory: workingDirectory}
 	configuredWorkPreferences := os.Getenv("AMUX_WORK_SUBMISSION_PREFERENCES")
-	instructions := mcpStartupInstructionsFor(origin.Provider, os.Getenv("AMUX_AGENT_PROVIDER"), runner, localConversation)
+	instructions := mcpStartupInstructionsFor(ctx, origin.Provider, os.Getenv("AMUX_AGENT_PROVIDER"), runner, localConversation)
 	tools := make([]storage.TaskTool, 0, len(bundledToolCatalog)+len(server.AgentTaskTools())+len(taskRoutingMCPTools)+1)
 	if nativeRequested {
 		if localConversation {
@@ -210,7 +210,7 @@ func mcpTools(client *gatewayclient.Client, project, conversationID, localTask, 
 	}}
 }
 
-func mcpStartupInstructionsFor(explicitProvider, environmentProvider string, runner bundledToolRunner, localConversation bool) string {
+func mcpStartupInstructionsFor(ctx context.Context, explicitProvider, environmentProvider string, runner bundledToolRunner, localConversation bool) string {
 	provider := explicitProvider
 	if provider == "" {
 		provider = environmentProvider
@@ -221,10 +221,10 @@ func mcpStartupInstructionsFor(explicitProvider, environmentProvider string, run
 	if _, supplied := os.LookupEnv("AMUX_DESKTOP_GUIDANCE"); supplied {
 		return ""
 	}
-	return nativeMCPStartupInstructions(runner, localConversation)
+	return nativeMCPStartupInstructions(ctx, runner, localConversation)
 }
 
-func nativeMCPStartupInstructions(runner bundledToolRunner, localConversation bool) string {
+func nativeMCPStartupInstructions(ctx context.Context, runner bundledToolRunner, localConversation bool) string {
 	query, ok := startupguidance.MemoryQuery(runner.workingDirectory())
 	if !ok {
 		return ""
@@ -234,7 +234,7 @@ func nativeMCPStartupInstructions(runner bundledToolRunner, localConversation bo
 		codeTools = codeTools || tool.Name == "code_symbols"
 		memoryTools = memoryTools || tool.Name == "memory_search"
 	}
-	memories := bundledtools.DurableMemories(runner.workingDirectory(), query)
+	memories := bundledtools.DurableMemoriesContext(ctx, runner.workingDirectory(), query)
 	if localConversation {
 		return startupguidance.LocalConversationContext(codeTools, memoryTools, memories)
 	}

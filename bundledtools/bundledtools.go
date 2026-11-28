@@ -71,6 +71,11 @@ func ConfigureProcess(command *exec.Cmd) { configureProcess(command) }
 // The child writes to a temporary file, so output beyond the read limit cannot
 // block the process and is never accumulated in memory.
 func DurableMemories(project, query string) string {
+	return DurableMemoriesContext(context.Background(), project, query)
+}
+
+// DurableMemoriesContext stops recall when the caller is canceled.
+func DurableMemoriesContext(ctx context.Context, project, query string) string {
 	path, ok := Path("", os.Getenv("AMUX_BUNDLED_DIR"), "memory")
 	if !ok {
 		return ""
@@ -85,7 +90,7 @@ func DurableMemories(project, query string) string {
 		_ = os.Remove(name)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), MemoryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, MemoryTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, path, "search", "--limit=5", "--", query)
 	command.Dir = project
