@@ -8,12 +8,12 @@ import (
 	"testing"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func channelRouterRegistry(t *testing.T) *router.Registry {
+func channelRouterRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	r, err := router.NewRegistry([]router.EventDefinition{{ID: "test.changed", Version: 1, Validate: router.Object}}, []router.PluginDefinition{{ID: "fixture", Subscriptions: []router.Subscription{{Event: "test.changed", MinVersion: 1, MaxVersion: 1}}}})
+	r, err := fism.NewRegistry([]fism.EventDefinition{{ID: "test.changed", Version: 1, Validate: fism.Object}}, []fism.ControllerDefinition{{ID: "fixture", Subscriptions: []fism.Subscription{{Event: "test.changed", MinVersion: 1, MaxVersion: 1}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestRouterChannelsAnnounceCommittedJournal(t *testing.T) {
 	one, two := s.EventBus().Subscribe(4), s.EventBus().Subscribe(4)
 	defer one.Unsubscribe()
 	defer two.Unsubscribe()
-	result, err := s.EmitRouterEvent(ctx, r, router.EmitRequest{ID: "test.changed", Version: 1, Source: "server:test", Payload: []byte(`{"value":1}`)})
+	result, err := s.EmitRouterEvent(ctx, r, fism.EmitRequest{ID: "test.changed", Version: 1, Source: "server:test", Payload: []byte(`{"value":1}`)})
 	if err != nil || !result.Stored {
 		t.Fatalf("emit %+v: %v", result, err)
 	}
@@ -61,7 +61,7 @@ func TestRouterEmitSavepointKeepsCallerTransactionAtomic(t *testing.T) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('router-test','caller'); CREATE TEMP TRIGGER reject_router_delivery BEFORE INSERT ON router_deliveries BEGIN SELECT RAISE(ABORT,'fixture rejection'); END;`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := emitRouterEventIn(ctx, tx, r, router.EmitRequest{ID: "test.changed", Version: 1, Source: "server:test", Payload: []byte(`{}`)}); err == nil {
+	if _, err := emitRouterEventIn(ctx, tx, r, fism.EmitRequest{ID: "test.changed", Version: 1, Source: "server:test", Payload: []byte(`{}`)}); err == nil {
 		t.Fatal("accepted rejected delivery")
 	}
 	var count int
@@ -133,11 +133,11 @@ func TestOpenUpgradesLegacyRouterWithinFullRustSchema(t *testing.T) {
 
 func TestRouterSkippedEmitsStillValidateDeclarationAndSchema(t *testing.T) {
 	s := testStore(t)
-	r, err := router.NewRegistry([]router.EventDefinition{{ID: "test.changed", Version: 1, Validate: router.Object}}, nil)
+	r, err := fism.NewRegistry([]fism.EventDefinition{{ID: "test.changed", Version: 1, Validate: fism.Object}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, request := range []router.EmitRequest{
+	for _, request := range []fism.EmitRequest{
 		{ID: "undeclared.event", Version: 1, Source: "test", Payload: []byte(`{}`)},
 		{ID: "test.changed", Version: 1, Source: "test", Payload: []byte(`[]`)},
 	} {
@@ -156,7 +156,7 @@ func TestRouterEmitInRollsBackWithCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	result, err := emitRouterEventIn(ctx, tx, channelRouterRegistry(t), router.EmitRequest{ID: "test.changed", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	result, err := emitRouterEventIn(ctx, tx, channelRouterRegistry(t), fism.EmitRequest{ID: "test.changed", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil || !result.Stored {
 		t.Fatalf("emit %+v: %v", result, err)
 	}

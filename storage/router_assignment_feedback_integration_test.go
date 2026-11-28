@@ -3,23 +3,24 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestAssignmentFeedbackRuntimeRefusalAndNativeAdoptionBoundary(t *testing.T) {
 	s, agent, first, second := assignmentPluginFixture(t)
 	ctx := context.Background()
-	definitions := append(append(nativePresenceDefinitions(), RouterTaskEventDefinitions()...), plugins.NotificationEventDefinitions()...)
-	newRuntime := func(store *Store) *router.Runtime {
+	definitions := append(append(nativePresenceDefinitions(), RouterTaskEventDefinitions()...), controllers.NotificationEventDefinitions()...)
+	newRuntime := func(store *Store) *fism.Runtime {
 		t.Helper()
-		runtime, err := router.NewRuntime(store, store.EventBus(), definitions, []router.Plugin{
-			plugins.PresencePlugin(store), plugins.AssignmentPlugin(store),
-			{Definition: router.PluginDefinition{ID: "notification-observer", Subscriptions: []router.Subscription{{Event: plugins.NotifyEventID, MinVersion: 1, MaxVersion: 1}}}},
-		}, router.RunConfig{Capacity: 4})
+		runtime, err := fism.NewRuntime(store, store.EventBus(), definitions, []fism.Controller{
+			controllers.PresenceController(store), controllers.AssignmentController(store),
+			{Definition: fism.ControllerDefinition{ID: "notification-observer", Subscriptions: []fism.Subscription{{Event: controllers.NotifyEventID, MinVersion: 1, MaxVersion: 1}}}},
+		}, fism.RunConfig{Capacity: 4})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,9 +29,9 @@ func TestAssignmentFeedbackRuntimeRefusalAndNativeAdoptionBoundary(t *testing.T)
 	runtime := newRuntime(s)
 	stop := runRouterFixture(t, runtime)
 	defer stop()
-	tick := func() router.Event {
+	tick := func() fism.Event {
 		t.Helper()
-		result, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
+		result, err := s.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
 		if err != nil || !result.Stored {
 			t.Fatalf("tick admission: %+v %v", result, err)
 		}
@@ -43,11 +44,24 @@ func TestAssignmentFeedbackRuntimeRefusalAndNativeAdoptionBoundary(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: plugins.NotifyResultEventID, Version: 1, Source: source, Correlation: &uid, Payload: payload})
+		result, err := s.AcceptObservation(ctx, runtime.Registry(), fism.EmitRequest{ID: controllers.NotifyResultEventID, Version: 1, Source: source, Correlation: &uid, Payload: payload})
 		if err != nil || !result.Stored {
 			t.Fatalf("feedback admission: %+v %v", result, err)
 		}
-		waitRouterDeliveryState(t, s, result.Event.Seq, "assignment", "completed")
+		pending, err := s.PendingObservations(ctx, 20)
+		i := slices.IndexFunc(pending, func(observation AcceptedObservation) bool { return observation.Event.UID == result.Event.UID })
+		if err != nil || i < 0 {
+			t.Fatalf("feedback observation: %+v %v", pending, err)
+		}
+		if err := runtime.ReconcileSignal(ctx, pending[i].Event); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SettleObservation(ctx, pending[i].ID, pending[i].Event.UID); err != nil {
+			t.Fatal(err)
+		}
+		if rows, err := s.RouterDeliveries(ctx, result.Event.Seq); err != nil || len(rows) != 0 {
+			t.Fatalf("feedback created scheduler rows: %+v %v", rows, err)
+		}
 	}
 	offer := func() (string, []byte) {
 		t.Helper()

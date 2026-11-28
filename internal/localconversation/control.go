@@ -12,13 +12,14 @@ import (
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/internal/clientcontrol"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
 
 type createChat struct {
 	Provider    string
-	Preferences Preferences
+	Preferences providers.Preferences
 	Replace     string
 }
 
@@ -64,7 +65,7 @@ type Remote struct {
 	ConfigPath string
 }
 
-func (c Remote) Create(ctx context.Context, project, provider, replace string, prefs Preferences) (storage.Conversation, error) {
+func (c Remote) Create(ctx context.Context, project, provider, replace string, prefs providers.Preferences) (storage.Conversation, error) {
 	var info storage.Conversation
 	payload, err := json.Marshal(createChat{Provider: provider, Preferences: prefs, Replace: replace})
 	if err == nil {

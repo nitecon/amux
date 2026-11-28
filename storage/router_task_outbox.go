@@ -10,17 +10,17 @@ import (
 	"io"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 var routerTaskEventKinds = [...]string{"created", "updated", "commented", "assigned", "started", "user_review", "completed", "cancelled", "unclaimed"}
 
 // RouterTaskEventDefinitions declares the task events emitted from the durable
 // task outbox. Payloads match the Rust task plugin contract.
-func RouterTaskEventDefinitions() []router.EventDefinition {
-	definitions := make([]router.EventDefinition, 0, len(routerTaskEventKinds))
+func RouterTaskEventDefinitions() []fism.EventDefinition {
+	definitions := make([]fism.EventDefinition, 0, len(routerTaskEventKinds))
 	for _, kind := range routerTaskEventKinds {
-		definitions = append(definitions, router.EventDefinition{
+		definitions = append(definitions, fism.EventDefinition{
 			ID:         "task." + kind,
 			Version:    1,
 			RemoteEmit: false,
@@ -119,7 +119,7 @@ type routerTaskOutboxRow struct {
 
 // DrainRouterTaskOutbox emits and acknowledges one bounded outbox batch in a
 // single SQLite transaction. Failed rows leave the entire batch available.
-func (s *Store) DrainRouterTaskOutbox(ctx context.Context, registry *router.Registry, limit int) (int, error) {
+func (s *Store) DrainRouterTaskOutbox(ctx context.Context, registry *fism.Registry, limit int) (int, error) {
 	if limit < 1 || limit > 200 {
 		return 0, fmt.Errorf("router task outbox limit must be between 1 and 200")
 	}
@@ -129,50 +129,17 @@ func (s *Store) DrainRouterTaskOutbox(ctx context.Context, registry *router.Regi
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.QueryContext(ctx, `SELECT id,kind,project,task_json,comment_json,actor_json
-		FROM router_task_outbox ORDER BY id LIMIT ?`, limit)
+	batch, err := readTaskOutbox(ctx, tx, limit)
 	if err != nil {
-		return 0, fmt.Errorf("read router task outbox: %w", err)
+		return 0, err
 	}
-	batch := make([]routerTaskOutboxRow, 0, limit)
-	for rows.Next() {
-		var row routerTaskOutboxRow
-		var comment, actor sql.NullString
-		if err := rows.Scan(&row.id, &row.kind, &row.project, &row.task, &comment, &actor); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan router task outbox row: %w", err)
-		}
-		if comment.Valid {
-			row.commentPresent = true
-			row.comment = []byte(comment.String)
-		}
-		if actor.Valid {
-			row.actorPresent = true
-			row.actor = []byte(actor.String)
-		}
-		batch = append(batch, row)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, fmt.Errorf("read router task outbox rows: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("close router task outbox rows: %w", err)
-	}
-
 	stored := false
 	for _, row := range batch {
-		id, ok := routerTaskEventID(row.kind)
-		if !ok {
-			return 0, fmt.Errorf("unknown router task outbox kind %q", row.kind)
-		}
-		payload, err := marshalRouterTaskPayload(row)
+		request, err := taskChangeRequest(row)
 		if err != nil {
-			return 0, fmt.Errorf("build router task outbox payload %d: %w", row.id, err)
+			return 0, err
 		}
-		result, err := emitRouterEventIn(ctx, tx, registry, router.EmitRequest{
-			ID: id, Version: 1, Payload: payload, Source: "tasks",
-		})
+		result, err := emitRouterEventIn(ctx, tx, registry, request)
 		if err != nil {
 			return 0, fmt.Errorf("emit router task outbox row %d: %w", row.id, err)
 		}
@@ -198,6 +165,42 @@ func (s *Store) DrainRouterTaskOutbox(ctx context.Context, registry *router.Regi
 		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
 	}
 	return len(batch), nil
+}
+
+func readTaskOutbox(ctx context.Context, q queryer, limit int) ([]routerTaskOutboxRow, error) {
+	if limit < 1 || limit > 200 {
+		return nil, fmt.Errorf("router task outbox limit must be between 1 and 200")
+	}
+	rows, err := q.QueryContext(ctx, `SELECT id,kind,project,task_json,comment_json,actor_json
+		FROM router_task_outbox ORDER BY id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read router task outbox: %w", err)
+	}
+	defer rows.Close()
+	batch := make([]routerTaskOutboxRow, 0, limit)
+	for rows.Next() {
+		var row routerTaskOutboxRow
+		var comment, actor sql.NullString
+		if err := rows.Scan(&row.id, &row.kind, &row.project, &row.task, &comment, &actor); err != nil {
+			return nil, fmt.Errorf("scan router task outbox row: %w", err)
+		}
+		row.commentPresent, row.actorPresent = comment.Valid, actor.Valid
+		row.comment, row.actor = []byte(comment.String), []byte(actor.String)
+		batch = append(batch, row)
+	}
+	return batch, rows.Err()
+}
+
+func taskChangeRequest(row routerTaskOutboxRow) (fism.EmitRequest, error) {
+	id, ok := routerTaskEventID(row.kind)
+	if !ok {
+		return fism.EmitRequest{}, fmt.Errorf("unknown task change kind %q", row.kind)
+	}
+	payload, err := marshalRouterTaskPayload(row)
+	if err != nil {
+		return fism.EmitRequest{}, fmt.Errorf("build task change %d: %w", row.id, err)
+	}
+	return fism.EmitRequest{ID: id, Version: 1, Payload: payload, Source: "tasks"}, nil
 }
 
 func routerTaskEventID(kind string) (string, bool) {

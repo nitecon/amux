@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -29,7 +31,7 @@ func TestNativeMCPProcessDelegatesWithoutAgentTools(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	actor := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	rootReason, details := "user-directed", "Delegate a scoped subtask"
 	parent, err := store.InsertTask(ctx, storage.TaskInsert{Project: "source", Title: "Parent scope", Reporter: actor.SessionID, RootReason: &rootReason, Details: &details}, &actor)
 	if err != nil {
@@ -51,9 +53,10 @@ func TestNativeMCPProcessDelegatesWithoutAgentTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.CommandContext(ctx, executable, "mcp", "--server", host.URL, "--project", "source", "--conversation", conversation.ID,
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: host.URL})
+	command := exec.CommandContext(ctx, executable, "mcp", "--project", "source", "--conversation", conversation.ID,
 		"--session", actor.SessionID, "--instance", actor.InstanceID, "--provider", actor.Provider, "--os", actor.OS)
-	command.Env = workerTestEnvironment(t, map[string]string{"AMUX_MCP_PROCESS_TEST": "1", "GATEWAY_API_KEY": "mcp-delegation-key", "PATH": ""})
+	command.Env = workerTestEnvironment(t, map[string]string{"AMUX_MCP_PROCESS_TEST": "1", "GATEWAY_API_KEY": "mcp-delegation-key", "PATH": "", "HOME": os.Getenv("HOME"), "USERPROFILE": os.Getenv("USERPROFILE")})
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -31,7 +31,7 @@ func migrateRouterNotifier(ctx context.Context, tx *sql.Tx) error {
 
 // ReconcileRouterNotifiers stores task notices and their cause receipt as one
 // transaction. Recipients always come from the current, TTL-filtered snapshot.
-func (s *Store) ReconcileRouterNotifiers(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (s *Store) ReconcileRouterNotifiers(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	if _, ok := routerNotifierKinds[event.ID]; !ok || event.Version != 1 || event.Seq <= 0 || !canonicalUUID(event.UID) {
 		return fmt.Errorf("notifier reconciliation requires a supported persisted task v1 event with a canonical UID")
 	}
@@ -74,7 +74,7 @@ func (s *Store) ReconcileRouterNotifiers(ctx context.Context, registry *router.R
 	return nil
 }
 
-func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *router.Registry, event router.Event) (bool, error) {
+func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *fism.Registry, event fism.Event) (bool, error) {
 	var payload struct {
 		Project string          `json:"project"`
 		Task    json.RawMessage `json:"task"`
@@ -132,8 +132,16 @@ func (s *Store) announceRouterTask(ctx context.Context, tx *sql.Tx, registry *ro
 			Comment   json.RawMessage `json:"comment"`
 			Origin    json.RawMessage `json:"origin"`
 		}{Kind: kind, Project: payload.Project, CreatedAt: event.EmittedAt, Task: payload.Task, Comment: payload.Comment, Origin: payload.Actor}
+		receiver := map[string]string{
+			"session_id": presence.Origin.SessionID, "instance_id": presence.Origin.InstanceID,
+			"project": payload.Project, "provider": presence.Origin.Provider, "os": presence.Origin.OS,
+		}
+		if presence.Generation != nil {
+			receiver["generation"] = *presence.Generation
+		}
 		notice, err := json.Marshal(map[string]any{
 			"target": presence.Origin.SessionID, "project": payload.Project, "mode": "recipient",
+			"receiver":     receiver,
 			"require_idle": requesterResult,
 			"new_task":     newTask, "heading": heading, "instructions": instructions,
 			"event": notificationEvent,

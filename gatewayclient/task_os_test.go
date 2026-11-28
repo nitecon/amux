@@ -8,19 +8,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 const taskOSTestID = "66666666-6666-4666-8666-666666666666"
 
 func TestSetTaskOSRequiresExactActiveOwnerBeforeMutation(t *testing.T) {
-	actor := storage.AgentOrigin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
 	for _, tc := range []struct {
 		name   string
 		status string
-		owner  *storage.AgentOrigin
+		owner  *agent.Origin
 	}{
-		{name: "other owner", status: "todo", owner: &storage.AgentOrigin{SessionID: "33333333-3333-4333-8333-333333333333", InstanceID: actor.InstanceID, Provider: actor.Provider, OS: actor.OS}},
+		{name: "other owner", status: "todo", owner: &agent.Origin{SessionID: "33333333-3333-4333-8333-333333333333", InstanceID: actor.InstanceID, Provider: actor.Provider, OS: actor.OS}},
 		{name: "inactive", status: "done", owner: &actor},
 		{name: "unowned", status: "todo"},
 	} {
@@ -47,7 +48,7 @@ func TestSetTaskOSRequiresExactActiveOwnerBeforeMutation(t *testing.T) {
 }
 
 func TestSetTaskOSRequiresExplicitNullsInIncompatibleHandoffReceipt(t *testing.T) {
-	actor := storage.AgentOrigin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
 	const current = `{"id":"` + taskOSTestID + `","project_ident":"demo","status":"in_progress","labels":["keep","os:linux"],"owner_origin":{"session_id":"11111111-1111-4111-8111-111111111111","instance_id":"22222222-2222-4222-8222-222222222222","provider":"codex","os":"linux"}}`
 	const receipt = `{"id":"` + taskOSTestID + `","project_ident":"demo","status":"todo","labels":["keep","os:windows"],"owner_agent_id":null,"owner_origin":null,"started_at":null,"done_at":null,"routing":{"mode":"unassigned"}}`
 	for _, tc := range []struct{ name, body, want string }{

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -43,7 +44,7 @@ func TestCallProjectMessageThreadValidatesSingleTextInOneRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.CallTaskTool(context.Background(), "tasks", "conversation", storage.AgentOrigin{}, "project_message_thread", json.RawMessage(`{"id":41}`))
+	result, err := client.CallTaskTool(context.Background(), "tasks", "conversation", agent.Origin{}, "project_message_thread", json.RawMessage(`{"id":41}`))
 	if err != nil || result.IsError || calls.Load() != 1 || len(result.Content) != 1 || !strings.Contains(result.Content[0].Text, "full original") {
 		t.Fatalf("thread result=%+v err=%v requests=%d", result, err, calls.Load())
 	}
@@ -73,7 +74,7 @@ func TestCallProjectMessageThreadRejectsMalformedSuccessfulResponses(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := client.CallTaskTool(context.Background(), "tasks", "conversation", storage.AgentOrigin{}, "project_message_thread", json.RawMessage(`{"id":41}`))
+			result, err := client.CallTaskTool(context.Background(), "tasks", "conversation", agent.Origin{}, "project_message_thread", json.RawMessage(`{"id":41}`))
 			if tc.valid {
 				if err != nil || !result.IsError || calls.Load() != 1 {
 					t.Fatalf("server tool error result=%+v err=%v calls=%d", result, err, calls.Load())
@@ -94,7 +95,7 @@ func TestCallProjectMessageThreadRejectsInvalidLocalIDWithoutRequest(t *testing.
 		t.Fatal(err)
 	}
 	for _, args := range []string{`{"id":0}`, `{"id":"41"}`, `{}`} {
-		if _, err := client.CallTaskTool(context.Background(), "tasks", "conversation", storage.AgentOrigin{}, "project_message_thread", json.RawMessage(args)); err == nil {
+		if _, err := client.CallTaskTool(context.Background(), "tasks", "conversation", agent.Origin{}, "project_message_thread", json.RawMessage(args)); err == nil {
 			t.Errorf("accepted invalid local arguments %s", args)
 		}
 	}

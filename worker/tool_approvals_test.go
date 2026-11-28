@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worksubmission"
 )
 
 type approvalRecorder struct {
-	Session
+	providers.Session
 	resolved   []string
 	resolveErr error
 }
@@ -34,7 +35,7 @@ func TestToolApprovalsResolveMatchingRequestsAndForwardOthers(t *testing.T) {
 		forwarded = append(forwarded, event.RequestID)
 		return nil
 	})
-	var session Session = &approvalRecorder{}
+	var session providers.Session = &approvalRecorder{}
 	approvals.session.Store(&session)
 	options := []conversation.PermissionOption{{ID: "allow-once", Kind: "allow_once"}, {ID: "deny", Kind: "reject_once"}}
 	request := func(id, command string) conversation.Event {
@@ -69,7 +70,7 @@ func TestOpenWithToolApprovalsUsesPermissionCWDAndFallback(t *testing.T) {
 	var sink conversation.Sink
 	session := &approvalRecorder{}
 	forwarded := 0
-	open := OpenWithToolApprovals(func(_ context.Context, _ storage.WorkerRun, got conversation.Sink) (Session, error) {
+	open := OpenWithToolApprovals(func(_ context.Context, _ storage.WorkerRun, got conversation.Sink) (providers.Session, error) {
 		sink = got
 		return session, nil
 	}, path)

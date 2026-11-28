@@ -10,14 +10,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func projectInboxTick(now time.Time) router.Event {
-	return router.Event{Seq: 1, UID: uuid.NewString(), ID: "clock.tick", Version: 1, EmittedAt: now.UnixMilli()}
+func projectInboxTick(now time.Time) fism.Event {
+	return fism.Event{Seq: 1, UID: uuid.NewString(), ID: "clock.tick", Version: 1, EmittedAt: now.UnixMilli()}
 }
 
-func reportProjectInboxNative(t *testing.T, s *Store, project string, origin AgentOrigin, source string, sequence int64, draft bool, now time.Time) {
+func reportProjectInboxNative(t *testing.T, s *Store, project string, origin agent.Origin, source string, sequence int64, draft bool, now time.Time) {
 	t.Helper()
 	_, err := s.ReportPresenceWithPrincipal(context.Background(), PresenceReport{Source: source, Sequence: sequence,
 		Agents: []PresenceAgent{{ProjectIdent: project, Origin: origin, Busy: true, Draft: draft}}}, now, "api-key")
@@ -26,7 +27,7 @@ func reportProjectInboxNative(t *testing.T, s *Store, project string, origin Age
 	}
 }
 
-func createInboxConversation(t *testing.T, s *Store, project string, origin *AgentOrigin) *Conversation {
+func createInboxConversation(t *testing.T, s *Store, project string, origin *agent.Origin) *Conversation {
 	t.Helper()
 	created, err := s.CreateConversation(context.Background(), project, "", origin)
 	if err != nil {

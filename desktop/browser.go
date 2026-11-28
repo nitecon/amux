@@ -20,8 +20,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/localconversation"
-	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 	"github.com/nitecon/amux/worksubmission"
@@ -46,6 +47,7 @@ type BrowserConfig struct {
 	Dispatch                    func(func())
 	WorkerManager               *WorkerManager
 	NewWindow                   func(string) fyne.Window
+	NotifyGlobal                func(string)
 }
 
 type Browser struct {
@@ -53,6 +55,8 @@ type Browser struct {
 	excludedProjects                                         map[string]bool
 	client                                                   *gatewayclient.Client
 	appControls                                              fyne.CanvasObject
+	notifyGlobal                                             func(string)
+	notificationConsumer                                     string
 	projectOverride, prefsPath, endpoint, prefKey, clusterID string
 	dispatch                                                 func(func())
 	root                                                     *container.Split
@@ -138,7 +142,7 @@ type Browser struct {
 	gatewaySettings                                     *gatewaySettingsPanel
 	projectItems                                        []storage.ProjectOverview
 	checkoutItems                                       []storage.CheckoutOverview
-	localCheckouts                                      []projectidentity.LocalCheckout
+	localCheckouts                                      []projectid.LocalCheckout
 	checkoutScan                                        uint64
 	projectsDirectoryEntry                              *widget.Entry
 	localCheckoutSummary                                *widget.Label
@@ -304,6 +308,7 @@ func NewBrowser(config BrowserConfig) (*Browser, error) {
 		}
 	}
 	b := &Browser{clientConfigPath: config.ClientConfigPath, client: config.Client, localConversationsDirectory: config.LocalConversationsDirectory, localChatSessions: make(map[string]*localChat), appControls: config.AppControls, projectOverride: strings.TrimSpace(config.Project), prefsPath: config.PreferencesPath, endpoint: config.Client.Endpoint(), dispatch: config.Dispatch, taskWindowFactory: config.NewWindow, prefs: prefs, chats: map[string]*UI{}, chatStarted: map[string]bool{}, browserStatus: widget.NewLabel("Loading projects…")}
+	b.configureGlobalNotifications(config.NotifyGlobal)
 	b.taskComposer = newTaskComposer(b)
 	b.worktreeStatus = newWorktreeStatusView(func() { b.refreshWorktreeStatus() })
 	if b.dispatch == nil {
@@ -1007,6 +1012,9 @@ func (b *Browser) Start(parent context.Context) {
 	if b.clientConfigPath != "" {
 		b.launchWithTimeout(0, b.watchManagedApprovals)
 	}
+	if b.notifyGlobal != nil {
+		b.launchWithTimeout(0, b.watchGlobalNotifications)
+	}
 	go b.runNavigationRefreshes(ctx)
 	go func() {
 		defer b.wg.Done()
@@ -1314,7 +1322,7 @@ func machineCheckoutReport(ctx context.Context, bindings []workspaceCheckoutBind
 		if !localCheckoutAvailable(binding.directory) {
 			continue
 		}
-		origin, err := projectidentity.CloneOrigin(ctx, binding.directory)
+		origin, err := projectid.CloneOrigin(ctx, binding.directory)
 		if err != nil {
 			return nil, err
 		}
@@ -2546,7 +2554,7 @@ func chatKey(project, conversation string) string { return project + "\x00" + co
 // the fleet record or the owner's reported presence and is omitted when unknown.
 func conversationLabel(c storage.Conversation) string {
 	date := time.UnixMilli(c.CreatedAt).Format("Jan 2, 2006 15:04")
-	agent := worker.AgentName(c.Owner.SessionID) + " (" + providerConversationLabel(c.Provider) + ")"
+	agent := agent.Name(c.Owner.SessionID) + " (" + providerConversationLabel(c.Provider) + ")"
 	if host := conversationHostname(c); host != "" {
 		agent = host + " - " + agent
 	}

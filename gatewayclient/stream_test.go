@@ -11,12 +11,13 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestConversationStreamDeliversTranscriptAndCommandCursors(t *testing.T) {
 	stop := errors.New("projection committed")
-	owner := storage.AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -82,7 +83,7 @@ func TestConversationStreamRejectsGapBeforeProjection(t *testing.T) {
 			return
 		}
 		defer c.CloseNow()
-		wsjson.Write(r.Context(), c, map[string]any{"type": "ready", "version": 1, "conversation_id": "thread", "owner": storage.AgentOrigin{}})
+		wsjson.Write(r.Context(), c, map[string]any{"type": "ready", "version": 1, "conversation_id": "thread", "owner": agent.Origin{}})
 		wsjson.Write(r.Context(), c, map[string]any{"type": "event", "version": 1, "event": storage.ConversationEvent{ConversationID: "thread", Sequence: 2}})
 		closed := c.CloseRead(r.Context())
 		<-closed.Done()

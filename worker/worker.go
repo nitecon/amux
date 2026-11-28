@@ -13,23 +13,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/providers/acp"
-	"github.com/nitecon/amux/providers/claude"
-	"github.com/nitecon/amux/providers/codex"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 )
 
-type Session interface {
-	Done() <-chan struct{}
-	Err() error
-	Prompt(context.Context, string) (string, error)
-	ResolvePermission(context.Context, string, string) error
-	Close() error
-}
-
 // Open transfers ownership only on success. On error it must clean up any
 // partial provider resources; Run will not call methods on the failed result.
-type Open func(context.Context, storage.WorkerRun, conversation.Sink) (Session, error)
+type Open func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error)
 
 // EventArchive attaches a local transcript to a worker run.
 type EventArchive func(context.Context, storage.WorkerRun) (conversation.Sink, error)
@@ -48,26 +38,16 @@ type Config struct {
 	AdvertisePresence bool
 }
 
-func OpenACP(ctx context.Context, r storage.WorkerRun, sink conversation.Sink) (Session, error) {
-	if r.Owner.Provider != "antigravity" {
-		return nil, fmt.Errorf("provider adapter is not implemented")
-	}
-	return acp.Start(ctx, acp.Config{Directory: r.Directory, ResumeID: r.NativeSessionID, Command: r.Command}, sink)
-}
-
 // OpenNative selects the provider persisted with the worker run. Keeping this
 // decision on the saved origin makes restart independent of CLI defaults.
-func OpenNative(ctx context.Context, r storage.WorkerRun, sink conversation.Sink) (Session, error) {
-	switch r.Owner.Provider {
-	case "antigravity":
-		return OpenACP(ctx, r, sink)
-	case "codex":
-		return codex.Start(ctx, codex.Config{Directory: r.Directory, ResumeID: r.NativeSessionID, Command: r.Command}, sink)
-	case "claude":
-		return claude.Start(ctx, claude.Config{Directory: r.Directory, ResumeID: r.NativeSessionID, Command: r.Command}, sink)
-	default:
+func OpenNative(ctx context.Context, r storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
+	provider, ok := providers.Lookup(r.Owner.Provider)
+	if !ok {
 		return nil, fmt.Errorf("provider %q is not implemented", r.Owner.Provider)
 	}
+	return provider.Start(ctx, providers.StartOptions{
+		Command: r.Command, Directory: r.Directory, ResumeID: r.NativeSessionID,
+	}, sink)
 }
 
 // Flush publishes the local ordered outbox using the persisted origin. Call
@@ -181,7 +161,7 @@ func Run(parent context.Context, config Config) (runErr error) {
 	ctx, cancelRun := context.WithCancelCause(parent)
 	stop := func() { cancelRun(nil) }
 	var group sync.WaitGroup
-	var session Session
+	var session providers.Session
 	defer func() {
 		stop()
 		if session != nil {

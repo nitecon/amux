@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -28,7 +29,7 @@ func taskAPI(t *testing.T) (*storage.Store, http.Handler) {
 	}
 	return s, h
 }
-func taskRequest(h http.Handler, method, path, body string, actor *storage.AgentOrigin) *httptest.ResponseRecorder {
+func taskRequest(h http.Handler, method, path, body string, actor *agent.Origin) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer task-key")
 	req.Header.Set("Content-Type", "application/json")
@@ -43,8 +44,8 @@ func taskRequest(h http.Handler, method, path, body string, actor *storage.Agent
 	h.ServeHTTP(res, req)
 	return res
 }
-func apiActor() *storage.AgentOrigin {
-	return &storage.AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+func apiActor() *agent.Origin {
+	return &agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 }
 
 // Rust task_events.rs::origin_headers_are_all_or_none_and_validated, extended for required Antigravity support.

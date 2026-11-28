@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestAgentProjectMessageReceiptSurvivesReopenAndReceiptFailureRollsBack(t *testing.T) {
@@ -24,7 +26,7 @@ func TestAgentProjectMessageReceiptSurvivesReopenAndReceiptFailureRollsBack(t *t
 	if err := store.InsertProject(ctx, Project{Ident: "native", ChannelName: "internal", RoomID: "native", CreatedAt: 1, Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
-	origin := AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+	origin := agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 	eventAt := int64(1234)
 	input := AgentProjectMessageInput{Content: "durable native message", MessageType: "message", Subject: ptr("subject"), Hostname: ptr("host"), EventAt: &eventAt}
 	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_internal_receipt BEFORE UPDATE OF external_message_id ON messages

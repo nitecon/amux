@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 type HumanProjectMessageInput struct {
@@ -30,7 +30,7 @@ type HumanProjectMessageReceipt struct {
 // requests first resolve their parent to the thread root so the subsequent
 // receipt is checked against the exact parent the server should commit.
 func (c *Client) PostHumanProjectMessage(ctx context.Context, project string, input HumanProjectMessageInput) (*HumanProjectMessageReceipt, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
 	}

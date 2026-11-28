@@ -12,9 +12,9 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/internal/localconversation"
 	"github.com/nitecon/amux/storage"
-	"github.com/nitecon/amux/worker"
 )
 
 func (b *Browser) setMainView(name string) {
@@ -270,7 +270,7 @@ func (b *Browser) openStandaloneConversation(chat storage.Conversation) {
 		b.persist()
 		content := child.Content()
 		if chat.FleetHostname != nil {
-			identity := worker.AgentDisplayName(chat.Owner) + " · " + providerConversationLabel(chat.Provider)
+			identity := agent.DisplayName(chat.Owner) + " · " + providerConversationLabel(chat.Provider)
 			if *chat.FleetHostname != "" {
 				identity += " · " + *chat.FleetHostname
 			}

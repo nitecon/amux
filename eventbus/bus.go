@@ -16,6 +16,7 @@ const (
 	ConversationChanged      Topic = "conversation_changed"
 	FleetConversationChanged Topic = "fleet_conversation_changed"
 	PresenceChanged          Topic = "presence_changed"
+	ObservationAccepted      Topic = "observation_accepted"
 	RouterChanged            Topic = "router_changed"
 	Tick                     Topic = "tick"
 )

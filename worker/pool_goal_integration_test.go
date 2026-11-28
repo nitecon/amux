@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -36,7 +37,7 @@ func TestRunPoolCarriesSelectedGoalThroughAllocationAndSavedNativeRun(t *testing
 	opened := make(chan storage.WorkerRun, 2)
 	sessions := make(chan *poolFixtureSession, 2)
 	release := make(chan struct{})
-	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		opened <- run
 		if err := sink(openCtx, conversation.Event{Kind: "session_ready", SessionID: "selected-goal-native"}); err != nil {
 			return nil, err

@@ -10,7 +10,8 @@ import (
 	"unicode"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const (
@@ -34,18 +35,18 @@ type PresenceReport struct {
 }
 
 type PresenceAgent struct {
-	ProjectIdent       string      `json:"project_ident"`
-	Origin             AgentOrigin `json:"origin"`
-	Hostname           *string     `json:"hostname,omitempty"`
-	Goal               *string     `json:"goal,omitempty"`
-	Generation         *string     `json:"generation,omitempty"`
-	AgentID            *string     `json:"agent_id,omitempty"`
-	Busy               bool        `json:"busy"`
-	Draft              bool        `json:"draft"`
-	AutoAssign         bool        `json:"auto_assign"`
-	ReviewContextClear bool        `json:"review_context_clear"`
-	ExecutionIdle      bool        `json:"execution_idle,omitempty"`
-	LastActivityAt     *int64      `json:"last_activity_at,omitempty"`
+	ProjectIdent       string       `json:"project_ident"`
+	Origin             agent.Origin `json:"origin"`
+	Hostname           *string      `json:"hostname,omitempty"`
+	Goal               *string      `json:"goal,omitempty"`
+	Generation         *string      `json:"generation,omitempty"`
+	AgentID            *string      `json:"agent_id,omitempty"`
+	Busy               bool         `json:"busy"`
+	Draft              bool         `json:"draft"`
+	AutoAssign         bool         `json:"auto_assign"`
+	ReviewContextClear bool         `json:"review_context_clear"`
+	ExecutionIdle      bool         `json:"execution_idle,omitempty"`
+	LastActivityAt     *int64       `json:"last_activity_at,omitempty"`
 }
 
 type AgentPresence struct {
@@ -127,47 +128,47 @@ func validatePresenceReport(report PresenceReport, now time.Time) (PresenceRepor
 	nowMS := now.UnixMilli()
 	seen := make(map[string]struct{}, len(report.Agents))
 	for i := range report.Agents {
-		agent := &report.Agents[i]
-		goal, err := NormalizeTaskGoal(agent.Goal)
+		entry := &report.Agents[i]
+		goal, err := NormalizeTaskGoal(entry.Goal)
 		if err != nil {
 			return invalid(err.Error())
 		}
-		agent.Goal = goal
-		if agent.Generation != nil && !canonicalUUID(*agent.Generation) {
+		entry.Goal = goal
+		if entry.Generation != nil && !canonicalUUID(*entry.Generation) {
 			return invalid("generation must be a canonical UUID")
 		}
-		if agent.AgentID != nil {
-			id := strings.TrimSpace(*agent.AgentID)
+		if entry.AgentID != nil {
+			id := strings.TrimSpace(*entry.AgentID)
 			if id == "" {
-				agent.AgentID = nil
+				entry.AgentID = nil
 			} else if len(id) > 128 || strings.IndexFunc(id, unicode.IsControl) >= 0 {
 				return invalid("agent_id must be at most 128 UTF-8 bytes and contain no control characters")
 			} else {
-				agent.AgentID = &id
+				entry.AgentID = &id
 			}
 		}
-		if agent.Hostname != nil {
-			agent.Hostname, err = normalizePresenceHostname(agent.Hostname)
+		if entry.Hostname != nil {
+			entry.Hostname, err = normalizePresenceHostname(entry.Hostname)
 			if err != nil {
 				return invalid(err.Error())
 			}
 		}
-		agent.ProjectIdent = projects.NormalizeIdent(agent.ProjectIdent)
-		if agent.ProjectIdent == "" {
+		entry.ProjectIdent = projectid.NormalizeIdent(entry.ProjectIdent)
+		if entry.ProjectIdent == "" {
 			return invalid("project identifier is required")
 		}
-		origin, err := NormalizeOrigin(&agent.Origin)
+		origin, err := agent.NormalizeOrigin(&entry.Origin)
 		if err != nil {
 			return invalid(err.Error())
 		}
-		agent.Origin = *origin
-		if agent.LastActivityAt != nil && (*agent.LastActivityAt < 0 || *agent.LastActivityAt > nowMS) {
+		entry.Origin = *origin
+		if entry.LastActivityAt != nil && (*entry.LastActivityAt < 0 || *entry.LastActivityAt > nowMS) {
 			return invalid("last activity cannot be in the future or negative")
 		}
-		if _, ok := seen[agent.Origin.SessionID]; ok {
+		if _, ok := seen[entry.Origin.SessionID]; ok {
 			return invalid("duplicate session")
 		}
-		seen[agent.Origin.SessionID] = struct{}{}
+		seen[entry.Origin.SessionID] = struct{}{}
 	}
 	return report, nil
 }
@@ -393,7 +394,7 @@ func nullInt64(value *int64) any {
 
 func readPresence(ctx context.Context, q queryer, project string) ([]AgentPresence, error) {
 	rows, err := q.QueryContext(ctx, `SELECT project_ident,instance_id,session_id,provider,os,source,seen_at,last_activity_at,busy,draft,auto_assign,review_context_clear,state,hostname,goal,generation,agent_id
- FROM amux_presence_agents WHERE project_ident=? ORDER BY COALESCE(last_activity_at,seen_at),session_id,instance_id`, projects.NormalizeIdent(project))
+ FROM amux_presence_agents WHERE project_ident=? ORDER BY COALESCE(last_activity_at,seen_at),session_id,instance_id`, projectid.NormalizeIdent(project))
 	if err != nil {
 		return nil, err
 	}

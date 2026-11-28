@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const routerRuntimeLeaseKey = "router-runtime-lease"
@@ -48,7 +48,7 @@ func (s *Store) routerLease() *routerRuntimeLease {
 	return value.(*routerRuntimeLease)
 }
 
-func (s *Store) AcquireRouterRuntime(ctx context.Context, registry *router.Registry, nowMS int64) (string, error) {
+func (s *Store) AcquireRouterRuntime(ctx context.Context, registry *fism.Registry, nowMS int64) (string, error) {
 	if registry == nil {
 		return "", fmt.Errorf("router registry is nil")
 	}
@@ -59,7 +59,7 @@ func (s *Store) AcquireRouterRuntime(ctx context.Context, registry *router.Regis
 		return "", err
 	}
 	if lease.active {
-		return "", router.ErrRuntimeInactive
+		return "", fism.ErrRuntimeInactive
 	}
 	token, err := uuid.NewV7()
 	if err != nil {
@@ -136,8 +136,8 @@ func (s *Store) AcquireRouterRuntime(ctx context.Context, registry *router.Regis
 	return lease.token, nil
 }
 
-func (s *Store) ClaimRouterDeliveries(ctx context.Context, token string, registry *router.Registry, nowMS int64, capacity int) (router.ClaimBatch, error) {
-	batch := router.ClaimBatch{Runs: make([]router.ClaimedRun, 0)}
+func (s *Store) ClaimRouterDeliveries(ctx context.Context, token string, registry *fism.Registry, nowMS int64, capacity int) (fism.ClaimBatch, error) {
+	batch := fism.ClaimBatch{Runs: make([]fism.ClaimedRun, 0)}
 	if registry == nil {
 		return batch, fmt.Errorf("router registry is nil")
 	}
@@ -157,7 +157,7 @@ func (s *Store) ClaimRouterDeliveries(ctx context.Context, token string, registr
 	if capacity > available {
 		capacity = available
 	}
-	plugins := registry.PluginIDs()
+	plugins := registry.ControllerIDs()
 	if len(plugins) == 0 {
 		return batch, nil
 	}
@@ -294,7 +294,7 @@ func (s *Store) ClaimRouterDeliveries(ctx context.Context, token string, registr
 			if err != nil {
 				return batch, err
 			}
-			batch.Runs = append(batch.Runs, router.ClaimedRun{Event: event, Plugin: candidate.plugin, Failures: candidate.failures})
+			batch.Runs = append(batch.Runs, fism.ClaimedRun{Event: event, Plugin: candidate.plugin, Failures: candidate.failures})
 			changed = true
 			if len(batch.Runs) == capacity {
 				break
@@ -305,10 +305,10 @@ func (s *Store) ClaimRouterDeliveries(ctx context.Context, token string, registr
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return router.ClaimBatch{Runs: make([]router.ClaimedRun, 0)}, err
+		return fism.ClaimBatch{Runs: make([]fism.ClaimedRun, 0)}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return router.ClaimBatch{Runs: make([]router.ClaimedRun, 0)}, err
+		return fism.ClaimBatch{Runs: make([]fism.ClaimedRun, 0)}, err
 	}
 	if lease.activeClaims == nil {
 		lease.activeClaims = make(map[routerActiveClaimKey]routerActiveClaim)
@@ -322,7 +322,7 @@ func (s *Store) ClaimRouterDeliveries(ctx context.Context, token string, registr
 	return batch, nil
 }
 
-func (s *Store) FinishRouterDelivery(ctx context.Context, token string, registry *router.Registry, run router.ClaimedRun, outcome router.Outcome, nowMS int64) (returnErr error) {
+func (s *Store) FinishRouterDelivery(ctx context.Context, token string, registry *fism.Registry, run fism.ClaimedRun, outcome fism.Outcome, nowMS int64) (returnErr error) {
 	if registry == nil {
 		return fmt.Errorf("router registry is nil")
 	}
@@ -359,14 +359,14 @@ func (s *Store) FinishRouterDelivery(ctx context.Context, token string, registry
 	if uid != run.Event.UID {
 		return fmt.Errorf("router delivery event identity changed")
 	}
-	if outcome.Kind == router.Fail && attempts > run.Failures {
+	if outcome.Kind == fism.Fail && attempts > run.Failures {
 		return nil
 	}
 	if state != "running" {
-		if outcome.Kind == router.Continue && state == "completed" && attempts == run.Failures {
+		if outcome.Kind == fism.Continue && state == "completed" && attempts == run.Failures {
 			return nil
 		}
-		if outcome.Kind == router.Stop && state == "stopped" && attempts == run.Failures {
+		if outcome.Kind == fism.Stop && state == "stopped" && attempts == run.Failures {
 			return nil
 		}
 		return fmt.Errorf("router delivery is not running")
@@ -377,15 +377,14 @@ func (s *Store) FinishRouterDelivery(ctx context.Context, token string, registry
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	changed := false
+	decision, err := registry.DecideControllerOutcome(run, outcome)
+	if err != nil {
+		return err
+	}
 	switch outcome.Kind {
-	case router.Continue, router.Stop:
-		nextState := "completed"
-		if outcome.Kind == router.Stop {
-			nextState = "stopped"
-		}
+	case fism.Continue, fism.Stop:
 		result, err := tx.ExecContext(ctx, `UPDATE router_deliveries SET state=?,last_error=NULL,updated_at=?
-			WHERE event_seq=? AND plugin=? AND state='running' AND attempts=?`, nextState, nowMS, run.Event.Seq, run.Plugin, run.Failures)
+			WHERE event_seq=? AND plugin=? AND state='running' AND attempts=?`, decision.State, nowMS, run.Event.Seq, run.Plugin, run.Failures)
 		if err != nil {
 			return err
 		}
@@ -393,51 +392,41 @@ func (s *Store) FinishRouterDelivery(ctx context.Context, token string, registry
 		if n == 0 {
 			return fmt.Errorf("router delivery finish lost its compare-and-swap")
 		}
-		changed = n != 0
-	case router.Fail:
+	case fism.Fail:
 		if eventID != run.Event.ID {
 			return fmt.Errorf("router delivery event identity changed")
 		}
-		failures := run.Failures + 1
-		delay := router.RetryDelay(failures).Milliseconds()
-		state := "retrying"
-		if max := registry.MaxAttempts(run.Plugin); max != 0 && failures >= int64(max) {
-			state = "failed"
-		}
 		var result sql.Result
-		if state == "failed" {
+		if decision.State == "failed" {
 			result, err = tx.ExecContext(ctx, `UPDATE router_deliveries SET state='failed',attempts=?,last_error=?,updated_at=?
-				WHERE event_seq=? AND plugin=? AND state='running' AND attempts=?`, failures, outcome.Error, nowMS, run.Event.Seq, run.Plugin, run.Failures)
+				WHERE event_seq=? AND plugin=? AND state='running' AND attempts=?`, decision.Failures, outcome.Error, nowMS, run.Event.Seq, run.Plugin, run.Failures)
 		} else {
 			result, err = tx.ExecContext(ctx, `UPDATE router_deliveries SET state='retrying',attempts=?,next_attempt_at=?,last_error=?,updated_at=?
-				WHERE event_seq=? AND plugin=? AND state='running' AND attempts=?`, failures, nowMS+delay, outcome.Error, nowMS, run.Event.Seq, run.Plugin, run.Failures)
+				WHERE event_seq=? AND plugin=? AND state='running' AND attempts=?`, decision.Failures, nowMS+decision.RetryAfter.Milliseconds(), outcome.Error, nowMS, run.Event.Seq, run.Plugin, run.Failures)
 		}
 		if err != nil {
 			return err
 		}
 		n, _ := result.RowsAffected()
-		changed = n != 0
 		if n == 0 {
 			return fmt.Errorf("router delivery finish lost its compare-and-swap")
 		}
-		if state == "retrying" && delay == router.RetryDelay(6).Milliseconds() && router.RetryDelay(failures-1).Milliseconds() < delay && eventID != "router.retrying" {
+		if decision.Notify {
 			payload, err := json.Marshal(struct {
 				EventUID string `json:"event_uid"`
 				Event    string `json:"event"`
 				Plugin   string `json:"plugin"`
 				Attempts int64  `json:"attempts"`
 				Error    string `json:"error"`
-			}{EventUID: uid, Event: eventID, Plugin: run.Plugin, Attempts: failures, Error: outcome.Error})
+			}{EventUID: uid, Event: eventID, Plugin: run.Plugin, Attempts: decision.Failures, Error: outcome.Error})
 			if err != nil {
 				return fmt.Errorf("encode router retry notification: %w", err)
 			}
 			correlation := uid
-			if _, err := emitRouterEventIn(ctx, tx, registry, router.EmitRequest{ID: "router.retrying", Version: 1, Source: "router", Payload: payload, Correlation: &correlation}); err != nil {
+			if _, err := emitRouterEventIn(ctx, tx, registry, fism.EmitRequest{ID: "router.retrying", Version: 1, Source: "router", Payload: payload, Correlation: &correlation}); err != nil {
 				return fmt.Errorf("emit router retry notification: %w", err)
 			}
 		}
-	default:
-		return fmt.Errorf("unknown router outcome kind %d", outcome.Kind)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -445,9 +434,7 @@ func (s *Store) FinishRouterDelivery(ctx context.Context, token string, registry
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if changed {
-		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
-	}
+	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
 	return nil
 }
 
@@ -455,7 +442,7 @@ func (s *Store) ReleaseRouterRuntime(ctx context.Context, token string) error {
 	lease := s.routerLease()
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
-	if !lease.active || lease.token != token {
+	if !lease.active || token == "" || lease.token != token {
 		return nil
 	}
 	lease.active = false
@@ -488,19 +475,19 @@ func validRouterRuntime(ctx context.Context, lease *routerRuntimeLease, token st
 		return err
 	}
 	if !lease.active || token == "" || lease.token != token {
-		return router.ErrRuntimeInactive
+		return fism.ErrRuntimeInactive
 	}
 	return ctx.Err()
 }
 
-func readRouterEventBySeq(ctx context.Context, q queryer, seq int64) (router.Event, error) {
-	var event router.Event
+func readRouterEventBySeq(ctx context.Context, q queryer, seq int64) (fism.Event, error) {
+	var event fism.Event
 	var payload []byte
 	var correlation sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT seq,uid,id,version,payload,source,emitted_at,correlation FROM router_events WHERE seq=?`, seq).
 		Scan(&event.Seq, &event.UID, &event.ID, &event.Version, &payload, &event.Source, &event.EmittedAt, &correlation)
 	if err != nil {
-		return router.Event{}, err
+		return fism.Event{}, err
 	}
 	event.Payload = append(event.Payload[:0], payload...)
 	if correlation.Valid {

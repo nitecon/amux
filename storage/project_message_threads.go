@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ProjectMessageConfirmation preserves Rust's JSON tuple wire shape:
@@ -56,7 +56,7 @@ type ProjectMessageThread struct {
 // project-scoped thread view. A missing root for a reply falls back to that
 // reply, matching the source's one-hop lookup behavior.
 func (s *Store) GetProjectMessageThread(ctx context.Context, project string, messageID int64) (*ProjectMessageThread, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" || messageID <= 0 {
 		return nil, ErrProjectMessageNotFound
 	}
@@ -145,7 +145,7 @@ func (s *Store) GetProjectMessageThread(ctx context.Context, project string, mes
 // readProjectMessageByID loads a message only from the requested project.
 // Keeping this query shared makes reply and root lookups use the same boundary.
 func readProjectMessageByID(ctx context.Context, q queryer, project string, id int64) (*ProjectMessage, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" || id <= 0 {
 		return nil, nil
 	}

@@ -7,14 +7,14 @@ import (
 
 	"fyne.io/fyne/v2"
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestBrowserTaskWindowDetachRedockPreservesState(t *testing.T) {
 	fixture := startEditorBrowser(t, func(next http.Handler) http.Handler { return next })
 	b, callbacks := fixture.browser, fixture.callbacks
 	b.taskWindowFactory = fyne.CurrentApp().NewWindow
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	conversation, err := fixture.store.CreateConversation(context.Background(), "demo", fixture.first.ID, &owner)
 	if err != nil {
 		t.Fatal(err)

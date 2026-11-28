@@ -71,6 +71,7 @@ func newManifestClient(endpoint, path string) (*Client, error) {
 		return nil, err
 	}
 	client.clusterID = profile.ClusterID
+	client.nodeID = profile.NodeID
 	return client, nil
 }
 

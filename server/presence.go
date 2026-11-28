@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -34,7 +35,7 @@ func (a *api) registerPresenceRoutes(mux *http.ServeMux) {
 			writeError(w, http.StatusBadRequest, "presence report is required")
 			return
 		}
-		principal := authenticatedPrincipal(r.Context())
+		principal := auth.PrincipalID(r.Context())
 		if principal == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return

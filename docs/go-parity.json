@@ -677,7 +677,7 @@
       "line": 2505,
       "test": "project_views_use_real_files_and_git_and_bound_preview",
       "status": "ported",
-      "go_test": "desktop/browser_files_integration_test.go::TestBrowserFilesFollowAttachedWorkspace;desktop/workspace_files_test.go::TestWorkspacePreviewIsRootedAndLimited;desktop/worktree_status_test.go::TestBrowserWorktreeStatusLoadsAttachedCheckout;projectidentity/identity_test.go::TestReadWorktreeStatus",
+      "go_test": "desktop/browser_files_integration_test.go::TestBrowserFilesFollowAttachedWorkspace;desktop/workspace_files_test.go::TestWorkspacePreviewIsRootedAndLimited;desktop/worktree_status_test.go::TestBrowserWorktreeStatusLoadsAttachedCheckout;identity/project/project_test.go::TestReadWorktreeStatus",
       "disposition": "Fyne Files follows the verified checkout binding across workspace switches, previews real file contents, stays inside the checkout, and caps reads at 64 KiB. The Git view reads branch, short status, and recent commits from the attached checkout."
     },
     {
@@ -1069,7 +1069,7 @@
       "line": 733,
       "test": "local_project_discovery_lists_only_immediate_checkouts_without_modifying_them",
       "status": "ported",
-      "go_test": "projectidentity/local_checkout_test.go::TestDiscoverLocalCheckoutsListsImmediateCheckoutsReadOnly; projectidentity/local_checkout_test.go::TestDiscoverLocalCheckoutsMissingOrEmptyParent; desktop/worker_panel_test.go::TestWorkerPanelDiscoverySelectionOnlyFillsCheckoutField",
+      "go_test": "identity/project/local_checkout_test.go::TestDiscoverLocalCheckoutsListsImmediateCheckoutsReadOnly; identity/project/local_checkout_test.go::TestDiscoverLocalCheckoutsMissingOrEmptyParent; desktop/worker_panel_test.go::TestWorkerPanelDiscoverySelectionOnlyFillsCheckoutField",
       "disposition": "Go discovery verifies sorted immediate checkouts, paths containing spaces, optional normalized origins, unchanged Git configuration and an empty result for missing parents. The Fyne worker panel selects a discovered checkout without starting a worker."
     },
     {
@@ -1237,7 +1237,7 @@
       "line": 896,
       "test": "list_arguments_pass_each_element_as_one_positional",
       "status": "ported",
-      "go_test": "internal/amuxruntime/work_submission_mcp_contract_test.go:TestSubmitWorkMCPPathsMatchSourceListContract,TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames,TestSubmitWorkMCPForwardsResumeCommit,TestSubmitWorkMCPRejectsInvalidPathShapesBeforeHTTPOrGit; internal/amuxruntime/work_submission_test.go:TestSubmitWorkPathsFilePreservesLiteralStrings",
+      "go_test": "mcp/submit_work_test.go:TestSubmitWorkMCPPathsMatchSourceListContract; internal/amuxruntime/work_submission_mcp_contract_test.go:TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames,TestSubmitWorkMCPForwardsResumeCommit,TestSubmitWorkMCPRejectsInvalidPathShapesBeforeHTTPOrGit; worksubmission/submit_test.go:TestSubmitWorkPathsFilePreservesLiteralStrings",
       "disposition": "Direct typed MCP handling replaces source argv expansion while preserving the named list contract: paths are a required string array, literal filenames and leading-dash values reach submission intact, and invalid/empty path lists reject before HTTP or Git. MCP filters blank path entries; strict file-manifest decoding preserves literal values. Resume evidence here covers forwarding a commit that fails AmuxID trailer validation with local and remote HEAD unchanged; it does not establish successful resume acceptance."
     },
     {
@@ -1245,7 +1245,7 @@
       "line": 932,
       "test": "tool_names_are_unique",
       "status": "ported",
-      "go_test": "server/task_tools_test.go::TestAgentTaskToolsCatalogSchemas;internal/amuxruntime/bundled_catalog_test.go::TestCombinedMCPToolCatalogNamesAreUnique",
+      "go_test": "server/task_tools_test.go::TestAgentTaskToolsCatalogSchemas;mcp/bundled_catalog_test.go::TestCombinedMCPToolCatalogNamesAreUnique",
       "disposition": "The combined Go catalog test builds the 15 server task/message tools, local submit_work, and all 12 bundled definitions (28 total), then asserts every name is unique. This proves the source invariant across the complete current combined catalog; bundle availability is runtime-dependent."
     },
     {
@@ -1397,7 +1397,7 @@
       "line": 699,
       "test": "preferences_default_to_commit_and_push_with_the_amux_prefix",
       "status": "ported",
-      "go_test": "worksubmission/source_unit_contract_test.go::TestSourcePreferencesDefaultToDirectPushAndUseFullUUIDBranchNames;internal/amuxruntime/work_submission_test.go::TestWorkSubmissionPreferencesDefaultAndPreserveExistingRootFields",
+      "go_test": "worksubmission/source_unit_contract_test.go::TestSourcePreferencesDefaultToDirectPushAndUseFullUUIDBranchNames;worksubmission/submit_test.go::TestWorkSubmissionPreferencesDefaultAndPreserveExistingRootFields",
       "disposition": "Go-native adaptation of the complete source case, using only synthetic repositories/local bare remotes and test servers. Selected paths, Git history/index/worktree, task identity and source recovery behavior are checked. Native CLI/MCP supplies explicit execution and checkout binding instead of the legacy registry; local submission never runs on the gateway."
     },
     {
@@ -1429,7 +1429,7 @@
       "line": 427,
       "test": "local_project_without_origin_is_reused_or_cloned_at_another_location",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryReusesExactLocalCheckoutWithoutOrigin",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryReusesExactLocalCheckoutWithoutOrigin",
       "disposition": "Reuses the exact origin-free checkout with an unborn HEAD and clones it to a separate projects directory when requested."
     },
     {
@@ -1437,7 +1437,7 @@
       "line": 454,
       "test": "clone_populates_empty_destination_and_respects_clone_reservation",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryPopulatesEmptyDestinationAndHonorsReservation",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryPopulatesEmptyDestinationAndHonorsReservation",
       "disposition": "Preserves an existing reservation and refuses a live lock, then clones into the pre-existing empty destination after explicit cleanup. Go leaves an empty sidecar to preserve inode lock identity and acquires the lock before creating or populating the destination."
     },
     {
@@ -1445,7 +1445,7 @@
       "line": 503,
       "test": "clone_creates_checkout_and_reuses_existing_destination",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryReusesVerifiedCheckoutAndPreservesLocalFiles",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryReusesVerifiedCheckoutAndPreservesLocalFiles",
       "disposition": "Clones an empty bare local repository into a parent path with spaces, then reuses the same Git checkout and preserves the local file unchanged."
     },
     {
@@ -1453,7 +1453,7 @@
       "line": 536,
       "test": "clone_reuses_matching_remote_across_transports_and_preserves_changes",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryReusesCanonicalRemoteAcrossTransports",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryReusesCanonicalRemoteAcrossTransports",
       "disposition": "Reuses the canonical HTTPS/SSH match without network access or lost local edits, and rejects a different owner path or a missing origin."
     },
     {
@@ -1461,7 +1461,7 @@
       "line": 605,
       "test": "clone_rejects_existing_non_checkout_without_touching_it",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryRejectsNonCheckoutWithoutModifyingIt",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryRejectsNonCheckoutWithoutModifyingIt",
       "disposition": "Rejects an ordinary subdirectory of a matching repository and a regular file at the destination. Both contents remain intact."
     },
     {
@@ -1549,7 +1549,7 @@
       "line": 11,
       "test": "unfinished_legacy_checkout_is_rejected_without_changing_its_files",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryRejectsIncompleteLegacyAndReservationSymlink",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryRejectsIncompleteLegacyAndReservationSymlink",
       "disposition": "A matching Git checkout with no HEAD is rejected as incomplete, and its existing file contents are preserved."
     },
     {
@@ -1557,7 +1557,7 @@
       "line": 52,
       "test": "normal_clone_failure_remains_an_error_on_retry_and_preserves_partial_folder",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryFailurePreservesFolderAndExplicitRemovalAllowsRetry",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryFailurePreservesFolderAndExplicitRemovalAllowsRetry",
       "disposition": "A failed local Git clone leaves the destination intact and subsequent attempts reject the incomplete checkout without changing its files."
     },
     {
@@ -1565,7 +1565,7 @@
       "line": 74,
       "test": "deleting_a_failed_clone_folder_allows_a_fresh_retry",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryFailurePreservesFolderAndExplicitRemovalAllowsRetry",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryFailurePreservesFolderAndExplicitRemovalAllowsRetry",
       "disposition": "After the fixture explicitly removes the failed destination, a fresh clone of an empty local Git repository succeeds."
     },
     {
@@ -1573,7 +1573,7 @@
       "line": 104,
       "test": "clone_fixture",
       "status": "partial",
-      "go_test": "projectidentity/clone_test.go::TestCloneProcessGateHelper",
+      "go_test": "identity/project/clone_test.go::TestCloneProcessGateHelper",
       "disposition": "Rust marks this subprocess fixture ignored outside its parent test. Go uses a test subprocess to gate the Git command and verifies the contract in TestCloneRepositoryConcurrentAndInterruptedProcess. The helper is not counted as a separate verified behavior."
     },
     {
@@ -1581,7 +1581,7 @@
       "line": 138,
       "test": "concurrent_and_killed_clones_are_rejected_even_after_head_is_written",
       "status": "ported",
-      "go_test": "projectidentity/clone_test.go::TestCloneRepositoryConcurrentAndInterruptedProcess",
+      "go_test": "identity/project/clone_test.go::TestCloneRepositoryConcurrentAndInterruptedProcess",
       "disposition": "A real local Git clone pauses with a verified HEAD before completion is recorded. A concurrent call is refused. Releasing the process permits reuse and preserves local edits. Killing the fixture-owned process leaves an incomplete checkout that subsequent calls refuse."
     },
     {
@@ -2877,7 +2877,7 @@
       "line": 65,
       "test": "every_tool_command_and_option_exists_in_the_bundled_version",
       "status": "partial",
-      "go_test": "internal/amuxruntime/bundled_version_contract_test.go::TestPinnedBundledToolCommandsAndOptionsExist;internal/amuxruntime/bundled_catalog_test.go::TestBundledCatalogHasExactUniqueSourceTools",
+      "go_test": "mcp/bundled_version_contract_test.go::TestPinnedBundledToolCommandsAndOptionsExist;mcp/bundled_catalog_test.go::TestBundledCatalogHasExactUniqueSourceTools",
       "disposition": "Go verifies the pinned 12-tool catalog and checks each configured command and option against the bundled binaries. This does not fully port the Rust contract across its complete bundled command, option, coercion and runtime behavior; keep this source case partial."
     },
     {
@@ -2885,7 +2885,7 @@
       "line": 91,
       "test": "the_server_lists_and_runs_bundled_tools_over_stdio",
       "status": "partial",
-      "go_test": "internal/amuxruntime/bundled_version_contract_test.go::TestPinnedBundledMCPReadsGoModuleOverRealStdio;internal/amuxruntime/bundled_mcp_process_test.go::TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools;internal/amuxruntime/bundled_mcp_process_test.go::TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest",
+      "go_test": "mcp/bundled_version_contract_test.go::TestPinnedBundledMCPReadsGoModuleOverRealStdio;internal/amuxruntime/bundled_mcp_process_test.go::TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools;internal/amuxruntime/bundled_mcp_process_test.go::TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest",
       "disposition": "Go exercises the real pinned bundle over stdio, checks the configured catalog and runs a bundled code_read call. This covers a subset of the Rust end-to-end contract; native task/submit tools use separate MCP paths, and the source case remains partial."
     },
     {
@@ -2893,7 +2893,7 @@
       "line": 179,
       "test": "memory_update_reports_tombstone_recovery_without_changing_retained_content",
       "status": "ported",
-      "go_test": "internal/amuxruntime/bundled_memory_contract_test.go::TestPinnedBundledMemoryUpdateRetainsTombstoneThroughMCP",
+      "go_test": "mcp/bundled_memory_contract_test.go::TestPinnedBundledMemoryUpdateRetainsTombstoneThroughMCP",
       "disposition": "A pinned memory executable is called through an initialized Go MCP stdio subprocess. Its memory_update response reports tombstone recovery with safe copy guidance, and a direct isolated database read confirms the retained visible/raw content, tags, timestamp and tombstone row are unchanged. This verifies the pinned bundled binary contract only; it does not establish a Go server memory backend or live gateway behavior."
     },
     {
@@ -2901,7 +2901,7 @@
       "line": 240,
       "test": "memory_push_all_continues_past_retained_gateway_deletions",
       "status": "ported",
-      "go_test": "internal/amuxruntime/bundled_memory_contract_test.go::TestPinnedBundledMemoryPushAllContinuesPastTombstones",
+      "go_test": "mcp/bundled_memory_contract_test.go::TestPinnedBundledMemoryPushAllContinuesPastTombstones",
       "disposition": "The pinned memory executable runs push --all against an isolated database with two retained tombstones and an unreachable test gateway URL. It completes both projects with blocked=2 and rejected=0, emits no recovery prompt, and preserves both tombstone rows. This verifies the pinned bundled binary contract only; no live gateway or Go server memory backend parity is claimed."
     },
     {
@@ -3053,7 +3053,7 @@
       "line": 17,
       "test": "upstream_and_checkout_directory_define_identity",
       "status": "ported",
-      "go_test": "projectidentity/identity_test.go",
+      "go_test": "identity/project/project_test.go",
       "disposition": "Canonical checkout, origin, subdirectory, symlink and deterministic session identity contracts ported. Windows symlink test skipped without privileges as in source platform scope."
     },
     {
@@ -3061,7 +3061,7 @@
       "line": 48,
       "test": "git_subdirectory_resolves_to_same_checkout",
       "status": "ported",
-      "go_test": "projectidentity/identity_test.go",
+      "go_test": "identity/project/project_test.go",
       "disposition": "Canonical checkout, origin, subdirectory, symlink and deterministic session identity contracts ported. Windows symlink test skipped without privileges as in source platform scope."
     },
     {
@@ -3069,7 +3069,7 @@
       "line": 62,
       "test": "directory_without_origin_has_stable_local_identity",
       "status": "ported",
-      "go_test": "projectidentity/identity_test.go",
+      "go_test": "identity/project/project_test.go",
       "disposition": "Canonical checkout, origin, subdirectory, symlink and deterministic session identity contracts ported. Windows symlink test skipped without privileges as in source platform scope."
     },
     {
@@ -3077,7 +3077,7 @@
       "line": 74,
       "test": "symlink_alias_does_not_create_a_second_project",
       "status": "ported",
-      "go_test": "projectidentity/identity_test.go",
+      "go_test": "identity/project/project_test.go",
       "disposition": "Canonical checkout, origin, subdirectory, symlink and deterministic session identity contracts ported. Windows symlink test skipped without privileges as in source platform scope."
     },
     {
@@ -6045,7 +6045,7 @@
       "line": 264,
       "test": "password_hash_round_trips_and_enforces_length",
       "status": "ported",
-      "go_test": "browserauth/password_test.go::TestHashPasswordUsesRustDefaultsAndUnicodeCharacterPolicy;browserauth/password_test.go::TestVerifyPasswordRejectsMalformedAndUnboundedPHC",
+      "go_test": "auth/authn/password_test.go::TestHashPasswordUsesRustDefaultsAndUnicodeCharacterPolicy;auth/authn/password_test.go::TestVerifyPasswordRejectsMalformedAndUnboundedPHC",
       "disposition": "Focused race tests verify Rust-compatible Argon2id default parameters, correct/incorrect password checks, malformed PHC rejection, Unicode length and fresh random salt."
     },
     {
@@ -6053,7 +6053,7 @@
       "line": 274,
       "test": "token_binds_user_expiry_epoch_and_key",
       "status": "ported",
-      "go_test": "server/ui_session_token_test.go::TestBrowserSessionTokenMatchesRustFixtureAndBindsAccountState;server/ui_session_token_test.go::TestBrowserSessionTokenRejectsMalformedAndNonCanonicalSignatures",
+      "go_test": "auth/authn/session_test.go::TestBrowserSessionTokenMatchesRustFixtureAndBindsAccountState;auth/authn/session_test.go::TestBrowserSessionTokenRejectsMalformedAndNonCanonicalSignatures",
       "disposition": "Focused race tests verify exact Rust-compatible HMAC token, account binding, expiration boundary, wrong key, epoch revocation, disabled users and malformed token rejection."
     },
     {
@@ -6809,7 +6809,7 @@
       "gatewayclient/task_tool_result_test.go",
       "server/task_tool_comment_validation_test.go",
       "storage/conversation_fence_test.go",
-      "mcpstdio/mcpstdio_test.go",
+      "internal/amuxruntime/mcp_process_test.go",
       "worker/native_tools_test.go",
       "providers/codex/mcp_test.go",
       "providers/claude/mcp_test.go"
@@ -7141,7 +7141,7 @@
     "bounds": "Actual 16673-path MCP input fits the 4 MiB inbound frame bound without argv expansion. Ordinary trusted local tool results remain full source-compatible output with no 5 MiB cap. CLI path manifests and preference files are bounded single JSON values. Raw Git/gh stderr is excluded from tool errors; command/exit information and safe recovery references remain.",
     "source_cases": "All15 work_submission_contract cases,2 source unit cases, large MCP submission case and2 ownership cases are mapped above with executable Go evidence.",
     "limits": "PR construction retains the Rust commit-tree path and does not run commit hooks. Live GitHub publication, native settings UI, Windows Git/ACL runtime and whole-system descendant lifecycle remain unverified or incomplete. Git publication and gateway comment are separate effects with a preflight, not an atomic cross-system transaction.",
-    "evidence": "worksubmission/source_contract_test.go;worksubmission/source_unit_contract_test.go;worksubmission/concurrency_contract_test.go;worksubmission/worksubmission_test.go;internal/amuxruntime/work_submission_integration_test.go;internal/amuxruntime/work_submission_test.go;worker/native_tools_test.go;mcpstdio/mcpstdio_test.go;worksubmission/preferences_test.go;desktop/work_submission_settings_test.go;desktop/browser_work_submission_integration_test.go",
+    "evidence": "worksubmission/source_contract_test.go;worksubmission/source_unit_contract_test.go;worksubmission/concurrency_contract_test.go;worksubmission/worksubmission_test.go;internal/amuxruntime/work_submission_integration_test.go;worksubmission/submit_test.go;worker/native_tools_test.go;internal/amuxruntime/mcp_process_test.go;worksubmission/preferences_test.go;desktop/work_submission_settings_test.go;desktop/browser_work_submission_integration_test.go",
     "desktop_settings": "Fyne browser Work submission settings exposes direct commit-and-push or pull-request mode and branch prefix, with explicit Save/Cancel. CLI, desktop and native worker share one bounded source-compatible codec and path resolver. Desktop --work-preferences and AMUX_WORK_SUBMISSION_PREFERENCES select the same pinned file for hosted workers; unavailable implicit configuration leaves browsing usable with a visible settings error. Save errors retain drafts; closed-browser callbacks cannot persist; saving does not launch workers or publish work.",
     "remaining": "Live provider/GitHub PR validation, native interactive submissions and Windows runtime/ACL verification remain pending. PR commit-tree retains source behavior without commit hooks. Broader general settings and remaining task tool/catalog behavior remain incomplete."
   },

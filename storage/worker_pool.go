@@ -16,8 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayorigin"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var (
@@ -39,12 +39,12 @@ type WorkerPool struct {
 }
 
 type WorkerPoolSlot struct {
-	ID             string      `json:"id"`
-	PoolID         string      `json:"pool_id"`
-	Owner          AgentOrigin `json:"owner"`
-	RunID          string      `json:"run_id,omitempty"`
-	ReportSequence int64       `json:"report_sequence"`
-	LastActivityAt int64       `json:"last_activity_at"`
+	ID             string       `json:"id"`
+	PoolID         string       `json:"pool_id"`
+	Owner          agent.Origin `json:"owner"`
+	RunID          string       `json:"run_id,omitempty"`
+	ReportSequence int64        `json:"report_sequence"`
+	LastActivityAt int64        `json:"last_activity_at"`
 }
 
 func migrateWorkerPool(ctx context.Context, tx *sql.Tx) error {
@@ -112,7 +112,7 @@ func validWorkerPoolServer(raw string) bool {
 }
 
 func (s *Store) CreateWorkerPool(ctx context.Context, pool WorkerPool) (*WorkerPool, error) {
-	pool.Project = projects.NormalizeIdent(pool.Project)
+	pool.Project = projectid.NormalizeIdent(pool.Project)
 	goal, err := NormalizeTaskGoal(pool.Goal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrWorkerPoolInput, err)
@@ -121,7 +121,7 @@ func (s *Store) CreateWorkerPool(ctx context.Context, pool WorkerPool) (*WorkerP
 	if err := validateWorkerPool(pool); err != nil {
 		return nil, err
 	}
-	checkout, err := projectidentity.Resolve(ctx, pool.Directory)
+	checkout, err := projectid.Resolve(ctx, pool.Directory)
 	if err != nil {
 		return nil, fmt.Errorf("resolve worker pool checkout: %w", err)
 	}
@@ -140,7 +140,7 @@ func (s *Store) CreateWorkerPool(ctx context.Context, pool WorkerPool) (*WorkerP
 	}
 	now := time.Now().UnixMilli()
 	for range pool.SlotCount {
-		owner := AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: pool.Provider, OS: pool.OS}
+		owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: pool.Provider, OS: pool.OS}
 		ownerJSON, _ := json.Marshal(owner)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO amux_worker_pool_slots(id,pool_id,owner_json,last_activity_at) VALUES(?,?,?,?)`, uuid.NewString(), pool.ID, string(ownerJSON), now); err != nil {
 			return nil, err

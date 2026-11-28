@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -92,7 +94,7 @@ func TestWorkerKeepsOfflineOutputAndDoesNotRepeatLostClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "antigravity", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "antigravity", OS: "linux"}
 	bound, err := remote.CreateConversation(ctx, "demo", task.ID, &owner)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +130,7 @@ func TestWorkerKeepsOfflineOutputAndDoesNotRepeatLostClaim(t *testing.T) {
 	workerCtx, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	var once sync.Once
-	open := func(ctx context.Context, r storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(ctx context.Context, r storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		once.Do(func() { provider.sink = sink })
 		if err := sink(ctx, conversation.Event{Kind: "session_ready", SessionID: "native"}); err != nil {
 			return nil, err

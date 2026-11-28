@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/server"
 )
@@ -126,14 +126,14 @@ func TestAttachReusesRunningClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := startOrAttachClient(ctx, cli, settings, endpoint, ""); err != nil {
+	if err := startOrAttachClient(ctx, cli, settings, endpoint); err != nil {
 		t.Fatal(err)
 	}
 	outdated.Store(true)
-	if err := startOrAttachClient(ctx, cli, settings, "https://other.test", ""); err == nil || shutdowns.Load() != 0 {
+	if err := startOrAttachClient(ctx, cli, settings, "https://other.test"); err == nil || shutdowns.Load() != 0 {
 		t.Fatal("attempted to restart a client attached to a different gateway")
 	}
-	if err := startOrAttachClient(ctx, cli, settings, endpoint, ""); err == nil || !strings.Contains(err.Error(), "test shutdown refused") || shutdowns.Load() != 1 {
+	if err := startOrAttachClient(ctx, cli, settings, endpoint); err == nil || !strings.Contains(err.Error(), "test shutdown refused") || shutdowns.Load() != 1 {
 		t.Fatalf("outdated client restart returned %v with %d shutdown calls", err, shutdowns.Load())
 	}
 }
@@ -174,10 +174,12 @@ func TestMigrateClientConfigPreservesJournalAndExistingYAML(t *testing.T) {
 
 func TestChangingGatewayStopsPreviousClientBeforeReplacingConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
+	path := filepath.Join(dir, "config.yaml")
 	current := config.Client{
 		EnrolledProfile:  filepath.Join(dir, "old", "client-profile.json"),
 		WorkerJournal:    filepath.Join(dir, "workers.db"),
+		WorkPreferences:  filepath.Join(dir, "work-preferences.json"),
+		TaskToolsCommand: filepath.Join(dir, "amux"),
 		Projects:         map[string]string{"old-project": filepath.Join(dir, "old-checkout")},
 		Providers:        []string{"codex"},
 		ExcludedProjects: map[string]bool{"old-project": true},
@@ -213,6 +215,7 @@ func TestChangingGatewayStopsPreviousClientBeforeReplacingConfig(t *testing.T) {
 	}
 	settings, err := config.ReadClient(path)
 	if err != nil || settings.EnrolledProfile != replacement || settings.WorkerJournal != current.WorkerJournal ||
+		settings.WorkPreferences != current.WorkPreferences || settings.TaskToolsCommand != current.TaskToolsCommand ||
 		len(settings.Projects) != 0 || len(settings.Providers) != 1 || settings.Providers[0] != "codex" ||
 		!settings.ExcludedProjects["old-project"] {
 		t.Fatalf("unexpected replacement configuration: %+v, %v", settings, err)

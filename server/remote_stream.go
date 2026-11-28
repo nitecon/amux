@@ -14,28 +14,35 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/auth"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/queues"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/wsock"
 )
 
 const (
 	remoteStreamIdleTimeout = time.Minute
 	remoteHeartbeatInterval = 20 * time.Second
 	remoteWriteTimeout      = 5 * time.Second
+	remoteOutboundBuffer    = 8
 	remoteBusBuffer         = 64
 )
 
 type RemoteConfig struct {
-	Context   context.Context
-	Registry  *router.Registry
-	Forwarded []string
+	Context      context.Context
+	Registry     *fism.Registry
+	Forwarded    []string
+	QueueManager queues.Manager
 }
 
 type remoteStreamConfig struct {
-	ctx       context.Context
-	registry  *router.Registry
-	forwarded map[string]struct{}
+	ctx          context.Context
+	registry     *fism.Registry
+	forwarded    map[string]struct{}
+	queueManager queues.Manager
 }
 
 func validateRemoteConfig(config RemoteConfig) (*remoteStreamConfig, error) {
@@ -55,11 +62,11 @@ func validateRemoteConfig(config RemoteConfig) (*remoteStreamConfig, error) {
 		}
 		forwarded[event] = struct{}{}
 	}
-	return &remoteStreamConfig{ctx: config.Context, registry: config.Registry, forwarded: forwarded}, nil
+	return &remoteStreamConfig{ctx: config.Context, registry: config.Registry, forwarded: forwarded, queueManager: config.QueueManager}, nil
 }
 
 func (a *api) remoteEventStream(w http.ResponseWriter, r *http.Request) {
-	if authenticatedPrincipal(r.Context()) == "" {
+	if auth.PrincipalID(r.Context()) == "" {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -156,17 +163,7 @@ func strictRemoteFrame(raw []byte, value any) error {
 	return nil
 }
 
-func writeRemoteFrame(ctx context.Context, conn *websocket.Conn, value any) error {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	writeCtx, cancel := context.WithTimeout(ctx, remoteWriteTimeout)
-	defer cancel()
-	return conn.Write(writeCtx, websocket.MessageText, body)
-}
-
-func remoteEventFrame(event *router.Event) any {
+func remoteEventFrame(event *fism.Event) any {
 	return map[string]any{
 		"type": "event",
 		"event": map[string]any{
@@ -177,14 +174,14 @@ func remoteEventFrame(event *router.Event) any {
 	}
 }
 
-func resetRemoteDeadline(timer *time.Timer, subscribed bool, lastHeartbeat time.Time, inflight *router.Event, sentAt time.Time, attempts int) <-chan time.Time {
+func resetRemoteDeadline(timer *time.Timer, subscribed bool, lastHeartbeat time.Time, inflight *fism.Event, sentAt time.Time, attempts int) <-chan time.Time {
 	if !subscribed {
 		timer.Stop()
 		return nil
 	}
 	deadline := lastHeartbeat.Add(remoteHeartbeatInterval)
 	if inflight != nil {
-		retryAt := sentAt.Add(router.RetryDelay(int64(attempts)))
+		retryAt := sentAt.Add(fism.RetryDelay(int64(attempts)))
 		if retryAt.Before(deadline) {
 			deadline = retryAt
 		}
@@ -206,6 +203,12 @@ func resetRemoteDeadline(timer *time.Timer, subscribed bool, lastHeartbeat time.
 func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Conn) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	connectionID := uuid.NewString()
+	writer, err := wsock.NewWriter(ctx, a.remote.queueManager, "wsock."+connectionID, remoteOutboundBuffer, remoteWriteTimeout, conn.Write)
+	if err != nil {
+		return
+	}
+	defer writer.Close()
 	input := make(chan streamMessage, 1)
 	readerDone := make(chan struct{})
 	go func() {
@@ -222,12 +225,12 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 			}
 		}
 	}()
-	defer func() { cancel(); conn.CloseNow(); <-readerDone }()
-	connectionID := uuid.NewString()
+
 	principal := authenticatedSecurePrincipal(parent)
 	consumerID := ""
+	var releaseSession func()
 	var cursor int64
-	var inflight *router.Event
+	var inflight *fism.Event
 	var inflightFrame any
 	attempts := 0
 	var sentAt time.Time
@@ -246,7 +249,11 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 	sub := bus.Subscribe(remoteBusBuffer)
 	defer func() { sub.Unsubscribe() }()
 	defer func() {
+		cancel()
+		conn.CloseNow()
+		<-readerDone
 		if consumerID != "" {
+			releaseSession()
 			cleanup, stop := context.WithTimeout(context.WithoutCancel(parent), 2*time.Second)
 			defer stop()
 			_ = a.store.CloseRemoteConsumer(cleanup, consumerID, connectionID)
@@ -257,6 +264,8 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 		deadlineC := resetRemoteDeadline(deadline, consumerID != "", lastHeartbeat, inflight, sentAt, attempts)
 		select {
 		case <-ctx.Done():
+			return
+		case <-writer.Done():
 			return
 		case <-a.remote.ctx.Done():
 			return
@@ -272,18 +281,18 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 			}
 			now := time.Now()
 			if now.Sub(lastHeartbeat) >= remoteHeartbeatInterval {
-				if writeRemoteFrame(ctx, conn, map[string]any{"type": "heartbeat"}) != nil {
+				if writer.EnqueueJSON(map[string]any{"type": "heartbeat"}) != nil {
 					return
 				}
 				lastHeartbeat = now
 			}
-			if inflight != nil && now.Sub(sentAt) >= router.RetryDelay(int64(attempts)) {
-				if writeRemoteFrame(ctx, conn, inflightFrame) != nil {
+			if inflight != nil && now.Sub(sentAt) >= fism.RetryDelay(int64(attempts)) {
+				if writer.EnqueueJSON(inflightFrame) != nil {
 					return
 				}
 				attempts++
 				sentAt = now
-			} else if inflight == nil && !a.offerRemoteEvent(ctx, conn, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
+			} else if inflight == nil && !a.offerRemoteEvent(ctx, writer, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
 				return
 			}
 		case message := <-input:
@@ -302,7 +311,7 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 			idle.Reset(remoteStreamIdleTimeout)
 			request, err := decodeRemoteInput(message.body)
 			if err != nil {
-				if writeRemoteFrame(ctx, conn, map[string]any{"type": "error", "message": err.Error()}) != nil {
+				if writer.EnqueueJSON(map[string]any{"type": "error", "message": err.Error()}) != nil {
 					return
 				}
 				continue
@@ -320,6 +329,10 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 				}
 				request.consumerID = parsedID.String()
 				for _, event := range request.events {
+					if event == controllers.NotifyEventID && principal == nil {
+						err = fmt.Errorf("agent notifications require an enrolled node")
+						break
+					}
 					if _, ok := a.remote.forwarded[event]; !ok {
 						err = fmt.Errorf("event %q is not forwarded to remote consumers", event)
 						break
@@ -333,20 +346,24 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 						break
 					}
 				}
-				cursor, err = a.store.OpenRemoteConsumer(ctx, request.consumerID, connectionID, request.after)
+				releaseSession, err = a.sockets.ClaimSession(request.consumerID, conn, func() error {
+					var claimErr error
+					cursor, claimErr = a.store.OpenRemoteConsumer(ctx, request.consumerID, connectionID, request.after)
+					return claimErr
+				})
 				if err != nil {
 					break
 				}
 				consumerID = request.consumerID
 				remoteEvents = append([]string(nil), request.events...)
 				remoteTargets = append([]string(nil), request.targets...)
-				if err = writeRemoteFrame(ctx, conn, map[string]any{
+				if err = writer.EnqueueJSON(map[string]any{
 					"type": "subscribed", "consumer_id": consumerID, "cursor": cursor,
 					"server_restart_reminders": a.remote.registry.Subscribes("reminder", "client.heartbeat", 1),
 				}); err != nil {
 					return
 				}
-				if !a.offerRemoteEvent(ctx, conn, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
+				if !a.offerRemoteEvent(ctx, writer, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
 					return
 				}
 				continue
@@ -356,7 +373,7 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 						return
 					}
 				}
-				if err = writeRemoteFrame(ctx, conn, map[string]any{"type": "heartbeat_ack"}); err != nil {
+				if err = writer.EnqueueJSON(map[string]any{"type": "heartbeat_ack"}); err != nil {
 					return
 				}
 				continue
@@ -383,10 +400,10 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 					return
 				}
 				if err == nil {
-					if err = writeRemoteFrame(ctx, conn, map[string]any{"type": "acked", "seq": request.seq}); err != nil {
+					if err = writer.EnqueueJSON(map[string]any{"type": "acked", "seq": request.seq}); err != nil {
 						return
 					}
-					if !a.offerRemoteEvent(ctx, conn, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
+					if !a.offerRemoteEvent(ctx, writer, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
 						return
 					}
 					continue
@@ -411,9 +428,9 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 						return
 					}
 				}
-				result, emitErr := a.store.EmitRouterEvent(ctx, a.remote.registry, router.EmitRequest{
+				result, emitErr := a.store.AcceptObservation(ctx, a.remote.registry, fism.EmitRequest{
 					ID: request.id, Version: request.version, Payload: request.payload,
-					Source: "client:" + authenticatedPrincipal(ctx), Correlation: correlation,
+					Source: "client:" + auth.PrincipalID(ctx), Correlation: correlation,
 				})
 				err = emitErr
 				if err == nil {
@@ -422,7 +439,7 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 							return
 						}
 					}
-					if err = writeRemoteFrame(ctx, conn, map[string]any{"type": "emitted", "uid": result.Event.UID}); err != nil {
+					if err = writer.EnqueueJSON(map[string]any{"type": "emitted", "uid": result.Event.UID}); err != nil {
 						return
 					}
 					continue
@@ -432,7 +449,7 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 				if errors.Is(err, storage.ErrRemoteConsumerReplaced) {
 					return
 				}
-				if writeRemoteFrame(ctx, conn, map[string]any{"type": "error", "message": err.Error()}) != nil {
+				if writer.EnqueueJSON(map[string]any{"type": "error", "message": err.Error()}) != nil {
 					return
 				}
 			}
@@ -444,7 +461,7 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 				}
 				sub.Unsubscribe()
 				sub = bus.Subscribe(remoteBusBuffer)
-				if consumerID != "" && inflight == nil && !a.offerRemoteEvent(ctx, conn, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
+				if consumerID != "" && inflight == nil && !a.offerRemoteEvent(ctx, writer, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
 					return
 				}
 				continue
@@ -456,14 +473,14 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 				if err := a.store.CheckRemoteConsumer(ctx, consumerID, connectionID); err != nil {
 					return
 				}
-				if inflight == nil && !a.offerRemoteEvent(ctx, conn, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
+				if inflight == nil && !a.offerRemoteEvent(ctx, writer, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
 					return
 				}
 			} else if event.Topic == eventbus.RouterChanged && inflight == nil {
 				if err := a.store.CheckRemoteConsumer(ctx, consumerID, connectionID); err != nil {
 					return
 				}
-				if !a.offerRemoteEvent(ctx, conn, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
+				if !a.offerRemoteEvent(ctx, writer, consumerID, connectionID, remoteEvents, remoteTargets, &inflight, &inflightFrame, &attempts, &sentAt) {
 					return
 				}
 			}
@@ -471,11 +488,11 @@ func (a *api) serveRemoteEventStream(parent context.Context, conn *websocket.Con
 	}
 }
 
-func (a *api) offerRemoteEvent(ctx context.Context, conn *websocket.Conn, consumerID, connectionID string, events, targets []string, inflight **router.Event, inflightFrame *any, attempts *int, sentAt *time.Time) bool {
+func (a *api) offerRemoteEvent(ctx context.Context, writer *wsock.Writer, consumerID, connectionID string, events, targets []string, inflight **fism.Event, inflightFrame *any, attempts *int, sentAt *time.Time) bool {
 	if *inflight != nil {
 		return true
 	}
-	event, err := a.store.NextRemoteEvent(ctx, consumerID, connectionID, events, targets)
+	event, err := a.store.NextRemoteEvent(ctx, consumerID, connectionID, events, targets, auth.PrincipalID(ctx), a.securityEnrollment)
 	if err != nil {
 		return false
 	}
@@ -483,7 +500,7 @@ func (a *api) offerRemoteEvent(ctx context.Context, conn *websocket.Conn, consum
 		return true
 	}
 	frame := remoteEventFrame(event)
-	if err = writeRemoteFrame(ctx, conn, frame); err != nil {
+	if err = writer.WriteJSON(frame); err != nil {
 		return false
 	}
 	*inflight = event

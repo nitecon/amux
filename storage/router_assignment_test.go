@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func assignmentClock(at int64) router.Event {
-	return router.Event{UID: uuid.NewString(), ID: "clock.tick", Version: 1, EmittedAt: at}
+func assignmentClock(at int64) fism.Event {
+	return fism.Event{UID: uuid.NewString(), ID: "clock.tick", Version: 1, EmittedAt: at}
 }
 
 func TestReconcileRouterAssignmentsDoesNotReconcilePresence(t *testing.T) {

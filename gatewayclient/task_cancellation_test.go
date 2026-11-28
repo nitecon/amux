@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -21,11 +22,11 @@ const (
 	cancelTestInstance = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 )
 
-func cancelTestOrigin() *storage.AgentOrigin {
-	return &storage.AgentOrigin{SessionID: cancelTestSession, InstanceID: cancelTestInstance, Provider: "claude", OS: "linux"}
+func cancelTestOrigin() *agent.Origin {
+	return &agent.Origin{SessionID: cancelTestSession, InstanceID: cancelTestInstance, Provider: "claude", OS: "linux"}
 }
 
-func cancellationFixture(reason string, origin *storage.AgentOrigin) storage.Cancellation {
+func cancellationFixture(reason string, origin *agent.Origin) storage.Cancellation {
 	return storage.Cancellation{
 		TaskID: cancelTestTaskID, ProjectIdent: cancelTestProject, Reason: reason,
 		PriorStatus: "in_progress", PriorOwnerAgentID: ptrString("agent-1"),
@@ -34,7 +35,7 @@ func cancellationFixture(reason string, origin *storage.AgentOrigin) storage.Can
 	}
 }
 
-func cancellationResponseFixture(reason string, origin *storage.AgentOrigin) storage.CancelResponse {
+func cancellationResponseFixture(reason string, origin *agent.Origin) storage.CancelResponse {
 	response := storage.CancelResponse{
 		Task:         &storage.Task{ID: cancelTestTaskID, ProjectIdent: cancelTestProject, Status: "cancelled", OwnerAgentID: ptrString("agent-1"), OwnerOrigin: origin, StartedAt: ptrInt64(100)},
 		Cancellation: &storage.Cancellation{},
@@ -165,7 +166,7 @@ func TestTaskCancelValidatesNativeInputAndDoesNotSendInvalidWrites(t *testing.T)
 	for _, tc := range []struct {
 		reason    string
 		changeset json.RawMessage
-		origin    *storage.AgentOrigin
+		origin    *agent.Origin
 	}{
 		{" ", nil, cancelTestOrigin()}, {strings.Repeat("x", 16385), nil, cancelTestOrigin()}, {"reason", json.RawMessage(`{}`), cancelTestOrigin()}, {"reason", nil, nil},
 	} {

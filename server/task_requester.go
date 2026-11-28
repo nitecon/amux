@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -26,7 +27,7 @@ func parseOptionalRequester(raw json.RawMessage) (*storage.RegisteredTargetIdent
 	return requester, nil
 }
 
-func currentRequester(ctx context.Context, store *storage.Store, project string, origin *storage.AgentOrigin) (*storage.RegisteredTargetIdentity, error) {
+func currentRequester(ctx context.Context, store *storage.Store, project string, origin *agent.Origin) (*storage.RegisteredTargetIdentity, error) {
 	if origin == nil {
 		return nil, fmt.Errorf("requester subscription requires a native execution")
 	}

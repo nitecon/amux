@@ -28,10 +28,11 @@ func TestGenerateAndRunServerConfig(t *testing.T) {
 		t.Fatal("regeneration should reject an existing file")
 	}
 	data = bytes.Replace(data, []byte("database: \"\""), []byte("database: application.sqlite"), 1)
+	data = bytes.Replace(data, []byte("listen: 127.0.0.1:7913"), []byte("listen: 127.0.0.1:0"), 1)
 	if err := os.WriteFile(serverConfigFilename, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	address, stop := startServerCommand(t, "--config", serverConfigFilename, "--listen", "127.0.0.1:0")
+	address, stop := startServerCommand(t, "--config", serverConfigFilename)
 	defer stop()
 	client, err := gatewayclient.New("http://"+address, profileTestEnv("GATEWAY_API_KEY"), nil)
 	if err != nil {

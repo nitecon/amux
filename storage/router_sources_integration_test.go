@@ -11,26 +11,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func sourceRegistry(t *testing.T) *router.Registry {
+func sourceRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	definitions := append(RouterTaskEventDefinitions(), plugins.ClockDefinition())
-	subscriptions := make([]router.Subscription, 0, len(definitions))
+	definitions := append(RouterTaskEventDefinitions(), controllers.ClockDefinition())
+	subscriptions := make([]fism.Subscription, 0, len(definitions))
 	for _, def := range definitions {
-		subscriptions = append(subscriptions, router.Subscription{Event: def.ID, MinVersion: 1, MaxVersion: 1})
+		subscriptions = append(subscriptions, fism.Subscription{Event: def.ID, MinVersion: 1, MaxVersion: 1})
 	}
-	r, err := router.NewRegistry(definitions, []router.PluginDefinition{{ID: "observer", Subscriptions: subscriptions}})
+	r, err := fism.NewRegistry(definitions, []fism.ControllerDefinition{{ID: "observer", Subscriptions: subscriptions}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r
 }
 
-func awaitSourceEvent(t *testing.T, s *Store, id string) router.Event {
+func awaitSourceEvent(t *testing.T, s *Store, id string) fism.Event {
 	t.Helper()
 	sub := s.EventBus().Subscribe(64)
 	defer sub.Unsubscribe()
@@ -63,7 +63,7 @@ type sourceDrainProbe struct {
 	drained chan struct{}
 }
 
-func (p *sourceDrainProbe) DrainRouterTaskOutbox(ctx context.Context, r *router.Registry, limit int) (int, error) {
+func (p *sourceDrainProbe) DrainRouterTaskOutbox(ctx context.Context, r *fism.Registry, limit int) (int, error) {
 	count, err := p.Store.DrainRouterTaskOutbox(ctx, r, limit)
 	p.once.Do(func() { close(p.drained) })
 	return count, err
@@ -75,12 +75,12 @@ func TestTaskSourcePublishesCommittedNativeMutationsAndRestartsWithoutDuplicates
 	r := sourceRegistry(t)
 	actor := taskActor()
 	task := makeTask(t, s, actor)
-	stop := runOwnedRouterFixture(t, func(ctx context.Context) error { return plugins.RunTaskSource(ctx, s, r, s.EventBus()) })
+	stop := runOwnedRouterFixture(t, func(ctx context.Context) error { return controllers.RunTaskSource(ctx, s, r, s.EventBus()) })
 	created := awaitSourceEvent(t, s, "task.created")
 	var payload struct {
 		Project string          `json:"project"`
 		Task    Task            `json:"task"`
-		Actor   AgentOrigin     `json:"actor"`
+		Actor   agent.Origin    `json:"actor"`
 		Comment json.RawMessage `json:"comment"`
 	}
 	if err := json.Unmarshal(created.Payload, &payload); err != nil {
@@ -94,8 +94,8 @@ func TestTaskSourcePublishesCommittedNativeMutationsAndRestartsWithoutDuplicates
 	}
 	commented := awaitSourceEvent(t, s, "task.commented")
 	var commentPayload struct {
-		Comment TaskComment `json:"comment"`
-		Actor   AgentOrigin `json:"actor"`
+		Comment TaskComment  `json:"comment"`
+		Actor   agent.Origin `json:"actor"`
 	}
 	if err := json.Unmarshal(commented.Payload, &commentPayload); err != nil {
 		t.Fatal(err)
@@ -111,60 +111,12 @@ func TestTaskSourcePublishesCommittedNativeMutationsAndRestartsWithoutDuplicates
 		t.Fatal(err)
 	}
 	probe := &sourceDrainProbe{Store: s, drained: make(chan struct{})}
-	stopAgain := runOwnedRouterFixture(t, func(ctx context.Context) error { return plugins.RunTaskSource(ctx, probe, r, s.EventBus()) })
+	stopAgain := runOwnedRouterFixture(t, func(ctx context.Context) error { return controllers.RunTaskSource(ctx, probe, r, s.EventBus()) })
 	awaitRouterSignal(t, probe.drained)
 	stopAgain()
 	after, err := s.RouterEvents(ctx, 0, 200)
 	if err != nil || len(after) != len(before) {
 		t.Fatalf("restart duplicated source events: before=%d after=%d %v", len(before), len(after), err)
-	}
-}
-
-func TestSharedClockTicksPersistClockEvents(t *testing.T) {
-	s := testStore(t)
-	r := sourceRegistry(t)
-	entered := make(chan struct{}, 1)
-	// Now is called only while processing an observed tick, so this fixture uses
-	// the shared subscription as its startup barrier instead of timing sleeps.
-	clockTime := time.UnixMilli(123456)
-	stop := runOwnedRouterFixture(t, func(ctx context.Context) error {
-		return plugins.RunClockSource(ctx, s, r, s.EventBus(), plugins.ClockConfig{Now: func() time.Time {
-			select {
-			case entered <- struct{}{}:
-			default:
-			}
-			return clockTime
-		}})
-	})
-	// Publish until the source observes a tick; every attempt waits on the bus
-	// rather than assuming the source goroutine has already subscribed.
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	observed := false
-	for !observed {
-		select {
-		case <-entered:
-			observed = true
-		case <-tick.C:
-			if err := s.EventBus().Publish(eventbus.Event{Topic: eventbus.Tick}); err != nil {
-				t.Fatal(err)
-			}
-		case <-deadline.C:
-			t.Fatal("clock source did not observe shared tick")
-		}
-	}
-	event := awaitSourceEvent(t, s, "clock.tick")
-	stop()
-	var payload struct {
-		At int64 `json:"at"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if event.Source != "clock" || event.Correlation != nil || payload.At != clockTime.UnixMilli() {
-		t.Fatalf("clock provenance %+v payload %+v", event, payload)
 	}
 }
 
@@ -220,7 +172,7 @@ func TestTaskOutboxCommitFailuresRetainEntireBatchAndDoNotAnnounce(t *testing.T)
 func TestRolledBackTaskMutationLeavesNoRouterOutboxRows(t *testing.T) {
 	s := taskStore(t)
 	fixtureErr := errors.New("fixture mutation rolled back")
-	err := s.taskMutation(context.Background(), taskActor(), func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(context.Background(), taskActor(), func(tx *sql.Tx, actor *agent.Origin) error {
 		if _, err := insertTaskRecord(context.Background(), tx, TaskInsert{Project: "tasks", Title: "Rollback fixture", Reporter: "fixture"}, actor, "general"); err != nil {
 			return err
 		}

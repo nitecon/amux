@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/nitecon/amux/config"
 )
 
 type synchronizedBuffer struct {
@@ -69,6 +71,19 @@ func startWorkerProcessMode(t *testing.T, ctx context.Context, state string, env
 
 func startWorkerProcessModeWithTaskTools(t *testing.T, ctx context.Context, state string, env map[string]string, mode string, enableTaskTools bool, args ...string) *workerProcess {
 	t.Helper()
+	var connection config.Client
+	for i := 0; i+1 < len(args); i++ {
+		switch args[i] {
+		case "--server":
+			connection.GatewayEndpoint = args[i+1]
+		case "--enrolled-profile":
+			connection.EnrolledProfile = args[i+1]
+		}
+	}
+	if _, explicitHome := env["HOME"]; !explicitHome && (connection.EnrolledProfile != "" || connection.GatewayEndpoint != "") {
+		home := mcpTestHome(t, connection)
+		env = mergeWorkerTestHome(env, home)
+	}
 	commandArgs := []string{"-test.run=^TestWorkerProcessHelper$", "--", "worker", mode, "--state", state}
 	if !enableTaskTools {
 		commandArgs = append(commandArgs, "--no-task-tools")
@@ -121,6 +136,15 @@ func startWorkerProcessModeWithTaskTools(t *testing.T, ctx context.Context, stat
 		t.Fatalf("worker startup output %q: %s", line, stderr)
 	}
 	return &workerProcess{cmd: cmd, runID: fields[2], conversationID: fields[4], stderr: stderr, stdoutDone: done}
+}
+
+func mergeWorkerTestHome(env map[string]string, home string) map[string]string {
+	copy := make(map[string]string, len(env)+2)
+	for key, value := range env {
+		copy[key] = value
+	}
+	copy["HOME"], copy["USERPROFILE"] = home, home
+	return copy
 }
 
 func stopWorkerProcess(t *testing.T, ctx context.Context, process *workerProcess) {

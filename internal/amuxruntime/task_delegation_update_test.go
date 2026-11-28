@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -27,7 +28,7 @@ func TestTasksUpdateDelegationUsesPinnedSDKReceiptAndLiteralFlags(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	actor := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	rootReason, details := "user-directed", "Edit linked contract"
 	parent, err := store.InsertTask(ctx, storage.TaskInsert{Project: "source", Title: "Parent", Reporter: actor.SessionID, RootReason: &rootReason, Details: &details}, &actor)
 	if err != nil {

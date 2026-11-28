@@ -11,11 +11,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/taskplatform"
+	"github.com/nitecon/amux/worksubmission"
 	"github.com/urfave/cli/v3"
 )
 
@@ -109,13 +110,13 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	if *human && providedOrigin {
 		return fmt.Errorf("--human and native origin flags are mutually exclusive")
 	}
-	var origin *storage.AgentOrigin
+	var origin *agent.Origin
 	if providedOrigin {
 		if *session == "" || *instance == "" || *provider == "" || *hostOS == "" {
 			return fmt.Errorf("native origin requires --session, --instance, --provider, and --os together")
 		}
-		origin = &storage.AgentOrigin{SessionID: *session, InstanceID: *instance, Provider: *provider, OS: *hostOS}
-		canonical, err := storage.NormalizeOrigin(origin)
+		origin = &agent.Origin{SessionID: *session, InstanceID: *instance, Provider: *provider, OS: *hostOS}
+		canonical, err := agent.NormalizeOrigin(origin)
 		if err != nil {
 			return err
 		}
@@ -143,7 +144,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	if !readonly && origin == nil && !*human {
 		return fmt.Errorf("task writes require a complete native origin (--session, --instance, --provider, --os) or --human")
 	}
-	client, _, err := gatewayClientForProfile(selectedServerURL, *enrolledProfile, apiKey)
+	client, _, err := gatewayclient.NewForProfile(selectedServerURL, *enrolledProfile, apiKey)
 	if err != nil {
 		return err
 	}
@@ -184,7 +185,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: tasks get ID [--comments N]")
 		}
-		id, e := canonicalTaskID(pos[0])
+		id, e := storage.CanonicalTaskID(pos[0])
 		if e != nil {
 			return e
 		}
@@ -197,7 +198,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: tasks cancellation TASK_ID")
 		}
-		id, e := canonicalTaskID(pos[0])
+		id, e := storage.CanonicalTaskID(pos[0])
 		if e != nil {
 			return e
 		}
@@ -255,7 +256,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 			}
 		}
 		if *parent != "" {
-			canonical, err := canonicalTaskID(*parent)
+			canonical, err := storage.CanonicalTaskID(*parent)
 			if err != nil {
 				return err
 			}
@@ -288,7 +289,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		if len(pos) != 1 || strings.TrimSpace(pos[0]) == "" || *parent == "" || *targetProject == "" {
 			return fmt.Errorf("usage: tasks delegate TITLE --parent UUID --target-project IDENT [--specification TEXT]")
 		}
-		parentID, parseErr := canonicalTaskID(*parent)
+		parentID, parseErr := storage.CanonicalTaskID(*parent)
 		if parseErr != nil {
 			return fmt.Errorf("--parent: %w", parseErr)
 		}
@@ -317,7 +318,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: tasks watch TASK_ID [--clear]")
 		}
-		id, parseErr := canonicalTaskID(pos[0])
+		id, parseErr := storage.CanonicalTaskID(pos[0])
 		if parseErr != nil {
 			return parseErr
 		}
@@ -348,7 +349,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: tasks update-delegation TASK_ID [--title TEXT] [--description TEXT] [--specification TEXT | --details TEXT] [--labels JSON_ARRAY]")
 		}
-		id, parseErr := canonicalTaskID(pos[0])
+		id, parseErr := storage.CanonicalTaskID(pos[0])
 		if parseErr != nil {
 			return parseErr
 		}
@@ -385,7 +386,7 @@ func runTasks(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		if len(pos) != 1 || *recipient == "" {
 			return fmt.Errorf("usage: tasks reassign TASK_ID --to SESSION_UUID")
 		}
-		id, parseErr := canonicalTaskID(pos[0])
+		id, parseErr := storage.CanonicalTaskID(pos[0])
 		if parseErr != nil {
 			return parseErr
 		}
@@ -474,7 +475,7 @@ func validateTaskCheckout(ctx context.Context, client *gatewayclient.Client, pro
 	if err != nil {
 		return fmt.Errorf("resolve current checkout: %w", err)
 	}
-	identity, err := projectidentity.Resolve(ctx, root)
+	identity, err := projectid.Resolve(ctx, root)
 	if err != nil {
 		return fmt.Errorf("resolve current checkout identity: %w", err)
 	}
@@ -483,14 +484,14 @@ func validateTaskCheckout(ctx context.Context, client *gatewayclient.Client, pro
 		return err
 	}
 	for _, candidate := range projects {
-		if candidate.Ident == project && checkoutMatchesProject(candidate, identity) {
+		if candidate.Ident == project && worksubmission.CheckoutMatchesProject(candidate, identity) {
 			return nil
 		}
 	}
 	return fmt.Errorf("current checkout is not bound to gateway project %q", project)
 }
 
-func runTaskCancel(ctx context.Context, client *gatewayclient.Client, project string, args []string, origin *storage.AgentOrigin, stderr io.Writer) (*storage.CancelResponse, error) {
+func runTaskCancel(ctx context.Context, client *gatewayclient.Client, project string, args []string, origin *agent.Origin, stderr io.Writer) (*storage.CancelResponse, error) {
 	if origin == nil {
 		return nil, fmt.Errorf("tasks cancel requires a complete native agent origin and does not support --human")
 	}
@@ -506,7 +507,7 @@ func runTaskCancel(ctx context.Context, client *gatewayclient.Client, project st
 	if len(pos) != 1 || strings.TrimSpace(*reason) == "" || !fs.IsSet("reason") {
 		return nil, fmt.Errorf("usage: tasks cancel TASK_ID --reason TEXT [--changeset JSON]")
 	}
-	id, err := canonicalTaskID(pos[0])
+	id, err := storage.CanonicalTaskID(pos[0])
 	if err != nil {
 		return nil, err
 	}
@@ -517,14 +518,6 @@ func runTaskCancel(ctx context.Context, client *gatewayclient.Client, project st
 	return client.TaskCancel(ctx, project, id, *reason, change, origin)
 }
 
-func canonicalTaskID(value string) (string, error) {
-	id, err := uuid.Parse(value)
-	if err != nil || id == uuid.Nil {
-		return "", fmt.Errorf("task ID must be a non-zero UUID")
-	}
-	return id.String(), nil
-}
-
 func optionalString(value string) *string {
 	if value == "" {
 		return nil
@@ -532,7 +525,7 @@ func optionalString(value string) *string {
 	return &value
 }
 
-func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, operation string, args []string, origin *storage.AgentOrigin, goal *string, stderr io.Writer) (json.RawMessage, error) {
+func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, operation string, args []string, origin *agent.Origin, goal *string, stderr io.Writer) (json.RawMessage, error) {
 	fs := commandFlags("tasks "+operation, stderr)
 	switch operation {
 	case "claim", "started", "done", "release", "confirm-mutation":
@@ -549,24 +542,13 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if len(pos) != 1 {
 			return nil, fmt.Errorf("tasks %s requires TASK_ID", operation)
 		}
-		id, err := canonicalTaskID(pos[0])
+		id, err := storage.CanonicalTaskID(pos[0])
 		if err != nil {
 			return nil, err
 		}
 		switch operation {
 		case "started":
-			raw, err := client.TaskRead(ctx, project, id, 0)
-			if err != nil {
-				return nil, err
-			}
-			var task storage.Task
-			if err := json.Unmarshal(raw, &task); err != nil {
-				return nil, fmt.Errorf("invalid task response")
-			}
-			if !storage.IsActiveTaskStatus(task.Status) || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
-				return nil, fmt.Errorf("started requires an active task owned by this exact native session and instance")
-			}
-			return client.TaskComment(ctx, project, id, fmt.Sprintf("Agent reports execution started: session=%s instance=%s; recorded as a comment, not an atomic gateway lifecycle transition", origin.SessionID, origin.InstanceID), origin)
+			return client.ReportTaskStarted(ctx, project, id, origin)
 		case "claim":
 			raw, err := client.TaskRead(ctx, project, id, 0)
 			if err != nil {
@@ -590,24 +572,11 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 			}
 			return client.TaskUpdate(ctx, project, id, storage.TaskWorkflowUpdate{Status: "done", Changeset: change}, origin, goal)
 		case "release":
-			if origin != nil {
-				raw, err := client.TaskRead(ctx, project, id, 0)
-				if err != nil {
-					return nil, err
-				}
-				var task storage.Task
-				if json.Unmarshal(raw, &task) != nil {
-					return nil, fmt.Errorf("invalid task response")
-				}
-				if !storage.IsActiveTaskStatus(task.Status) || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
-					return nil, fmt.Errorf("only the exact owning execution may release this active task; no status update was sent")
-				}
-			}
 			change, err := parseOptionalChangeset(changeset, changesetProvided)
 			if err != nil {
 				return nil, err
 			}
-			return client.TaskUpdate(ctx, project, id, storage.TaskWorkflowUpdate{Status: "todo", Changeset: change}, origin, goal)
+			return client.ReleaseTask(ctx, project, id, origin, goal, change)
 		case "confirm-mutation":
 			taskType := "software"
 			return client.TaskConfirm(ctx, project, id, &taskType, nil, origin)
@@ -626,7 +595,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if len(pos) != 2 {
 			return nil, fmt.Errorf("usage: tasks rank TASK_ID RANK")
 		}
-		id, err := canonicalTaskID(pos[0])
+		id, err := storage.CanonicalTaskID(pos[0])
 		if err != nil {
 			return nil, err
 		}
@@ -647,7 +616,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if len(pos) != 1 || (*clear == (*osFlag != "")) {
 			return nil, fmt.Errorf("usage: tasks set-os TASK_ID (--os linux|windows|macos | --clear)")
 		}
-		id, err := canonicalTaskID(pos[0])
+		id, err := storage.CanonicalTaskID(pos[0])
 		if err != nil {
 			return nil, err
 		}
@@ -667,7 +636,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if len(pos) < 2 {
 			return nil, fmt.Errorf("usage: tasks comment TASK_ID CONTENT...")
 		}
-		id, err := canonicalTaskID(pos[0])
+		id, err := storage.CanonicalTaskID(pos[0])
 		if err != nil {
 			return nil, err
 		}
@@ -682,7 +651,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if len(pos) != 2 {
 			return nil, fmt.Errorf("usage: tasks user-review TASK_ID ACTION [--changeset JSON]")
 		}
-		id, err := canonicalTaskID(pos[0])
+		id, err := storage.CanonicalTaskID(pos[0])
 		if err != nil {
 			return nil, err
 		}
@@ -700,7 +669,7 @@ func runTaskWrite(ctx context.Context, client *gatewayclient.Client, project, op
 		if len(pos) != 2 {
 			return nil, fmt.Errorf("usage: tasks set-changeset TASK_ID JSON_NULL_OR_ARRAY")
 		}
-		id, err := canonicalTaskID(pos[0])
+		id, err := storage.CanonicalTaskID(pos[0])
 		if err != nil {
 			return nil, err
 		}

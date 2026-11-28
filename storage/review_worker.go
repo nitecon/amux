@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 // queueCompletionReviews keeps completion independent from review execution.
@@ -73,7 +74,7 @@ func (s *Store) RetryTaskReviews(ctx context.Context) (bool, error) {
 	}
 	failed := false
 	for _, j := range jobs {
-		err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+		err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 			enabled, err := automaticReviewsEnabled(ctx, tx)
 			if err != nil {
 				return err

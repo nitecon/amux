@@ -8,23 +8,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
-func nativePresenceDefinitions() []router.EventDefinition {
-	return append(append(RouterPresenceEventDefinitions(), plugins.ClockDefinition(), plugins.ClientHeartbeatDefinition()), plugins.ActivityEventDefinitions()...)
+func nativePresenceDefinitions() []fism.EventDefinition {
+	return append(append(RouterPresenceEventDefinitions(), controllers.ClockDefinition(), controllers.ClientHeartbeatDefinition()), controllers.ActivityEventDefinitions()...)
 }
-func nativePresenceObserver() router.Plugin {
-	subscriptions := make([]router.Subscription, 0, 4)
+func nativePresenceObserver() fism.Controller {
+	subscriptions := make([]fism.Subscription, 0, 4)
 	for _, id := range []string{"agent.online", "agent.busy", "agent.idle", "agent.gone"} {
-		subscriptions = append(subscriptions, router.Subscription{Event: id, MinVersion: 1, MaxVersion: 1})
+		subscriptions = append(subscriptions, fism.Subscription{Event: id, MinVersion: 1, MaxVersion: 1})
 	}
-	return router.Plugin{Definition: router.PluginDefinition{ID: "observer", Subscriptions: subscriptions}}
+	return fism.Controller{Definition: fism.ControllerDefinition{ID: "observer", Subscriptions: subscriptions}}
 }
-func nativePresenceRegistry(t *testing.T) *router.Registry {
+func nativePresenceRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	r, err := router.NewRegistry(nativePresenceDefinitions(), []router.PluginDefinition{nativePresenceObserver().Definition})
+	r, err := fism.NewRegistry(nativePresenceDefinitions(), []fism.ControllerDefinition{nativePresenceObserver().Definition})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func nativePresenceRegistry(t *testing.T) *router.Registry {
 func TestPresencePluginClockTransitionIsCausalAndDoesNotRunAssignment(t *testing.T) {
 	s := presenceStore(t, filepath.Join(t.TempDir(), "presence-plugin.db"))
 	ctx := context.Background()
-	runtime, err := router.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []router.Plugin{plugins.PresencePlugin(s), nativePresenceObserver()}, router.RunConfig{Capacity: 4})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []fism.Controller{controllers.PresenceController(s), nativePresenceObserver()}, fism.RunConfig{Capacity: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestPresencePluginClockTransitionIsCausalAndDoesNotRunAssignment(t *testing
 		t.Fatal(err)
 	}
 	stopSource := runOwnedRouterFixture(t, func(ctx context.Context) error {
-		return plugins.RunPresenceSource(ctx, s, runtime.Registry(), s.EventBus())
+		return controllers.RunPresenceSource(ctx, presenceSourceFixture{Store: s, runtime: runtime}, runtime.Registry(), s.EventBus())
 	})
 	stopRuntime := runRouterFixture(t, runtime)
 	online := awaitSourceEvent(t, s, "agent.online")
@@ -61,7 +61,7 @@ func TestPresencePluginClockTransitionIsCausalAndDoesNotRunAssignment(t *testing
 	if online.Correlation != nil || busy.Correlation != nil {
 		t.Fatalf("native report incorrectly borrowed clock cause: online=%+v busy=%+v", online, busy)
 	}
-	clock, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
+	clock, err := s.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestPresenceTransitionFailureRollsBackStateClockAndReportCursor(t *testing.
 	if ok, err := s.ReportPresence(ctx, report, start); err != nil || !ok {
 		t.Fatalf("same sequence not retryable %v %v", ok, err)
 	}
-	if _, err := s.DrainRouterPresenceOutbox(ctx, r, 200); err != nil {
+	if _, err := drainPresenceFixture(ctx, s, r, 200); err != nil {
 		t.Fatal(err)
 	}
 	var before int64
@@ -130,7 +130,7 @@ func TestPresenceTransitionFailureRollsBackStateClockAndReportCursor(t *testing.
 	if _, err := s.db.Exec(`CREATE TRIGGER reject_idle_event BEFORE INSERT ON router_events WHEN NEW.id='agent.idle' BEGIN SELECT RAISE(ABORT,'fixture idle event failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{ID: "clock.tick", Version: 1, UID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Source: "clock", EmittedAt: start.Add(31 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	event := fism.Event{ID: "clock.tick", Version: 1, UID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Source: "clock", EmittedAt: start.Add(31 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
 	if err := s.ReconcileRouterPresence(ctx, r, event); err == nil {
 		t.Fatal("clock transition accepted without emitted event")
 	}
@@ -170,7 +170,7 @@ func TestPresenceGoneDoesNotReleaseOfflineNativeTaskOwnership(t *testing.T) {
 	if _, err := s.TransitionTask(ctx, "presence", task.ID, "in_progress", &agent.Origin); err != nil {
 		t.Fatal(err)
 	}
-	tick := router.Event{ID: "clock.tick", Version: 1, UID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Source: "clock", EmittedAt: start.Add(90 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	tick := fism.Event{ID: "clock.tick", Version: 1, UID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Source: "clock", EmittedAt: start.Add(90 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
 	if err := s.ReconcileRouterPresence(ctx, nativePresenceRegistry(t), tick); err != nil {
 		t.Fatal(err)
 	}
@@ -189,10 +189,10 @@ type gatedPresenceDrain struct {
 	calls                            int
 }
 
-func (p *gatedPresenceDrain) DrainRouterPresenceOutbox(ctx context.Context, r *router.Registry, limit int) (int, error) {
+func (p *gatedPresenceDrain) DrainRouterPresenceOutbox(ctx context.Context, r *fism.Registry, limit int) (int, error) {
 	p.calls++
 	if p.calls == 1 {
-		n, err := p.Store.DrainRouterPresenceOutbox(ctx, r, limit)
+		n, err := drainPresenceFixture(ctx, p.Store, r, limit)
 		close(p.ready)
 		return n, err
 	}
@@ -203,11 +203,21 @@ func (p *gatedPresenceDrain) DrainRouterPresenceOutbox(ctx context.Context, r *r
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
-		n, err := p.Store.DrainRouterPresenceOutbox(ctx, r, limit)
-		close(p.finished)
+		n, err := drainPresenceFixture(ctx, p.Store, r, limit)
+		if n < limit || err != nil {
+			close(p.finished)
+		}
 		return n, err
 	}
-	return p.Store.DrainRouterPresenceOutbox(ctx, r, limit)
+	n, err := drainPresenceFixture(ctx, p.Store, r, limit)
+	if n < limit || err != nil {
+		select {
+		case <-p.finished:
+		default:
+			close(p.finished)
+		}
+	}
+	return n, err
 }
 
 func TestPresenceClockWakeDrainsCausalRowsBeyondAtomicBatch(t *testing.T) {
@@ -225,7 +235,7 @@ func TestPresenceClockWakeDrainsCausalRowsBeyondAtomicBatch(t *testing.T) {
 	}
 	r := nativePresenceRegistry(t)
 	for {
-		n, err := s.DrainRouterPresenceOutbox(ctx, r, 200)
+		n, err := drainPresenceFixture(ctx, s, r, 200)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,14 +244,14 @@ func TestPresenceClockWakeDrainsCausalRowsBeyondAtomicBatch(t *testing.T) {
 		}
 	}
 	probe := &gatedPresenceDrain{Store: s, ready: make(chan struct{}), begun: make(chan struct{}), released: make(chan struct{}), finished: make(chan struct{})}
-	stop := runOwnedRouterFixture(t, func(ctx context.Context) error { return plugins.RunPresenceSource(ctx, probe, r, s.EventBus()) })
+	stop := runOwnedRouterFixture(t, func(ctx context.Context) error { return controllers.RunPresenceSource(ctx, probe, r, s.EventBus()) })
 	awaitRouterSignal(t, probe.ready)
-	tick := router.Event{ID: "clock.tick", Version: 1, UID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Source: "clock", EmittedAt: start.Add(31 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	tick := fism.Event{ID: "clock.tick", Version: 1, UID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Source: "clock", EmittedAt: start.Add(31 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
 	if err := s.ReconcileRouterPresence(ctx, r, tick); err != nil {
 		t.Fatal(err)
 	}
 	awaitRouterSignal(t, probe.begun)
-	assertEqual(t, s.db, "SELECT COUNT(*) FROM amux_presence_outbox", int64(1))
+	assertEqual(t, s.db, "SELECT COUNT(*) FROM amux_presence_outbox", int64(201))
 	close(probe.released)
 	awaitRouterSignal(t, probe.finished)
 	stop()
@@ -251,4 +261,33 @@ func TestPresenceClockWakeDrainsCausalRowsBeyondAtomicBatch(t *testing.T) {
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM router_events WHERE id='agent.idle' AND correlation=?", tick.UID).Scan(&causal); err != nil || causal != 201 {
 		t.Fatalf("causal rows %d %v", causal, err)
 	}
+}
+
+type presenceSourceFixture struct {
+	*Store
+	runtime *fism.Runtime
+}
+
+func drainPresenceFixture(ctx context.Context, s *Store, registry *fism.Registry, limit int) (int, error) {
+	return (presenceSourceFixture{Store: s}).DrainRouterPresenceOutbox(ctx, registry, limit)
+}
+
+func (s presenceSourceFixture) DrainRouterPresenceOutbox(ctx context.Context, registry *fism.Registry, limit int) (int, error) {
+	changes, err := s.PublishPresenceChanges(ctx, registry, limit)
+	if err != nil {
+		return 0, err
+	}
+	for i, change := range changes {
+		var outcomes []fism.Delivery
+		if s.runtime != nil {
+			outcomes, err = s.runtime.ReconcileEvent(ctx, change.Event)
+			if err != nil {
+				return i, err
+			}
+		}
+		if err := s.SettlePresenceChange(ctx, change, outcomes); err != nil {
+			return i, err
+		}
+	}
+	return len(changes), nil
 }

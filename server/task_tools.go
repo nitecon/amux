@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 const taskToolCreateDescription = "Create a subtask under a fitting existing parent; read the parent first and check scope. Create a root (root_reason instead of parent) only for an explicit user request (user-directed) or a core-principle finding (principle), with a specification recording the request or finding, evidence and acceptance criteria. Otherwise, if no parent fits, ask the user to create the top-level task and propose its title and description."
 
-var agentTaskTools = []mcpstdio.Tool{
+var agentTaskTools = []storage.TaskTool{
 	{Name: "task_get", Description: "Show a task with its specification and comments.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Task ID"}},"required":["id"],"additionalProperties":false}`)},
 	{Name: "project_message_thread", Description: "Read a full project message thread, including the original message and replies.", InputSchema: schema(`{"type":"object","properties":{"id":{"type":"integer","minimum":1,"description":"Project message ID"}},"required":["id"],"additionalProperties":false}`)},
 	{Name: "task_list", Description: "List this project's tasks (default: todo, in_progress and stalled).", InputSchema: schema(`{"type":"object","properties":{"status":{"type":"string","description":"Comma-separated statuses: todo, in_progress, stalled, user_review, done, cancelled"}},"additionalProperties":false}`)},
@@ -39,11 +39,11 @@ var agentTaskTools = []mcpstdio.Tool{
 func schema(raw string) json.RawMessage { return json.RawMessage(raw) }
 
 // AgentTaskTools returns the native task tools supported by this server.
-func AgentTaskTools() []mcpstdio.Tool {
+func AgentTaskTools() []storage.TaskTool {
 	return cloneTaskTools(agentTaskTools)
 }
 
-var localConversationTaskTools = []mcpstdio.Tool{
+var localConversationTaskTools = []storage.TaskTool{
 	mustTaskTool("task_get"),
 	mustTaskTool("project_message_thread"),
 	mustTaskTool("task_list"),
@@ -62,19 +62,19 @@ var localConversationTaskTools = []mcpstdio.Tool{
 
 // LocalConversationTaskTools returns the task tools supported by standalone
 // local conversations that are not bound to a server conversation or task.
-func LocalConversationTaskTools() []mcpstdio.Tool {
+func LocalConversationTaskTools() []storage.TaskTool {
 	return cloneTaskTools(localConversationTaskTools)
 }
 
-func cloneTaskTools(source []mcpstdio.Tool) []mcpstdio.Tool {
-	tools := append([]mcpstdio.Tool(nil), source...)
+func cloneTaskTools(source []storage.TaskTool) []storage.TaskTool {
+	tools := append([]storage.TaskTool(nil), source...)
 	for i := range tools {
 		tools[i].InputSchema = append(json.RawMessage(nil), tools[i].InputSchema...)
 	}
 	return tools
 }
 
-func mustTaskTool(name string) mcpstdio.Tool {
+func mustTaskTool(name string) storage.TaskTool {
 	tool, ok := taskToolByName(name)
 	if !ok {
 		panic("unknown task tool: " + name)
@@ -161,17 +161,17 @@ func selectedTaskGoal(header http.Header) (*string, error) {
 	return &selected, nil
 }
 
-func taskToolByName(name string) (mcpstdio.Tool, bool) {
+func taskToolByName(name string) (storage.TaskTool, bool) {
 	for _, tool := range agentTaskTools {
 		if tool.Name == name {
 			return tool, true
 		}
 	}
-	return mcpstdio.Tool{}, false
+	return storage.TaskTool{}, false
 }
 
-func taskToolResult(text string, isError bool) mcpstdio.Result {
-	return mcpstdio.Result{Content: []mcpstdio.TextContent{{Type: "text", Text: text}}, IsError: isError}
+func taskToolResult(text string, isError bool) storage.ToolResult {
+	return storage.ToolResult{Content: []storage.ToolText{{Type: "text", Text: text}}, IsError: isError}
 }
 
 func decodeTaskToolArgs(raw json.RawMessage, allowed ...string) (map[string]json.RawMessage, error) {
@@ -394,7 +394,7 @@ func ParseTaskCommentArgs(raw json.RawMessage) (string, string, error) {
 	return id, body, nil
 }
 
-func (a *api) executeTaskTool(ctx context.Context, project string, actor *storage.AgentOrigin, selectedGoal *string, conversationTaskID, name string, raw json.RawMessage) (any, string, error) {
+func (a *api) executeTaskTool(ctx context.Context, project string, actor *agent.Origin, selectedGoal *string, conversationTaskID, name string, raw json.RawMessage) (any, string, error) {
 	switch name {
 	case "task_get":
 		id, err := ParseTaskIDArg(raw)

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -137,14 +137,14 @@ func verifiedFavoriteProject(selection NavigationSelection, items []storage.Proj
 }
 
 func checkoutMatchesProjectRemote(checkoutRemote string, projectRemote *string) (bool, error) {
-	checkout, err := projects.CanonicalRemote(checkoutRemote)
+	checkout, err := projectid.CanonicalRemote(checkoutRemote)
 	if err != nil {
 		return false, err
 	}
 	if projectRemote == nil {
 		return false, nil
 	}
-	project, err := projects.CanonicalRemote(*projectRemote)
+	project, err := projectid.CanonicalRemote(*projectRemote)
 	if err != nil {
 		return false, err
 	}

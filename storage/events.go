@@ -11,22 +11,15 @@ import (
 	"unicode"
 
 	"github.com/nitecon/amux/eventbus"
+	"github.com/nitecon/amux/identity/agent"
 )
-
-// AgentOrigin fences an execution by stable session and ephemeral instance.
-type AgentOrigin struct {
-	SessionID  string `json:"session_id"`
-	InstanceID string `json:"instance_id"`
-	Provider   string `json:"provider"`
-	OS         string `json:"os"`
-}
 
 type TaskEvent struct {
 	ID              int64           `json:"id"`
 	Kind            string          `json:"kind"`
 	ProjectIdent    string          `json:"project_ident"`
 	CanonicalRemote *string         `json:"canonical_remote"`
-	Origin          *AgentOrigin    `json:"origin"`
+	Origin          *agent.Origin   `json:"origin"`
 	Task            json.RawMessage `json:"task"`
 	Comment         json.RawMessage `json:"comment"`
 	Delegation      json.RawMessage `json:"delegation"`

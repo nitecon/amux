@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestRouterHeartbeatRejectsSourcesThatCannotEnterJournal(t *testing.T) {
@@ -69,16 +69,16 @@ func TestRouterHeartbeatUpgradeRetainsSourceCursorAndLegacyReminderReceipts(t *t
 	assertEqual(t, upgraded.db, "SELECT COUNT(*) FROM amux_heartbeat_outbox", int64(1))
 }
 
-func heartbeatRegistry(t *testing.T) *router.Registry {
+func heartbeatRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	registry, err := router.NewRegistry(
-		[]router.EventDefinition{{ID: "client.heartbeat", Version: 1, Validate: func(payload json.RawMessage) error {
+	registry, err := fism.NewRegistry(
+		[]fism.EventDefinition{{ID: "client.heartbeat", Version: 1, Validate: func(payload json.RawMessage) error {
 			if !json.Valid(payload) {
-				return router.ErrInvalidEvent
+				return fism.ErrInvalidEvent
 			}
 			return nil
 		}}},
-		[]router.PluginDefinition{{ID: "heartbeat-test", Subscriptions: []router.Subscription{{Event: "client.heartbeat", MinVersion: 1, MaxVersion: 1}}}},
+		[]fism.ControllerDefinition{{ID: "heartbeat-test", Subscriptions: []fism.Subscription{{Event: "client.heartbeat", MinVersion: 1, MaxVersion: 1}}}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -230,19 +230,19 @@ func TestRouterHeartbeatCurrentUIDSequenceFreshnessAndRawNumbers(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, "SELECT heartbeat_uid FROM amux_presence_sources WHERE source='worker:current'").Scan(&uid); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{UID: uid, ID: "client.heartbeat", Version: 1, Source: "worker:current", Payload: json.RawMessage(`{"report_sequence":9007199254741113,"reported_at":1800730000000,"agents":[]}`)}
+	event := fism.Event{UID: uid, ID: "client.heartbeat", Version: 1, Source: "worker:current", Payload: json.RawMessage(`{"report_sequence":9007199254741113,"reported_at":1800730000000,"agents":[]}`)}
 	if current, err := routerHeartbeatCurrent(ctx, s.db, event, start.UnixMilli()+89_999); err != nil || !current {
 		t.Fatalf("fresh large-number heartbeat current=%v err=%v", current, err)
 	}
-	for _, mutate := range []func(*router.Event){
-		func(e *router.Event) { e.UID = uuid.NewString() },
-		func(e *router.Event) { e.Payload = json.RawMessage(`{"report_sequence":9007199254741112}`) },
-		func(e *router.Event) { e.Payload = json.RawMessage(`{"report_sequence":null}`) },
-		func(e *router.Event) {
+	for _, mutate := range []func(*fism.Event){
+		func(e *fism.Event) { e.UID = uuid.NewString() },
+		func(e *fism.Event) { e.Payload = json.RawMessage(`{"report_sequence":9007199254741112}`) },
+		func(e *fism.Event) { e.Payload = json.RawMessage(`{"report_sequence":null}`) },
+		func(e *fism.Event) {
 			e.Payload = json.RawMessage(`{"report_sequence":9007199254741113,"reported_at":1800730000000}`)
 		},
-		func(e *router.Event) { e.Payload = json.RawMessage(`{"report_sequence":9007199254741113.0}`) },
-		func(e *router.Event) { e.Payload = json.RawMessage(`{"report_sequence":9007199254741113} {}`) },
+		func(e *fism.Event) { e.Payload = json.RawMessage(`{"report_sequence":9007199254741113.0}`) },
+		func(e *fism.Event) { e.Payload = json.RawMessage(`{"report_sequence":9007199254741113} {}`) },
 	} {
 		candidate := event
 		mutate(&candidate)
@@ -271,7 +271,7 @@ func TestReconcileRouterPresenceIgnoresHeartbeatSnapshot(t *testing.T) {
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "worker:reconcile", Sequence: 2}, start.Add(time.Second)); err != nil || !ok {
 		t.Fatalf("second report accepted=%v err=%v", ok, err)
 	}
-	event := router.Event{UID: uuid.NewString(), ID: "client.heartbeat", Version: 1, Source: "worker:reconcile", Payload: json.RawMessage(`{"report_sequence":1,"reported_at":1800740000000,"agents":[]}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "client.heartbeat", Version: 1, Source: "worker:reconcile", Payload: json.RawMessage(`{"report_sequence":1,"reported_at":1800740000000,"agents":[]}`)}
 	if err := s.ReconcileRouterPresence(ctx, nil, event); err != nil {
 		t.Fatalf("heartbeat no-op failed: %v", err)
 	}

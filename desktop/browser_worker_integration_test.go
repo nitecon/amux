@@ -15,8 +15,8 @@ import (
 	"fyne.io/fyne/v2"
 	fynetest "fyne.io/fyne/v2/test"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
-	"github.com/nitecon/amux/worker"
 )
 
 func TestBrowserWorkerControlsResumeSavedScopeAndDrainOnClose(t *testing.T) {
@@ -25,7 +25,7 @@ func TestBrowserWorkerControlsResumeSavedScopeAndDrainOnClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var opened atomic.Int32
-	manager, local, remote, client, _ := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (worker.Session, error) {
+	manager, local, remote, client, _ := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 		opened.Add(1)
 		return nil, fmt.Errorf("fixture has no assigned work")
 	})
@@ -172,7 +172,7 @@ func TestBrowserWorkerCloseReturnsBeforeProviderJoinsButWaitDrains(t *testing.T)
 	defer releaseOnce.Do(func() { close(release) })
 	session := &gatedDesktopSession{done: make(chan struct{}), closing: make(chan struct{}), release: release}
 	opened := make(chan struct{})
-	manager, _, remote, client, _ := workerManagerFixture(t, func(ctx context.Context, _ storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	manager, _, remote, client, _ := workerManagerFixture(t, func(ctx context.Context, _ storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if err := sink(ctx, conversation.Event{Kind: "session_ready", SessionID: "synthetic-desktop-session"}); err != nil {
 			return nil, err
 		}

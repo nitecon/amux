@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -19,7 +19,7 @@ func TestHumanCanSetCurrentRequesterWithoutImpersonatingOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	watcher := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	watcher := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	generation := uuid.NewString()
 	if _, err := store.RegisterTarget(ctx, "tasks", storage.TargetRegistration{Origin: watcher, Generation: generation}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestHumanCanSetCurrentRequesterWithoutImpersonatingOwner(t *testing.T) {
 
 func TestTaskCreateAcceptsTypedRequesterForHumanSelectedExecution(t *testing.T) {
 	store, handler := taskAPI(t)
-	watcher := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	watcher := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	generation := uuid.NewString()
 	if _, err := store.RegisterTarget(context.Background(), "tasks", storage.TargetRegistration{Origin: watcher, Generation: generation}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -111,13 +111,13 @@ func TestNativeTaskToolsSubscribeOnlyTheCurrentExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := newAPI(store, "unused")
-	call := func(body string) mcpstdio.Result {
+	call := func(body string) storage.ToolResult {
 		t.Helper()
 		response := invokeTaskTool(t, a, actor, conversation.ID, body)
 		if response.Code != http.StatusOK {
 			t.Fatalf("task tool HTTP %d: %s", response.Code, response.Body.String())
 		}
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.IsError {
 			t.Fatalf("task tool result %+v err=%v", result, err)
 		}

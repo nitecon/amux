@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -89,6 +90,6 @@ func withArtifactMutationIdentity(request *http.Request) *http.Request {
 	request.Header.Set("Idempotency-Key", "quota-test")
 	request.Header.Set("X-Agent-Id", "agent-1")
 	request.Header.Set("X-Agent-System", "codex")
-	ctx := context.WithValue(request.Context(), authenticatedPrincipalContextKey{}, bearerAPIKeyPrincipal)
+	ctx := auth.WithPrincipal(request.Context(), auth.BearerPrincipal)
 	return request.WithContext(ctx)
 }

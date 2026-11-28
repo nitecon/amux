@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/conversation"
 )
 
@@ -19,7 +20,7 @@ func (a *api) pendingTaskConversations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ids, err := a.store.PendingTaskConversations(r.Context(), r.PathValue("ident"), *actor, authenticatedPrincipal(r.Context()))
+	ids, err := a.store.PendingTaskConversations(r.Context(), r.PathValue("ident"), *actor, auth.PrincipalID(r.Context()))
 	if err != nil {
 		conversationError(w, err)
 		return

@@ -6,13 +6,14 @@ See the [getting started guide](../README.md) for downloads and first launch.
 
 For a local gateway with bearer authentication, build the CLI and set `GATEWAY_API_KEY`.
 
-```sh
-./bin/amux server run --database /path/to/amux.db --listen 127.0.0.1:7913
+Save the following as `amux-server.yml` and run `./bin/amux server --config amux-server.yml`.
+
+```yaml
+database: /path/to/amux.db
+listen: 127.0.0.1:7913
 ```
 
-Discord messaging is opt-in. Add `--discord-token-env NAME` and
-`--discord-guild-id ID` to `server run`; optionally add
-`--discord-category-id ID` for newly created rooms. The token is read from the
+To enable Discord messaging, set `discord-token-env` and `discord-guild-id` in YAML. Set `discord-category-id` to choose the category for newly created rooms. The token is read from the
 named environment variable. Enabling Discord does not change the server's
 `internal` default channel. The CLI configures Discord outbound messaging and
 inbound room ingestion; other channel adapters remain pending. The inbound
@@ -29,26 +30,24 @@ For a networked Go gateway, use a server profile and mTLS. The hostname or IP
 advertised to clients must be in the server certificate, and clients must
 reach both the secure and discovery ports.
 
-```sh
-./bin/amux server run --profile "$server_profile" --secure-instance-id "$server_instance_id" \
-  --listen 0.0.0.0:24182 --discovery-bind 0.0.0.0:24181 --profile-tls-name gateway.example
+Set the profile path and reuse the administrator instance UUID across restarts.
+
+```yaml
+profile: /path/to/server-profile
+secure-instance-id: "550e8400-e29b-41d4-a716-446655440000"
+listen: 0.0.0.0:24182
+discovery-bind: 0.0.0.0:24181
+profile-tls-name: [gateway.example]
 ```
 
-On the server, `./bin/amux server peering-key --profile "$server_profile"`
-generates an invitation that expires in ten minutes. Use a fresh invitation per
-client and provide it on stdin to `./bin/amux client enroll --state-dir "$client_state"
---server https://gateway.example:24182`. Pairing pins the cluster root, issues
-a client certificate, and returns the path to the enrolled manifest. Start the
-desktop with `./bin/amux-desktop --enrolled-profile "$client_manifest"`. The manifest
-contains the gateway address, and the client renews its certificate over mTLS.
+For a new deployment that needs desktop enrollment, host the gateway in the
+desktop app. Open **Settings → Gateway**, enable remote hosting, and generate
+a peering key. On the other desktop, choose **Client** and enter the address
+and invitation. Enrolled profiles can also be used by `amux headless` via
+`enrolled_profile` in `~/.amux/config.yaml`.
 
-For a same-host Rust cutover, stop the Rust gateway before starting Go against
-its server profile. Back up the complete profile and retain the original server
-installation ID, endpoint, and ports. The application database contains tasks
-and conversations. The security database and root certificates and keys carry
-the installation trust and enrollment state. Existing clients can reuse their
-enrolled manifests. Keep the server profile and client credential files at
-their existing locations and protect them as private keys.
+For a standalone server or same-host Rust cutover, follow the
+[deployment and upgrade guide](../deploy/README.md#upgrade-an-existing-deployment).
 
 ## Task and project commands
 
@@ -207,15 +206,14 @@ available through the native MCP `submit_work` tool and the top-level
 The default mode is `commit_and_push`; PR mode uses a branch with the full task
 UUID and a temporary index so the caller's checkout stays unchanged. It retains
 the Rust `commit-tree` path, which does not run commit hooks. Settings live in
-`amux/work-preferences.json` under the OS configuration
-directory. Override it with `--work-preferences PATH` or
-`AMUX_WORK_SUBMISSION_PREFERENCES`. Updates preserve unrelated fields in a
+`amux/work-preferences.json` under the OS configuration directory. Set
+`work_preferences` in `~/.amux/device.yaml` or use
+`AMUX_WORK_SUBMISSION_PREFERENCES` to choose another file. Updates preserve unrelated fields in a
 Rust-compatible preferences file. Native workers pass the pinned checkout and
 configured preference path to their MCP child. The managed settings contain no
 credentials; Git and `gh` use the host's configured noninteractive authentication.
 The Fyne browser's **Work submission settings** section edits this same file
-with explicit Save and Cancel. Desktop `--work-preferences PATH` selects the
-file for both the panel and hosted workers; saving does not publish work.
+with explicit Save and Cancel.
 
 If publication fails after committing, the error retains the local task commit
 and recovery instructions. After resolving the checkout, use
@@ -274,8 +272,8 @@ notices in the exact native conversation. Receipts freeze receiver identity and
 authenticated source; replay cannot create a second prompt or result. Busy
 provider turns and reported drafts defer idle-only notices, while task ownership
 alone does not block them. Delivery means durable intent, not task completion.
-`amux server run` now acquires the complete builtin registry before announcing
-readiness and owns its router, task/presence/heartbeat sources and shared clock.
+`amux server --config PATH` starts the gateway with the complete controller
+registry. `fism` reconciles durable inputs through the shared queues and Go channels.
 The authenticated `/v1/events/stream` forwards task and presence events,
 notifications and retry notices. Consumers retain an acknowledged replay cursor
 for 24 hours, receive one event at a time and resume unacknowledged events after
@@ -519,27 +517,17 @@ Use **Resume saved pool** with the original journal to let the original slot
 pick up queued task conversation prompts. The same-client and pre-upgrade
 limits of worker pool follow-up discovery described above apply.
 
-Browser mode keeps its worker journal at `amux/workers.db` in the OS user
-configuration directory. Use `--state PATH` for another journal or `--state=` to
-disable local hosting. Only one process may own a journal at a time. Navigation
-preferences remember the selected pool ID per gateway; credentials stay in the
-environment. Worker task tools use the `amux` CLI beside the desktop executable
-or on `PATH`, or the explicit `--task-tools-command` executable. Missing tools
-and provider startup errors remain visible in the pool status.
+Set `worker_journal` in `~/.amux/device.yaml` to choose the companion client's
+journal. The default is `~/.amux/workers.db`. Navigation preferences remember
+the selected pool ID per gateway. Set `task_tools_command` in `device.yaml`
+when workers need a specific task-tools executable.
 
-## Desktop startup options
+## Desktop startup
 
-```sh
-./bin/amux-desktop --server https://gateway.example \
-  --preferences /path/to/navigation.json
-# Optionally select an initial project:
-./bin/amux-desktop --server https://gateway.example --project project-ident
-# Open a conversation directly and optionally host its saved worker:
-./bin/amux-desktop --server https://gateway.example --project project-ident \
-  --conversation CONVERSATION_UUID
-# Add --state /path/to/worker.db --run-id RUN_UUID to host the saved worker.
-# Add --task-tools-command /absolute/path/to/bin/amux to enable its task tools.
-```
+Launch `amux-desktop` to open the project browser. Gateway connectivity comes
+from `~/.amux/config.yaml`, and machine settings come from
+`~/.amux/device.yaml`. First launch opens gateway setup when no configuration
+has been saved. Choose projects and conversations in the browser.
 
 ### Tool approval rules
 
@@ -554,13 +542,13 @@ Draft edits survive conversation updates. A pattern must match the pending
 request before it can be saved through this action.
 
 Rules are stored under `directory_tool_approvals` in `work-preferences.json`
-(the shared preferences file described above, overridden by desktop
-`--work-preferences` or `AMUX_WORK_SUBMISSION_PREFERENCES`). Local chats and
+(the shared preferences file selected by `work_preferences` in
+`~/.amux/device.yaml` or `AMUX_WORK_SUBMISSION_PREFERENCES`). Local chats and
 native task workers read the file for each permission request, so new rules
 apply without restarting the provider. The request's working directory takes
 precedence over the conversation's directory. Existing `tool_approvals` string
-rules remain global for compatibility. Remote fleet workers, archived task
-transcripts, and direct `--conversation` windows do not offer local rule saving.
+rules remain global for compatibility. Remote fleet workers and archived task
+transcripts do not offer local rule saving.
 
 The two keys have this shape in `work-preferences.json`.
 

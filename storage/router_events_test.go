@@ -12,16 +12,16 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func routerTestRegistry(t *testing.T, plugins ...string) *router.Registry {
+func routerTestRegistry(t *testing.T, plugins ...string) *fism.Registry {
 	t.Helper()
-	definitions := make([]router.PluginDefinition, 0, len(plugins))
+	definitions := make([]fism.ControllerDefinition, 0, len(plugins))
 	for _, id := range plugins {
-		definitions = append(definitions, router.PluginDefinition{ID: id, Subscriptions: []router.Subscription{{Event: "test.event", MinVersion: 1, MaxVersion: 1}}})
+		definitions = append(definitions, fism.ControllerDefinition{ID: id, Subscriptions: []fism.Subscription{{Event: "test.event", MinVersion: 1, MaxVersion: 1}}})
 	}
-	r, err := router.NewRegistry([]router.EventDefinition{{ID: "test.event", Version: 1, RemoteEmit: true, Validate: func(payload json.RawMessage) error {
+	r, err := fism.NewRegistry([]fism.EventDefinition{{ID: "test.event", Version: 1, RemoteEmit: true, Validate: func(payload json.RawMessage) error {
 		var value map[string]json.RawMessage
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return err
@@ -37,8 +37,8 @@ func routerTestRegistry(t *testing.T, plugins ...string) *router.Registry {
 	return r
 }
 
-func routerTestRequest(payload string) router.EmitRequest {
-	return router.EmitRequest{ID: "test.event", Version: 1, Payload: json.RawMessage(payload), Source: "test"}
+func routerTestRequest(payload string) fism.EmitRequest {
+	return fism.EmitRequest{ID: "test.event", Version: 1, Payload: json.RawMessage(payload), Source: "test"}
 }
 
 func TestRouterEmitPersistsEventAndDeliveries(t *testing.T) {
@@ -101,28 +101,28 @@ func TestRouterUIDReplayUsesSemanticJSONAndStoredEvent(t *testing.T) {
 		t.Fatalf("replay = %+v, err = %v", replayed, err)
 	}
 	request.Payload = json.RawMessage(`{"a":1,"b":9007199254740992}`)
-	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t, "alpha"), request); !errors.Is(err, router.ErrUIDConflict) {
+	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t, "alpha"), request); !errors.Is(err, fism.ErrUIDConflict) {
 		t.Fatalf("large integer conflict error = %v", err)
 	}
 	request.Payload = json.RawMessage(`{"a":1,"b":9007199254740993}`)
 	request.Source = "different-source"
-	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t, "alpha"), request); !errors.Is(err, router.ErrUIDConflict) {
+	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t, "alpha"), request); !errors.Is(err, fism.ErrUIDConflict) {
 		t.Fatalf("source conflict error = %v", err)
 	}
 	request.Source = "test"
 	correlation := uuid.Must(uuid.NewV7()).String()
 	request.Correlation = &correlation
-	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t, "alpha"), request); !errors.Is(err, router.ErrUIDConflict) {
+	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t, "alpha"), request); !errors.Is(err, fism.ErrUIDConflict) {
 		t.Fatalf("correlation conflict error = %v", err)
 	}
 	request.Correlation = nil
-	registry, err := router.NewRegistry(
-		[]router.EventDefinition{
-			{ID: "test.event", Version: 1, Validate: router.Object},
-			{ID: "test.event", Version: 2, Validate: router.Object},
-			{ID: "other.event", Version: 1, Validate: router.Object},
+	registry, err := fism.NewRegistry(
+		[]fism.EventDefinition{
+			{ID: "test.event", Version: 1, Validate: fism.Object},
+			{ID: "test.event", Version: 2, Validate: fism.Object},
+			{ID: "other.event", Version: 1, Validate: fism.Object},
 		},
-		[]router.PluginDefinition{{ID: "alpha", Subscriptions: []router.Subscription{
+		[]fism.ControllerDefinition{{ID: "alpha", Subscriptions: []fism.Subscription{
 			{Event: "test.event", MinVersion: 1, MaxVersion: 2},
 			{Event: "other.event", MinVersion: 1, MaxVersion: 1},
 		}}},
@@ -131,12 +131,12 @@ func TestRouterUIDReplayUsesSemanticJSONAndStoredEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.ID = "other.event"
-	if _, err := s.EmitRouterEvent(ctx, registry, request); !errors.Is(err, router.ErrUIDConflict) {
+	if _, err := s.EmitRouterEvent(ctx, registry, request); !errors.Is(err, fism.ErrUIDConflict) {
 		t.Fatalf("event ID conflict error = %v", err)
 	}
 	request.ID = "test.event"
 	request.Version = 2
-	if _, err := s.EmitRouterEvent(ctx, registry, request); !errors.Is(err, router.ErrUIDConflict) {
+	if _, err := s.EmitRouterEvent(ctx, registry, request); !errors.Is(err, fism.ErrUIDConflict) {
 		t.Fatalf("event version conflict error = %v", err)
 	}
 }
@@ -155,7 +155,7 @@ func TestRouterUIDReplayPrecedesNoSubscriberSkip(t *testing.T) {
 		t.Fatalf("replay = %+v, err = %v", replay, err)
 	}
 	request.Payload = json.RawMessage(`{"n":2}`)
-	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t), request); !errors.Is(err, router.ErrUIDConflict) {
+	if _, err := s.EmitRouterEvent(ctx, routerTestRegistry(t), request); !errors.Is(err, fism.ErrUIDConflict) {
 		t.Fatalf("conflict with no subscribers = %v", err)
 	}
 }
@@ -193,14 +193,14 @@ func TestRouterEmitRejectsMalformedRequestBoundaries(t *testing.T) {
 	registry := routerTestRegistry(t, "alpha")
 	for _, tc := range []struct {
 		name string
-		edit func(*router.EmitRequest)
+		edit func(*fism.EmitRequest)
 	}{
-		{"malformed json", func(r *router.EmitRequest) { r.Payload = json.RawMessage(`{"x":`) }},
-		{"trailing json", func(r *router.EmitRequest) { r.Payload = json.RawMessage(`{} {}`) }},
-		{"empty source", func(r *router.EmitRequest) { r.Source = "" }},
-		{"whitespace source", func(r *router.EmitRequest) { r.Source = "  " }},
-		{"malformed uid", func(r *router.EmitRequest) { r.UID = "not-a-uuid" }},
-		{"malformed correlation", func(r *router.EmitRequest) { v := "not-a-uuid"; r.Correlation = &v }},
+		{"malformed json", func(r *fism.EmitRequest) { r.Payload = json.RawMessage(`{"x":`) }},
+		{"trailing json", func(r *fism.EmitRequest) { r.Payload = json.RawMessage(`{} {}`) }},
+		{"empty source", func(r *fism.EmitRequest) { r.Source = "" }},
+		{"whitespace source", func(r *fism.EmitRequest) { r.Source = "  " }},
+		{"malformed uid", func(r *fism.EmitRequest) { r.UID = "not-a-uuid" }},
+		{"malformed correlation", func(r *fism.EmitRequest) { v := "not-a-uuid"; r.Correlation = &v }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := routerTestRequest(`{"n":1}`)
@@ -261,7 +261,7 @@ func TestRouterEmitUIDConcurrentWriters(t *testing.T) {
 	request.UID = uuid.Must(uuid.NewV7()).String()
 	registry := routerTestRegistry(t, "alpha")
 	stores := []*Store{s1, s2}
-	results := make([]router.EmitResult, 2)
+	results := make([]fism.EmitResult, 2)
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	for i := range stores {

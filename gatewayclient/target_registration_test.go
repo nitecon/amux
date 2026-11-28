@@ -7,11 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestTargetRegistrationUsesNativeHeadersAndRustWireShape(t *testing.T) {
-	origin := storage.AgentOrigin{
+	origin := agent.Origin{
 		SessionID:  "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 		Provider:   "codex", OS: "linux",

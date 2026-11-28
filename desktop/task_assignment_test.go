@@ -18,6 +18,7 @@ import (
 	fynetest "fyne.io/fyne/v2/test"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -50,7 +51,7 @@ func TestBrowserRequesterSetAndClearPreserveOwnerForUserReviewTask(t *testing.T)
 		})
 	})
 	ctx := context.Background()
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	if _, err := fixture.store.ApplyTaskTransition(ctx, "demo", fixture.first.ID, "in_progress", &owner, storage.TaskTransitionPolicy{}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestBrowserRequesterSetAndClearPreserveOwnerForUserReviewTask(t *testing.T)
 func TestBrowserRequesterSetPreservesLiveInProgressOwner(t *testing.T) {
 	fixture, identity := prepareAssignmentFixture(t, nil)
 	ctx := context.Background()
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	if _, err := fixture.store.ApplyTaskTransition(ctx, "demo", fixture.first.ID, "in_progress", &owner, storage.TaskTransitionPolicy{}); err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +173,12 @@ func prepareAssignmentFixture(t *testing.T, wrap func(http.Handler) http.Handler
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	origin := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	identity := storage.RegisteredTargetIdentity{Origin: origin, Generation: uuid.NewString()}
 	if _, err := client.RegisterTarget(ctx, "demo", storage.TargetRegistration{Origin: origin, Generation: identity.Generation, CanonicalRemote: &remote, DisplayName: stringPtrDesktop("Fixture Agent"), Hostname: stringPtrDesktop("worker-host")}); err != nil {
 		t.Fatal(err)
 	}
-	wrongOS := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "windows"}
+	wrongOS := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "windows"}
 	if _, err := client.RegisterTarget(ctx, "demo", storage.TargetRegistration{Origin: wrongOS, Generation: uuid.NewString(), CanonicalRemote: &remote}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +208,7 @@ func stringPtrDesktop(value string) *string { return &value }
 func TestTaskOwnerLabelUsesFreshSessionMetadataAfterInstanceRestart(t *testing.T) {
 	now := time.UnixMilli(1_800_000_000_000)
 	session := uuid.NewString()
-	owner := storage.AgentOrigin{SessionID: session, InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	owner := agent.Origin{SessionID: session, InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	nameOld, hostOld := "Old display", "Old machine"
 	nameCurrent, hostCurrent := "Current display", "Current machine"
 	task := storage.Task{OwnerAgentID: stringPtrDesktop("legacy-agent-id"), OwnerOrigin: &owner, Hostname: stringPtrDesktop("task-creation-machine")}
@@ -218,17 +219,17 @@ func TestTaskOwnerLabelUsesFreshSessionMetadataAfterInstanceRestart(t *testing.T
 			DisplayName: &nameOld, Hostname: &hostOld,
 		},
 		{
-			Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: session, InstanceID: uuid.NewString(), Provider: "codex", OS: "windows"}, Generation: uuid.NewString()},
+			Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: session, InstanceID: uuid.NewString(), Provider: "codex", OS: "windows"}, Generation: uuid.NewString()},
 			SeenAt: now.Add(-time.Second).UnixMilli(), ExpiresAt: now.Add(time.Minute).UnixMilli(),
 			DisplayName: &nameCurrent, Hostname: &hostCurrent,
 		},
 		{
-			Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, Generation: uuid.NewString()},
+			Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, Generation: uuid.NewString()},
 			SeenAt: now.UnixMilli(), ExpiresAt: now.Add(time.Minute).UnixMilli(),
 			DisplayName: &nameOld, Hostname: &hostOld,
 		},
 		{
-			Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: session, InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, Generation: uuid.NewString()},
+			Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: session, InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, Generation: uuid.NewString()},
 			SeenAt: now.UnixMilli(), ExpiresAt: now.UnixMilli(),
 			DisplayName: &nameOld, Hostname: &hostOld,
 		},

@@ -3,17 +3,24 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/channels"
+	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -30,15 +37,6 @@ type HandlerConfig struct {
 	SecureBind                string
 	DiscoveryBind             string
 	Shutdown                  func()
-}
-
-type authenticatedPrincipalContextKey struct{}
-
-const bearerAPIKeyPrincipal = "api-key"
-
-func authenticatedPrincipal(ctx context.Context) string {
-	principal, _ := ctx.Value(authenticatedPrincipalContextKey{}).(string)
-	return principal
 }
 
 // NewHandler wires the ported project API. Unported endpoints remain absent;
@@ -135,6 +133,7 @@ func NewHandlerWithConfig(store *storage.Store, apiKey string, config HandlerCon
 	mux.HandleFunc("POST /v1/projects/{ident}/conversations/{conversation}/tools", api.callTaskTool)
 	mux.HandleFunc("GET /v1/tasks/stream", api.taskStream)
 	mux.HandleFunc("GET /v1/events/stream", api.remoteEventStream)
+	mux.HandleFunc("POST /v1/notifications/global", api.publishGlobalNotification)
 	mux.HandleFunc("GET /v1/task-events", api.taskEvents)
 	mux.HandleFunc("GET /v1/task-events/consumers", api.taskConsumerStatuses)
 	if config.SecurityEnrollment != nil {
@@ -260,4 +259,303 @@ func Serve(ctx context.Context, listener net.Listener, handler http.Handler, shu
 		}
 		return nil
 	}
+}
+
+const (
+	defaultArtifactAuthEnforced      = false
+	defaultArtifactBodySchemaEnabled = true
+)
+
+// Start runs the configured server until shutdown.
+func Start(ctx context.Context, stdout, _ io.Writer) error {
+	options := config.GetServer()
+	database := options.Database
+	profile := options.Profile
+	secureInstance := options.SecureInstance
+	discoveryBind := options.DiscoveryBind
+	profileTLSNames := options.ProfileTLSNames
+	listen := options.Listen
+	keyEnv := options.KeyEnv
+	certPath := options.CertPath
+	keyPath := options.KeyPath
+	retentionDays := options.RetentionDays
+	botRetentionDays := options.BotRetentionDays
+	discordTokenEnv := options.DiscordTokenEnv
+	discordGuildID := options.DiscordGuildID
+	discordCategoryID := options.DiscordCategoryID
+	artifactAuthEnforced, err := serverBool(options.ArtifactAuthEnforced, "GATEWAY_ARTIFACT_AUTH_ENFORCED", defaultArtifactAuthEnforced)
+	if err != nil {
+		return err
+	}
+	artifactBodySchemaEnabled, err := serverBool(options.ArtifactBodySchemaEnabled, "GATEWAY_ARTIFACT_BODY_SCHEMA_ENABLED", defaultArtifactBodySchemaEnabled)
+	if err != nil {
+		return err
+	}
+	if err := options.Validate(); err != nil {
+		return err
+	}
+	if secureInstance != "" || len(profileTLSNames) > 0 {
+		profileTLSNames = storage.ProfileServerTLSNames(ctx, profileTLSNames)
+	}
+	databasePath := database
+	if profile != "" {
+		databasePath = filepath.Join(profile, "application.sqlite")
+	}
+	apiKey := os.Getenv(keyEnv)
+	if apiKey == "" {
+		if secureInstance == "" {
+			return fmt.Errorf("server API credential is not configured")
+		}
+		internalKey, err := uuid.NewRandom()
+		if err != nil {
+			return err
+		}
+		apiKey = internalKey.String()
+	}
+	var outbound map[string]channels.Outbound
+	var discord *channels.Discord
+	if discordTokenEnv != "" || discordGuildID != "" || discordCategoryID != "" {
+		configuredDiscord, err := channels.NewDiscord(channels.DiscordConfig{
+			Token: os.Getenv(discordTokenEnv), GuildID: discordGuildID, CategoryID: discordCategoryID,
+		})
+		if err != nil {
+			return fmt.Errorf("configure Discord outbound messaging: %w", err)
+		}
+		discord = configuredDiscord
+		outbound = map[string]channels.Outbound{"discord": discord}
+	}
+	host, _, _ := net.SplitHostPort(listen)
+	ip := net.ParseIP(host)
+	if certPath == "" && len(profileTLSNames) == 0 && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("non-loopback server listeners require tls-cert and tls-key")
+	}
+	var tlsConfig *tls.Config
+	if certPath != "" {
+		certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return fmt.Errorf("load server TLS certificate: %w", err)
+		}
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}
+	}
+	profileLock, err := LockProfile(databasePath)
+	if err != nil {
+		return err
+	}
+	defer profileLock.Close()
+	var enrollment *storage.SecurityEnrollment
+	var clusterID string
+	if profile != "" {
+		securityLock, err := LockSecurityProfile(profile)
+		if err != nil {
+			return err
+		}
+		defer securityLock.Close()
+		clusterID, err = storage.EnsureSecurityInstallation(ctx, profile)
+		if err != nil {
+			return fmt.Errorf("initialize security profile: %w", err)
+		}
+		if err := storage.EnsureSecurityRoot(profile, clusterID); err != nil {
+			return fmt.Errorf("initialize security profile root: %w", err)
+		}
+		if len(profileTLSNames) != 0 {
+			certificate, err := storage.EnsureProfileServerTLS(profile, clusterID, profileTLSNames)
+			if err != nil {
+				return fmt.Errorf("initialize profile TLS identity: %w", err)
+			}
+			tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}
+		}
+		if secureInstance != "" {
+			enrollment, err = storage.OpenSecurityEnrollment(ctx, profile)
+			if err != nil {
+				return fmt.Errorf("open security enrollment: %w", err)
+			}
+			defer enrollment.Close()
+			rootPEM, err := os.ReadFile(filepath.Join(profile, "root.pem"))
+			if err != nil {
+				return fmt.Errorf("read profile trust root: %w", err)
+			}
+			tlsConfig.ClientCAs = x509.NewCertPool()
+			if !tlsConfig.ClientCAs.AppendCertsFromPEM(rootPEM) {
+				return fmt.Errorf("invalid profile trust root")
+			}
+			tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
+		}
+	}
+	store, err := storage.Open(ctx, databasePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.RecoverTaskConsumers(ctx); err != nil {
+		return err
+	}
+	if discord != nil {
+		if err := registerDiscordRooms(ctx, store, discord); err != nil {
+			return err
+		}
+	}
+	builtins, err := NewGatewayFISM(store, retentionDays, botRetentionDays)
+	if err != nil {
+		return err
+	}
+	store.UseRouterReviews()
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	defer listener.Close()
+	var localNodeID string
+	var localURL string
+	var discoveryListener net.Listener
+	var discoveryHandler http.Handler
+	var discoveryPort uint16
+	if enrollment != nil {
+		bound := listener.Addr().(*net.TCPAddr)
+		loopback := "127.0.0.1"
+		if bound.IP.To4() == nil {
+			loopback = "::1"
+		}
+		localURL = "https://" + net.JoinHostPort(loopback, strconv.Itoa(bound.Port))
+		local, err := enrollment.ProvisionLocal(ctx, localURL, secureInstance)
+		if err != nil {
+			return fmt.Errorf("provision local administrator: %w", err)
+		}
+		localNodeID = local.NodeID
+		address := discoveryBind
+		if address == "" {
+			address = net.JoinHostPort(host, "24181")
+		}
+		discoveryListener, err = net.Listen("tcp", address)
+		if err != nil {
+			return fmt.Errorf("listen for enrollment discovery: %w", err)
+		}
+		defer discoveryListener.Close()
+		discoveryPort = uint16(discoveryListener.Addr().(*net.TCPAddr).Port)
+		public := enrollment.Discovery(uint16(bound.Port))
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /v1/discovery", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(public)
+		})
+		discoveryHandler = mux
+	}
+	var secureConnections *SecureConnections
+	if enrollment != nil {
+		listener, secureConnections, err = TrackSecureConnections(listener, tlsConfig)
+		if err != nil {
+			return fmt.Errorf("track secure TLS connections: %w", err)
+		}
+	} else if tlsConfig != nil {
+		listener = tls.NewListener(listener, tlsConfig)
+	}
+	runtimeCtx, stopRuntime := context.WithCancel(ctx)
+	defer stopRuntime()
+	routerDone := make(chan error, 1)
+	ready := make(chan struct{})
+	go func() {
+		routerDone <- builtins.Run(runtimeCtx, ready)
+		stopRuntime()
+	}()
+	joined := false
+	defer func() {
+		stopRuntime()
+		if !joined {
+			<-routerDone
+		}
+	}()
+	select {
+	case <-ready:
+	case err := <-routerDone:
+		joined = true
+		return err
+	case <-runtimeCtx.Done():
+		err := <-routerDone
+		joined = true
+		return err
+	}
+	remoteConfig := RemoteConfig{
+		Context: runtimeCtx, Registry: builtins.Registry(), Forwarded: controllers.RemoteForwardedEvents(),
+	}
+	processNonce := ""
+	secureBind, discoveryAddress := "", ""
+	var shutdown func()
+	if enrollment != nil {
+		processNonce = uuid.NewString()
+		secureBind = listener.Addr().String()
+		discoveryAddress = discoveryListener.Addr().String()
+		shutdown = stopRuntime
+	}
+	handler, err := NewHandlerWithConfig(store, apiKey, HandlerConfig{
+		Remote: &remoteConfig, Channels: outbound, ArtifactAuthEnforced: artifactAuthEnforced,
+		DisableArtifactBodySchema: !artifactBodySchemaEnabled,
+		SecurityEnrollment:        enrollment, LocalNodeID: localNodeID,
+		DiscoveryPort: discoveryPort, ProcessNonce: processNonce, SecureBind: secureBind,
+		DiscoveryBind: discoveryAddress, Shutdown: shutdown,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(stdout, "listening", listener.Addr().String()); err != nil {
+		return err
+	}
+	if secureConnections != nil {
+		maintenanceDone := make(chan struct{})
+		go func() {
+			defer close(maintenanceDone)
+			maintainSecureCredentials(runtimeCtx, store.EventBus(), secureConnections, enrollment, localURL, secureInstance, profile, clusterID, profileTLSNames)
+		}()
+		defer func() {
+			stopRuntime()
+			<-maintenanceDone
+		}()
+	}
+	var discoveryDone chan error
+	if discoveryListener != nil {
+		discoveryDone = make(chan error, 1)
+		go func() {
+			discoveryDone <- Serve(runtimeCtx, discoveryListener, discoveryHandler, 10*time.Second)
+			stopRuntime()
+		}()
+	}
+	var ingress *discordIngress
+	if discord != nil {
+		ingress = startDiscordIngress(runtimeCtx, discord, store.AcceptObservation, builtins.Registry())
+	}
+	serveErr := Serve(runtimeCtx, listener, handler, 10*time.Second)
+	stopRuntime()
+	if discoveryDone != nil {
+		if err := <-discoveryDone; err != nil {
+			serveErr = errors.Join(serveErr, fmt.Errorf("serve enrollment discovery: %w", err))
+		}
+	}
+	if ingress != nil {
+		<-ingress.providerDone
+		sourceErr := <-ingress.sourceDone
+		if sourceErr != nil && !(runtimeCtx.Err() != nil && errors.Is(sourceErr, context.Canceled)) {
+			serveErr = errors.Join(serveErr, fmt.Errorf("persist Discord inbound events: %w", sourceErr))
+		}
+	}
+	routerErr := <-routerDone
+	joined = true
+	return errors.Join(serveErr, routerErr)
+}
+
+func readServerBool(key string, defaultValue bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	case "":
+		return defaultValue, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean flag", key)
+	}
+}
+
+func serverBool(configured *bool, name string, fallback bool) (bool, error) {
+	if configured != nil {
+		return *configured, nil
+	}
+	return readServerBool(name, fallback)
 }

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestInboundRuntimeFIFOAcrossProjectsSurvivesFailureAndRestart(t *testing.T) {
@@ -28,26 +28,26 @@ func TestInboundRuntimeFIFOAcrossProjectsSurvivesFailureAndRestart(t *testing.T)
 		BEGIN SELECT RAISE(ABORT,'fixture first cursor failed'); END`); err != nil {
 		t.Fatal(err)
 	}
-	newRuntime := func(store *Store) *router.Runtime {
+	newRuntime := func(store *Store) *fism.Runtime {
 		t.Helper()
-		runtime, err := router.NewRuntime(store, store.EventBus(), []router.EventDefinition{plugins.InboundDefinition()}, []router.Plugin{
-			plugins.InboundPlugin(store),
-			{Definition: router.PluginDefinition{ID: "independent", Subscriptions: []router.Subscription{{Event: "channel.message_received", MinVersion: 1, MaxVersion: 1}}}},
-		}, router.RunConfig{Capacity: 4})
+		runtime, err := fism.NewRuntime(store, store.EventBus(), []fism.EventDefinition{controllers.InboundDefinition()}, []fism.Controller{
+			controllers.InboundController(store),
+			{Definition: fism.ControllerDefinition{ID: "independent", Subscriptions: []fism.Subscription{{Event: "channel.message_received", MinVersion: 1, MaxVersion: 1}}}},
+		}, fism.RunConfig{Capacity: 4})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return runtime
 	}
 	runtime := newRuntime(s)
-	emit := func(store *Store, registry *router.Registry, room, id string) router.Event {
+	emit := func(store *Store, registry *fism.Registry, room, id string) fism.Event {
 		t.Helper()
 		payload, err := json.Marshal(map[string]any{"channel_name": "fixture", "room_id": room,
 			"message": map[string]string{"id": id, "content": "Input " + id, "author_kind": "human"}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := store.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: "channel.message_received", Version: 1, Source: "channel:fixture", Payload: payload})
+		result, err := store.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: "channel.message_received", Version: 1, Source: "channel:fixture", Payload: payload})
 		if err != nil || !result.Stored {
 			t.Fatalf("accept durable input: %+v %v", result, err)
 		}

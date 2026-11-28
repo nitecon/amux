@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func nativeAuthorityFixture(t *testing.T, draft bool) (*Store, *Task, *Conversation, *AgentOrigin, *router.Registry) {
+func nativeAuthorityFixture(t *testing.T, draft bool) (*Store, *Task, *Conversation, *agent.Origin, *fism.Registry) {
 	t.Helper()
 	s, c, actor := commandConversation(t)
 	task, err := readTask(context.Background(), s.db, c.ProjectIdent, c.TaskID)
@@ -30,7 +31,7 @@ func TestNativeDeliveryPendingReceiptSurvivesReopenAndIgnoresPayloadAuthority(t 
 		t.Fatal(err)
 	}
 	payload["source"], payload["principal"] = "forged:source", "forged:principal"
-	emitted, err := s.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: plugins.NotifyEventID, Version: 1, Source: "plugin:notifier", Payload: mustJSONBytes(t, payload)})
+	emitted, err := s.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: controllers.NotifyEventID, Version: 1, Source: "plugin:notifier", Payload: mustJSONBytes(t, payload)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestNativeDeliveryRawObservationCannotAuthorizeExistingConversation(t *test
 		"project": task.ProjectIdent, "session_id": actor.SessionID, "instance_id": actor.InstanceID,
 		"provider": actor.Provider, "os": actor.OS, "auto_assign": true,
 	}}})
-	if err := s.ReconcilePresenceEvent(ctx, rawPresenceRegistry(t), rawPresenceEvent(plugins.ClientHeartbeatID, "raw:principal-spoof", 1, time.Now().UnixMilli(), string(body))); err != nil {
+	if err := s.ReconcilePresenceEvent(ctx, rawPresenceRegistry(t), rawPresenceEvent(controllers.ClientHeartbeatID, "raw:principal-spoof", 1, time.Now().UnixMilli(), string(body))); err != nil {
 		t.Fatal(err)
 	}
 	registry := nativeDeliveryRegistry(t)
@@ -179,7 +180,7 @@ func TestNativeDeliveryResultFailureRollsBackPromptAndKeepsFrozenReceipt(t *test
 
 func TestNativeDeliveryRequiresDurableResultSubscriber(t *testing.T) {
 	s, task, _, _, _ := nativeAuthorityFixture(t, false)
-	registry, err := router.NewRegistry(plugins.NotificationEventDefinitions(), []router.PluginDefinition{plugins.NativeDeliveryPlugin(nil).Definition})
+	registry, err := fism.NewRegistry(controllers.NotificationEventDefinitions(), []fism.ControllerDefinition{controllers.NativeDeliveryController(nil).Definition})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +204,7 @@ func TestNativeDeliveryExpiredUnadoptedOfferCanCompensateWithoutStartingWork(t *
 	}
 	task := makeTask(t, s, nil)
 	registry := nativeDeliveryRegistry(t)
-	if err := s.ReconcileRouterAssignmentsWithRegistry(ctx, registry, router.Event{ID: "clock.tick", Version: 1, UID: uuid.NewString(), EmittedAt: now.UnixMilli()}); err != nil {
+	if err := s.ReconcileRouterAssignmentsWithRegistry(ctx, registry, fism.Event{ID: "clock.tick", Version: 1, UID: uuid.NewString(), EmittedAt: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
 	var uid string

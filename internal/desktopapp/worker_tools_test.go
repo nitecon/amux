@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -47,7 +48,7 @@ func TestDesktopWorkerTaskToolsAcceptEnrolledProfileWithoutBearerEnvironment(t *
 	open := desktopWorkerOpenWithEnrolledProfile(executable, "https://gateway.example", "CUSTOM_BEARER", "", manifest)
 	_, err := open(context.Background(), storage.WorkerRun{
 		Server: "https://gateway.example",
-		Owner:  storage.AgentOrigin{Provider: "unsupported"},
+		Owner:  agent.Origin{Provider: "unsupported"},
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), `provider "unsupported" is not implemented`) {
 		t.Fatalf("enrolled task tools did not proceed without bearer credentials: %v", err)

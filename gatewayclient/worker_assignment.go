@@ -4,20 +4,21 @@ import (
 	"context"
 	"net/url"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
-func (c *Client) AdoptWorkerAssignment(ctx context.Context, project string, origin storage.AgentOrigin) (*storage.WorkerAssignment, error) {
+func (c *Client) AdoptWorkerAssignment(ctx context.Context, project string, origin agent.Origin) (*storage.WorkerAssignment, error) {
 	return c.AdoptWorkerAssignmentWithGoal(ctx, project, origin, nil)
 }
 
 // AdoptWorkerAssignmentWithGoal preserves the selected queue when adopting a
 // committed native assignment. Retries return its existing conversation/prompt.
-func (c *Client) AdoptWorkerAssignmentWithGoal(ctx context.Context, project string, origin storage.AgentOrigin, goal *string) (*storage.WorkerAssignment, error) {
+func (c *Client) AdoptWorkerAssignmentWithGoal(ctx context.Context, project string, origin agent.Origin, goal *string) (*storage.WorkerAssignment, error) {
 	return c.AdoptWorkerTask(ctx, project, "", origin, goal)
 }
 
-func (c *Client) AdoptWorkerTask(ctx context.Context, project, taskID string, origin storage.AgentOrigin, goal *string) (*storage.WorkerAssignment, error) {
+func (c *Client) AdoptWorkerTask(ctx context.Context, project, taskID string, origin agent.Origin, goal *string) (*storage.WorkerAssignment, error) {
 	var result *storage.WorkerAssignment
 	request := struct {
 		TaskID string `json:"task_id,omitempty"`

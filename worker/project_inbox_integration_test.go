@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/providers"
+	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -20,18 +21,14 @@ func TestProjectInboxSharedTickKeepsNudgesOutOfTaskWorker(t *testing.T) {
 	defer local.Close()
 	defer host.Close()
 	defer host.Config.Handler.(interface{ ShutdownStreams(context.Context) error }).ShutdownStreams(context.Background())
-	definitions := append(append(storage.RouterPresenceEventDefinitions(), storage.RouterTaskEventDefinitions()...), plugins.ClockDefinition(), plugins.ClientHeartbeatDefinition())
-	definitions = append(definitions, plugins.ActivityEventDefinitions()...)
-	definitions = append(definitions, plugins.NotificationEventDefinitions()...)
-	runtime, err := router.NewRuntime(remote, remote.EventBus(), definitions, []router.Plugin{
-		plugins.PresencePlugin(remote), plugins.AssignmentPlugin(remote), plugins.NativeDeliveryPlugin(remote), plugins.ProjectInboxPlugin(remote),
-	}, router.RunConfig{Capacity: 8})
+	runtime, err := server.NewGatewayFISM(remote, 7, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	routerCtx, stopRouter := context.WithCancel(ctx)
 	routerDone := make(chan error, 1)
-	go func() { routerDone <- runtime.Run(routerCtx) }()
+	ready := make(chan struct{})
+	go func() { routerDone <- runtime.Run(routerCtx, ready) }()
 	defer func() {
 		stopRouter()
 		select {
@@ -46,7 +43,7 @@ func TestProjectInboxSharedTickKeepsNudgesOutOfTaskWorker(t *testing.T) {
 	opened := make(chan storage.WorkerRun, 1)
 	sessions := make(chan *poolFixtureSession, 1)
 	release := make(chan struct{})
-	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if err := sink(openCtx, conversation.Event{Kind: "session_ready", SessionID: "pool-native"}); err != nil {
 			return nil, err
 		}
@@ -91,9 +88,9 @@ func TestProjectInboxSharedTickKeepsNudgesOutOfTaskWorker(t *testing.T) {
 	if _, err := remote.InsertTask(ctx, storage.TaskInsert{Project: pool.Project, Title: "Inbox worker context", Reporter: "fixture"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	tick := func() router.Event {
+	tick := func() fism.Event {
 		t.Helper()
-		result, err := remote.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
+		result, err := remote.AcceptObservation(ctx, runtime.Registry(), fism.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,17 +143,18 @@ func TestProjectInboxSharedTickKeepsNudgesOutOfTaskWorker(t *testing.T) {
 	}
 	pendingTick := tick()
 	for {
-		deliveries, err := remote.RouterDeliveries(ctx, pendingTick.Seq)
+		pending, err := remote.PendingObservations(ctx, 200)
 		if err != nil {
 			t.Fatal(err)
 		}
-		complete := false
-		for _, delivery := range deliveries {
-			if delivery.Plugin == "project-inbox" && delivery.State == "completed" {
-				complete = true
+		complete := true
+		for _, observation := range pending {
+			if observation.Event.UID == pendingTick.UID {
+				complete = false
 				break
 			}
 		}
+
 		if complete {
 			break
 		}

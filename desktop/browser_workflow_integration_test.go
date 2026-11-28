@@ -16,12 +16,13 @@ import (
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 func cancelWorkflowFixtureTask(t *testing.T, fixture editorBrowserFixture) {
 	t.Helper()
-	actor := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	if _, err := fixture.store.CancelTask(context.Background(), "demo", fixture.first.ID, "No longer needed", json.RawMessage(`null`), actor); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +350,7 @@ func TestBrowserBoardMovesSubtaskAndOpensItsDetails(t *testing.T) {
 	}
 	b.setMainView("Board")
 	waitBrowser(t, fixture.callbacks, func() bool { return hasChild(b.taskBoard.lanes[0]) })
-	actor := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	if _, err := fixture.store.ApplyTaskTransition(ctx, "demo", child.ID, "in_progress", actor, storage.TaskTransitionPolicy{}); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +380,7 @@ func TestBrowserRestoresConversationViewAndSelection(t *testing.T) {
 	fixture := startEditorBrowser(t, withoutComposerNavigationStream)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	owner := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	chat, err := fixture.store.CreateConversation(ctx, "demo", "", owner)
 	if err != nil {
 		t.Fatal(err)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 func (s *Store) ResolveProjectMessage(ctx context.Context, project string, messageID int64, resolvedBy string) (bool, error) {
@@ -18,7 +18,7 @@ func (s *Store) ReopenProjectMessage(ctx context.Context, project string, messag
 // updateProjectMessageResolution is shared with transactional human-reply
 // authoring so insertion and optional root resolution remain atomic.
 func updateProjectMessageResolution(ctx context.Context, q queryer, project string, messageID, resolvedAt int64, resolvedBy string, resolved bool) (bool, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	var result interface{ RowsAffected() (int64, error) }
 	var err error
 	if resolved {

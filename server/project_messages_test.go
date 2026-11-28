@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -18,7 +18,7 @@ func TestProjectMessageRoutesRequireNativeOriginAndUseItsSession(t *testing.T) {
 	if err := store.InsertProject(ctx, storage.Project{Ident: "inbox", ChannelName: "discord", RoomID: "room-a", Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{
+	event := fism.Event{
 		Seq: 1, ID: "channel.message_received", Version: 1, EmittedAt: 1234,
 		Payload: json.RawMessage(`{"channel_name":"discord","room_id":"room-a","message":{"id":"external-1","content":"hello inbox","author_kind":"human"}}`),
 	}

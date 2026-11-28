@@ -1,0 +1,4 @@
+# The database path is relative to the server's working directory.
+database: amux.db
+listen: 127.0.0.1:7913
+api-key-env: GATEWAY_API_KEY

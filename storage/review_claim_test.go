@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func reviewTask(t *testing.T, s *Store, labels []string) *Task {
@@ -20,7 +22,7 @@ func reviewTask(t *testing.T, s *Store, labels []string) *Task {
 
 func reviewProviderSource(t *testing.T, s *Store, provider string) *Task {
 	t.Helper()
-	source := makeTask(t, s, &AgentOrigin{
+	source := makeTask(t, s, &agent.Origin{
 		SessionID:  "11111111-1111-4111-8111-111111111111",
 		InstanceID: "22222222-2222-4222-8222-222222222222",
 		Provider:   provider, OS: "linux",
@@ -28,7 +30,7 @@ func reviewProviderSource(t *testing.T, s *Store, provider string) *Task {
 	return source
 }
 
-func reviewPresence(origin AgentOrigin, project string, now time.Time) PresenceAgent {
+func reviewPresence(origin agent.Origin, project string, now time.Time) PresenceAgent {
 	activity := now.Add(-time.Duration(presenceIdleAfter) * time.Millisecond).UnixMilli()
 	return PresenceAgent{
 		ProjectIdent: project, Origin: origin, AutoAssign: true,

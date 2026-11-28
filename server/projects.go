@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -31,20 +31,20 @@ func (a *api) registerProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "project must be an object")
 		return
 	}
-	ident := projects.SanitizeIdent(req.Ident)
+	ident := projectid.SanitizeIdent(req.Ident)
 	channel := "internal"
 	if req.Channel != nil {
 		channel = *req.Channel
 	}
-	var repo *projects.RepoRef
+	var repo *projectid.RepoRef
 	if req.RepoURL != nil {
-		parsed, err := projects.ParseRemote(*req.RepoURL)
+		parsed, err := projectid.ParseRemote(*req.RepoURL)
 		if err == nil {
 			repo = &parsed
 		}
 	}
 	if repo == nil {
-		parsed, err := projects.ParseRemote(req.Ident)
+		parsed, err := projectid.ParseRemote(req.Ident)
 		if err == nil {
 			repo = &parsed
 		}

@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 func migrateRouterHeartbeat(ctx context.Context, tx *sql.Tx) error {
@@ -113,15 +113,8 @@ func flattenHeartbeatAgents(report PresenceReport) []routerHeartbeatAgent {
 	return agents
 }
 
-type routerHeartbeatOutboxRow struct {
-	id      int64
-	uid     string
-	source  string
-	payload []byte
-}
-
 // DrainRouterHeartbeatOutbox emits and acknowledges one bounded prefix atomically.
-func (s *Store) DrainRouterHeartbeatOutbox(ctx context.Context, registry *router.Registry, limit int) (int, error) {
+func (s *Store) DrainRouterHeartbeatOutbox(ctx context.Context, registry *fism.Registry, limit int) (int, error) {
 	if limit < 1 || limit > 200 {
 		return 0, fmt.Errorf("router heartbeat outbox limit must be between 1 and 200")
 	}
@@ -130,48 +123,21 @@ func (s *Store) DrainRouterHeartbeatOutbox(ctx context.Context, registry *router
 		return 0, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT id,uid,source,payload FROM amux_heartbeat_outbox ORDER BY id LIMIT ?`, limit)
+	batch, err := readObservations(ctx, tx, 0, limit, "e.seq IS NULL")
 	if err != nil {
-		return 0, fmt.Errorf("read router heartbeat outbox: %w", err)
-	}
-	batch := make([]routerHeartbeatOutboxRow, 0, limit)
-	for rows.Next() {
-		var row routerHeartbeatOutboxRow
-		if err := rows.Scan(&row.id, &row.uid, &row.source, &row.payload); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan router heartbeat outbox: %w", err)
-		}
-		batch = append(batch, row)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, fmt.Errorf("read router heartbeat rows: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("close router heartbeat rows: %w", err)
+		return 0, err
 	}
 	stored := false
 	for _, row := range batch {
-		if !canonicalUUID(row.uid) || !validRouterSource(row.source) || !json.Valid(row.payload) {
-			return 0, fmt.Errorf("invalid router heartbeat outbox row %d", row.id)
-		}
-		result, err := emitRouterEventIn(ctx, tx, registry, router.EmitRequest{
-			UID: row.uid, ID: "client.heartbeat", Version: 1, Source: row.source, Payload: row.payload,
+		result, err := emitRouterEventIn(ctx, tx, registry, fism.EmitRequest{
+			UID: row.Event.UID, ID: "client.heartbeat", Version: 1, Source: row.Event.Source, Payload: row.Event.Payload,
 		})
 		if err != nil {
-			return 0, fmt.Errorf("emit router heartbeat outbox row %d: %w", row.id, err)
+			return 0, fmt.Errorf("emit router heartbeat outbox row %d: %w", row.ID, err)
 		}
 		stored = stored || result.Stored
-		ack, err := tx.ExecContext(ctx, "DELETE FROM amux_heartbeat_outbox WHERE id=? AND uid=?", row.id, row.uid)
-		if err != nil {
-			return 0, fmt.Errorf("acknowledge router heartbeat row %d: %w", row.id, err)
-		}
-		count, err := ack.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("count acknowledged heartbeat row %d: %w", row.id, err)
-		}
-		if count != 1 {
-			return 0, fmt.Errorf("acknowledged %d heartbeat rows for id %d", count, row.id)
+		if err := settleObservation(ctx, tx, row.ID, row.Event.UID); err != nil {
+			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -184,7 +150,7 @@ func (s *Store) DrainRouterHeartbeatOutbox(ctx context.Context, registry *router
 }
 
 // routerHeartbeatCurrent verifies the persisted source binding, sequence, and TTL.
-func routerHeartbeatCurrent(ctx context.Context, q queryer, event router.Event, nowMS int64) (bool, error) {
+func routerHeartbeatCurrent(ctx context.Context, q queryer, event fism.Event, nowMS int64) (bool, error) {
 	if event.ID != "client.heartbeat" || event.Version != 1 || !canonicalUUID(event.UID) || !validRouterSource(event.Source) {
 		return false, nil
 	}

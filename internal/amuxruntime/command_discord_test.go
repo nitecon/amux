@@ -26,15 +26,9 @@ func TestServerDiscordConfigurationFailsBeforeOpeningState(t *testing.T) {
 			database := filepath.Join(t.TempDir(), "state.db")
 			args := append([]string{"server", "run", "--database", database, "--listen", "127.0.0.1:0"}, test.flags...)
 			var output bytes.Buffer
-			err := run(context.Background(), args, &output, &output, func(name string) string {
-				if name == "GATEWAY_API_KEY" {
-					return "test-gateway-key"
-				}
-				if name == "TEST_DISCORD_TOKEN" {
-					return test.token
-				}
-				return ""
-			})
+			t.Setenv("GATEWAY_API_KEY", "test-gateway-key")
+			t.Setenv("TEST_DISCORD_TOKEN", test.token)
+			err := run(context.Background(), args, &output, &output, os.Getenv)
 			if err == nil {
 				t.Fatal("invalid Discord configuration accepted")
 			}

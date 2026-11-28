@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var errSpecSourceTaskFound = errors.New("spec source task already exists")
@@ -15,9 +16,9 @@ var errSpecSourceTaskFound = errors.New("spec source task already exists")
 // FindOrCreateSpecSourceTask serializes Rust-compatible source-tuple recovery
 // with task insertion. A later link failure can safely be retried without
 // creating another task for the same accepted manifest item.
-func (s *Store) FindOrCreateSpecSourceTask(ctx context.Context, projectIdent, artifactID, versionID, itemID string, input TaskInsert, origin *AgentOrigin) (*Task, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
-	input.Project = projects.NormalizeIdent(input.Project)
+func (s *Store) FindOrCreateSpecSourceTask(ctx context.Context, projectIdent, artifactID, versionID, itemID string, input TaskInsert, origin *agent.Origin) (*Task, error) {
+	projectIdent = projectid.NormalizeIdent(projectIdent)
+	input.Project = projectid.NormalizeIdent(input.Project)
 	if projectIdent == "" || input.Project != projectIdent || artifactID == "" || versionID == "" || itemID == "" {
 		return nil, fmt.Errorf("invalid spec task source")
 	}
@@ -27,7 +28,7 @@ func (s *Store) FindOrCreateSpecSourceTask(ctx context.Context, projectIdent, ar
 		return nil, fmt.Errorf("spec task details must include the source tuple")
 	}
 	var task *Task
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		var sourceExists int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact_versions v
 JOIN artifacts a ON a.artifact_id=v.artifact_id
@@ -66,7 +67,7 @@ WHERE t.project_ident=?
 AND instr(char(10)||replace(t.details,char(13)||char(10),char(10))||char(10), ?) > 0
 AND instr(char(10)||replace(t.details,char(13)||char(10),char(10))||char(10), ?) > 0
 AND instr(char(10)||replace(t.details,char(13)||char(10),char(10))||char(10), ?) > 0
-ORDER BY t.created_at ASC LIMIT 1`, projects.NormalizeIdent(projectIdent), artifactLine, versionLine, itemLine))
+ORDER BY t.created_at ASC LIMIT 1`, projectid.NormalizeIdent(projectIdent), artifactLine, versionLine, itemLine))
 }
 
 func hasExactDetailsLine(details, expected string) bool {

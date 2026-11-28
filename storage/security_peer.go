@@ -58,6 +58,18 @@ func (s *SecurityEnrollment) BindInstance(ctx context.Context, nodeID, instanceI
 	return s.bindPeerID(ctx, "native_instances", nodeID, instanceID, "native instance belongs to another node")
 }
 
+// OwnsNativeInstance verifies a previously registered instance for a node.
+func (s *SecurityEnrollment) OwnsNativeInstance(ctx context.Context, nodeID, instanceID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ready(); err != nil {
+		return false, err
+	}
+	var owns bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_instances WHERE id=? AND node_id=?)`, instanceID, nodeID).Scan(&owns)
+	return owns, err
+}
+
 // BindConsumer associates a durable stream consumer with its authenticated node.
 func (s *SecurityEnrollment) BindConsumer(ctx context.Context, nodeID, consumerID string) error {
 	if len(consumerID) == 0 || len(consumerID) > 128 {

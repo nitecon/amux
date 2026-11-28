@@ -16,8 +16,8 @@ import (
 	"github.com/nitecon/amux/chat"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
-	"github.com/nitecon/amux/worker"
 )
 
 type markdownFixtureSession struct {
@@ -48,7 +48,7 @@ func TestMarkdownConversationRunsAndRestoresWithoutGateway(t *testing.T) {
 	if err != nil || len(saved) != 1 || saved[0].ID != info.ID {
 		t.Fatalf("list chats: %v, %v", saved, err)
 	}
-	local, err := openMarkdownChat(root, info, func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	local, err := openMarkdownChat(root, info, func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if err := sink(ctx, conversation.Event{Kind: "session_ready", SessionID: "fixture-native"}); err != nil {
 			return nil, err
 		}

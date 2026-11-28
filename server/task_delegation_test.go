@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -58,7 +57,7 @@ func TestTaskDelegationHTTPAndToolLifecycle(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("MCP tool HTTP %d: %s", response.Code, response.Body.String())
 	}
-	var toolResult mcpstdio.Result
+	var toolResult storage.ToolResult
 	if err := json.Unmarshal(response.Body.Bytes(), &toolResult); err != nil || toolResult.IsError {
 		t.Fatalf("MCP tool result %+v err=%v", toolResult, err)
 	}

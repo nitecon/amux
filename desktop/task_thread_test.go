@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -75,7 +76,7 @@ func TestTaskThreadHeaderLabelsAndOrderStayPinnedOnClick(t *testing.T) {
 		ProjectIdent:  "demo",
 		TaskID:        fixture.first.ID,
 		Provider:      "claude",
-		Owner:         storage.AgentOrigin{SessionID: "session-newest", Provider: "claude"},
+		Owner:         agent.Origin{SessionID: "session-newest", Provider: "claude"},
 		OwnerHostname: &hostNewest,
 		CreatedAt:     created,
 		UpdatedAt:     created + 30_000,
@@ -85,7 +86,7 @@ func TestTaskThreadHeaderLabelsAndOrderStayPinnedOnClick(t *testing.T) {
 		ProjectIdent:  "demo",
 		TaskID:        fixture.first.ID,
 		Provider:      "codex",
-		Owner:         storage.AgentOrigin{SessionID: "session-beta", Provider: "codex"},
+		Owner:         agent.Origin{SessionID: "session-beta", Provider: "codex"},
 		OwnerHostname: &hostBeta,
 		CreatedAt:     created,
 		UpdatedAt:     created + 10_000,
@@ -95,7 +96,7 @@ func TestTaskThreadHeaderLabelsAndOrderStayPinnedOnClick(t *testing.T) {
 		ProjectIdent:  "demo",
 		TaskID:        fixture.first.ID,
 		Provider:      "antigravity",
-		Owner:         storage.AgentOrigin{SessionID: "session-alpha", Provider: "antigravity"},
+		Owner:         agent.Origin{SessionID: "session-alpha", Provider: "antigravity"},
 		OwnerHostname: &hostAlpha,
 		CreatedAt:     created,
 		UpdatedAt:     created + 10_000,
@@ -105,7 +106,7 @@ func TestTaskThreadHeaderLabelsAndOrderStayPinnedOnClick(t *testing.T) {
 		ProjectIdent: "demo",
 		TaskID:       fixture.first.ID,
 		Provider:     "codex",
-		Owner:        storage.AgentOrigin{SessionID: "session-oldest", Provider: "codex"},
+		Owner:        agent.Origin{SessionID: "session-oldest", Provider: "codex"},
 		CreatedAt:    created - 60_000,
 	}
 
@@ -152,7 +153,7 @@ func TestTaskThreadHeaderLabelsAndOrderStayPinnedOnClick(t *testing.T) {
 		ProjectIdent: "demo",
 		TaskID:       fixture.second.ID,
 		Provider:     "claude",
-		Owner:        storage.AgentOrigin{SessionID: "other-task-agent", Provider: "claude"},
+		Owner:        agent.Origin{SessionID: "other-task-agent", Provider: "claude"},
 		CreatedAt:    created,
 	}}
 	b.conversationHistory = nil
@@ -175,8 +176,8 @@ func TestDirectConversationsTabShowsTaskThreadNamesAndOrder(t *testing.T) {
 
 	hostOne := "Defcon2"
 	hostTwo := "WillsM4Max.local"
-	agentOne := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
-	agentTwo := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "macos"}
+	agentOne := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	agentTwo := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "macos"}
 	if accepted, err := fixture.store.ReportPresence(ctx, storage.PresenceReport{
 		Source: "pool-1", Sequence: 1, Hostname: &hostOne,
 		Agents: []storage.PresenceAgent{{ProjectIdent: "demo", Origin: agentOne}},

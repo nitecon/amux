@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -18,10 +19,13 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/storage"
 	"github.com/urfave/cli/v3"
 )
 
-func TestServerConfigIsLoadedWithCommandLineOverrides(t *testing.T) {
+func TestServerConfigIsLoadedFromYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("database: unused.db\nmessage-retention-days: 10\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -29,45 +33,48 @@ func TestServerConfigIsLoadedWithCommandLineOverrides(t *testing.T) {
 	command := newCommand()
 	// Replacing the startup action isolates config binding from the listener.
 	command.Command("server").Action = func(_ context.Context, server *cli.Command) error {
-		if err := config.InitServer(server.String("config"), server); err != nil {
+		if err := config.LoadServer(server.String("config")); err != nil {
 			return err
 		}
-		if settings := config.Get().Server; settings.Database != "unused.db" || settings.RetentionDays != 15 {
+		if settings := config.GetServer(); settings.Database != "unused.db" || settings.RetentionDays != 10 {
 			t.Fatalf("database = %q, retention = %d", settings.Database, settings.RetentionDays)
 		}
 		if err := os.WriteFile(path, []byte("database: replacement.db\nmessage-retention-days: 20\n"), 0600); err != nil {
 			return err
 		}
-		if err := config.InitServer(path, server); err != nil {
+		if err := config.LoadServer(path); err != nil {
 			return err
 		}
-		if settings := config.Get().Server; settings.Database != "replacement.db" || settings.RetentionDays != 15 {
+		if settings := config.GetServer(); settings.Database != "replacement.db" || settings.RetentionDays != 20 {
 			t.Fatalf("reloaded settings = %+v", settings)
 		}
 		if err := os.WriteFile(path, []byte("database: replacement.db\nprofile: conflicting\n"), 0600); err != nil {
 			return err
 		}
-		if err := config.InitServer(path, server); err == nil {
+		if err := config.LoadServer(path); err == nil {
 			t.Fatal("accepted conflicting server settings")
 		}
-		if settings := config.Get().Server; settings.Database != "replacement.db" || settings.Profile != "" {
+		if settings := config.GetServer(); settings.Database != "replacement.db" || settings.Profile != "" {
 			t.Fatalf("failed reload replaced snapshot: %+v", settings)
 		}
-		settings := config.Get().Server
+		settings := config.GetServer()
 		settings.Database = "saved.db"
+		settings.RetentionDays = 0
 		if err := config.SaveServer(path, settings); err != nil {
 			return err
 		}
-		saved, err := config.ReadServer(path, server)
-		if err != nil {
+		if live := config.GetServer(); live.Database != "replacement.db" {
+			t.Fatalf("file save changed the active server settings: %+v", live)
+		}
+		if err := config.LoadServer(path); err != nil {
 			return err
 		}
-		if saved.Database != "saved.db" || config.Get().Server.Database != "saved.db" {
-			t.Fatalf("server save did not update file and snapshot: %+v", saved)
+		if live := config.GetServer(); live.Database != "saved.db" || live.RetentionDays != 0 {
+			t.Fatalf("server reload did not apply saved settings: %+v", live)
 		}
 		return nil
 	}
-	if err := command.Run(context.Background(), []string{"amux", "server", "--config", path, "--message-retention-days", "15"}); err != nil {
+	if err := command.Run(context.Background(), []string{"amux", "server", "--config", path}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -92,7 +99,15 @@ func TestServerRunsWithoutDisplayAndStopsOnSignal(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestServerProcessHelper$", "--", "server", "--database", filepath.Join(t.TempDir(), "server.db"), "--listen", "127.0.0.1:0")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.yml")
+	settings := config.DefaultServer()
+	settings.Database = filepath.Join(dir, "server.db")
+	settings.Listen = "127.0.0.1:0"
+	if err := config.SaveServer(path, settings); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestServerProcessHelper$", "--", "server", "--config", path)
 	cmd.Env = append(os.Environ(), "AMUX_GO_SERVER_TEST=1", "GATEWAY_API_KEY=process-test-key", "DISPLAY=", "WAYLAND_DISPLAY=", "DBUS_SESSION_BUS_ADDRESS=", "HOME="+t.TempDir())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -148,7 +163,8 @@ func TestServerRunsWithoutDisplayAndStopsOnSignal(t *testing.T) {
 		t.Fatalf("production router stream: %v", err)
 	}
 	defer stream.CloseNow()
-	if err := wsjson.Write(ctx, stream, map[string]any{"type": "subscribe", "consumer_id": uuid.NewString(), "events": []string{"task.created"}}); err != nil {
+	consumerID := uuid.NewString()
+	if err := wsjson.Write(ctx, stream, map[string]any{"type": "subscribe", "consumer_id": consumerID, "events": []string{"task.created", controllers.GlobalNotifyEventID}}); err != nil {
 		t.Fatal(err)
 	}
 	var subscribed struct {
@@ -177,10 +193,90 @@ func TestServerRunsWithoutDisplayAndStopsOnSignal(t *testing.T) {
 	if err := wsjson.Read(ctx, stream, &forbidden); err != nil || forbidden.Type != "error" {
 		t.Fatalf("remote clock bypass: %+v %v", forbidden, err)
 	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/v1/notifications/global", strings.NewReader(`{"message":"Process smoke check"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer process-test-key")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("publish global notification: HTTP %d", response.StatusCode)
+	}
+	var wire struct {
+		Type  string     `json:"type"`
+		Event fism.Event `json:"event"`
+	}
+	if err := wsjson.Read(ctx, stream, &wire); err != nil || wire.Type != "event" || wire.Event.ID != controllers.GlobalNotifyEventID {
+		t.Fatalf("global notification: %+v %v", wire, err)
+	}
+	stream.CloseNow()
+	replacement, _, err := websocket.Dial(ctx, "ws://"+address+"/v1/events/stream", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer process-test-key"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.CloseNow()
+	if err := wsjson.Write(ctx, replacement, map[string]any{"type": "subscribe", "consumer_id": consumerID, "events": []string{controllers.GlobalNotifyEventID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Read(ctx, replacement, &subscribed); err != nil || subscribed.Type != "subscribed" {
+		t.Fatalf("replacement subscribe: %+v %v", subscribed, err)
+	}
+	original := wire.Event
+	wire.Event = fism.Event{}
+	if err := wsjson.Read(ctx, replacement, &wire); err != nil || wire.Type != "event" || wire.Event.UID != original.UID || wire.Event.Seq != original.Seq {
+		t.Fatalf("unacknowledged notice did not replay: %+v %v", wire, err)
+	}
+	if err := wsjson.Write(ctx, replacement, map[string]any{"type": "ack", "seq": original.Seq}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Read(ctx, replacement, &wire); err != nil || wire.Type != "acked" {
+		t.Fatalf("notification acknowledgment: %+v %v", wire, err)
+	}
+	reader, err := sql.Open("sqlite", settings.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var completedAt int64
+		err := reader.QueryRowContext(ctx, "SELECT completed_at FROM retention_runs WHERE id=1").Scan(&completedAt)
+		if err == nil && completedAt > 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("startup retention did not commit its outcome: %v", err)
+		case <-tick.C:
+		}
+	}
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("server shutdown: %v: %s", err, stderr.String())
+	}
+	journal, err := storage.Open(ctx, settings.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	events, err := journal.RouterEvents(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.ID == controllers.RetentionStartupID {
+			t.Fatal("startup retention was persisted as transition work")
+		}
+	}
+	cursor, err := journal.OpenRemoteConsumer(ctx, consumerID, uuid.NewString(), nil)
+	if err != nil || cursor < original.Seq {
+		t.Fatalf("reopened notification cursor = %d, want at least %d (%v)", cursor, original.Seq, err)
 	}
 }

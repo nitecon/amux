@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -15,7 +15,7 @@ import (
 // reply message ID. It is a read-only request and does not require agent-origin
 // headers.
 func (c *Client) GetProjectMessageThread(ctx context.Context, project string, messageID int64) (*storage.ProjectMessageThread, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
 	}

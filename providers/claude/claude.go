@@ -16,14 +16,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/providerprocess"
+	"github.com/nitecon/amux/providers/process"
 )
 
 type Config struct {
 	Directory, ResumeID string
 	Command             []string
 	Env                 []string
-	MCP                 *providerprocess.MCPConfig
+	MCP                 *process.MCPConfig
 	OpenTimeout         time.Duration
 	CancelTimeout       time.Duration
 }
@@ -53,7 +53,7 @@ type turnResult struct {
 type Session struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
-	process       *providerprocess.Process
+	process       *process.Process
 	sink          conversation.Sink
 	mu            sync.Mutex
 	eventMu       sync.Mutex
@@ -85,7 +85,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	if sink == nil {
 		return nil, fmt.Errorf("Claude session requires an event sink")
 	}
-	directory, err := providerprocess.ValidateDirectory(config.Directory, "Claude")
+	directory, err := process.ValidateDirectory(config.Directory, "Claude")
 	if err != nil {
 		return nil, err
 	}
@@ -102,14 +102,14 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 		command = append(command, "--session-id", config.ResumeID)
 	}
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
-	process, err := providerprocess.Start(sessionCtx, providerprocess.Options{Command: command, Directory: directory, Env: config.Env})
+	child, err := process.Start(sessionCtx, process.Options{Command: command, Directory: directory, Env: config.Env})
 	if err != nil {
 		sessionCancel()
 		return nil, err
 	}
 	writeGate := make(chan struct{}, 1)
 	writeGate <- struct{}{}
-	s := &Session{ctx: sessionCtx, cancel: sessionCancel, process: process, sink: sink, id: config.ResumeID, pending: map[string]controlRequest{}, readerDone: make(chan struct{}), writeGate: writeGate, toolByBlock: map[int]string{}, openTimeout: config.OpenTimeout, cancelTimeout: config.CancelTimeout}
+	s := &Session{ctx: sessionCtx, cancel: sessionCancel, process: child, sink: sink, id: config.ResumeID, pending: map[string]controlRequest{}, readerDone: make(chan struct{}), writeGate: writeGate, toolByBlock: map[int]string{}, openTimeout: config.OpenTimeout, cancelTimeout: config.CancelTimeout}
 	if s.openTimeout <= 0 {
 		s.openTimeout = 15 * time.Second
 	}
@@ -147,7 +147,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	return s, nil
 }
 
-func appendMCPConfig(command []string, mcp *providerprocess.MCPConfig) []string {
+func appendMCPConfig(command []string, mcp *process.MCPConfig) []string {
 	command = append([]string(nil), command...)
 	if mcp == nil {
 		return command

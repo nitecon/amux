@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // AcceptArtifactVersion accepts an eligible version of a project spec and
 // atomically updates its state, both artifact pointers, and audit contribution.
 func (s *Store) AcceptArtifactVersion(ctx context.Context, projectIdent, artifactID, versionID, actorID string, workflowRunID, idempotencyKey *string) (*ArtifactContribution, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

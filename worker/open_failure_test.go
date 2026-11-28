@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/providers/acp"
 	"github.com/nitecon/amux/providers/claude"
 	"github.com/nitecon/amux/providers/codex"
@@ -35,7 +37,7 @@ func TestRunDoesNotOwnFailedProviderSession(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			actor := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: provider, OS: "linux"}
+			actor := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: provider, OS: "linux"}
 			bound, err := remote.CreateConversation(ctx, "demo", task.ID, &actor)
 			if err != nil {
 				t.Fatal(err)
@@ -60,7 +62,7 @@ func TestRunDoesNotOwnFailedProviderSession(t *testing.T) {
 				t.Fatal(err)
 			}
 			startupErr := errors.New("provider startup failed")
-			opener := func(context.Context, storage.WorkerRun, conversation.Sink) (Session, error) {
+			opener := func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 				switch provider {
 				case "antigravity":
 					var session *acp.Session

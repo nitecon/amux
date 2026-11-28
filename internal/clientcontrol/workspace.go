@@ -5,15 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/nitecon/amux/config"
-	"github.com/nitecon/amux/projectidentity"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 type Workspace struct {
 	ProjectsDirectory string
 	Projects          map[string]string
 	ExcludedProjects  map[string]bool
-	LocalCheckouts    []projectidentity.LocalCheckout
+	LocalCheckouts    []projectid.LocalCheckout
 }
 
 func LoadWorkspace(ctx context.Context, configPath string) (Workspace, error) {
@@ -34,7 +33,7 @@ type CheckoutRequest struct {
 }
 
 type CheckoutResult struct {
-	Identity projectidentity.Identity
+	Identity projectid.Identity
 	Origin   *string
 }
 
@@ -51,14 +50,4 @@ func PrepareCheckout(ctx context.Context, configPath string, input CheckoutReque
 	defer response.Body.Close()
 	err = json.NewDecoder(response.Body).Decode(&checkout)
 	return checkout, err
-}
-
-// LoadProfile returns the connection settings accepted by the running client.
-func LoadProfile(ctx context.Context, configPath string) (config.Client, error) {
-	var profile config.Client
-	data, err := Request(ctx, configPath, http.MethodGet, "/profile", nil)
-	if err == nil {
-		err = json.Unmarshal(data, &profile)
-	}
-	return profile, err
 }

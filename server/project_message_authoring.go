@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -102,7 +103,7 @@ func (a *api) postHumanProjectMessage(w http.ResponseWriter, r *http.Request) {
 	author := strings.TrimSpace(request.Author)
 	if author == "" {
 		author = "user"
-		if user := authenticatedBrowserUser(r.Context()); user != nil {
+		if user := auth.BrowserUser(r.Context()); user != nil {
 			author = user.DisplayName
 		}
 	}

@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nitecon/amux/projects"
-
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
-func (c *Client) CallTaskTool(ctx context.Context, project, conversationID string, origin storage.AgentOrigin, name string, arguments json.RawMessage) (mcpstdio.Result, error) {
+func (c *Client) CallTaskTool(ctx context.Context, project, conversationID string, origin agent.Origin, name string, arguments json.RawMessage) (storage.ToolResult, error) {
 	return c.CallTaskToolWithGoal(ctx, project, conversationID, origin, nil, name, arguments)
 }
 
 // CallTaskToolWithGoal applies the selected task queue to this request only.
-func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversationID string, origin storage.AgentOrigin, goal *string, name string, arguments json.RawMessage) (mcpstdio.Result, error) {
-	var result mcpstdio.Result
+func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversationID string, origin agent.Origin, goal *string, name string, arguments json.RawMessage) (storage.ToolResult, error) {
+	var result storage.ToolResult
 	var projectMessageID int64
 	if name == "project_message_thread" {
 		var input struct {
@@ -107,14 +106,14 @@ func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversation
 			if err != nil {
 				return result, err
 			}
-			if conversation == nil || conversation.ID != conversationID || conversation.ProjectIdent != projects.NormalizeIdent(project) || conversation.Owner != origin || !canonicalDelegationID(conversation.TaskID) {
+			if conversation == nil || conversation.ID != conversationID || conversation.ProjectIdent != projectid.NormalizeIdent(project) || conversation.Owner != origin || !canonicalDelegationID(conversation.TaskID) {
 				return result, fmt.Errorf("delegation requires the current conversation's native owner and parent")
 			}
 			input.ParentID = &conversation.TaskID
 			fields["parent"], _ = json.Marshal(conversation.TaskID)
 			arguments, _ = json.Marshal(fields)
 		}
-		input.TargetProject = projects.NormalizeIdent(input.TargetProject)
+		input.TargetProject = projectid.NormalizeIdent(input.TargetProject)
 		input.Requester = requesterTarget
 		delegation = &input
 	}
@@ -125,14 +124,14 @@ func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversation
 	if err == nil && name == "project_message_thread" && !result.IsError {
 		raw, parseErr := extractSingleTextJSON(result)
 		if parseErr != nil {
-			return mcpstdio.Result{}, fmt.Errorf("invalid project message thread response: %w", parseErr)
+			return storage.ToolResult{}, fmt.Errorf("invalid project message thread response: %w", parseErr)
 		}
 		var thread storage.ProjectMessageThread
 		if json.Unmarshal(raw, &thread) != nil {
-			return mcpstdio.Result{}, fmt.Errorf("invalid project message thread response")
+			return storage.ToolResult{}, fmt.Errorf("invalid project message thread response")
 		}
-		if err := validateProjectMessageThread(projects.NormalizeIdent(project), projectMessageID, &thread); err != nil {
-			return mcpstdio.Result{}, err
+		if err := validateProjectMessageThread(projectid.NormalizeIdent(project), projectMessageID, &thread); err != nil {
+			return storage.ToolResult{}, err
 		}
 	}
 	if contractBefore != nil {
@@ -143,10 +142,10 @@ func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversation
 			var receipt storage.TaskDelegationResult
 			raw, parseErr := extractSingleTextJSON(result)
 			if parseErr != nil || json.Unmarshal(raw, &receipt) != nil {
-				return mcpstdio.Result{}, fmt.Errorf("delegation contract receipt invalid; inspect both projects before retrying")
+				return storage.ToolResult{}, fmt.Errorf("delegation contract receipt invalid; inspect both projects before retrying")
 			}
-			if err := validateDelegationUpdateReceipt(&receipt, projects.NormalizeIdent(project), *contractBefore, contractInput); err != nil {
-				return mcpstdio.Result{}, err
+			if err := validateDelegationUpdateReceipt(&receipt, projectid.NormalizeIdent(project), *contractBefore, contractInput); err != nil {
+				return storage.ToolResult{}, err
 			}
 		}
 	}
@@ -157,14 +156,14 @@ func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversation
 		if !result.IsError {
 			raw, parseErr := extractSingleTextJSON(result)
 			if parseErr != nil {
-				return mcpstdio.Result{}, fmt.Errorf("requester receipt invalid; inspect the task before retrying")
+				return storage.ToolResult{}, fmt.Errorf("requester receipt invalid; inspect the task before retrying")
 			}
 			task, ackErr := taskAcknowledgement(raw, project, "")
 			if ackErr != nil || !canonicalDelegationID(task.ID) {
-				return mcpstdio.Result{}, fmt.Errorf("requester creation scope not confirmed; inspect the task before retrying")
+				return storage.ToolResult{}, fmt.Errorf("requester creation scope not confirmed; inspect the task before retrying")
 			}
 			if err := requesterAcknowledgement(raw, requesterTarget); err != nil {
-				return mcpstdio.Result{}, err
+				return storage.ToolResult{}, err
 			}
 		}
 	}
@@ -175,13 +174,13 @@ func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversation
 		if !result.IsError {
 			raw, parseErr := extractSingleTextJSON(result)
 			if parseErr != nil {
-				return mcpstdio.Result{}, fmt.Errorf("requester receipt invalid; inspect the task before retrying")
+				return storage.ToolResult{}, fmt.Errorf("requester receipt invalid; inspect the task before retrying")
 			}
 			if _, err := taskAcknowledgement(raw, project, requesterTaskID); err != nil {
-				return mcpstdio.Result{}, fmt.Errorf("requester resource not confirmed; inspect the task before retrying")
+				return storage.ToolResult{}, fmt.Errorf("requester resource not confirmed; inspect the task before retrying")
 			}
 			if err := requesterAcknowledgement(raw, requesterTarget); err != nil {
-				return mcpstdio.Result{}, err
+				return storage.ToolResult{}, err
 			}
 		}
 	}
@@ -193,17 +192,17 @@ func (c *Client) CallTaskToolWithGoal(ctx context.Context, project, conversation
 			var receipt storage.TaskDelegationResult
 			raw, parseErr := extractSingleTextJSON(result)
 			if parseErr != nil || json.Unmarshal(raw, &receipt) != nil {
-				return mcpstdio.Result{}, fmt.Errorf("delegation receipt invalid; inspect both projects before retrying")
+				return storage.ToolResult{}, fmt.Errorf("delegation receipt invalid; inspect both projects before retrying")
 			}
-			if err := validateDelegationReceipt(&receipt, projects.NormalizeIdent(project), *delegation); err != nil {
-				return mcpstdio.Result{}, err
+			if err := validateDelegationReceipt(&receipt, projectid.NormalizeIdent(project), *delegation); err != nil {
+				return storage.ToolResult{}, err
 			}
 		}
 	}
 	return result, err
 }
 
-func extractSingleTextJSON(result mcpstdio.Result) (json.RawMessage, error) {
+func extractSingleTextJSON(result storage.ToolResult) (json.RawMessage, error) {
 	if len(result.Content) != 1 || result.Content[0].Type != "text" {
 		return nil, fmt.Errorf("tool result must contain exactly one text item")
 	}

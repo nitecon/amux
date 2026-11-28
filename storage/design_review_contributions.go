@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var ErrArtifactNotDesignReview = errors.New("artifact is not a design_review")
@@ -45,7 +45,7 @@ func (s *Store) CreateDesignReviewSynthesis(ctx context.Context, projectIdent, a
 		return nil, err
 	}
 	defer tx.Rollback()
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projectIdent, artifactID))
 	if err != nil {
 		return nil, err
@@ -140,7 +140,7 @@ func (s *Store) AddDesignReviewContributionWithWorkflow(ctx context.Context, pro
 		return nil, false, err
 	}
 	defer tx.Rollback()
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projectIdent, artifactID))
 	if err != nil {
 		return nil, false, err
@@ -184,7 +184,7 @@ func (s *Store) ListDesignReviewContributions(ctx context.Context, projectIdent,
 		return nil, err
 	}
 	defer tx.Rollback()
-	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projects.NormalizeIdent(projectIdent), artifactID))
+	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projectid.NormalizeIdent(projectIdent), artifactID))
 	if err != nil {
 		return nil, err
 	}

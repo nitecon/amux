@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -16,11 +17,11 @@ func (c *Client) RequireRequesterSubscriptions(ctx context.Context) error {
 	return c.requireTaskCapability(ctx, "requester_subscriptions", "No subscription mutation sent")
 }
 
-func validateRequesterTarget(target *storage.RegisteredTargetIdentity, actor *storage.AgentOrigin) error {
+func validateRequesterTarget(target *storage.RegisteredTargetIdentity, actor *agent.Origin) error {
 	if target == nil {
 		return nil
 	}
-	origin, err := storage.NormalizeOrigin(&target.Origin)
+	origin, err := agent.NormalizeOrigin(&target.Origin)
 	if err != nil || origin == nil || !canonicalDelegationID(origin.SessionID) || !canonicalDelegationID(origin.InstanceID) || *origin != target.Origin || !canonicalDelegationID(target.Generation) {
 		return fmt.Errorf("requester requires a complete native origin and canonical non-nil generation")
 	}
@@ -33,11 +34,11 @@ func validateRequesterTarget(target *storage.RegisteredTargetIdentity, actor *st
 // RequesterTarget resolves only the caller's exact current advertisement. It
 // never assigns work, guesses a generation, or substitutes a display-name peer.
 // The mutation rechecks the target's lease and repository binding atomically.
-func (c *Client) RequesterTarget(ctx context.Context, project string, actor storage.AgentOrigin) (*storage.RegisteredTargetIdentity, error) {
+func (c *Client) RequesterTarget(ctx context.Context, project string, actor agent.Origin) (*storage.RegisteredTargetIdentity, error) {
 	if err := validateDelegationProject(project); err != nil {
 		return nil, err
 	}
-	normalized, err := storage.NormalizeOrigin(&actor)
+	normalized, err := agent.NormalizeOrigin(&actor)
 	if err != nil || normalized == nil || !canonicalDelegationID(normalized.SessionID) || !canonicalDelegationID(normalized.InstanceID) {
 		return nil, fmt.Errorf("requester discovery requires a complete native actor")
 	}
@@ -74,7 +75,7 @@ func (c *Client) RequesterTarget(ctx context.Context, project string, actor stor
 
 // SetTaskRequester changes result subscription only. Human callers pass nil
 // origin, even when selecting a native watcher. Unknown acceptance never retries.
-func (c *Client) SetTaskRequester(ctx context.Context, project, id string, target *storage.RegisteredTargetIdentity, origin *storage.AgentOrigin) (*storage.Task, error) {
+func (c *Client) SetTaskRequester(ctx context.Context, project, id string, target *storage.RegisteredTargetIdentity, origin *agent.Origin) (*storage.Task, error) {
 	if err := validateDelegationProject(project); err != nil {
 		return nil, err
 	}
@@ -82,7 +83,7 @@ func (c *Client) SetTaskRequester(ctx context.Context, project, id string, targe
 		return nil, fmt.Errorf("task ID must be a canonical non-nil UUID")
 	}
 	if origin != nil {
-		normalized, err := storage.NormalizeOrigin(origin)
+		normalized, err := agent.NormalizeOrigin(origin)
 		if err != nil || normalized == nil || !canonicalDelegationID(normalized.SessionID) || !canonicalDelegationID(normalized.InstanceID) {
 			return nil, fmt.Errorf("requester mutation requires a complete native actor")
 		}

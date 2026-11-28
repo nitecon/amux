@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 // Source-case evidence map for crates/gateway-backend/src/plugins/presence.rs:
@@ -76,21 +77,21 @@ func TestPresenceContractIdentityResetAndReverseOutputOrder(t *testing.T) {
 		}
 	}
 	identity := `"project":"presence","instance_id":"legacy-instance","session_id":"legacy-session","provider":"codex","os":"linux"`
-	emit(plugins.ClientHeartbeatID, "legacy:identity", `{"agents":[{`+identity+`,"generation":"first"}]}`, base)
-	emit(plugins.ClientActivityID, "legacy:identity", `{"session_id":"legacy-session","instance_id":"legacy-instance","output_at":`+strconv.FormatInt(base-60_000, 10)+`,"draft":true}`, base+1)
+	emit(controllers.ClientHeartbeatID, "legacy:identity", `{"agents":[{`+identity+`,"generation":"first"}]}`, base)
+	emit(controllers.ClientActivityID, "legacy:identity", `{"session_id":"legacy-session","instance_id":"legacy-instance","output_at":`+strconv.FormatInt(base-60_000, 10)+`,"draft":true}`, base+1)
 	if live, err := s.LivePresence(ctx, time.UnixMilli(base+2)); err != nil || len(live) != 1 || live[0].State != "busy" || !live[0].Draft {
 		t.Fatalf("draft activity was not busy: %+v %v", live, err)
 	}
 	// A changed identity for the same project/instance/session starts a fresh
 	// execution and clears activity and draft state.
-	emit(plugins.ClientHeartbeatID, "legacy:identity", `{"agents":[{`+identity+`,"generation":"second"}]}`, base+2)
+	emit(controllers.ClientHeartbeatID, "legacy:identity", `{"agents":[{`+identity+`,"generation":"second"}]}`, base+2)
 	if live, err := s.LivePresence(ctx, time.UnixMilli(base+3)); err != nil || len(live) != 1 || live[0].State != "unknown" || live[0].Draft || live[0].LastActivityAt != nil {
 		t.Fatalf("changed identity retained prior activity: %+v %v", live, err)
 	}
 	// A later event sequence with an older output timestamp updates the draft,
 	// while the last observed output time remains monotonic.
-	emit(plugins.ClientActivityID, "legacy:identity", `{"session_id":"legacy-session","instance_id":"legacy-instance","output_at":`+strconv.FormatInt(base-20_000, 10)+`,"draft":false}`, base+3)
-	emit(plugins.ClientActivityID, "legacy:identity", `{"session_id":"legacy-session","instance_id":"legacy-instance","output_at":`+strconv.FormatInt(base-70_000, 10)+`,"draft":true}`, base+4)
+	emit(controllers.ClientActivityID, "legacy:identity", `{"session_id":"legacy-session","instance_id":"legacy-instance","output_at":`+strconv.FormatInt(base-20_000, 10)+`,"draft":false}`, base+3)
+	emit(controllers.ClientActivityID, "legacy:identity", `{"session_id":"legacy-session","instance_id":"legacy-instance","output_at":`+strconv.FormatInt(base-70_000, 10)+`,"draft":true}`, base+4)
 	live, err := s.LivePresence(ctx, time.UnixMilli(base+5))
 	if err != nil || len(live) != 1 || live[0].State != "busy" || !live[0].Draft || live[0].LastActivityAt == nil || *live[0].LastActivityAt != base-20_000 {
 		t.Fatalf("reverse output order changed current activity contract: %+v %v", live, err)
@@ -111,7 +112,7 @@ func TestPresenceContractMovedIdentityKeepsGlobalForeignSourceOwnership(t *testi
 		at     int64
 		body   string
 	}{{"legacy:one", 1, base, first}, {"legacy:two", 2, base + 1, foreign}, {"legacy:one", 3, base + 2, moved}} {
-		raw := rawPresenceEvent(plugins.ClientHeartbeatID, event.source, event.seq, event.at, event.body)
+		raw := rawPresenceEvent(controllers.ClientHeartbeatID, event.source, event.seq, event.at, event.body)
 		if err := s.ReconcilePresenceEvent(ctx, registry, raw); err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +136,7 @@ func TestPresenceContractDelayedLiveHeartbeatRecoversAfterExpiry(t *testing.T) {
 	body := `{"agents":[{"project":"presence","instance_id":"legacy-instance","session_id":"legacy-session","provider":"codex","os":"linux"}]}`
 	reconcile := func(at int64, payload string) {
 		t.Helper()
-		event := emitObservationFixtureEvent(t, s, registry, plugins.ClientHeartbeatID, "legacy:delayed", payload, at)
+		event := emitObservationFixtureEvent(t, s, registry, controllers.ClientHeartbeatID, "legacy:delayed", payload, at)
 		if err := s.ReconcilePresenceEvent(ctx, registry, event); err != nil {
 			t.Fatal(err)
 		}
@@ -162,14 +163,14 @@ func TestPresenceContractRegisteredHostSurvivesRawDepartureAndRebinding(t *testi
 		t.Fatal(err)
 	}
 	now := time.Now().Add(-time.Minute)
-	origin := AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+	origin := agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 	registry := rawPresenceRegistry(t)
 	base := now.UnixMilli()
-	heartbeat := rawPresenceEvent(plugins.ClientHeartbeatID, "legacy:registered", 1, base, `{"agents":[{"project":"presence","instance_id":"`+origin.InstanceID+`","session_id":"`+origin.SessionID+`","provider":"codex","os":"linux"}]}`)
+	heartbeat := rawPresenceEvent(controllers.ClientHeartbeatID, "legacy:registered", 1, base, `{"agents":[{"project":"presence","instance_id":"`+origin.InstanceID+`","session_id":"`+origin.SessionID+`","provider":"codex","os":"linux"}]}`)
 	if err := s.ReconcilePresenceEvent(ctx, registry, heartbeat); err != nil {
 		t.Fatal(err)
 	}
-	activity := rawPresenceEvent(plugins.ClientActivityID, "legacy:registered", 2, base+1, `{"session_id":"`+origin.SessionID+`","instance_id":"`+origin.InstanceID+`","output_at":`+strconv.FormatInt(base, 10)+`,"draft":true}`)
+	activity := rawPresenceEvent(controllers.ClientActivityID, "legacy:registered", 2, base+1, `{"session_id":"`+origin.SessionID+`","instance_id":"`+origin.InstanceID+`","output_at":`+strconv.FormatInt(base, 10)+`,"draft":true}`)
 	if err := s.ReconcilePresenceEvent(ctx, registry, activity); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +188,7 @@ func TestPresenceContractRegisteredHostSurvivesRawDepartureAndRebinding(t *testi
 	if targets, err := s.Targets(ctx, "presence", time.UnixMilli(base+2)); err != nil || len(targets) != 1 {
 		t.Fatalf("registration disappeared during observation: %+v %v", targets, err)
 	}
-	departure := rawPresenceEvent(plugins.ClientHeartbeatID, "legacy:registered", 3, base+3, `{"agents":[]}`)
+	departure := rawPresenceEvent(controllers.ClientHeartbeatID, "legacy:registered", 3, base+3, `{"agents":[]}`)
 	if err := s.ReconcilePresenceEvent(ctx, registry, departure); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestRawPresenceContractsKeepObservationsOutOfNativeCapabilities(t *testing.
 	registry := rawPresenceRegistry(t)
 	base := time.Now().Add(-time.Minute).UnixMilli()
 	body := `{"agents":[{"project":"presence","instance_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","provider":"codex","os":"linux","auto_assign":true,"review_context_clear":true}]}`
-	event := rawPresenceEvent(plugins.ClientHeartbeatID, "legacy:capability", 1, base, body)
+	event := rawPresenceEvent(controllers.ClientHeartbeatID, "legacy:capability", 1, base, body)
 	if err := s.ReconcilePresenceEvent(ctx, registry, event); err != nil {
 		t.Fatal(err)
 	}
@@ -231,9 +232,9 @@ func TestRawPresenceContractsKeepObservationsOutOfNativeCapabilities(t *testing.
 	}
 }
 
-func presenceContractJournalRegistry(t *testing.T, s *Store) *router.Registry {
+func presenceContractJournalRegistry(t *testing.T, s *Store) *fism.Registry {
 	t.Helper()
-	runtime, err := router.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []router.Plugin{plugins.PresencePlugin(s), nativePresenceObserver()}, router.RunConfig{Capacity: 4})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []fism.Controller{controllers.PresenceController(s), nativePresenceObserver()}, fism.RunConfig{Capacity: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

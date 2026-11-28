@@ -9,6 +9,9 @@ apps="$HOME/Applications"
 [ "$(uname -s)" = Darwin ] || { echo "install-macos.sh supports macOS only; use install.sh or install.ps1" >&2; exit 1; }
 [ "$(uname -m)" = arm64 ] || { echo "amux releases support Apple Silicon Macs only" >&2; exit 1; }
 
+guide="https://github.com/$repo/blob/main/deploy/README.md#upgrade-an-existing-deployment"
+echo "Upgrading? Stop the desktop, gateway, and headless clients and back up server state first. See $guide" >&2
+
 tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" | sed 's|.*/||')
 base="https://github.com/$repo/releases/download/$tag"
 archive="amux-macos-aarch64-$tag.zip"
@@ -42,4 +45,4 @@ if ! mv "$tmp/bundle/amux.app" "$apps/amux.app"; then
 fi
 
 echo "amux $tag installed. Start it with: open \"$apps/amux.app\""
-echo "If amux was already running, quit and reopen it to use the new version."
+echo "For a standalone server, update the service binary and start it with amux server --config PATH. See $guide"

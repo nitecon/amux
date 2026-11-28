@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -26,7 +25,7 @@ func TestNativeTaskCommentsPreserveRESTContentLimits(t *testing.T) {
 	for _, body := range []string{"", " \n\t", strings.Repeat("x", 65537)} {
 		raw, _ := json.Marshal(map[string]any{"name": "task_comment", "arguments": map[string]any{"id": task.ID, "body": body}})
 		w := invokeTaskTool(t, a, actor, c.ID, string(raw))
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || !result.IsError {
 			t.Fatalf("invalid comment accepted: status=%d error=%v", w.Code, err)
 		}

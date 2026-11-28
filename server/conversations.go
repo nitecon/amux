@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"errors"
-	"github.com/coder/websocket"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -36,7 +38,7 @@ func conversationError(w http.ResponseWriter, err error) {
 		writeError(w, 500, "conversation operation failed")
 	}
 }
-func (a *api) conversationActor(w http.ResponseWriter, r *http.Request) (*storage.AgentOrigin, bool) {
+func (a *api) conversationActor(w http.ResponseWriter, r *http.Request) (*agent.Origin, bool) {
 	actor, ok := requestActor(w, r)
 	if !ok {
 		return nil, false
@@ -46,7 +48,7 @@ func (a *api) conversationActor(w http.ResponseWriter, r *http.Request) (*storag
 		return nil, false
 	}
 	if id := r.PathValue("conversation"); id != "" {
-		allowed, err := a.store.FleetConversationWriteAllowed(r.Context(), id, authenticatedPrincipal(r.Context()))
+		allowed, err := a.store.FleetConversationWriteAllowed(r.Context(), id, auth.PrincipalID(r.Context()))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "check conversation owner")
 			return nil, false
@@ -73,7 +75,7 @@ func (a *api) createConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a task goal requires a task")
 		return
 	}
-	c, err := a.store.CreateConversationWithPrincipal(r.Context(), project, taskID, actor, goal, authenticatedPrincipal(r.Context()))
+	c, err := a.store.CreateConversationWithPrincipal(r.Context(), project, taskID, actor, goal, auth.PrincipalID(r.Context()))
 	if err != nil {
 		conversationError(w, err)
 		return
@@ -141,7 +143,7 @@ func (a *api) bindConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "session binding is required")
 		return
 	}
-	c, err := a.store.BindConversationSessionWithPrincipal(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), req.NativeSessionID, actor, authenticatedPrincipal(r.Context()))
+	c, err := a.store.BindConversationSessionWithPrincipal(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), req.NativeSessionID, actor, auth.PrincipalID(r.Context()))
 	if err != nil {
 		conversationError(w, err)
 		return

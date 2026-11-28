@@ -11,8 +11,7 @@ import (
 	fynetest "fyne.io/fyne/v2/test"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -143,16 +142,16 @@ func TestBrowserProjectResolutionReconcilesSavedCheckoutFavorite(t *testing.T) {
 	if output, err := exec.Command("git", "-C", checkout, "remote", "add", "origin", "git@github.com:example/widget.git").CombinedOutput(); err != nil {
 		t.Fatalf("set checkout origin: %s: %v", output, err)
 	}
-	identity, err := projectidentity.ResolveCheckout(context.Background(), checkout)
+	identity, err := projectid.ResolveCheckout(context.Background(), checkout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin, err := projectidentity.CloneOrigin(context.Background(), identity.Directory)
+	origin, err := projectid.CloneOrigin(context.Background(), identity.Directory)
 	if err != nil || origin == nil {
 		t.Fatalf("resolve checkout origin: %v %v", origin, err)
 	}
 	matchedRemote := identity.Upstream
-	unmatchedRemote, err := projects.CanonicalRemote("github.com/example/other")
+	unmatchedRemote, err := projectid.CanonicalRemote("github.com/example/other")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +194,7 @@ func TestBrowserProjectResolutionReconcilesSavedCheckoutFavorite(t *testing.T) {
 		t.Fatalf("could not select matching gateway project: %q", b.selectedProject)
 	}
 	binding := b.workspaceBindingGeneration[workspaceID]
-	resolved, err := projectidentity.ResolveCheckout(context.Background(), identity.Directory)
+	resolved, err := projectid.ResolveCheckout(context.Background(), identity.Directory)
 	if err != nil {
 		t.Fatal(err)
 	}

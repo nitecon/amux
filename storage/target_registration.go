@@ -11,7 +11,8 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const targetRegistrationLease = int64(120_000)
@@ -22,11 +23,11 @@ var ErrTargetInput = errors.New("invalid target registration")
 // TargetRegistration is an explicit manual routing advertisement. Presence
 // reports do not create or renew this lease.
 type TargetRegistration struct {
-	Origin          AgentOrigin `json:"origin"`
-	Generation      string      `json:"generation"`
-	CanonicalRemote *string     `json:"canonical_remote,omitempty"`
-	DisplayName     *string     `json:"display_name,omitempty"`
-	Hostname        *string     `json:"hostname,omitempty"`
+	Origin          agent.Origin `json:"origin"`
+	Generation      string       `json:"generation"`
+	CanonicalRemote *string      `json:"canonical_remote,omitempty"`
+	DisplayName     *string      `json:"display_name,omitempty"`
+	Hostname        *string      `json:"hostname,omitempty"`
 }
 
 // RegisteredTarget is a validated directory entry and its independent lease.
@@ -41,8 +42,8 @@ type RegisteredTarget struct {
 
 // RegisteredTargetIdentity is the routing identity returned in the Rust wire shape.
 type RegisteredTargetIdentity struct {
-	Origin     AgentOrigin `json:"origin"`
-	Generation string      `json:"generation"`
+	Origin     agent.Origin `json:"origin"`
+	Generation string       `json:"generation"`
 }
 
 // TargetDirectory is one coherent target snapshot and its canonical project binding.
@@ -107,7 +108,7 @@ func migrateTargetRegistration(ctx context.Context, tx *sql.Tx) error {
 }
 
 func validateTargetRegistration(request TargetRegistration) (TargetRegistration, error) {
-	origin, err := NormalizeOrigin(&request.Origin)
+	origin, err := agent.NormalizeOrigin(&request.Origin)
 	if err != nil {
 		return TargetRegistration{}, fmt.Errorf("%w: origin: %v", ErrTargetInput, err)
 	}
@@ -136,7 +137,7 @@ func validateTargetRegistration(request TargetRegistration) (TargetRegistration,
 		if remote == "" {
 			request.CanonicalRemote = nil
 		} else {
-			repo, err := projects.ParseRemote(remote)
+			repo, err := projectid.ParseRemote(remote)
 			if err != nil {
 				return TargetRegistration{}, ErrTargetBinding
 			}
@@ -159,8 +160,8 @@ func validateTargetProjectBinding(project *Project, remote *string) (*string, er
 	if remote == nil {
 		return nil, ErrTargetBinding
 	}
-	expected, expectedErr := projects.ParseRemote(*project.CanonicalRemote)
-	actual, actualErr := projects.ParseRemote(*remote)
+	expected, expectedErr := projectid.ParseRemote(*project.CanonicalRemote)
+	actual, actualErr := projectid.ParseRemote(*remote)
 	if expectedErr != nil || actualErr != nil || expected.Canonical != actual.Canonical {
 		return nil, ErrTargetBinding
 	}
@@ -172,7 +173,7 @@ func (s *Store) RegisterTarget(ctx context.Context, project string, request Targ
 	if err != nil {
 		return RegisteredTarget{}, err
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RegisteredTarget{}, err
@@ -216,7 +217,7 @@ func (s *Store) RegisterTarget(ctx context.Context, project string, request Targ
 
 // transferTargetRegistration replaces a known predecessor after an exact
 // conversation takeover. The existing lease remains bounded by its old expiry.
-func transferTargetRegistration(ctx context.Context, tx *sql.Tx, project string, previous, current AgentOrigin, originJSON string) error {
+func transferTargetRegistration(ctx context.Context, tx *sql.Tx, project string, previous, current agent.Origin, originJSON string) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO task_target_presence
 		(project_ident,instance_id,session_id,origin_json,generation,seen_at,canonical_remote,display_name,hostname,advertised)
 		SELECT project_ident,?,session_id,?,?,seen_at,canonical_remote,display_name,hostname,1
@@ -239,7 +240,7 @@ func (s *Store) Targets(ctx context.Context, project string, now time.Time) ([]R
 }
 
 func (s *Store) TargetDirectory(ctx context.Context, project string, now time.Time) (TargetDirectory, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return TargetDirectory{}, err
@@ -291,7 +292,7 @@ func readTargetDirectory(ctx context.Context, tx *sql.Tx, project string, now ti
 			_ = rows.Close()
 			return TargetDirectory{}, err
 		}
-		var origin AgentOrigin
+		var origin agent.Origin
 		if err := json.Unmarshal([]byte(originJSON), &origin); err != nil {
 			_ = rows.Close()
 			return TargetDirectory{}, err

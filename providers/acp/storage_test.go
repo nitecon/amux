@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -28,7 +29,7 @@ func TestACPEventsPersistAgainstTheirTaskBeforeDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "antigravity", OS: "linux"}
+	actor := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "antigravity", OS: "linux"}
 	bound, err := store.CreateConversation(ctx, "chat", task.ID, actor)
 	if err != nil {
 		t.Fatal(err)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -36,7 +37,7 @@ func TestRunTaskAgentsIsReadOnlyAndReportsRemoteOSAndHost(t *testing.T) {
 	now := time.Now().UnixMilli()
 	remote := "github.com/example/project"
 	target := storage.RegisteredTarget{
-		Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{
+		Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{
 			SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "windows",
 		}, Generation: uuid.NewString()},
 		SeenAt: now, ExpiresAt: now + 60000,

@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const retentionTestDay int64 = 86_400_000
 
-func retentionEvent(id string, at int64) router.Event {
-	return router.Event{ID: id, Version: 1, UID: uuid.NewString(), EmittedAt: at}
+func retentionEvent(id string, at int64) fism.Event {
+	return fism.Event{ID: id, Version: 1, UID: uuid.NewString(), EmittedAt: at}
 }
 
 func retentionInsertEvent(t *testing.T, s *Store, seq int64, at int64, state string) string {

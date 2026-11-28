@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 type TaskSummary struct {
@@ -39,7 +39,7 @@ func (s *Store) Tasks(ctx context.Context, project string, statuses []string, in
 	if len(statuses) == 0 {
 		return result, nil
 	}
-	params := []any{projects.NormalizeIdent(project)}
+	params := []any{projectid.NormalizeIdent(project)}
 	placeholders := make([]string, 0, len(statuses))
 	for _, status := range statuses {
 		if !IsValidTaskStatus(status) {
@@ -78,7 +78,7 @@ func (s *Store) Tasks(ctx context.Context, project string, statuses []string, in
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	counts, err := tx.QueryContext(ctx, "SELECT c.task_id,COUNT(*) FROM task_comments c JOIN tasks t ON t.id=c.task_id WHERE t.project_ident=? GROUP BY c.task_id", projects.NormalizeIdent(project))
+	counts, err := tx.QueryContext(ctx, "SELECT c.task_id,COUNT(*) FROM task_comments c JOIN tasks t ON t.id=c.task_id WHERE t.project_ident=? GROUP BY c.task_id", projectid.NormalizeIdent(project))
 	if err != nil {
 		return nil, err
 	}

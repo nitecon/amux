@@ -5,85 +5,19 @@ SQLite schema and optional channel plugins. Desktop and CLI clients connect in
 Server or Client mode over native secure (mTLS) hosting, described below and in
 [ServerArchitecture.md](../ServerArchitecture.md).
 
-## Supported hosting
+## Current hosting
 
-The old raw HTTP compatibility host (`amux server serve` or bare `amux server`)
-and external gateway URL/API-key mode are retired after cutover. Use native secure
-hosting below. New projects default to internal rooms and durable SQLite messaging;
-Discord and WhatsApp are optional integrations for explicitly configured projects.
-Existing externally routed projects retain their channel mapping and provider errors.
-Browser pages and the external gateway updater are not part of amux.
+Use the desktop **Server** mode for local hosting and to enroll other machines
+through **Settings → Gateway**. On another desktop choose **Client** and enter
+the gateway address and peering key. Keep the secure and discovery listeners
+reachable when enrolling over the network.
 
-Local database operator commands remain available:
-
-```sh
-amux server task-machine issue PROJECT INSTANCE_ID OS
-amux server task-machine revoke PROJECT INSTANCE_ID
-amux server task claim-info PROJECT TASK_ID
-amux server task recover PROJECT TASK_ID --expected-claim TOKEN --reason REASON
-amux server user add USERNAME --admin
-amux server user list
-amux server user reset-password USERNAME
-```
-
-Database operator commands use the local native host's
-`$AMUX_STATE_DIR/server/application.sqlite` by default. Set `DATABASE_PATH` or
-`DATABASE_URL` to administer another installation. User commands accept a password through standard input or
-`GATEWAY_USER_PASSWORD`. Keep the profile in an owner-controlled directory.
-
-## Native secure mode
-
-Settings offers Server and Client modes. Fresh installations start a loopback server. Enable network hosting
-and set a hostname or IP reachable by clients before generating a peering key.
-Client Settings accepts that address and the key; Generate new replaces the
-previous key, and each key expires within ten minutes. Copy does not extend it.
-Operational traffic uses mTLS on 24182; public discovery on 24181 carries no
-enrollment secret. Retired URL/API-key settings require explicit Server selection
-or Client pairing; they cannot establish a connection.
-
-When a desktop in Client mode connects to a gateway hosted on the same machine,
-Settings → Gateway → Client shows **This machine is the server** with
-**Generate peering key** and **Copy current key**. They appear only when the
-client's server address is on this machine (loopback, the exact system hostname,
-or an address on a local interface, including DNS aliases resolving there) and
-the desktop's configured gateway state directory holds loadable local
-administrator credentials. The desktop stays in Client mode; these buttons only
-issue keys and do not change server settings. Generate copies a replacement key;
-Copy current key copies the active key without extending it. If the controls
-are absent because the server profile lives elsewhere, use the
-`amux server peering-key --profile` commands below.
-
-To run a headless secure host, supply a persistent profile and installation UUID:
-
-```sh
-amux server secure --profile ./server-profile \
-  --instance-id '<persistent installation UUID>' \
-  --bind 0.0.0.0:24182 --discovery-bind 0.0.0.0:24181 \
-  --name server.example.net
-amux server peering-key --profile ./server-profile
-amux server peering-key --profile ./server-profile --copy
-```
-
-The first peering-key command generates/replaces the invitation; `--copy` prints
-the existing active invitation for copying without replacing it. `--profile` is
-optional and defaults to the desktop server profile in the OS config directory. These are local
-operator commands using the host's reserved mTLS identity. Keep the profile in a
-persistent, owner-controlled directory. The native child uses its own
-`application.sqlite` and security database rather than an inherited database path.
-An existing compatibility database is not automatically moved into this profile.
-
-The owning desktop stops its child on close or mode change. A headless process
-remains owned by its operator; another amux process can attach without taking
-ownership or stopping it. Keep external plugin settings available to the host.
-When WhatsApp ingress is needed, pass a separate `--webhook-bind` and configure
-the existing app secret; discovery never accepts provider webhooks.
-
-Leaf keys rotate automatically under a stable installation CA. Previous keys
-have a bounded overlap, and renewed connections preserve node identity and event
-cursors. Unix files use owner-only permissions; Windows private keys use
-current-user DPAPI. CA-root rollover, database snapshot download and offline
-replication are separate features; see the implementation boundary in
-[ServerArchitecture.md](../ServerArchitecture.md).
+Run a standalone gateway with `amux server --config PATH`. Set its SQLite
+database or secure profile, listeners, and TLS settings in YAML. Use
+`amux headless` for an enrolled worker client. See the
+[deployment guide](../../deploy/README.md) for current setup and the
+[upgrade procedure](../../deploy/README.md#upgrade-an-existing-deployment)
+before opening an existing profile with a new binary.
 
 ## Compatibility evidence
 

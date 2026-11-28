@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -98,7 +98,7 @@ func TestRustGatewayTaskStreamOverMTLS(t *testing.T) {
 	var opens atomic.Int32
 	manager, err := NewWorkerManager(WorkerManagerConfig{
 		Store: local, Client: client, TaskConversationRoot: root, UseTaskStream: true,
-		Open: func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+		Open: func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 			opens.Add(1)
 			return &markdownFixtureSession{sink: sink, done: make(chan struct{})}, nil
 		},
@@ -202,7 +202,7 @@ func TestRustGatewayTaskStreamOverMTLS(t *testing.T) {
 			t.Fatal(err)
 		}
 		var result struct {
-			Result *mcpstdio.Result `json:"result"`
+			Result *storage.ToolResult `json:"result"`
 		}
 		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 		if err := json.Unmarshal([]byte(lines[len(lines)-1]), &result); err != nil || result.Result == nil || result.Result.IsError {

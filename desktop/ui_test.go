@@ -22,6 +22,7 @@ import (
 	"github.com/nitecon/amux/chat"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -114,7 +115,7 @@ func (g *fakeGateway) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.CloseNow()
-	owner := storage.AgentOrigin{SessionID: "session-owner", InstanceID: "instance-owner", Provider: "codex", OS: "darwin"}
+	owner := agent.Origin{SessionID: "session-owner", InstanceID: "instance-owner", Provider: "codex", OS: "darwin"}
 	if err = wsjson.Write(ctx, conn, gatewayclient.Frame{Type: "ready", Version: 1, ConversationID: testConv, Owner: &owner}); err != nil {
 		return
 	}

@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/nitecon/amux/projectidentity"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 func TestBrowserWorktreeStatusLoadsAttachedCheckout(t *testing.T) {
@@ -16,7 +16,7 @@ func TestBrowserWorktreeStatusLoadsAttachedCheckout(t *testing.T) {
 	if output, err := exec.Command("git", "-C", checkout, "init", "--quiet", "-b", "fixture-branch").CombinedOutput(); err != nil {
 		t.Fatalf("initialize fixture checkout: %v: %s", err, output)
 	}
-	identity, err := projectidentity.ResolveCheckout(context.Background(), checkout)
+	identity, err := projectid.ResolveCheckout(context.Background(), checkout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestWorktreeStatusRebindCancelsAndFencesOldRead(t *testing.T) {
 	default:
 		t.Fatal("rebind did not cancel the old read")
 	}
-	view.finish(first, projectidentity.WorktreeStatus{Branch: "stale"}, nil)
+	view.finish(first, projectid.WorktreeStatus{Branch: "stale"}, nil)
 	if view.branch.Text != "" || view.status.Text != "Attach a checkout to view Git status." {
 		t.Fatalf("stale result replaced current view: branch=%q status=%q", view.branch.Text, view.status.Text)
 	}
@@ -53,7 +53,7 @@ func TestWorktreeStatusRebindCancelsAndFencesOldRead(t *testing.T) {
 func TestWorktreeStatusViewRendersUnbornAndCleanResults(t *testing.T) {
 	view := newWorktreeStatusView(func() {})
 	generation, _ := view.bind("/checkout", context.Background())
-	view.finish(generation, projectidentity.WorktreeStatus{Branch: "initial"}, nil)
+	view.finish(generation, projectid.WorktreeStatus{Branch: "initial"}, nil)
 	if view.branch.Text != "initial" || view.changes.Text != "Clean working tree" || view.commits.Text != "No commits yet" {
 		t.Fatalf("unborn view branch=%q changes=%q commits=%q", view.branch.Text, view.changes.Text, view.commits.Text)
 	}

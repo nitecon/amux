@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // artifactDiscourseMigration follows the workflow-run schema at migration 39.
@@ -136,7 +136,7 @@ func (s *Store) AddArtifactComment(ctx context.Context, projectIdent, artifactID
 }
 
 func (s *Store) addArtifactCommentWithLimits(ctx context.Context, projectIdent, artifactID string, input ArtifactCommentInsert, suppliedLimits *ArtifactWriteLimits) (*ArtifactComment, bool, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
@@ -197,11 +197,11 @@ func (s *Store) addArtifactCommentWithLimits(ctx context.Context, projectIdent, 
 }
 
 func (s *Store) ArtifactComment(ctx context.Context, projectIdent, artifactID, commentID string) (*ArtifactComment, error) {
-	return scanArtifactComment(s.db.QueryRowContext(ctx, artifactCommentSelect+` WHERE artifact_id=? AND comment_id=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`, artifactID, commentID, artifactID, projects.NormalizeIdent(projectIdent)))
+	return scanArtifactComment(s.db.QueryRowContext(ctx, artifactCommentSelect+` WHERE artifact_id=? AND comment_id=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`, artifactID, commentID, artifactID, projectid.NormalizeIdent(projectIdent)))
 }
 
 func (s *Store) ArtifactComments(ctx context.Context, projectIdent, artifactID string) ([]ArtifactComment, error) {
-	if err := requireArtifactProject(ctx, s.db, projects.NormalizeIdent(projectIdent), artifactID); err != nil {
+	if err := requireArtifactProject(ctx, s.db, projectid.NormalizeIdent(projectIdent), artifactID); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, artifactCommentSelect+` WHERE artifact_id=? ORDER BY created_at ASC`, artifactID)
@@ -226,7 +226,7 @@ func (s *Store) ResolveArtifactComment(ctx context.Context, projectIdent, artifa
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := requireArtifactProjectTx(ctx, tx, projects.NormalizeIdent(projectIdent), artifactID); err != nil {
+	if err := requireArtifactProjectTx(ctx, tx, projectid.NormalizeIdent(projectIdent), artifactID); err != nil {
 		return nil, err
 	}
 	item, err := scanArtifactComment(tx.QueryRowContext(ctx, artifactCommentSelect+` WHERE artifact_id=? AND comment_id=?`, artifactID, commentID))
@@ -260,7 +260,7 @@ func (s *Store) ReopenArtifactComment(ctx context.Context, projectIdent, artifac
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := requireArtifactProjectTx(ctx, tx, projects.NormalizeIdent(projectIdent), artifactID); err != nil {
+	if err := requireArtifactProjectTx(ctx, tx, projectid.NormalizeIdent(projectIdent), artifactID); err != nil {
 		return nil, err
 	}
 	item, err := scanArtifactComment(tx.QueryRowContext(ctx, artifactCommentSelect+` WHERE artifact_id=? AND comment_id=?`, artifactID, commentID))

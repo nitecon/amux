@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/channels"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -198,7 +199,7 @@ func decodeProjectMessageAlias(raw json.RawMessage) (*string, error) {
 	return &value, nil
 }
 
-func projectMessageDefaults(body string, suppliedSubject *string, action bool, suppliedHostname *string, suppliedEventAt *int64, origin storage.AgentOrigin) (*string, *string, *int64) {
+func projectMessageDefaults(body string, suppliedSubject *string, action bool, suppliedHostname *string, suppliedEventAt *int64, origin agent.Origin) (*string, *string, *int64) {
 	derived := deriveProjectMessageSubject(body)
 	var subject string
 	if action && suppliedSubject == nil {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -23,7 +24,7 @@ func TestTaskSubtasksHTTPCreateListAndPublishParentAtomically(t *testing.T) {
 	}
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
-	request := func(method, path, body string, actor *storage.AgentOrigin) (*http.Response, []byte) {
+	request := func(method, path, body string, actor *agent.Origin) (*http.Response, []byte) {
 		t.Helper()
 		req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
 		if err != nil {

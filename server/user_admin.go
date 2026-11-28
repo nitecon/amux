@@ -7,7 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nitecon/amux/browserauth"
+	"github.com/nitecon/amux/auth"
+	"github.com/nitecon/amux/auth/authn"
+	"github.com/nitecon/amux/auth/authz"
+	account "github.com/nitecon/amux/identity/user"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -35,28 +38,28 @@ func (a *api) registerUserAdminRoutes(mux *http.ServeMux) {
 }
 
 func requireUserAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if authenticatedPrincipal(r.Context()) == bearerAPIKeyPrincipal {
+	ctx := r.Context()
+	caller := authz.UserAdminCaller{PrincipalID: auth.PrincipalID(ctx), BrowserUser: auth.BrowserUser(ctx)}
+	if principal := authenticatedSecurePrincipal(ctx); principal != nil {
+		caller.NodeRole = &principal.role
+	}
+	err := authz.RequireUserAdmin(caller)
+	switch err {
+	case nil:
 		return true
+	case authz.ErrAuthenticationRequired:
+		writeError(w, http.StatusUnauthorized, err.Error())
+	default:
+		writeError(w, http.StatusForbidden, err.Error())
 	}
-	if principal := authenticatedSecurePrincipal(r.Context()); principal != nil {
-		if principal.role == "administrator" {
-			return true
-		}
-		writeError(w, http.StatusForbidden, "administrator role required")
-		return false
-	}
-	if authenticatedBrowserUser(r.Context()) != nil {
-		return allowBrowserAdmin(w, r)
-	}
-	writeError(w, http.StatusUnauthorized, "authentication required")
 	return false
 }
 
 // allowBrowserAdmin restricts signed browser sessions on authenticated routes
 // that also serve native callers under their existing authorization policy.
 func allowBrowserAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if user := authenticatedBrowserUser(r.Context()); user != nil && (!user.IsAdmin() || !user.IsActive()) {
-		writeError(w, http.StatusForbidden, "administrator role required")
+	if err := authz.AllowBrowserAdmin(auth.BrowserUser(r.Context())); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
 		return false
 	}
 	return true
@@ -86,11 +89,11 @@ func (a *api) createUser(w http.ResponseWriter, r *http.Request) {
 	if !readJSONRequest(w, r, &request, 1<<20) {
 		return
 	}
-	role := storage.UserRoleMember
+	role := account.RoleMember
 	if request.Role != nil && strings.TrimSpace(*request.Role) != "" {
 		role = strings.ToLower(strings.TrimSpace(*request.Role))
 	}
-	hash, err := browserauth.HashPassword(request.Password)
+	hash, err := authn.HashPassword(request.Password)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -127,7 +130,7 @@ func (a *api) updateUser(w http.ResponseWriter, r *http.Request) {
 		update.Role = &role
 	}
 	if request.Password != nil && strings.TrimSpace(*request.Password) != "" {
-		hash, err := browserauth.HashPassword(strings.TrimSpace(*request.Password))
+		hash, err := authn.HashPassword(strings.TrimSpace(*request.Password))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -138,7 +141,7 @@ func (a *api) updateUser(w http.ResponseWriter, r *http.Request) {
 		disabled := userDisabledValue(request.Disabled)
 		update.Disabled = &disabled
 	}
-	if actor := authenticatedBrowserUser(r.Context()); actor != nil && actor.ID == id {
+	if actor := auth.BrowserUser(r.Context()); actor != nil && actor.ID == id {
 		update.ActingUserID = &actor.ID
 	}
 	user, err := a.store.UpdateUser(r.Context(), id, update)
@@ -163,7 +166,7 @@ func (a *api) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var actingUserID *int64
-	if actor := authenticatedBrowserUser(r.Context()); actor != nil {
+	if actor := auth.BrowserUser(r.Context()); actor != nil {
 		actingUserID = &actor.ID
 	}
 	changed, err := a.store.DeleteUserAs(r.Context(), id, actingUserID)

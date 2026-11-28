@@ -8,7 +8,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -38,12 +39,12 @@ func (c *Client) TaskCancellation(ctx context.Context, project, id string) (*sto
 
 // TaskCancel records an explicit native cancellation report. The server
 // authorizes it atomically against current ownership and lifecycle state.
-func (c *Client) TaskCancel(ctx context.Context, project, id, reason string, changeset json.RawMessage, origin *storage.AgentOrigin) (*storage.CancelResponse, error) {
+func (c *Client) TaskCancel(ctx context.Context, project, id, reason string, changeset json.RawMessage, origin *agent.Origin) (*storage.CancelResponse, error) {
 	canonicalID, err := canonicalCancellationTaskID(id)
 	if err != nil {
 		return nil, err
 	}
-	canonicalOrigin, err := storage.NormalizeOrigin(origin)
+	canonicalOrigin, err := agent.NormalizeOrigin(origin)
 	if err != nil || canonicalOrigin == nil {
 		return nil, fmt.Errorf("task cancellation requires a complete native agent origin")
 	}
@@ -99,8 +100,8 @@ func canonicalCancellationTaskID(id string) (string, error) {
 	return parsed.String(), nil
 }
 
-func validateCancellation(cancellation *storage.Cancellation, project, id string, reporter *storage.AgentOrigin, reason string) error {
-	if cancellation == nil || cancellation.TaskID != id || cancellation.ProjectIdent != projects.NormalizeIdent(project) || cancellation.Reason == "" || strings.TrimSpace(cancellation.Reason) != cancellation.Reason || cancellation.CancelledAt <= 0 || cancellation.ExecutorStopConfirmed {
+func validateCancellation(cancellation *storage.Cancellation, project, id string, reporter *agent.Origin, reason string) error {
+	if cancellation == nil || cancellation.TaskID != id || cancellation.ProjectIdent != projectid.NormalizeIdent(project) || cancellation.Reason == "" || strings.TrimSpace(cancellation.Reason) != cancellation.Reason || cancellation.CancelledAt <= 0 || cancellation.ExecutorStopConfirmed {
 		return fmt.Errorf("gateway cancellation response did not match the requested task")
 	}
 	validatedReason, err := storage.ValidateTaskCancellationReason(cancellation.Reason)
@@ -117,12 +118,12 @@ func validateCancellation(cancellation *storage.Cancellation, project, id string
 		return fmt.Errorf("gateway cancellation response has an unbound prior claim")
 	}
 	if cancellation.PriorOwnerOrigin != nil {
-		canonical, err := storage.NormalizeOrigin(cancellation.PriorOwnerOrigin)
+		canonical, err := agent.NormalizeOrigin(cancellation.PriorOwnerOrigin)
 		if err != nil || *canonical != *cancellation.PriorOwnerOrigin {
 			return fmt.Errorf("gateway cancellation response has an invalid prior owner origin")
 		}
 	}
-	canonicalReporter, err := storage.NormalizeOrigin(&cancellation.ReporterOrigin)
+	canonicalReporter, err := agent.NormalizeOrigin(&cancellation.ReporterOrigin)
 	if err != nil || canonicalReporter == nil || *canonicalReporter != cancellation.ReporterOrigin {
 		return fmt.Errorf("gateway cancellation response has an invalid reporter origin")
 	}
@@ -138,7 +139,7 @@ func validateCancellation(cancellation *storage.Cancellation, project, id string
 	return nil
 }
 
-func sameOrigin(a, b *storage.AgentOrigin) bool {
+func sameOrigin(a, b *agent.Origin) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}

@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var (
@@ -30,8 +31,8 @@ type TaskSubtaskInsert struct {
 // CreateTaskSubtask inserts the child, parent link, and creation snapshots in
 // one task mutation. The parent is scoped to ParentProject; a child may live
 // in a different target project.
-func (s *Store) CreateTaskSubtask(ctx context.Context, input TaskSubtaskInsert, origin *AgentOrigin) (*Task, error) {
-	input.ParentProject = projects.NormalizeIdent(input.ParentProject)
+func (s *Store) CreateTaskSubtask(ctx context.Context, input TaskSubtaskInsert, origin *agent.Origin) (*Task, error) {
+	input.ParentProject = projectid.NormalizeIdent(input.ParentProject)
 	if input.ParentProject == "" || input.ParentID == "" {
 		return nil, ErrSubtaskParentNotFound
 	}
@@ -41,10 +42,10 @@ func (s *Store) CreateTaskSubtask(ctx context.Context, input TaskSubtaskInsert, 
 	}
 	targetProject := input.ParentProject
 	if input.TargetProject != nil {
-		targetProject = projects.NormalizeIdent(*input.TargetProject)
+		targetProject = projectid.NormalizeIdent(*input.TargetProject)
 	}
 	var created *Task
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		parent, err := readTask(ctx, tx, input.ParentProject, input.ParentID)
 		if err != nil {
 			return err
@@ -85,7 +86,7 @@ func (s *Store) CreateTaskSubtask(ctx context.Context, input TaskSubtaskInsert, 
 // TaskSubtasks returns children ordered by creation time and ID after checking
 // the parent in the route's project.
 func (s *Store) TaskSubtasks(ctx context.Context, project, parentID string) ([]Task, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

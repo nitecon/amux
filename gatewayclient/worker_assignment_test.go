@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -26,7 +27,7 @@ func TestWorkerAssignmentHTTPRetryPreservesConversationAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	now := time.Now()
 	activity := now.Add(-time.Minute).UnixMilli()
 	if _, err := s.ReportPresence(ctx, storage.PresenceReport{Source: "pool/slot", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "demo", Origin: owner, AutoAssign: true, LastActivityAt: &activity}}}, now); err != nil {

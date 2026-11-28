@@ -7,16 +7,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func nativeDeliveryRegistry(t *testing.T) *router.Registry {
+func nativeDeliveryRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	r, err := router.NewRegistry(plugins.NotificationEventDefinitions(), []router.PluginDefinition{
-		plugins.NativeDeliveryPlugin(nil).Definition,
-		{ID: "assignment", Subscriptions: []router.Subscription{{Event: plugins.NotifyResultEventID, MinVersion: 1, MaxVersion: 1}}},
+	r, err := fism.NewRegistry(controllers.NotificationEventDefinitions(), []fism.ControllerDefinition{
+		controllers.NativeDeliveryController(nil).Definition,
+		{ID: "assignment", Subscriptions: []fism.Subscription{{Event: controllers.NotifyResultEventID, MinVersion: 1, MaxVersion: 1}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -44,22 +45,22 @@ func mustJSONBytes(t *testing.T, v any) []byte {
 	return b
 }
 
-func emitNativeNotice(t *testing.T, s *Store, r *router.Registry, task *Task, source, mode string, reminder bool) router.Event {
+func emitNativeNotice(t *testing.T, s *Store, r *fism.Registry, task *Task, source, mode string, reminder bool) fism.Event {
 	t.Helper()
 	payload := nativeNoticePayload(t, task, mode, reminder, false)
-	result, err := s.EmitRouterEvent(context.Background(), r, router.EmitRequest{ID: plugins.NotifyEventID, Version: 1, Source: source, Payload: payload})
+	result, err := s.EmitRouterEvent(context.Background(), r, fism.EmitRequest{ID: controllers.NotifyEventID, Version: 1, Source: source, Payload: payload})
 	if err != nil || !result.Stored {
 		t.Fatalf("emit notice: %+v %v", result, err)
 	}
 	return result.Event
 }
 
-func reportNativeDeliveryAgent(t *testing.T, s *Store, actor *AgentOrigin, sequence int64, draft bool) {
+func reportNativeDeliveryAgent(t *testing.T, s *Store, actor *agent.Origin, sequence int64, draft bool) {
 	t.Helper()
 	reportNativeDeliveryAgentGeneration(t, s, actor, sequence, draft, "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 }
 
-func reportNativeDeliveryAgentGeneration(t *testing.T, s *Store, actor *AgentOrigin, sequence int64, draft bool, generation string) {
+func reportNativeDeliveryAgentGeneration(t *testing.T, s *Store, actor *agent.Origin, sequence int64, draft bool, generation string) {
 	t.Helper()
 	now := time.Now()
 	activity := now.Add(-2 * time.Minute).UnixMilli()
@@ -110,13 +111,16 @@ func TestNativeDeliveryReminderWaitsForDraftThenQueuesOnceDespiteTaskBusy(t *tes
 		t.Fatalf("replay duplicated prompt: commands=%+v err=%v", commands, err)
 	}
 	var resultCount int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM router_events WHERE id=? AND correlation=?", plugins.NotifyResultEventID, event.UID).Scan(&resultCount); err != nil || resultCount != 1 {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM router_events WHERE id=? AND correlation=?", controllers.NotifyResultEventID, event.UID).Scan(&resultCount); err != nil || resultCount != 1 {
 		t.Fatalf("correlated result count=%d err=%v", resultCount, err)
 	}
 	var resultSource string
-	if err := s.db.QueryRowContext(ctx, "SELECT source FROM router_events WHERE id=? AND correlation=?", plugins.NotifyResultEventID, event.UID).Scan(&resultSource); err != nil || resultSource != "native:delivery-test" {
+	if err := s.db.QueryRowContext(ctx, "SELECT source FROM router_events WHERE id=? AND correlation=?", controllers.NotifyResultEventID, event.UID).Scan(&resultSource); err != nil || resultSource != "native:delivery-test" {
 		t.Fatalf("result source=%q err=%v", resultSource, err)
 	}
+	assertEqual(t, s.db, `SELECT COUNT(*) FROM amux_heartbeat_outbox h JOIN router_events e ON e.uid=h.uid WHERE e.id='agent.notify_result'`, int64(1))
+	assertEqual(t, s.db, `SELECT COUNT(*) FROM router_deliveries d JOIN router_events e ON e.seq=d.event_seq WHERE e.id='agent.notify_result'`, int64(0))
+
 }
 
 func TestNativeDeliveryAssignmentWithoutOfferSkipsInsteadOfRetargeting(t *testing.T) {
@@ -133,7 +137,7 @@ func TestNativeDeliveryAssignmentWithoutOfferSkipsInsteadOfRetargeting(t *testin
 	}
 	assertEqual(t, s.db, "SELECT COUNT(*) FROM amux_native_delivery_receipts WHERE notify_uid='"+event.UID+"' AND status='skipped'", int64(1))
 	var resultSource string
-	if err := s.db.QueryRowContext(ctx, "SELECT source FROM router_events WHERE id=? AND correlation=?", plugins.NotifyResultEventID, event.UID).Scan(&resultSource); err != nil || resultSource != "plugin:native-delivery" {
+	if err := s.db.QueryRowContext(ctx, "SELECT source FROM router_events WHERE id=? AND correlation=?", controllers.NotifyResultEventID, event.UID).Scan(&resultSource); err != nil || resultSource != "plugin:native-delivery" {
 		t.Fatalf("unproven assignment result source=%q err=%v", resultSource, err)
 	}
 }
@@ -153,7 +157,7 @@ func TestNativeDeliveryValidUnsupportedNotificationSkipsExactlyOnce(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := mustJSONBytes(t, map[string]any{"target": tc.target, "project": tc.project, "mode": "recipient", "require_idle": true, "event": map[string]any{"kind": "task_created", "task": tc.task}})
-			emitted, err := s.EmitRouterEvent(ctx, r, router.EmitRequest{ID: plugins.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: payload})
+			emitted, err := s.EmitRouterEvent(ctx, r, fism.EmitRequest{ID: controllers.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: payload})
 			if err != nil || !emitted.Stored {
 				t.Fatalf("valid notification emit: %+v %v", emitted, err)
 			}
@@ -174,7 +178,7 @@ func TestNativeDeliveryValidUnsupportedNotificationSkipsExactlyOnce(t *testing.T
 func TestNativeDeliveryMalformedPublicNotificationStillFails(t *testing.T) {
 	s := taskStore(t)
 	r := nativeDeliveryRegistry(t)
-	event := router.Event{UID: uuid.NewString(), ID: plugins.NotifyEventID, Version: 1, Source: "plugin:reminder", EmittedAt: time.Now().UnixMilli(), Payload: json.RawMessage(`{"target":"","project":"","mode":"unsupported","require_idle":true,"event":{"kind":"task_created","task":{}}}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: controllers.NotifyEventID, Version: 1, Source: "plugin:reminder", EmittedAt: time.Now().UnixMilli(), Payload: json.RawMessage(`{"target":"","project":"","mode":"unsupported","require_idle":true,"event":{"kind":"task_created","task":{}}}`)}
 	if _, err := s.ReconcileNativeDelivery(context.Background(), r, event); err == nil {
 		t.Fatal("malformed public notification was silently skipped")
 	}
@@ -202,7 +206,7 @@ func TestNativeDeliveryStartupContinuityTargetsCurrentExplicitReceiver(t *testin
 	notice["receiver"] = map[string]any{"session_id": current.SessionID, "instance_id": current.InstanceID, "provider": current.Provider, "os": current.OS, "project": "tasks"}
 	notice["instructions"] = "Informational continuity only; inspect prior progress."
 	r := nativeDeliveryRegistry(t)
-	emitted, err := s.EmitRouterEvent(ctx, r, router.EmitRequest{ID: plugins.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: mustJSONBytes(t, notice)})
+	emitted, err := s.EmitRouterEvent(ctx, r, fism.EmitRequest{ID: controllers.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: mustJSONBytes(t, notice)})
 	if err != nil || !emitted.Stored {
 		t.Fatalf("emit continuity notice: %+v %v", emitted, err)
 	}
@@ -231,7 +235,7 @@ func TestNativeDeliveryAdoptionReceiptSurvivesOfferInvalidationAndExpiry(t *test
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO amux_assignment_offer_claims(notify_uid,origin_json,claim_updated_at,reporter_principal) VALUES(?,?,?,NULL)`, uid, string(origin), task.UpdatedAt); err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.EmitRouterEvent(ctx, r, router.EmitRequest{UID: uid, ID: plugins.NotifyEventID, Version: 1, Source: "plugin:assignment", Payload: payload})
+	result, err := s.EmitRouterEvent(ctx, r, fism.EmitRequest{UID: uid, ID: controllers.NotifyEventID, Version: 1, Source: "plugin:assignment", Payload: payload})
 	if err != nil || !result.Stored {
 		t.Fatalf("emit assignment offer: %+v %v", result, err)
 	}
@@ -278,7 +282,7 @@ func TestNativeDeliveryAdoptionReceiptSurvivesOfferInvalidationAndExpiry(t *test
 	}
 	assertEqual(t, s.db, "SELECT status FROM amux_native_delivery_receipts WHERE notify_uid='"+uid+"'", "completed")
 	var results int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM router_events WHERE id=? AND correlation=?", plugins.NotifyResultEventID, uid).Scan(&results); err != nil || results != 1 {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM router_events WHERE id=? AND correlation=?", controllers.NotifyResultEventID, uid).Scan(&results); err != nil || results != 1 {
 		t.Fatalf("adoption result count=%d err=%v", results, err)
 	}
 }

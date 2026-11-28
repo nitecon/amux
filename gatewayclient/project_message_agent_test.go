@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/nitecon/amux/channels"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -135,7 +136,7 @@ func TestAgentProjectMessageRejectsInvalidInputsBeforeHTTP(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := client.SendProjectMessage(context.Background(), "demo", ProjectMessageInput{Body: &alias}, storage.AgentOrigin{})
+			_, err := client.SendProjectMessage(context.Background(), "demo", ProjectMessageInput{Body: &alias}, agent.Origin{})
 			return err
 		},
 	} {

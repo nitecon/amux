@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/providerprocess"
+	"github.com/nitecon/amux/providers/process"
 )
 
 func TestMCPConfigIsNativeAndContainsNoCredentialValue(t *testing.T) {
 	secret := "credential-value-must-not-appear"
 	t.Setenv("AMUX_API_KEY", secret)
-	config := &providerprocess.MCPConfig{Command: "/opt/amux tools/amux", Args: []string{"mcp", "--project", "project with spaces", "--api-key-env", "AMUX_API_KEY"}, Env: map[string]string{"AMUX_DESKTOP_GUIDANCE": "provided by desktop"}}
+	config := &process.MCPConfig{Command: "/opt/amux tools/amux", Args: []string{"mcp", "--project", "project with spaces", "--api-key-env", "AMUX_API_KEY"}, Env: map[string]string{"AMUX_DESKTOP_GUIDANCE": "provided by desktop"}}
 	got := appendMCPConfig([]string{"claude"}, config)
 	if len(got) != 5 || got[1] != "--settings" || got[3] != "--mcp-config" {
 		t.Fatalf("Claude args = %#v", got)
@@ -46,7 +46,7 @@ func TestClaudeSettingsRequireConfiguredAmuxMCP(t *testing.T) {
 }
 
 func TestMCPConfigForwardsOnlyConfiguredDesktopGuidance(t *testing.T) {
-	config := &providerprocess.MCPConfig{
+	config := &process.MCPConfig{
 		Command: "/opt/amux", Args: []string{"mcp"}, Env: map[string]string{"AMUX_DESKTOP_GUIDANCE": "desktop text"},
 	}
 	args := appendMCPConfig([]string{"claude"}, config)

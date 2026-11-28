@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nitecon/amux/auth/authn"
 	"github.com/nitecon/amux/channels"
 	"github.com/nitecon/amux/storage"
 )
@@ -227,7 +228,7 @@ func TestBrowserSessionHumanMessageUsesDisplayNameAndResolvesAsUsername(t *testi
 	}
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
-	token := mintBrowserSessionToken(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
+	token := authn.MintBrowserSession(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
 	path := "/v1/projects/" + project + "/messages/human"
 	payload := fmt.Sprintf(`{"content":"reply","parent_message_id":%d,"resolve":true}`, parent.ID)
 	response, body := browserSessionRequest(t, srv, http.MethodPost, path, payload, token, "", true)

@@ -15,7 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/projectidentity"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -51,7 +52,7 @@ func TestHeadlessTaskCLIProcessPreservesNativeWorkflow(t *testing.T) {
 	submissionFixtureGit(t, checkout, "init", "--initial-branch=main", "--template=")
 	const remoteValue = "github.com/example/task-cli-fixture"
 	submissionFixtureGit(t, checkout, "remote", "add", "origin", "https://"+remoteValue+".git")
-	identity, err := projectidentity.Resolve(ctx, checkout)
+	identity, err := projectid.Resolve(ctx, checkout)
 	if err != nil || identity.Upstream == "" {
 		t.Fatalf("resolve test checkout binding: identity=%+v err=%v", identity, err)
 	}
@@ -193,7 +194,7 @@ func TestHeadlessTaskCancellationProcessPreservesReportAndReplay(t *testing.T) {
 	if err := store.InsertProject(ctx, storage.Project{Ident: "demo", ChannelName: "demo", Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
-	actor := storage.AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "antigravity", OS: "linux"}
+	actor := agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "antigravity", OS: "linux"}
 	task, err := store.InsertTask(ctx, storage.TaskInsert{Project: "demo", Title: "Cancel via console", Reporter: "user"}, &actor)
 	if err != nil {
 		t.Fatal(err)

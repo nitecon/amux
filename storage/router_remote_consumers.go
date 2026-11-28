@@ -8,7 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 const (
@@ -64,7 +65,7 @@ func (s *Store) OpenRemoteConsumer(ctx context.Context, consumerID, connectionID
 // NextRemoteEvent returns the next matching event after durably skipping
 // nonmatching rows. A matching event never advances the cursor; the caller
 // advances it only after validating and accepting its in-flight ack.
-func (s *Store) NextRemoteEvent(ctx context.Context, consumerID, connectionID string, events, targets []string) (*router.Event, error) {
+func (s *Store) NextRemoteEvent(ctx context.Context, consumerID, connectionID string, events, targets []string, principal string, enrollment *SecurityEnrollment) (*fism.Event, error) {
 	if err := validateRemoteConsumerIDs(consumerID, connectionID); err != nil {
 		return nil, err
 	}
@@ -106,7 +107,14 @@ func (s *Store) NextRemoteEvent(ctx context.Context, consumerID, connectionID st
 			if err != nil {
 				return nil, fmt.Errorf("read remote router event %d: %w", row.seq, err)
 			}
-			if remoteEventMatches(event, eventSet, targetSet) {
+			matches := remoteEventMatches(event, eventSet, targetSet)
+			if matches && event.ID == controllers.NotifyEventID {
+				matches, err = remoteNotificationAllowed(ctx, tx, event, principal, enrollment)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if matches {
 				if lastSkipped != startCursor {
 					if err := updateOwnedRemoteCursor(ctx, tx, consumerID, connectionID, lastSkipped, time.Now().UTC().UnixMilli()); err != nil {
 						return nil, err
@@ -248,7 +256,7 @@ func readRemoteEventSequenceBatch(ctx context.Context, q queryer, after int64) (
 	return batch, rows.Err()
 }
 
-func remoteEventMatches(event router.Event, events, targets map[string]struct{}) bool {
+func remoteEventMatches(event fism.Event, events, targets map[string]struct{}) bool {
 	if _, ok := events[event.ID]; !ok {
 		return false
 	}

@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 func insertNativeReceiptRetentionFixture(t *testing.T, s *Store, uid, status string, at int64, conversationID, commandID *string) {
@@ -38,7 +38,7 @@ func TestNativeDeliveryReceiptRetentionPreservesReplayAndUnfinishedCommands(t *t
 	}
 	now := time.Now().UnixMilli()
 	old := now - retentionDayMS - 1
-	held, err := s.EmitRouterEvent(ctx, notificationRegistry(t), router.EmitRequest{ID: "agent.notify", Version: 1, Source: "fixture:retained",
+	held, err := s.EmitRouterEvent(ctx, notificationRegistry(t), fism.EmitRequest{ID: "agent.notify", Version: 1, Source: "fixture:retained",
 		Payload: []byte(`{"target":"fixture","project":"tasks","mode":"recipient","require_idle":true,"event":{"kind":"task_created","task":{}}}`)})
 	if err != nil || !held.Stored {
 		t.Fatalf("held journal fixture: %+v %v", held, err)
@@ -52,7 +52,7 @@ func TestNativeDeliveryReceiptRetentionPreservesReplayAndUnfinishedCommands(t *t
 	insertNativeReceiptRetentionFixture(t, s, "old-done-effect", "completed", old, &c.ID, &done.ID)
 	insertNativeReceiptRetentionFixture(t, s, "recent-closed", "completed", now, nil, nil)
 	insertNativeReceiptRetentionFixture(t, s, held.Event.UID, "completed", old, nil, nil)
-	event := router.Event{ID: "retention.startup", Version: 1, UID: uuid.NewString(), EmittedAt: now}
+	event := fism.Event{ID: "retention.startup", Version: 1, UID: uuid.NewString(), EmittedAt: now}
 	if ran, _, err := s.ReconcileRouterRetention(ctx, event, 30, 30); err != nil || !ran {
 		t.Fatalf("receipt cleanup: ran=%v %v", ran, err)
 	}
@@ -84,7 +84,7 @@ func TestNativeDeliveryReceiptRetentionRollsBackWithCheckpoint(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT,'injected checkpoint failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{ID: "retention.startup", Version: 1, UID: uuid.NewString(), EmittedAt: now}
+	event := fism.Event{ID: "retention.startup", Version: 1, UID: uuid.NewString(), EmittedAt: now}
 	if _, _, err := s.ReconcileRouterRetention(context.Background(), event, 30, 30); err == nil {
 		t.Fatal("receipt/checkpoint failure was swallowed")
 	}

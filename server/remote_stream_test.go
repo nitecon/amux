@@ -12,21 +12,21 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 	"github.com/nitecon/amux/storage"
 )
 
-func remoteStreamFixture(t *testing.T) (*storage.Store, http.Handler, string, *router.Registry) {
+func remoteStreamFixture(t *testing.T) (*storage.Store, http.Handler, string, *fism.Registry) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "remote.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := router.NewRegistry([]router.EventDefinition{
-		{ID: "remote.accepted", Version: 1, RemoteEmit: true, Validate: router.Object},
-		{ID: "local.only", Version: 1, Validate: router.Object},
-	}, []router.PluginDefinition{{ID: "stream-test", Subscriptions: []router.Subscription{
+	registry, err := fism.NewRegistry([]fism.EventDefinition{
+		{ID: "remote.accepted", Version: 1, RemoteEmit: true, Validate: fism.Object},
+		{ID: "local.only", Version: 1, Validate: fism.Object},
+	}, []fism.ControllerDefinition{{ID: "stream-test", Subscriptions: []fism.Subscription{
 		{Event: "remote.accepted", MinVersion: 1, MaxVersion: 1},
 		{Event: "local.only", MinVersion: 1, MaxVersion: 1},
 	}}})
@@ -159,12 +159,14 @@ func TestRemoteStreamTakeoverAndShutdown(t *testing.T) {
 	if got := readStream(t, second); frameType(got) != "subscribed" {
 		t.Fatalf("replacement subscribe: %s", got)
 	}
-	// First connection's accepted input detects replacement and closes it.
-	sendStream(t, first, map[string]any{"type": "heartbeat"})
 	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := first.Read(readCtx); err == nil {
-		t.Fatal("replaced consumer connection remained active")
+	if _, _, err := first.Read(readCtx); err == nil || readCtx.Err() != nil {
+		t.Fatalf("replaced consumer connection remained active: %v", err)
+	}
+	sendStream(t, second, map[string]any{"type": "heartbeat"})
+	if got := readStream(t, second); frameType(got) != "heartbeat_ack" {
+		t.Fatalf("replacement lost its lease: %s", got)
 	}
 	shutdown, stop := context.WithTimeout(context.Background(), time.Second)
 	defer stop()
@@ -176,11 +178,11 @@ func TestRemoteStreamTakeoverAndShutdown(t *testing.T) {
 func TestRemoteStreamRetryAckReplayWithoutTick(t *testing.T) {
 	store, _, url, registry := remoteStreamFixture(t)
 	ctx := context.Background()
-	first, err := store.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: json.RawMessage(`{"n":1}`)})
+	first, err := store.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: json.RawMessage(`{"n":1}`)})
 	if err != nil || !first.Stored {
 		t.Fatalf("store first event: %+v %v", first, err)
 	}
-	second, err := store.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: json.RawMessage(`{"n":2}`)})
+	second, err := store.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: json.RawMessage(`{"n":2}`)})
 	if err != nil || !second.Stored {
 		t.Fatalf("store second event: %+v %v", second, err)
 	}
@@ -239,11 +241,11 @@ func TestRemoteStreamDeliversAndAcksLargeEventPayload(t *testing.T) {
 	store, _, url, registry := remoteStreamFixture(t)
 	ctx := context.Background()
 	largePayload := json.RawMessage(`{"body":"` + strings.Repeat("x", 128<<10) + `"}`)
-	first, err := store.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: largePayload})
+	first, err := store.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: largePayload})
 	if err != nil || !first.Stored {
 		t.Fatalf("store large event: %+v %v", first, err)
 	}
-	second, err := store.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: json.RawMessage(`{"body":"next"}`)})
+	second, err := store.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: "remote.accepted", Version: 1, Source: "plugin:test", Payload: json.RawMessage(`{"body":"next"}`)})
 	if err != nil || !second.Stored {
 		t.Fatalf("store next event: %+v %v", second, err)
 	}
@@ -309,7 +311,7 @@ func TestRemoteRuntimeDetachClosesAttachedStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	registry, err := router.NewRegistry(nil, nil)
+	registry, err := fism.NewRegistry(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

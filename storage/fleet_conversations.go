@@ -10,7 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var ErrFleetAgentUnavailable = errors.New("agent is unavailable for fleet conversations")
@@ -36,7 +37,7 @@ func migrateFleetConversations(ctx context.Context, tx *sql.Tx) error {
 // OpenFleetConversation returns the default conversation for a stable agent
 // session. Its owning node comes from authenticated worker presence.
 func (s *Store) OpenFleetConversation(ctx context.Context, project, session string, now time.Time) (*FleetConversation, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if id, err := uuid.Parse(session); err != nil || id == uuid.Nil || id.String() != session {
 		return nil, fmt.Errorf("%w: agent session must be a UUID", ErrConversationInput)
 	}
@@ -66,7 +67,7 @@ func (s *Store) OpenFleetConversation(ctx context.Context, project, session stri
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	owner := AgentOrigin{SessionID: session}
+	owner := agent.Origin{SessionID: session}
 	var principal string
 	err = tx.QueryRowContext(ctx, `SELECT a.instance_id,a.provider,a.os,s.principal,COALESCE(a.hostname,s.hostname,'')
 		FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source

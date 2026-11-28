@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // Project preserves the Rust gateway's project JSON and nullable metadata.
@@ -44,7 +44,7 @@ func scanProject(row scanner) (*Project, error) {
 	return &p, nil
 }
 func getProject(ctx context.Context, q queryer, ident string) (*Project, error) {
-	return scanProject(q.QueryRowContext(ctx, "SELECT "+projectColumns+" FROM projects WHERE ident=?", projects.NormalizeIdent(ident)))
+	return scanProject(q.QueryRowContext(ctx, "SELECT "+projectColumns+" FROM projects WHERE ident=?", projectid.NormalizeIdent(ident)))
 }
 func (s *Store) Project(ctx context.Context, ident string) (*Project, error) {
 	return getProject(ctx, s.db, ident)
@@ -81,7 +81,7 @@ func normalizeOptional(p *string) *string {
 	if p == nil {
 		return nil
 	}
-	s := projects.NormalizeIdent(*p)
+	s := projectid.NormalizeIdent(*p)
 	if s == "" {
 		return nil
 	}
@@ -115,7 +115,7 @@ func (s *Store) InsertProject(ctx context.Context, p Project) error {
 }
 
 func (s *Store) RegisterProject(ctx context.Context, p Project, recreate bool) error {
-	p.Ident = projects.NormalizeIdent(p.Ident)
+	p.Ident = projectid.NormalizeIdent(p.Ident)
 	p.RepoProvider = normalizeOptional(p.RepoProvider)
 	p.RepoNamespace = normalizeOptional(p.RepoNamespace)
 	p.RepoName = normalizeOptional(p.RepoName)
@@ -161,10 +161,10 @@ func (s *Store) RegisterProject(ctx context.Context, p Project, recreate bool) e
 }
 
 func (s *Store) UpdateRepoMapping(ctx context.Context, ident, provider, namespace, name string) (*Project, error) {
-	ident = projects.NormalizeIdent(ident)
-	provider = projects.NormalizeIdent(provider)
-	namespace = projects.NormalizeIdent(namespace)
-	name = projects.NormalizeIdent(name)
+	ident = projectid.NormalizeIdent(ident)
+	provider = projectid.NormalizeIdent(provider)
+	namespace = projectid.NormalizeIdent(namespace)
+	name = projectid.NormalizeIdent(name)
 	if (namespace == "") != (name == "") {
 		return nil, fmt.Errorf("namespace and repo_name must be supplied together")
 	}
@@ -203,8 +203,8 @@ func (s *Store) UpdateRepoMapping(ctx context.Context, ident, provider, namespac
 }
 
 // BackfillRepo fills absent metadata, without changing a prior repository mapping.
-func (s *Store) BackfillRepo(ctx context.Context, ident string, repo projects.RepoRef) (bool, error) {
-	ident = projects.NormalizeIdent(ident)
+func (s *Store) BackfillRepo(ctx context.Context, ident string, repo projectid.RepoRef) (bool, error) {
+	ident = projectid.NormalizeIdent(ident)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err

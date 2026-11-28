@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func inboundTestEvent(seq, at int64, room, externalID string) router.Event {
-	return router.Event{
+func inboundTestEvent(seq, at int64, room, externalID string) fism.Event {
+	return fism.Event{
 		Seq: seq, ID: "channel.message_received", Version: 1, EmittedAt: at,
 		Payload: json.RawMessage(`{"channel_name":"discord","room_id":"` + room + `","message":{"id":"` + externalID + `","content":"hello","author_kind":"human"}}`),
 	}

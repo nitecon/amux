@@ -11,16 +11,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func rawPresenceEvent(id, source string, seq, at int64, payload string) router.Event {
-	return router.Event{UID: uuid.NewString(), ID: id, Version: 1, Source: source, Seq: seq, EmittedAt: at, Payload: json.RawMessage(payload)}
+func rawPresenceEvent(id, source string, seq, at int64, payload string) fism.Event {
+	return fism.Event{UID: uuid.NewString(), ID: id, Version: 1, Source: source, Seq: seq, EmittedAt: at, Payload: json.RawMessage(payload)}
 }
 
-func rawPresenceRegistry(t *testing.T) *router.Registry {
+func rawPresenceRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	registry, err := router.NewRegistry(RouterPresenceEventDefinitions(), nil)
+	registry, err := fism.NewRegistry(RouterPresenceEventDefinitions(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

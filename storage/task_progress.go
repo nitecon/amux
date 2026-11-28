@@ -8,18 +8,19 @@ import (
 	"fmt"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 const taskQuietMS int64 = 5 * 60_000
 
 // ReconcileRouterProgress tracks exact-execution activity, rather than a busy
 // flag or client heartbeat. Pings and their durable counters commit together.
-func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	if event.ID != "clock.tick" || event.Version != 1 || !canonicalUUID(event.UID) {
 		return fmt.Errorf("task progress requires a clock.tick v1 event")
 	}
-	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		enabled, err := pluginEnabled(ctx, tx, "reclaim")
 		if err != nil || !enabled {
 			return err
@@ -53,12 +54,12 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 			return err
 		}
 		for _, task := range tasks {
-			owner, originErr := NormalizeOrigin(task.OwnerOrigin)
+			owner, originErr := agent.NormalizeOrigin(task.OwnerOrigin)
 			nativeOwner := originErr == nil && owner != nil
 			if !nativeOwner {
 				owner = task.OwnerOrigin
 				if owner == nil {
-					owner = &AgentOrigin{}
+					owner = &agent.Origin{}
 					if task.OwnerAgentID != nil {
 						owner.SessionID = *task.OwnerAgentID
 					}
@@ -174,7 +175,7 @@ func (s *Store) ReconcileRouterProgress(ctx context.Context, registry *router.Re
 	return err
 }
 
-func requeueStalledTask(ctx context.Context, tx *sql.Tx, task *Task, owner AgentOrigin, now int64) error {
+func requeueStalledTask(ctx context.Context, tx *sql.Tx, task *Task, owner agent.Origin, now int64) error {
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_revoked_conversations(conversation_id,revoked_at)
 	 SELECT id,? FROM amux_conversations WHERE task_id=? AND json_extract(owner_json,'$.session_id')=?
 	 AND json_extract(owner_json,'$.instance_id')=?`, now, task.ID, owner.SessionID, owner.InstanceID); err != nil {
@@ -217,7 +218,7 @@ func conversationRevoked(ctx context.Context, q queryer, id string) (bool, error
 
 // Real owner messages resume work immediately, including submission result
 // comments; a stalled status must not break the submission's active-state CAS.
-func resumeStalledTask(ctx context.Context, q queryer, id string, owner *AgentOrigin) (bool, error) {
+func resumeStalledTask(ctx context.Context, q queryer, id string, owner *agent.Origin) (bool, error) {
 	if owner == nil || id == "" {
 		return false, nil
 	}

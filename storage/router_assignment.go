@@ -7,7 +7,8 @@ import (
 	"fmt"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 var switchablePluginIDs = [...]string{"assignment", "notifier", "reminder", "review", "reclaim"}
@@ -49,25 +50,25 @@ func pluginEnabled(ctx context.Context, q queryer, id string) (bool, error) {
 
 // ReconcileRouterAssignments allocates from stored presence on a native clock
 // tick. It deliberately does not reconcile presence or advance its clock.
-func (s *Store) ReconcileRouterAssignments(ctx context.Context, event router.Event) error {
+func (s *Store) ReconcileRouterAssignments(ctx context.Context, event fism.Event) error {
 	if event.ID != "clock.tick" || event.Version != 1 || !canonicalUUID(event.UID) {
 		return fmt.Errorf("assignment reconciliation requires a clock.tick v1 event with a canonical UID")
 	}
-	return s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	return s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		return allocateAssignments(ctx, tx, event.EmittedAt)
 	})
 }
 
 // ReconcileRouterAssignmentsWithRegistry is the runtime entry point. The
 // registry is needed by the allocator's transaction-scoped offer emitter.
-func (s *Store) ReconcileRouterAssignmentsWithRegistry(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (s *Store) ReconcileRouterAssignmentsWithRegistry(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	if registry == nil {
 		return fmt.Errorf("assignment reconciliation requires a router registry")
 	}
 	if !validAssignmentCause(event) {
 		return fmt.Errorf("assignment reconciliation requires a supported v1 event with a canonical UID")
 	}
-	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		return allocateAssignmentsWithOffers(ctx, tx, event.EmittedAt, registry, event)
 	})
 	if err == nil {
@@ -76,7 +77,7 @@ func (s *Store) ReconcileRouterAssignmentsWithRegistry(ctx context.Context, regi
 	return err
 }
 
-func validAssignmentCause(event router.Event) bool {
+func validAssignmentCause(event fism.Event) bool {
 	switch event.ID {
 	case "clock.tick", "agent.idle", "task.created", "task.unclaimed":
 		return event.Version == 1 && canonicalUUID(event.UID)

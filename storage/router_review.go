@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 // ReconcileRouterReviews queues reviews for the completion represented by a
 // durable task.completed event. Invalid or obsolete task snapshots are benign.
-func (s *Store) ReconcileRouterReviews(ctx context.Context, event router.Event) (bool, error) {
+func (s *Store) ReconcileRouterReviews(ctx context.Context, event fism.Event) (bool, error) {
 	if event.ID != "task.completed" || event.Version != 1 {
 		return false, fmt.Errorf("review reconciliation requires a task.completed v1 event")
 	}
@@ -42,7 +43,7 @@ func (s *Store) ReconcileRouterReviews(ctx context.Context, event router.Event) 
 		snapshotDoneAt = &doneAt
 	}
 	processed := false
-	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		enabled, err := automaticReviewsEnabled(ctx, tx)
 		if err != nil {
 			return err

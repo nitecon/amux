@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const artifactWorkflowRunsMigration = 39
@@ -344,12 +344,12 @@ func (s *Store) ArtifactWorkflowRun(ctx context.Context, projectIdent, artifactI
 	return scanWorkflowRun(s.db.QueryRowContext(ctx, workflowRunSelect+`
  WHERE workflow_run_id=? AND artifact_id=?
  AND EXISTS (SELECT 1 FROM artifacts WHERE project_ident=? AND artifacts.artifact_id=workflow_runs.artifact_id)`,
-		workflowRunID, artifactID, projects.NormalizeIdent(projectIdent)))
+		workflowRunID, artifactID, projectid.NormalizeIdent(projectIdent)))
 }
 
 func (s *Store) WorkflowRuns(ctx context.Context, projectIdent, artifactID string) ([]WorkflowRun, error) {
 	var exists int
-	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifacts WHERE project_ident=? AND artifact_id=?", projects.NormalizeIdent(projectIdent), artifactID).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifacts WHERE project_ident=? AND artifact_id=?", projectid.NormalizeIdent(projectIdent), artifactID).Scan(&exists)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("artifact not found in project")
 	}

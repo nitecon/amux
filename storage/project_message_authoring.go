@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ErrProjectMessageInput reports invalid human-authored message content.
@@ -28,7 +28,7 @@ type HumanProjectMessageInput struct {
 // same durable inbox used by native sessions. Replies attach to the thread root;
 // optional root resolution commits atomically with the reply.
 func (s *Store) CreateHumanProjectMessage(ctx context.Context, project string, input HumanProjectMessageInput) (*ProjectMessage, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	content := strings.TrimSpace(input.Content)
 	if content == "" {
 		return nil, ErrProjectMessageInput

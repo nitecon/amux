@@ -14,10 +14,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/fism"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -262,7 +263,7 @@ func testRunPoolFollowUps(t *testing.T, streamed bool) {
 	sessions := make(chan *poolFixtureSession, 2)
 	var opened atomic.Int32
 	openedRuns := make(chan storage.WorkerRun, 3)
-	open := func(_ context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(_ context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		release := firstRelease
 		if opened.Add(1) > 1 {
 			release = secondRelease
@@ -478,8 +479,8 @@ func testRunPoolFollowUps(t *testing.T, streamed bool) {
 	case <-ctx.Done():
 		t.Fatal("pool did not stop before heartbeat audit")
 	}
-	registry, err := router.NewRegistry([]router.EventDefinition{plugins.ClientHeartbeatDefinition()}, []router.PluginDefinition{{
-		ID: "lifetime-observer", Subscriptions: []router.Subscription{{Event: plugins.ClientHeartbeatID, MinVersion: 1, MaxVersion: 1}},
+	registry, err := fism.NewRegistry([]fism.EventDefinition{controllers.ClientHeartbeatDefinition()}, []fism.ControllerDefinition{{
+		ID: "lifetime-observer", Subscriptions: []fism.Subscription{{Event: controllers.ClientHeartbeatID, MinVersion: 1, MaxVersion: 1}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +504,7 @@ func testRunPoolFollowUps(t *testing.T, streamed bool) {
 		}
 		for _, event := range events {
 			cursor = event.Seq
-			if event.ID != plugins.ClientHeartbeatID {
+			if event.ID != controllers.ClientHeartbeatID {
 				continue
 			}
 			var heartbeat struct {

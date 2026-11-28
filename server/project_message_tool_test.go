@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -44,13 +44,13 @@ func TestProjectMessageThreadTaskToolIsScopedReadOnlyAndReturnsFullText(t *testi
 		t.Fatal(err)
 	}
 
-	invoke := func(origin *storage.AgentOrigin, args string) mcpstdio.Result {
+	invoke := func(origin *agent.Origin, args string) storage.ToolResult {
 		t.Helper()
 		w := invokeTaskTool(t, newAPI(store, "unused"), origin, conversation.ID, `{"name":"project_message_thread","arguments":`+args+`}`)
 		if w.Code != 200 {
 			t.Fatalf("tool HTTP %d: %s", w.Code, w.Body.String())
 		}
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}

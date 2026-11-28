@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -41,7 +41,7 @@ func TestAgentTaskToolsCatalogSchemas(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ name, field string }{{"task_get", "id"}, {"project_message_thread", "id"}, {"task_claim", "id"}, {"task_started", "id"}, {"task_comment", "id"}, {"task_comment", "body"}, {"task_create", "title"}, {"task_delegate", "title"}, {"task_delegate", "target_project"}, {"task_update_delegation", "id"}, {"task_set_requester", "id"}, {"task_set_changeset", "id"}, {"task_set_changeset", "changeset"}} {
-		var tool mcpstdio.Tool
+		var tool storage.TaskTool
 		for _, candidate := range tools {
 			if candidate.Name == tc.name {
 				tool = candidate
@@ -84,7 +84,7 @@ func TestLocalConversationTaskToolsCatalogSchemas(t *testing.T) {
 	if len(tools) != len(want) {
 		t.Fatalf("local catalog length %d, want %d", len(tools), len(want))
 	}
-	byName := make(map[string]mcpstdio.Tool, len(tools))
+	byName := make(map[string]storage.TaskTool, len(tools))
 	for i, tool := range tools {
 		if tool.Name != want[i] {
 			t.Fatalf("tool %d: got %s want %s", i, tool.Name, want[i])
@@ -151,7 +151,7 @@ func TestLocalConversationTaskToolsCatalogSchemas(t *testing.T) {
 	}
 }
 
-func invokeTaskTool(t *testing.T, a *api, actor *storage.AgentOrigin, conversationID, body string) *httptest.ResponseRecorder {
+func invokeTaskTool(t *testing.T, a *api, actor *agent.Origin, conversationID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	r.SetPathValue("ident", "tasks")
@@ -181,12 +181,12 @@ func TestTaskToolLifecycleAndStrictArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := newAPI(store, "unused")
-	call := func(name, args string) mcpstdio.Result {
+	call := func(name, args string) storage.ToolResult {
 		w := invokeTaskTool(t, a, actor, conversation.ID, `{"name":"`+name+`","arguments":`+args+`}`)
 		if w.Code != 200 {
 			t.Fatalf("%s HTTP %d: %s", name, w.Code, w.Body.String())
 		}
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +264,7 @@ func TestTaskToolDoneWithExplicitNullChangeset(t *testing.T) {
 		args string
 	}{{"task_claim", `{"id":"` + task.ID + `"}`}, {"task_done", `{"id":"` + task.ID + `","changeset":null}`}} {
 		w := invokeTaskTool(t, a, actor, conversation.ID, `{"name":"`+call.name+`","arguments":`+call.args+`}`)
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != 200 || result.IsError {
 			t.Fatalf("%s: HTTP %d, result %+v, error %v", call.name, w.Code, result, err)
 		}
@@ -288,9 +288,9 @@ func TestTaskToolRootCreationRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := newAPI(store, "unused")
-	invoke := func(args string) mcpstdio.Result {
+	invoke := func(args string) storage.ToolResult {
 		w := invokeTaskTool(t, a, actor, conversation.ID, `{"name":"task_create","arguments":`+args+`}`)
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != 200 {
 			t.Fatalf("create response HTTP %d: %s (%v)", w.Code, w.Body.String(), err)
 		}
@@ -323,7 +323,7 @@ func TestTaskToolLinksFirstCreatedTaskToStandaloneConversation(t *testing.T) {
 			t.Fatal(err)
 		}
 		response := invokeTaskTool(t, api, actor, chat.ID, `{"name":"task_create","arguments":`+string(arguments)+`}`)
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 || result.IsError || len(result.Content) != 1 {
 			t.Fatalf("task creation HTTP %d: %s (%v)", response.Code, response.Body, err)
 		}
@@ -360,9 +360,9 @@ func TestTaskAskToolRaisesQuestionListedUntilUserAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := newAPI(store, "unused")
-	call := func(name, args string) mcpstdio.Result {
+	call := func(name, args string) storage.ToolResult {
 		w := invokeTaskTool(t, a, actor, conversation.ID, `{"name":"`+name+`","arguments":`+args+`}`)
-		var result mcpstdio.Result
+		var result storage.ToolResult
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil {
 			t.Fatalf("%s HTTP %d: %s", name, w.Code, w.Body.String())
 		}

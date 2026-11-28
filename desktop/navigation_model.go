@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -13,12 +13,12 @@ import (
 // retained as the fallback and migration key for un-enrolled connections.
 func FavoriteKey(endpoint, project string) string {
 	encode := base64.RawURLEncoding.EncodeToString
-	return "remote:" + encode([]byte(endpoint)) + ":" + encode([]byte(projects.NormalizeIdent(project)))
+	return "remote:" + encode([]byte(endpoint)) + ":" + encode([]byte(projectid.NormalizeIdent(project)))
 }
 
 func clusterFavoriteKey(clusterID, project string) string {
 	encode := base64.RawURLEncoding.EncodeToString
-	return "cluster:" + encode([]byte(clusterID)) + ":" + encode([]byte(projects.NormalizeIdent(project)))
+	return "cluster:" + encode([]byte(clusterID)) + ":" + encode([]byte(projectid.NormalizeIdent(project)))
 }
 
 // FilterProjects filters and orders remote projects without changing rows.

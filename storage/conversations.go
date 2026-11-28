@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/eventbus"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 var (
@@ -28,16 +29,16 @@ type Conversation struct {
 	WorkingDirectory string  `json:"working_directory,omitempty"`
 	FleetHostname    *string `json:"fleet_hostname,omitempty"`
 	// OwnerHostname is the owner session's last reported machine, when known.
-	OwnerHostname   *string     `json:"owner_hostname,omitempty"`
-	ID              string      `json:"id"`
-	ProjectIdent    string      `json:"project_ident"`
-	TaskID          string      `json:"task_id"`
-	UpdatedAt       int64       `json:"updated_at,omitempty"`
-	TaskTitle       string      `json:"task_title,omitempty"`
-	Provider        string      `json:"provider"`
-	NativeSessionID string      `json:"native_session_id"`
-	Owner           AgentOrigin `json:"owner"`
-	CreatedAt       int64       `json:"created_at"`
+	OwnerHostname   *string      `json:"owner_hostname,omitempty"`
+	ID              string       `json:"id"`
+	ProjectIdent    string       `json:"project_ident"`
+	TaskID          string       `json:"task_id"`
+	UpdatedAt       int64        `json:"updated_at,omitempty"`
+	TaskTitle       string       `json:"task_title,omitempty"`
+	Provider        string       `json:"provider"`
+	NativeSessionID string       `json:"native_session_id"`
+	Owner           agent.Origin `json:"owner"`
+	CreatedAt       int64        `json:"created_at"`
 }
 type ConversationEvent struct {
 	ID             string             `json:"id"`
@@ -149,25 +150,25 @@ func (s *Store) listConversations(ctx context.Context, project string, taskID *s
 	}
 	return result, rows.Err()
 }
-func (s *Store) CreateConversation(ctx context.Context, project, taskID string, origin *AgentOrigin) (*Conversation, error) {
+func (s *Store) CreateConversation(ctx context.Context, project, taskID string, origin *agent.Origin) (*Conversation, error) {
 	return s.CreateConversationWithGoal(ctx, project, taskID, origin, nil)
 }
 
 // CreateConversationWithGoal atomically claims queued work and creates its
 // conversation. Tagged tasks require the caller to select their exact goal.
-func (s *Store) CreateConversationWithGoal(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string) (*Conversation, error) {
+func (s *Store) CreateConversationWithGoal(ctx context.Context, project, taskID string, origin *agent.Origin, goal *string) (*Conversation, error) {
 	return s.CreateConversationWithPrincipal(ctx, project, taskID, origin, goal, "")
 }
 
 // CreateConversationWithPrincipal also records the server-authenticated
 // enrolled client that created the conversation. Only that principal may bind
 // its session or discover its pending follow-ups.
-func (s *Store) CreateConversationWithPrincipal(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string, principal string) (*Conversation, error) {
+func (s *Store) CreateConversationWithPrincipal(ctx context.Context, project, taskID string, origin *agent.Origin, goal *string, principal string) (*Conversation, error) {
 	selectedGoal, err := NormalizeTaskGoal(goal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid selected goal", ErrTaskConflict)
 	}
-	actor, err := NormalizeOrigin(origin)
+	actor, err := agent.NormalizeOrigin(origin)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +176,7 @@ func (s *Store) CreateConversationWithPrincipal(ctx context.Context, project, ta
 		return nil, ErrTaskOwnership
 	}
 	var c *Conversation
-	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, actor *agent.Origin) error {
 		conversationProject := project
 		if taskID != "" {
 			task, err := readTask(ctx, tx, project, taskID)
@@ -228,8 +229,8 @@ func (s *Store) CreateConversationWithPrincipal(ctx context.Context, project, ta
 
 // mutateConversation serializes ownership checks and mutations in the same
 // SQLite write transaction, including across separate server connections.
-func (s *Store) mutateConversation(ctx context.Context, project, id string, origin *AgentOrigin, change func(*sql.Tx, *Conversation, AgentOrigin) error) (*Conversation, error) {
-	actor, err := NormalizeOrigin(origin)
+func (s *Store) mutateConversation(ctx context.Context, project, id string, origin *agent.Origin, change func(*sql.Tx, *Conversation, agent.Origin) error) (*Conversation, error) {
+	actor, err := agent.NormalizeOrigin(origin)
 	if err != nil {
 		return nil, err
 	}
@@ -254,18 +255,18 @@ func (s *Store) mutateConversation(ctx context.Context, project, id string, orig
 	s.wakeConversations()
 	return c, nil
 }
-func (s *Store) BindConversationSession(ctx context.Context, project, id, nativeID string, origin *AgentOrigin) (*Conversation, error) {
+func (s *Store) BindConversationSession(ctx context.Context, project, id, nativeID string, origin *agent.Origin) (*Conversation, error) {
 	return s.BindConversationSessionWithPrincipal(ctx, project, id, nativeID, origin, "")
 }
 
 // BindConversationSessionWithPrincipal rejects a principal other than the one
 // recorded at creation. Binding never records a principal, so a conversation
 // without one (legacy rows) stays withheld from pending discovery.
-func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, project, id, nativeID string, origin *AgentOrigin, principal string) (*Conversation, error) {
+func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, project, id, nativeID string, origin *agent.Origin, principal string) (*Conversation, error) {
 	if nativeID == "" || len(nativeID) > 4096 || !utf8.ValidString(nativeID) || strings.ContainsRune(nativeID, 0) {
 		return nil, fmt.Errorf("%w: native session ID must be a nonempty bounded string", ErrConversationInput)
 	}
-	return s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
+	return s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor agent.Origin) error {
 		if c.Owner != actor {
 			return ErrTaskOwnership
 		}
@@ -289,9 +290,9 @@ func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, projec
 
 // ResumeConversation is an explicit compare-and-swap transfer to a new process
 // instance of the same stable agent. A retry by the winning instance is harmless.
-func (s *Store) ResumeConversation(ctx context.Context, project, id, previousInstance string, origin *AgentOrigin) (*Conversation, error) {
+func (s *Store) ResumeConversation(ctx context.Context, project, id, previousInstance string, origin *agent.Origin) (*Conversation, error) {
 	taskOwnerChanged := false
-	c, err := s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
+	c, err := s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor agent.Origin) error {
 		revoked, err := conversationRevoked(ctx, tx, id)
 		if err != nil {
 			return err
@@ -361,10 +362,10 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 		}
 		if c.NativeSessionID != "" {
 			data, err := json.Marshal(struct {
-				NativeSessionID string      `json:"native_session_id"`
-				InstanceID      string      `json:"instance_id"`
-				PreviousOrigin  AgentOrigin `json:"previous_origin"`
-				CurrentOrigin   AgentOrigin `json:"current_origin"`
+				NativeSessionID string       `json:"native_session_id"`
+				InstanceID      string       `json:"instance_id"`
+				PreviousOrigin  agent.Origin `json:"previous_origin"`
+				CurrentOrigin   agent.Origin `json:"current_origin"`
 			}{c.NativeSessionID, actor.InstanceID, previous, actor})
 			if err != nil {
 				return err
@@ -392,7 +393,7 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 	return c, err
 }
 
-func (s *Store) AppendConversationEvent(ctx context.Context, project, id, eventID string, event conversation.Event, origin *AgentOrigin) (*ConversationEvent, error) {
+func (s *Store) AppendConversationEvent(ctx context.Context, project, id, eventID string, event conversation.Event, origin *agent.Origin) (*ConversationEvent, error) {
 	parsed, err := uuid.Parse(eventID)
 	if err != nil || parsed == uuid.Nil {
 		return nil, fmt.Errorf("%w: event ID must be a nonzero UUID", ErrConversationInput)
@@ -404,7 +405,7 @@ func (s *Store) AppendConversationEvent(ctx context.Context, project, id, eventI
 	}
 	var result *ConversationEvent
 	resumed := false
-	_, err = s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
+	_, err = s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor agent.Origin) error {
 		if c.Owner != actor {
 			return ErrTaskOwnership
 		}

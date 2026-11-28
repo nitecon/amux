@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func emitObservationFixtureEvent(t *testing.T, s *Store, registry *router.Registry, id, source, payload string, at int64) router.Event {
+func emitObservationFixtureEvent(t *testing.T, s *Store, registry *fism.Registry, id, source, payload string, at int64) fism.Event {
 	t.Helper()
-	result, err := s.EmitRouterEvent(context.Background(), registry, router.EmitRequest{ID: id, Version: 1, Source: source, Payload: json.RawMessage(payload)})
+	result, err := s.EmitRouterEvent(context.Background(), registry, fism.EmitRequest{ID: id, Version: 1, Source: source, Payload: json.RawMessage(payload)})
 	if err != nil || !result.Stored {
 		t.Fatalf("persist %s: %+v %v", id, result, err)
 	}
@@ -37,7 +38,7 @@ func TestPresenceObservationRuntimePreservesCausalityAndIndependentLeases(t *tes
 	if _, err := s.db.Exec("UPDATE projects SET kind='adhoc' WHERE ident='presence'"); err != nil {
 		t.Fatal(err)
 	}
-	origin := AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	origin := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	base := time.Now().Add(-91 * time.Second).UnixMilli()
 	if _, err := s.RegisterTarget(ctx, "presence", TargetRegistration{Origin: origin, Generation: uuid.NewString(), Hostname: ptr("retained-host")}, time.UnixMilli(base)); err != nil {
 		t.Fatal(err)
@@ -49,13 +50,13 @@ func TestPresenceObservationRuntimePreservesCausalityAndIndependentLeases(t *tes
 	if _, err := s.db.Exec("UPDATE tasks SET created_at=?,updated_at=? WHERE id=?", base-1, base-1, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := router.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []router.Plugin{plugins.PresencePlugin(s), nativePresenceObserver()}, router.RunConfig{Capacity: 1})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), nativePresenceDefinitions(), []fism.Controller{controllers.PresenceController(s), nativePresenceObserver()}, fism.RunConfig{Capacity: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	heartbeatPayload := `{"os":"linux","hostname":"retained-host","agents":[{"project":"presence","session_id":"` + origin.SessionID + `","instance_id":"` + origin.InstanceID + `","provider":"codex","os":"linux","canonical_remote":"  ","auto_assign":true,"source":"forged","rank":9007199254740993}]}`
-	heartbeat := emitObservationFixtureEvent(t, s, runtime.Registry(), plugins.ClientHeartbeatID, "legacy:runtime", heartbeatPayload, base)
-	activity := emitObservationFixtureEvent(t, s, runtime.Registry(), plugins.ClientActivityID, "legacy:runtime", `{"session_id":"`+origin.SessionID+`","instance_id":"`+origin.InstanceID+`","output_at":`+strconv.FormatInt(base-31_000, 10)+`,"draft":false}`, base+1)
+	heartbeat := emitObservationFixtureEvent(t, s, runtime.Registry(), controllers.ClientHeartbeatID, "legacy:runtime", heartbeatPayload, base)
+	activity := emitObservationFixtureEvent(t, s, runtime.Registry(), controllers.ClientActivityID, "legacy:runtime", `{"session_id":"`+origin.SessionID+`","instance_id":"`+origin.InstanceID+`","output_at":`+strconv.FormatInt(base-31_000, 10)+`,"draft":false}`, base+1)
 	stop := runRouterFixture(t, runtime)
 	defer stop()
 	waitRouterDeliveryState(t, s, heartbeat.Seq, "presence", "completed")
@@ -130,11 +131,11 @@ func TestPresenceBindingFilterKeepsEmptySnapshotClock(t *testing.T) {
 func TestPresenceObservationFanoutFailureRollsBackCursorClockAndRows(t *testing.T) {
 	ctx := context.Background()
 	s := presenceStore(t, filepath.Join(t.TempDir(), "observation-rollback.db"))
-	registry, err := router.NewRegistry(nativePresenceDefinitions(), []router.PluginDefinition{plugins.PresencePlugin(nil).Definition, nativePresenceObserver().Definition})
+	registry, err := fism.NewRegistry(nativePresenceDefinitions(), []fism.ControllerDefinition{controllers.PresenceController(nil).Definition, nativePresenceObserver().Definition})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := emitObservationFixtureEvent(t, s, registry, plugins.ClientHeartbeatID, "raw:atomic", `{"agents":[
+	root := emitObservationFixtureEvent(t, s, registry, controllers.ClientHeartbeatID, "raw:atomic", `{"agents":[
 		{"project":"unregistered","instance_id":"one","session_id":"first","provider":"legacy","os":"linux"},
 		{"project":"","instance_id":"two","session_id":"second","provider":"legacy","os":"windows"}]}`, time.Now().UnixMilli())
 	if _, err := s.db.Exec(`CREATE TRIGGER fail_second_presence_event BEFORE INSERT ON router_events
@@ -211,7 +212,7 @@ func TestPresenceObservationFullRustProfileKeepsArchivesAndSeparateCursors(t *te
 	assertEqual(t, s.db, "SELECT heartbeat_seq FROM rawpresence_sources WHERE source='rust-source'", int64(77))
 	// The native local sequence starts at one even when the imported global
 	// router sequence for the same source is much larger.
-	origin := AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	origin := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	if accepted, err := s.ReportPresence(ctx, PresenceReport{Source: "rust-source", Sequence: 1, Agents: []PresenceAgent{{ProjectIdent: "rust-project", Origin: origin}}}, time.Now()); err != nil || !accepted {
 		t.Fatalf("raw global cursor blocked native local sequence: %v %v", accepted, err)
 	}
@@ -231,7 +232,7 @@ func TestPresenceObservationFullRustProfileKeepsArchivesAndSeparateCursors(t *te
 func TestPresenceObservationSummaryMatchesLegacyInventoryContract(t *testing.T) {
 	ctx := context.Background()
 	s := presenceStore(t, filepath.Join(t.TempDir(), "legacy-summary.db"))
-	registry, err := router.NewRegistry(nativePresenceDefinitions(), []router.PluginDefinition{plugins.PresencePlugin(nil).Definition, nativePresenceObserver().Definition})
+	registry, err := fism.NewRegistry(nativePresenceDefinitions(), []fism.ControllerDefinition{controllers.PresenceController(nil).Definition, nativePresenceObserver().Definition})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,10 +247,10 @@ func TestPresenceObservationSummaryMatchesLegacyInventoryContract(t *testing.T) 
 	linux := `{"project":"p","session_id":"linux-agent","instance_id":"instance","provider":"codex","os":"linux"}`
 	unresolved := `{"project":"","session_id":"unresolved-agent","instance_id":"instance","provider":"codex","os":"linux"}`
 	windows := `{"project":"p","session_id":"windows-agent","instance_id":"instance","provider":"claude","os":"windows"}`
-	emit(plugins.ClientHeartbeatID, "client:linux", `{"os":"linux","agents":[`+linux+`,`+linux+`,`+unresolved+`]}`)
-	emit(plugins.ClientHeartbeatID, "client:windows-one", `{"agents":[`+windows+`]}`)
-	emit(plugins.ClientHeartbeatID, "client:windows-two", `{"os":"windows","agents":[]}`)
-	emit(plugins.LegacyActivityID, "client:linux", `{"session_id":"linux-agent","instance_id":"instance","output_at":`+strconv.FormatInt(base, 10)+`,"draft":false}`)
+	emit(controllers.ClientHeartbeatID, "client:linux", `{"os":"linux","agents":[`+linux+`,`+linux+`,`+unresolved+`]}`)
+	emit(controllers.ClientHeartbeatID, "client:windows-one", `{"agents":[`+windows+`]}`)
+	emit(controllers.ClientHeartbeatID, "client:windows-two", `{"os":"windows","agents":[]}`)
+	emit(controllers.LegacyActivityID, "client:linux", `{"session_id":"linux-agent","instance_id":"instance","output_at":`+strconv.FormatInt(base, 10)+`,"draft":false}`)
 	check := func(machines int, platforms []string) {
 		t.Helper()
 		summary, err := s.PresenceSummary(ctx, time.UnixMilli(base+10))
@@ -258,9 +259,9 @@ func TestPresenceObservationSummaryMatchesLegacyInventoryContract(t *testing.T) 
 		}
 	}
 	check(3, []string{"linux", "windows"})
-	emit(plugins.ClientHeartbeatID, "client:windows-two", `{"os":"windows","agents":[]}`)
+	emit(controllers.ClientHeartbeatID, "client:windows-two", `{"os":"windows","agents":[]}`)
 	check(3, []string{"linux", "windows"})
-	emit(plugins.ClientHeartbeatID, "client:mac", `{"os":"macos","agents":[]}`)
+	emit(controllers.ClientHeartbeatID, "client:mac", `{"os":"macos","agents":[]}`)
 	check(4, []string{"linux", "macos", "windows"})
 	if _, err := s.db.Exec("UPDATE rawpresence_sources SET heartbeat_seen_at=? WHERE source='client:windows-two'", base-presenceGoneAfter); err != nil {
 		t.Fatal(err)
@@ -272,11 +273,11 @@ func TestPresenceObservationSummaryMatchesLegacyInventoryContract(t *testing.T) 
 func TestPresenceObservationExtraHostIsNotRegisteredMetadata(t *testing.T) {
 	ctx := context.Background()
 	s := presenceStore(t, filepath.Join(t.TempDir(), "opaque-host.db"))
-	registry, err := router.NewRegistry(nativePresenceDefinitions(), []router.PluginDefinition{plugins.PresencePlugin(nil).Definition, nativePresenceObserver().Definition})
+	registry, err := fism.NewRegistry(nativePresenceDefinitions(), []fism.ControllerDefinition{controllers.PresenceController(nil).Definition, nativePresenceObserver().Definition})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := emitObservationFixtureEvent(t, s, registry, plugins.ClientHeartbeatID, "raw:host", `{"agents":[
+	root := emitObservationFixtureEvent(t, s, registry, controllers.ClientHeartbeatID, "raw:host", `{"agents":[
 		{"project":"presence","instance_id":"instance","session_id":"session","provider":"codex","os":"linux",
 		"name":"Agent label","hostname":"Unregistered-Extra"}]}`, time.Now().UnixMilli())
 	if err := s.ReconcileRouterPresence(ctx, registry, root); err != nil {

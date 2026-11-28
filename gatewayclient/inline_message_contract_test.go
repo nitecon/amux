@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestInlineProjectMessageReadsAndUncertainWritesMatchSourceContract(t *testing.T) {
@@ -180,7 +180,7 @@ func assertNoProjectMessageOriginHeaders(t *testing.T, r *http.Request) {
 	}
 }
 
-func assertProjectMessageOriginHeaders(t *testing.T, r *http.Request, actor storage.AgentOrigin) {
+func assertProjectMessageOriginHeaders(t *testing.T, r *http.Request, actor agent.Origin) {
 	t.Helper()
 	if r.Header.Get("X-Agent-Session-Id") != actor.SessionID || r.Header.Get("X-Agent-Instance-Id") != actor.InstanceID || r.Header.Get("X-Agent-Provider") != actor.Provider || r.Header.Get("X-Agent-OS") != actor.OS {
 		t.Errorf("write origin headers do not match identity: %v", r.Header)

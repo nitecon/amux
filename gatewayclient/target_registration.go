@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -23,7 +24,7 @@ func taskTargetsPath(project string) string {
 // RegisterTarget explicitly advertises the caller's native target for manual
 // routing. The origin is sent only in the standard native-origin headers.
 func (c *Client) RegisterTarget(ctx context.Context, project string, request storage.TargetRegistration) (storage.RegisteredTarget, error) {
-	origin, err := storage.NormalizeOrigin(&request.Origin)
+	origin, err := agent.NormalizeOrigin(&request.Origin)
 	if err != nil || origin == nil {
 		return storage.RegisteredTarget{}, fmt.Errorf("target registration requires a complete native agent origin")
 	}

@@ -8,11 +8,11 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 type RustPresenceAgent struct {
-	storage.AgentOrigin
+	agent.Origin
 	Name            string  `json:"name"`
 	Project         string  `json:"project"`
 	Generation      string  `json:"generation"`

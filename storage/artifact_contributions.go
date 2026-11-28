@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ArtifactContribution is an immutable artifact discourse record.
@@ -105,7 +105,7 @@ func addArtifactContributionTx(ctx context.Context, tx *sql.Tx, projectIdent, ar
 }
 
 func addArtifactContributionTxWithLimits(ctx context.Context, tx *sql.Tx, projectIdent, artifactID string, input ArtifactContributionInsert, suppliedLimits *ArtifactWriteLimits) (*ArtifactContribution, bool, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	if len(input.ReadSet) > 0 && !json.Valid(input.ReadSet) {
 		return nil, false, fmt.Errorf("artifact contribution read_set must be valid JSON")
 	}
@@ -170,11 +170,11 @@ func findArtifactContributionReplayTx(ctx context.Context, tx *sql.Tx, artifactI
 }
 
 func (s *Store) ArtifactContribution(ctx context.Context, projectIdent, artifactID, contributionID string) (*ArtifactContribution, error) {
-	return scanArtifactContribution(s.db.QueryRowContext(ctx, artifactContributionSelect+` WHERE artifact_id=? AND contribution_id=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`, artifactID, contributionID, artifactID, projects.NormalizeIdent(projectIdent)))
+	return scanArtifactContribution(s.db.QueryRowContext(ctx, artifactContributionSelect+` WHERE artifact_id=? AND contribution_id=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`, artifactID, contributionID, artifactID, projectid.NormalizeIdent(projectIdent)))
 }
 
 func (s *Store) ArtifactContributions(ctx context.Context, projectIdent, artifactID string) ([]ArtifactContribution, error) {
-	if err := requireArtifactProject(ctx, s.db, projects.NormalizeIdent(projectIdent), artifactID); err != nil {
+	if err := requireArtifactProject(ctx, s.db, projectid.NormalizeIdent(projectIdent), artifactID); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, artifactContributionSelect+` WHERE artifact_id=? ORDER BY created_at ASC`, artifactID)

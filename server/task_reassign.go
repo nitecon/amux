@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -33,7 +34,7 @@ func (a *api) assignTask(w http.ResponseWriter, r *http.Request) {
 	a.assignTaskHTTP(w, r, nil)
 }
 
-func (a *api) assignTaskHTTP(w http.ResponseWriter, r *http.Request, actor *storage.AgentOrigin) {
+func (a *api) assignTaskHTTP(w http.ResponseWriter, r *http.Request, actor *agent.Origin) {
 	var request *struct {
 		Target *storage.RegisteredTargetIdentity `json:"target"`
 	}

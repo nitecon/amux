@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -53,7 +54,7 @@ func TestRunPoolRejectsChangedCheckoutWithoutLosingActiveWork(t *testing.T) {
 	// must validate local identity before starting a provider on that checkout.
 	runGit(t, pool.Directory, "remote", "set-url", "origin", "git@github.com:example/replacement.git")
 	var opened atomic.Int32
-	config.Open = func(context.Context, storage.WorkerRun, conversation.Sink) (Session, error) {
+	config.Open = func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 		opened.Add(1)
 		return nil, errors.New("unexpected provider launch")
 	}

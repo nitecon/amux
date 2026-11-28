@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 type ReviewFinding struct {
@@ -33,7 +35,7 @@ func currentSubmissionReviewSource(ctx context.Context, tx *sql.Tx, project, rev
 
 // FinishSubmissionReview applies the review and its effect on the source task
 // together. The owned review conversation supplies the execution fence.
-func (s *Store) FinishSubmissionReview(ctx context.Context, project, id, outcome, summary string, findings []ReviewFinding, actor *AgentOrigin) (*Task, error) {
+func (s *Store) FinishSubmissionReview(ctx context.Context, project, id, outcome, summary string, findings []ReviewFinding, actor *agent.Origin) (*Task, error) {
 	summary = strings.TrimSpace(summary)
 	if (outcome != "approved" && outcome != "changes_requested") || summary == "" || len(summary) > 8000 || len(findings) > 20 {
 		return nil, fmt.Errorf("%w: expected an approval or correction request with a review summary and at most 20 findings", ErrTaskConflict)
@@ -45,7 +47,7 @@ func (s *Store) FinishSubmissionReview(ctx context.Context, project, id, outcome
 		}
 	}
 	var result *Task
-	err := s.taskMutation(ctx, actor, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, actor, func(tx *sql.Tx, actor *agent.Origin) error {
 		review, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err

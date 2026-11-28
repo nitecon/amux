@@ -6,12 +6,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestTaskArchiveSurvivesReplyToSameAgent(t *testing.T) {
 	root := t.TempDir()
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "macos"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "macos"}
 	info := storage.Conversation{ID: uuid.NewString(), ProjectIdent: "demo", TaskID: uuid.NewString(), Provider: owner.Provider, Owner: owner}
 	run := storage.WorkerRun{Owner: owner, Directory: root}
 	archive, err := openTaskConversationArchive(root, info, run)

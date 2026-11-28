@@ -7,33 +7,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	account "github.com/nitecon/amux/identity/user"
 )
 
 const (
 	userAccountsMigration = 46
-	UserRoleAdmin         = "admin"
-	UserRoleMember        = "member"
 )
 
-var ErrInvalidUser = errors.New("invalid user")
 var ErrLastActiveAdmin = errors.New("cannot remove the last active administrator")
 var ErrSelfUserMutation = errors.New("you cannot demote, disable or delete your own account")
-
-// User retains the gateway account record. PasswordHash is storage-only.
-type User struct {
-	ID           int64  `json:"id"`
-	Username     string `json:"username"`
-	DisplayName  string `json:"display_name"`
-	Role         string `json:"role"`
-	PasswordHash string `json:"-"`
-	SessionEpoch int64  `json:"session_epoch"`
-	DisabledAt   *int64 `json:"disabled_at"`
-	CreatedAt    int64  `json:"created_at"`
-	LastLoginAt  *int64 `json:"last_login_at"`
-}
-
-func (u User) IsAdmin() bool  { return u.Role == UserRoleAdmin }
-func (u User) IsActive() bool { return u.DisabledAt == nil }
 
 // UserUpdate applies the profile and credential changes from one account
 // update atomically. Password and disable transitions advance session_epoch.
@@ -65,8 +48,8 @@ INSERT OR IGNORE INTO amux_go_migrations(version) VALUES(46);`); err != nil {
 
 const userColumns = `id,username,display_name,role,password_hash,session_epoch,disabled_at,created_at,last_login_at`
 
-func scanUser(row interface{ Scan(...any) error }) (*User, error) {
-	var user User
+func scanUser(row interface{ Scan(...any) error }) (*account.Account, error) {
+	var user account.Account
 	if err := row.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.PasswordHash, &user.SessionEpoch, &user.DisabledAt, &user.CreatedAt, &user.LastLoginAt); err != nil {
 		return nil, err
 	}
@@ -79,13 +62,13 @@ func (s *Store) UserCount(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-func (s *Store) Users(ctx context.Context) ([]User, error) {
+func (s *Store) Users(ctx context.Context) ([]account.Account, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	users := make([]User, 0)
+	users := make([]account.Account, 0)
 	for rows.Next() {
 		user, err := scanUser(rows)
 		if err != nil {
@@ -96,7 +79,7 @@ func (s *Store) Users(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
-func (s *Store) User(ctx context.Context, id int64) (*User, error) {
+func (s *Store) User(ctx context.Context, id int64) (*account.Account, error) {
 	user, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -104,7 +87,7 @@ func (s *Store) User(ctx context.Context, id int64) (*User, error) {
 	return user, err
 }
 
-func (s *Store) UserByUsername(ctx context.Context, username string) (*User, error) {
+func (s *Store) UserByUsername(ctx context.Context, username string) (*account.Account, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	user, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE username=?`, username))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -113,33 +96,20 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (*User, err
 	return user, err
 }
 
-func normalizeUsername(raw string) (string, error) {
-	name := strings.ToLower(strings.TrimSpace(raw))
-	if len(name) < 2 || len(name) > 40 {
-		return "", fmt.Errorf("%w: username must be 2-40 characters", ErrInvalidUser)
-	}
-	for _, r := range name {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-') {
-			return "", fmt.Errorf("%w: username may contain letters, digits, '.', '_' and '-' only", ErrInvalidUser)
-		}
-	}
-	return name, nil
-}
-
-func (s *Store) CreateUser(ctx context.Context, username, displayName, role, passwordHash string) (*User, error) {
-	username, err := normalizeUsername(username)
+func (s *Store) CreateUser(ctx context.Context, username, displayName, role, passwordHash string) (*account.Account, error) {
+	username, err := account.NormalizeUsername(username)
 	if err != nil {
 		return nil, err
 	}
-	if role != UserRoleAdmin && role != UserRoleMember {
-		return nil, fmt.Errorf("%w: role must be 'admin' or 'member'", ErrInvalidUser)
+	if role != account.RoleAdmin && role != account.RoleMember {
+		return nil, fmt.Errorf("%w: role must be 'admin' or 'member'", account.ErrInvalid)
 	}
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" {
 		displayName = username
 	}
 	if strings.TrimSpace(passwordHash) == "" {
-		return nil, fmt.Errorf("%w: password hash is required", ErrInvalidUser)
+		return nil, fmt.Errorf("%w: password hash is required", account.ErrInvalid)
 	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO users(username,display_name,role,password_hash,session_epoch,created_at) VALUES(?,?,?,?,1,?)`, username, displayName, role, passwordHash, time.Now().UnixMilli())
 	if err != nil {
@@ -152,12 +122,12 @@ func (s *Store) CreateUser(ctx context.Context, username, displayName, role, pas
 	return s.User(ctx, id)
 }
 
-func (s *Store) UpdateUser(ctx context.Context, id int64, update UserUpdate) (*User, error) {
-	if update.Role != nil && *update.Role != UserRoleAdmin && *update.Role != UserRoleMember {
-		return nil, fmt.Errorf("%w: role must be 'admin' or 'member'", ErrInvalidUser)
+func (s *Store) UpdateUser(ctx context.Context, id int64, update UserUpdate) (*account.Account, error) {
+	if update.Role != nil && *update.Role != account.RoleAdmin && *update.Role != account.RoleMember {
+		return nil, fmt.Errorf("%w: role must be 'admin' or 'member'", account.ErrInvalid)
 	}
 	if update.PasswordHash != nil && strings.TrimSpace(*update.PasswordHash) == "" {
-		return nil, fmt.Errorf("%w: password hash is required", ErrInvalidUser)
+		return nil, fmt.Errorf("%w: password hash is required", account.ErrInvalid)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -187,7 +157,7 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, update UserUpdate) (*U
 	if update.Disabled != nil {
 		disabled = *update.Disabled
 	}
-	if current.IsAdmin() && current.IsActive() && (role != UserRoleAdmin || disabled) {
+	if current.IsAdmin() && current.IsActive() && (role != account.RoleAdmin || disabled) {
 		var activeAdmins int64
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role='admin' AND disabled_at IS NULL`).Scan(&activeAdmins); err != nil {
 			return nil, err
@@ -197,7 +167,7 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, update UserUpdate) (*U
 		}
 	}
 	if update.ActingUserID != nil && *update.ActingUserID == id &&
-		((role == UserRoleMember && current.IsAdmin()) || (current.IsActive() && disabled)) {
+		((role == account.RoleMember && current.IsAdmin()) || (current.IsActive() && disabled)) {
 		return nil, ErrSelfUserMutation
 	}
 	var disabledAt any
@@ -233,7 +203,7 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, update UserUpdate) (*U
 // overwritten after the caller checked the old password.
 func (s *Store) ChangeUserPassword(ctx context.Context, id, expectedEpoch int64, expectedHash, newHash string) (bool, error) {
 	if strings.TrimSpace(expectedHash) == "" || strings.TrimSpace(newHash) == "" {
-		return false, fmt.Errorf("%w: password hash is required", ErrInvalidUser)
+		return false, fmt.Errorf("%w: password hash is required", account.ErrInvalid)
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash=?,session_epoch=session_epoch+1 WHERE id=? AND session_epoch=? AND password_hash=? AND disabled_at IS NULL`, newHash, id, expectedEpoch, expectedHash)
 	if err != nil {

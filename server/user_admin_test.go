@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/auth"
+	account "github.com/nitecon/amux/identity/user"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -20,11 +22,11 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	admin, err := store.CreateUser(ctx, "admin-user", "Admin Display", storage.UserRoleAdmin, "$argon2id$existing")
+	admin, err := store.CreateUser(ctx, "admin-user", "Admin Display", account.RoleAdmin, "$argon2id$existing")
 	if err != nil {
 		t.Fatal(err)
 	}
-	member, err := store.CreateUser(ctx, "member-user", "Member Display", storage.UserRoleMember, "$argon2id$member")
+	member, err := store.CreateUser(ctx, "member-user", "Member Display", account.RoleMember, "$argon2id$member")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,17 +34,17 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 	a := newAPI(store, "route-test-key")
 	mux := http.NewServeMux()
 	a.registerUserAdminRoutes(mux)
-	requestWithBrowserUser := func(method, path, body string, identity string, role string, browserUser *storage.User) *httptest.ResponseRecorder {
+	requestWithBrowserUser := func(method, path, body string, identity string, role string, browserUser *account.Account) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		ctx := r.Context()
 		if identity != "" {
-			ctx = context.WithValue(ctx, authenticatedPrincipalContextKey{}, identity)
+			ctx = auth.WithPrincipal(ctx, identity)
 			if role != "" {
 				ctx = context.WithValue(ctx, securePrincipalContextKey{}, &securePrincipal{NodeID: identity, role: role})
 			}
 		}
 		if browserUser != nil {
-			ctx = context.WithValue(ctx, browserUserContextKey{}, browserUser)
+			ctx = auth.WithBrowserUser(ctx, browserUser)
 		}
 		r = r.WithContext(ctx)
 		w := httptest.NewRecorder()
@@ -63,7 +65,7 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 		t.Fatalf("member session list status=%d body=%s", response.Code, response.Body)
 	}
 	for _, identity := range []struct{ principal, role string }{
-		{bearerAPIKeyPrincipal, ""}, {"node-admin", "administrator"},
+		{auth.BearerPrincipal, ""}, {"node-admin", "administrator"},
 	} {
 		response := request(http.MethodGet, "/v1/users", "", identity.principal, identity.role)
 		if response.Code != http.StatusOK {
@@ -81,7 +83,7 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 		}
 	}
 
-	createdResponse := request(http.MethodPost, "/v1/users", `{"username":"new-account","password":"eight chars","display_name":"New Display"}`, bearerAPIKeyPrincipal, "")
+	createdResponse := request(http.MethodPost, "/v1/users", `{"username":"new-account","password":"eight chars","display_name":"New Display"}`, auth.BearerPrincipal, "")
 	if createdResponse.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", createdResponse.Code, createdResponse.Body)
 	}
@@ -89,19 +91,19 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 	if err := json.Unmarshal(createdResponse.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Username != "new-account" || created.Role != storage.UserRoleMember || created.DisplayName != "New Display" {
+	if created.Username != "new-account" || created.Role != account.RoleMember || created.DisplayName != "New Display" {
 		t.Fatalf("create response=%s", createdResponse.Body)
 	}
 	if strings.Contains(createdResponse.Body.String(), `"password_hash"`) {
 		t.Fatalf("create response leaked password hash: %s", createdResponse.Body)
 	}
-	if duplicate := request(http.MethodPost, "/v1/users", `{"username":"NEW-ACCOUNT","password":"eight chars"}`, bearerAPIKeyPrincipal, ""); duplicate.Code != http.StatusBadRequest {
+	if duplicate := request(http.MethodPost, "/v1/users", `{"username":"NEW-ACCOUNT","password":"eight chars"}`, auth.BearerPrincipal, ""); duplicate.Code != http.StatusBadRequest {
 		t.Fatalf("duplicate create status=%d body=%s", duplicate.Code, duplicate.Body)
 	}
 
 	oldHash, oldEpoch := member.PasswordHash, member.SessionEpoch
 	path := "/v1/users/" + strconv.FormatInt(member.ID, 10)
-	updated := request(http.MethodPatch, path, `{"password":"another password","disabled":"true"}`, bearerAPIKeyPrincipal, "")
+	updated := request(http.MethodPatch, path, `{"password":"another password","disabled":"true"}`, auth.BearerPrincipal, "")
 	if updated.Code != http.StatusOK {
 		t.Fatalf("update status=%d body=%s", updated.Code, updated.Body)
 	}
@@ -126,7 +128,7 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 		{http.MethodPatch, `{"disabled":true}`},
 		{http.MethodDelete, ""},
 	} {
-		if response := request(test.method, adminPath, test.body, bearerAPIKeyPrincipal, ""); response.Code != http.StatusBadRequest {
+		if response := request(test.method, adminPath, test.body, auth.BearerPrincipal, ""); response.Code != http.StatusBadRequest {
 			t.Errorf("last administrator protection %s body=%s status=%d response=%s", test.method, test.body, response.Code, response.Body)
 		}
 		if response := requestWithBrowserUser(test.method, adminPath, test.body, "", "", admin); response.Code != http.StatusBadRequest {
@@ -135,12 +137,12 @@ func TestUserAdminRoutesBearerAndAdministratorNodeContracts(t *testing.T) {
 	}
 
 	for _, memberPath := range []string{path, "/v1/users/" + strconv.FormatInt(created.ID, 10)} {
-		response := request(http.MethodDelete, memberPath, "", bearerAPIKeyPrincipal, "")
+		response := request(http.MethodDelete, memberPath, "", auth.BearerPrincipal, "")
 		if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"changed":true}` {
 			t.Fatalf("member delete %s status=%d body=%s", memberPath, response.Code, response.Body)
 		}
 	}
-	response := request(http.MethodGet, "/v1/users", "", bearerAPIKeyPrincipal, "")
+	response := request(http.MethodGet, "/v1/users", "", auth.BearerPrincipal, "")
 	var remaining []userView
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &remaining) != nil || len(remaining) != 1 || remaining[0].ID != admin.ID {
 		t.Fatalf("final user list status=%d body=%s", response.Code, response.Body)
@@ -153,7 +155,7 @@ func TestUserAdminRoutesAreRegisteredBehindGatewayAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.CreateUser(context.Background(), "registered", "", storage.UserRoleMember, "$argon2id$fixture"); err != nil {
+	if _, err := store.CreateUser(context.Background(), "registered", "", account.RoleMember, "$argon2id$fixture"); err != nil {
 		t.Fatal(err)
 	}
 	handler, err := NewHandler(store, "registered-route-key")

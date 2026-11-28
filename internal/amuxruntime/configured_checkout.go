@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/nitecon/amux/gatewayclient"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/clientcontrol"
-	"github.com/nitecon/amux/projectidentity"
 )
 
 func configuredCheckoutHandler(client *gatewayclient.Client, reloads chan<- clientReload, stopped <-chan struct{}, projectsDirectory func() string) http.HandlerFunc {
@@ -29,7 +29,7 @@ func configuredCheckoutHandler(client *gatewayclient.Client, reloads chan<- clie
 			if project.Ident != input.Project || project.ArchivedAt != nil {
 				continue
 			}
-			identity, origin, err := projectidentity.PrepareCheckout(r.Context(), project.Kind, project.CanonicalRemote, input.Method, projectsDirectory(), input.Destination, input.Source)
+			identity, origin, err := projectid.PrepareCheckout(r.Context(), project.Kind, project.CanonicalRemote, input.Method, projectsDirectory(), input.Destination, input.Source)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 				return

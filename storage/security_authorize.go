@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/auth/authn"
+	"github.com/nitecon/amux/auth/authz"
 )
 
 // AuthorizedSecurityNode is the durable node state associated with a validated
@@ -45,17 +47,9 @@ func (s *SecurityEnrollment) AuthorizeCertificate(ctx context.Context, certifica
 }
 
 func (s *SecurityEnrollment) authorizeCertificateLocked(ctx context.Context, certificate *x509.Certificate, now time.Time) (AuthorizedSecurityNode, *x509.Certificate, string, error) {
-	if certificate == nil || len(certificate.Raw) == 0 {
-		return AuthorizedSecurityNode{}, nil, "", fmt.Errorf("client certificate is required")
-	}
-	certificate, err := x509.ParseCertificate(certificate.Raw)
+	certificate, err := authn.VerifyClientCertificate(certificate, s.root, now)
 	if err != nil {
-		return AuthorizedSecurityNode{}, nil, "", fmt.Errorf("invalid client certificate: %w", err)
-	}
-	roots := x509.NewCertPool()
-	roots.AddCert(s.root)
-	if _, err := certificate.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, CurrentTime: now}); err != nil {
-		return AuthorizedSecurityNode{}, nil, "", fmt.Errorf("client certificate is not trusted: %w", err)
+		return AuthorizedSecurityNode{}, nil, "", err
 	}
 	serial, err := certificateSerialCompat(certificate.Raw)
 	if err != nil {
@@ -103,12 +97,11 @@ WHERE c.serial=? AND c.expires_at>?`, serial, now).Scan(
 	if lastSeen.Valid {
 		node.LastSeen = &lastSeen.Int64
 	}
-	if node.Revoked {
-		return AuthorizedSecurityNode{}, fmt.Errorf("node revoked")
-	}
-	if node.CurrentSerial != serial && (node.PendingSerial == nil || *node.PendingSerial != serial) &&
-		(node.PreviousSerial == nil || *node.PreviousSerial != serial || node.PreviousUntil == nil || *node.PreviousUntil <= now) {
-		return AuthorizedSecurityNode{}, fmt.Errorf("credential retired")
+	if err := authz.CheckCertificateSerial(authz.CertificateState{
+		CurrentSerial: node.CurrentSerial, PendingSerial: node.PendingSerial, PreviousSerial: node.PreviousSerial,
+		PreviousUntil: node.PreviousUntil, Revoked: node.Revoked,
+	}, serial, now); err != nil {
+		return AuthorizedSecurityNode{}, err
 	}
 	return node, nil
 }

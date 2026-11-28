@@ -115,7 +115,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer, get
 		}
 		*endpoint = saved.Server
 	}
-	client, resolvedEndpoint, err := gatewayClientForProfile(*endpoint, *enrolledProfile, getenv(*keyEnv))
+	client, resolvedEndpoint, err := gatewayclient.NewForProfile(*endpoint, *enrolledProfile, getenv(*keyEnv))
 	if err != nil {
 		return err
 	}
@@ -165,6 +165,6 @@ func RunSavedWorker(ctx context.Context, store *storage.Store, client *gatewaycl
 		return err
 	}
 	open := worker.OpenWithNativeTools(worker.NativeToolsConfig{Executable: executable, Server: client.Endpoint(),
-		EnrolledProfile: profile, APIKeyEnv: keyEnv, WorkPreferencesPath: preferences, ManagedMCPEnv: ManagedMCPEnv})
+		EnrolledProfile: profile, APIKeyEnv: keyEnv, WorkPreferencesPath: preferences})
 	return worker.Run(ctx, worker.Config{Store: store, Client: client, RunID: runID, Open: open, AdvertisePresence: true})
 }

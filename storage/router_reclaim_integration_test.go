@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestReclaimRuntimeUsesCommittedPresenceAndStallsOfflineNativeWork(t *testing.T) {
@@ -25,7 +26,7 @@ func TestReclaimRuntimeUsesCommittedPresenceAndStallsOfflineNativeWork(t *testin
 		return task
 	}
 	native, legacy, busyLegacy := create("Offline native work"), create("Unbound legacy work"), create("Busy legacy work")
-	owner := AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	if _, err := s.TransitionTask(ctx, "presence", native.ID, "in_progress", &owner); err != nil {
 		t.Fatal(err)
 	}
@@ -95,13 +96,13 @@ func TestReclaimRuntimeUsesCommittedPresenceAndStallsOfflineNativeWork(t *testin
 		t.Fatalf("offline outbox fixture: %d %v", outboxCount, err)
 	}
 	gate := &gatedReminderPresence{Store: s, entered: make(chan struct{}), released: make(chan struct{})}
-	runtime, err := router.NewRuntime(s, s.EventBus(), append(nativePresenceDefinitions(), plugins.NotificationEventDefinitions()...), []router.Plugin{
-		plugins.PresencePlugin(gate), plugins.ReclaimPlugin(s),
-	}, router.RunConfig{Capacity: 4})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), append(nativePresenceDefinitions(), controllers.NotificationEventDefinitions()...), []fism.Controller{
+		controllers.PresenceController(gate), controllers.ReclaimController(s),
+	}, fism.RunConfig{Capacity: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tick, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
+	tick, err := s.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

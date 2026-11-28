@@ -3,8 +3,9 @@ package server
 import (
 	"net/http"
 
-	"github.com/nitecon/amux/browserauth"
-	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/auth"
+	"github.com/nitecon/amux/auth/authn"
+	account "github.com/nitecon/amux/identity/user"
 )
 
 type userView struct {
@@ -17,7 +18,7 @@ type userView struct {
 	LastLoginAt *int64 `json:"last_login_at"`
 }
 
-func userViewFromAccount(user storage.User) userView {
+func userViewFromAccount(user account.Account) userView {
 	return userView{
 		ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role,
 		Disabled: !user.IsActive(), CreatedAt: user.CreatedAt, LastLoginAt: user.LastLoginAt,
@@ -35,7 +36,7 @@ func (a *api) registerSelfServiceUserRoutes(mux *http.ServeMux) {
 }
 
 func (a *api) currentUser(w http.ResponseWriter, r *http.Request) {
-	user := authenticatedBrowserUser(r.Context())
+	user := auth.BrowserUser(r.Context())
 	if user == nil {
 		writeError(w, http.StatusNotFound, "no browser session on this request")
 		return
@@ -50,12 +51,12 @@ func (a *api) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
 	if !readJSONRequest(w, r, &request, 1<<20) {
 		return
 	}
-	session := authenticatedBrowserUser(r.Context())
+	session := auth.BrowserUser(r.Context())
 	if session == nil {
 		writeError(w, http.StatusBadRequest, "password changes require a browser session")
 		return
 	}
-	newHash, err := browserauth.HashPassword(request.NewPassword)
+	newHash, err := authn.HashPassword(request.NewPassword)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -73,7 +74,7 @@ func (a *api) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "user credential or active state changed")
 		return
 	}
-	if !browserauth.VerifyPassword(request.CurrentPassword, user.PasswordHash) {
+	if !authn.VerifyPassword(request.CurrentPassword, user.PasswordHash) {
 		writeError(w, http.StatusBadRequest, "current password is incorrect")
 		return
 	}

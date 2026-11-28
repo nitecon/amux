@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/nitecon/amux/projects"
 	"strings"
+
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // Artifact links follow workflow runs (39) and artifact discourse (40).
@@ -207,13 +208,13 @@ func (s *Store) CountArtifactLinks(ctx context.Context, projectIdent string) (in
 func countArtifactLinks(ctx context.Context, q queryer, projectIdent string) (int64, error) {
 	var count int64
 	err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM artifact_links AS l WHERE "+artifactLinkProjectVisibility,
-		projects.NormalizeIdent(projectIdent)).Scan(&count)
+		projectid.NormalizeIdent(projectIdent)).Scan(&count)
 	return count, err
 }
 
 func (s *Store) ListArtifactLinks(ctx context.Context, projectIdent string, filter ArtifactLinkFilter) ([]ArtifactLink, error) {
 	query := artifactLinkSelect + " AS l WHERE " + artifactLinkProjectVisibility
-	args := []any{projects.NormalizeIdent(projectIdent)}
+	args := []any{projectid.NormalizeIdent(projectIdent)}
 	for _, item := range []struct{ column, value string }{
 		{"link_type", filter.LinkType}, {"source_kind", filter.SourceKind}, {"source_id", filter.SourceID},
 		{"target_kind", filter.TargetKind}, {"target_id", filter.TargetID},

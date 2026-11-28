@@ -9,7 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -45,15 +46,15 @@ func (c *Client) requireTaskCapability(ctx context.Context, name, refusal string
 
 // DelegateTask never retries an uncertain creation. Its receipt must prove both
 // requested project links before the caller can treat the handoff as accepted.
-func (c *Client) DelegateTask(ctx context.Context, project string, input TaskDelegateInput, origin *storage.AgentOrigin, goal *string) (*storage.TaskDelegationResult, error) {
+func (c *Client) DelegateTask(ctx context.Context, project string, input TaskDelegateInput, origin *agent.Origin, goal *string) (*storage.TaskDelegationResult, error) {
 	if err := validateDelegationProject(project); err != nil {
 		return nil, err
 	}
 	if err := validateDelegationProject(input.TargetProject); err != nil {
 		return nil, err
 	}
-	project = projects.NormalizeIdent(project)
-	input.TargetProject = projects.NormalizeIdent(input.TargetProject)
+	project = projectid.NormalizeIdent(project)
+	input.TargetProject = projectid.NormalizeIdent(input.TargetProject)
 	input.Title = strings.TrimSpace(input.Title)
 	if project == input.TargetProject {
 		return nil, fmt.Errorf("delegation requires a different target project")
@@ -68,7 +69,7 @@ func (c *Client) DelegateTask(ctx context.Context, project string, input TaskDel
 		return nil, fmt.Errorf("delegation parent must be a canonical non-nil UUID")
 	}
 	if origin != nil {
-		normalized, err := storage.NormalizeOrigin(origin)
+		normalized, err := agent.NormalizeOrigin(origin)
 		if err != nil || normalized == nil || !canonicalDelegationID(normalized.SessionID) || !canonicalDelegationID(normalized.InstanceID) {
 			return nil, fmt.Errorf("delegation requires a complete native origin")
 		}

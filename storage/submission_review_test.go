@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestObsoleteSubmissionReviewCanCloseWithoutChangingSource(t *testing.T) {
@@ -35,7 +37,7 @@ func TestObsoleteSubmissionReviewCanCloseWithoutChangingSource(t *testing.T) {
 						t.Fatal(err)
 					}
 					var reviews []Task
-					err = s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+					err = s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 						var err error
 						reviews, err = enqueueReviewStages(ctx, tx, parked, cycle, []string{"submission"})
 						return err

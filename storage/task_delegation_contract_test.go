@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestDelegateTaskCreatesAtomicCrossProjectHierarchyAndUnassignedTarget(t *testing.T) {
@@ -195,13 +197,13 @@ func TestDelegateTaskRegisteredRequesterRequiresCurrentSameOriginAndCompatibleOS
 
 	for _, test := range []struct {
 		name      string
-		requester func(*AgentOrigin, string) RegisteredTargetIdentity
+		requester func(*agent.Origin, string) RegisteredTargetIdentity
 		seenAt    func() time.Time
 		labels    []string
 	}{
 		{
 			name: "foreign registered origin",
-			requester: func(_ *AgentOrigin, generation string) RegisteredTargetIdentity {
+			requester: func(_ *agent.Origin, generation string) RegisteredTargetIdentity {
 				foreign := *taskActor()
 				foreign.SessionID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 				foreign.InstanceID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
@@ -211,14 +213,14 @@ func TestDelegateTaskRegisteredRequesterRequiresCurrentSameOriginAndCompatibleOS
 		},
 		{
 			name: "stale generation",
-			requester: func(actor *AgentOrigin, _ string) RegisteredTargetIdentity {
+			requester: func(actor *agent.Origin, _ string) RegisteredTargetIdentity {
 				return RegisteredTargetIdentity{Origin: *actor, Generation: "88888888-8888-4888-8888-888888888888"}
 			},
 			seenAt: time.Now,
 		},
 		{
 			name: "expired registration",
-			requester: func(actor *AgentOrigin, generation string) RegisteredTargetIdentity {
+			requester: func(actor *agent.Origin, generation string) RegisteredTargetIdentity {
 				return RegisteredTargetIdentity{Origin: *actor, Generation: generation}
 			},
 			seenAt: func() time.Time {
@@ -227,7 +229,7 @@ func TestDelegateTaskRegisteredRequesterRequiresCurrentSameOriginAndCompatibleOS
 		},
 		{
 			name: "OS mismatch",
-			requester: func(actor *AgentOrigin, generation string) RegisteredTargetIdentity {
+			requester: func(actor *agent.Origin, generation string) RegisteredTargetIdentity {
 				return RegisteredTargetIdentity{Origin: *actor, Generation: generation}
 			},
 			seenAt: time.Now,
@@ -545,7 +547,7 @@ func assertDelegationProjectForeignKeys(t *testing.T, db *sql.DB) {
 	}
 }
 
-func delegationContractFixture(t *testing.T) (*Store, context.Context, *Task, *AgentOrigin) {
+func delegationContractFixture(t *testing.T) (*Store, context.Context, *Task, *agent.Origin) {
 	t.Helper()
 	s := taskStore(t)
 	ctx := context.Background()

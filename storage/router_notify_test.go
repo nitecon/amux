@@ -7,16 +7,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
-func notificationRegistry(t *testing.T) *router.Registry {
+func notificationRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	definition := plugins.NotificationEventDefinitions()[0]
-	registry, err := router.NewRegistry([]router.EventDefinition{definition}, []router.PluginDefinition{{
+	definition := controllers.NotificationEventDefinitions()[0]
+	registry, err := fism.NewRegistry([]fism.EventDefinition{definition}, []fism.ControllerDefinition{{
 		ID:            "notification-sink",
-		Subscriptions: []router.Subscription{{Event: plugins.NotifyEventID, MinVersion: 1, MaxVersion: 1}},
+		Subscriptions: []fism.Subscription{{Event: controllers.NotifyEventID, MinVersion: 1, MaxVersion: 1}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -205,14 +205,14 @@ func TestEmitRouterNotificationSnapshotsHostsPreservesJSONAndCallerTransaction(t
 	}
 }
 
-func TestEmitRouterNotificationDeliveryFailureRollsBackWithCaller(t *testing.T) {
+func TestEmitRouterNotificationAcceptanceFailureRollsBackWithCaller(t *testing.T) {
 	s := taskStore(t)
 	ctx := context.Background()
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE notification_business_marker(id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER reject_notification_delivery BEFORE INSERT ON router_deliveries
-		WHEN NEW.plugin='notification-sink' BEGIN SELECT RAISE(ABORT,'injected delivery failure'); END`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER reject_notification_acceptance BEFORE INSERT ON amux_heartbeat_outbox
+		BEGIN SELECT RAISE(ABORT,'injected acceptance failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -224,7 +224,7 @@ func TestEmitRouterNotificationDeliveryFailureRollsBackWithCaller(t *testing.T) 
 	}
 	_, emitErr := emitRouterNotificationIn(ctx, tx, notificationRegistry(t), "notifier", "00000000-0000-4000-8000-000000000005", json.RawMessage(`{"target":"receiver","project":"tasks","mode":"recipient","require_idle":false,"event":{"kind":"task_created","task":{}}}`))
 	if emitErr == nil {
-		t.Fatal("expected injected delivery failure")
+		t.Fatal("expected injected acceptance failure")
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestEmitRouterNotificationDeliveryFailureRollsBackWithCaller(t *testing.T) 
 		query string
 	}{
 		{name: "event", query: "SELECT COUNT(*) FROM router_events WHERE id='agent.notify'"},
-		{name: "delivery", query: "SELECT COUNT(*) FROM router_deliveries"},
+		{name: "accepted notification", query: "SELECT COUNT(*) FROM amux_heartbeat_outbox"},
 		{name: "business marker", query: "SELECT COUNT(*) FROM notification_business_marker"},
 	} {
 		var count int

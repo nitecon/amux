@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestReassignTaskUsesDirectoryBindingAndExactLiveWireTarget(t *testing.T) {
-	actor := storage.AgentOrigin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
-	target := storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: "33333333-3333-4333-8333-333333333333", InstanceID: "44444444-4444-4444-8444-444444444444", Provider: "claude", OS: "windows"}, Generation: "55555555-5555-4555-8555-555555555555"}
+	actor := agent.Origin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
+	target := storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: "33333333-3333-4333-8333-333333333333", InstanceID: "44444444-4444-4444-8444-444444444444", Provider: "claude", OS: "windows"}, Generation: "55555555-5555-4555-8555-555555555555"}
 	const taskID = "66666666-6666-4666-8666-666666666666"
 	const remote = "github.com/example/project"
 	now := time.Now().UnixMilli()
@@ -74,7 +75,7 @@ func TestReassignTaskUsesDirectoryBindingAndExactLiveWireTarget(t *testing.T) {
 }
 
 func TestReassignTaskRejectsWrongOSBeforeMutation(t *testing.T) {
-	actor := storage.AgentOrigin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: "11111111-1111-4111-8111-111111111111", InstanceID: "22222222-2222-4222-8222-222222222222", Provider: "codex", OS: "linux"}
 	const taskID = "66666666-6666-4666-8666-666666666666"
 	const session = "33333333-3333-4333-8333-333333333333"
 	now := time.Now().UnixMilli()
@@ -87,7 +88,7 @@ func TestReassignTaskRejectsWrongOSBeforeMutation(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
 			_ = json.NewEncoder(w).Encode([]storage.ProjectOverview{{Project: storage.Project{Ident: "demo", CanonicalRemote: ptrString("github.com/example/project")}}})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/task-targets"):
-			_ = json.NewEncoder(w).Encode(storage.TargetDirectory{CanonicalRemote: ptrString("github.com/example/project"), Targets: []storage.RegisteredTarget{{Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: session, InstanceID: "44444444-4444-4444-8444-444444444444", Provider: "claude", OS: "linux"}, Generation: "55555555-5555-4555-8555-555555555555"}, SeenAt: now, ExpiresAt: now + 120000}}})
+			_ = json.NewEncoder(w).Encode(storage.TargetDirectory{CanonicalRemote: ptrString("github.com/example/project"), Targets: []storage.RegisteredTarget{{Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: session, InstanceID: "44444444-4444-4444-8444-444444444444", Provider: "claude", OS: "linux"}, Generation: "55555555-5555-4555-8555-555555555555"}, SeenAt: now, ExpiresAt: now + 120000}}})
 		default:
 			writes++
 		}
@@ -105,7 +106,7 @@ func TestReassignTaskRejectsWrongOSBeforeMutation(t *testing.T) {
 func TestAssignTaskUsesSelectedLiveTargetWithoutAgentIdentity(t *testing.T) {
 	const taskID = "66666666-6666-4666-8666-666666666666"
 	const remote = "github.com/example/project"
-	target := storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: "33333333-3333-4333-8333-333333333333", InstanceID: "44444444-4444-4444-8444-444444444444", Provider: "claude", OS: "windows"}, Generation: "55555555-5555-4555-8555-555555555555"}
+	target := storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: "33333333-3333-4333-8333-333333333333", InstanceID: "44444444-4444-4444-8444-444444444444", Provider: "claude", OS: "windows"}, Generation: "55555555-5555-4555-8555-555555555555"}
 	now := time.Now().UnixMilli()
 	current := storage.Task{ID: taskID, ProjectIdent: "demo", Status: "in_progress", Labels: []string{"os:windows"}}
 	assigned := storage.Task{ID: taskID, ProjectIdent: "demo", Status: "todo", Labels: []string{"os:windows"}, OwnerOrigin: &target.Origin, Routing: json.RawMessage(`{"mode":"session","target":{"origin":{"session_id":"33333333-3333-4333-8333-333333333333","instance_id":"44444444-4444-4444-8444-444444444444","provider":"claude","os":"windows"},"generation":"55555555-5555-4555-8555-555555555555"}}`)}

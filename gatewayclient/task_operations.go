@@ -10,7 +10,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -85,7 +86,7 @@ func userCommentAcknowledgement(raw json.RawMessage, taskID, content string) (*s
 
 func taskPath(project string) string { return "/v1/projects/" + url.PathEscape(project) + "/tasks" }
 
-func (c *Client) TaskList(ctx context.Context, project string, options TaskListOptions, origin *storage.AgentOrigin, goal *string) ([]storage.TaskSummary, error) {
+func (c *Client) TaskList(ctx context.Context, project string, options TaskListOptions, origin *agent.Origin, goal *string) ([]storage.TaskSummary, error) {
 	query := url.Values{}
 	if len(options.Statuses) > 0 {
 		query.Set("status", strings.Join(options.Statuses, ","))
@@ -113,7 +114,7 @@ func (c *Client) TaskRead(ctx context.Context, project, id string, comments uint
 	return result, err
 }
 
-func (c *Client) TaskCreate(ctx context.Context, project string, input TaskCreateInput, origin *storage.AgentOrigin, goal *string) (json.RawMessage, error) {
+func (c *Client) TaskCreate(ctx context.Context, project string, input TaskCreateInput, origin *agent.Origin, goal *string) (json.RawMessage, error) {
 	routed := input.Routing != nil
 	if routed {
 		if origin != nil {
@@ -153,7 +154,7 @@ func (c *Client) TaskCreate(ctx context.Context, project string, input TaskCreat
 		task, err = taskAcknowledgement(result, project, "")
 		if err == nil {
 			id, parseErr := uuid.Parse(task.ID)
-			if parseErr != nil || id == uuid.Nil || (input.ParentID == nil && task.Parent != nil) || (input.ParentID != nil && (task.Parent == nil || task.Parent.ID != *input.ParentID || task.Parent.ProjectIdent != projects.NormalizeIdent(project))) {
+			if parseErr != nil || id == uuid.Nil || (input.ParentID == nil && task.Parent != nil) || (input.ParentID != nil && (task.Parent == nil || task.Parent.ID != *input.ParentID || task.Parent.ProjectIdent != projectid.NormalizeIdent(project))) {
 				err = fmt.Errorf("gateway did not acknowledge the requested task hierarchy")
 			}
 		}
@@ -173,7 +174,7 @@ func (c *Client) TaskCreate(ctx context.Context, project string, input TaskCreat
 	return result, err
 }
 
-func (c *Client) TaskUpdate(ctx context.Context, project, id string, input storage.TaskWorkflowUpdate, origin *storage.AgentOrigin, goal *string) (json.RawMessage, error) {
+func (c *Client) TaskUpdate(ctx context.Context, project, id string, input storage.TaskWorkflowUpdate, origin *agent.Origin, goal *string) (json.RawMessage, error) {
 	var result json.RawMessage
 	err := c.doTaskGoal(ctx, "PATCH", taskPath(project)+"/"+url.PathEscape(id), input, origin, goal, &result)
 	if err == nil {
@@ -198,7 +199,7 @@ func (c *Client) TaskUpdate(ctx context.Context, project, id string, input stora
 	return result, err
 }
 
-func (c *Client) TaskConfirm(ctx context.Context, project, id string, taskType *string, changeset json.RawMessage, origin *storage.AgentOrigin) (json.RawMessage, error) {
+func (c *Client) TaskConfirm(ctx context.Context, project, id string, taskType *string, changeset json.RawMessage, origin *agent.Origin) (json.RawMessage, error) {
 	var result json.RawMessage
 	input := struct {
 		TaskType  *string         `json:"task_type,omitempty"`
@@ -221,7 +222,7 @@ func (c *Client) TaskConfirm(ctx context.Context, project, id string, taskType *
 	return result, err
 }
 
-func (c *Client) TaskComment(ctx context.Context, project, id, content string, origin *storage.AgentOrigin) (json.RawMessage, error) {
+func (c *Client) TaskComment(ctx context.Context, project, id, content string, origin *agent.Origin) (json.RawMessage, error) {
 	author, kind := "user", "user"
 	if origin != nil {
 		author, kind = origin.SessionID, "agent"
@@ -254,7 +255,7 @@ func taskAcknowledgement(raw json.RawMessage, project, id string) (*storage.Task
 }
 
 func validateTaskAcknowledgement(task *storage.Task, project, id string) error {
-	if task == nil || task.ID == "" || (id != "" && task.ID != id) || task.ProjectIdent != projects.NormalizeIdent(project) {
+	if task == nil || task.ID == "" || (id != "" && task.ID != id) || task.ProjectIdent != projectid.NormalizeIdent(project) {
 		return fmt.Errorf("gateway task response did not match the requested scope")
 	}
 	if !storage.IsValidTaskStatus(task.Status) {
@@ -264,7 +265,7 @@ func validateTaskAcknowledgement(task *storage.Task, project, id string) error {
 }
 
 // AskTaskQuestion records a question from the task's owning agent.
-func (c *Client) AskTaskQuestion(ctx context.Context, project, id, question string, options []string, origin *storage.AgentOrigin) (json.RawMessage, error) {
+func (c *Client) AskTaskQuestion(ctx context.Context, project, id, question string, options []string, origin *agent.Origin) (json.RawMessage, error) {
 	if origin == nil {
 		return nil, fmt.Errorf("questions require an agent origin")
 	}
@@ -277,9 +278,41 @@ func (c *Client) AskTaskQuestion(ctx context.Context, project, id, question stri
 	return result, err
 }
 
-// OpenTaskQuestions lists unanswered agent questions across all projects.
+// OpenTaskQuestions lists unanswered agent questions across all projectid.
 func (c *Client) OpenTaskQuestions(ctx context.Context) ([]storage.TaskQuestion, error) {
 	var result []storage.TaskQuestion
 	err := c.do(ctx, "GET", "/v1/questions", nil, nil, &result)
 	return result, err
+}
+
+func (c *Client) ReportTaskStarted(ctx context.Context, project, id string, origin *agent.Origin) (json.RawMessage, error) {
+	raw, err := c.TaskRead(ctx, project, id, 0)
+	if err != nil {
+		return nil, err
+	}
+	var task storage.Task
+	if err := json.Unmarshal(raw, &task); err != nil {
+		return nil, fmt.Errorf("invalid task response")
+	}
+	if !storage.IsActiveTaskStatus(task.Status) || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
+		return nil, fmt.Errorf("started requires an active task owned by this exact native session and instance")
+	}
+	return c.TaskComment(ctx, project, id, fmt.Sprintf("Agent reports execution started: session=%s instance=%s; recorded as a comment, not an atomic gateway lifecycle transition", origin.SessionID, origin.InstanceID), origin)
+}
+
+func (c *Client) ReleaseTask(ctx context.Context, project, id string, origin *agent.Origin, goal *string, change json.RawMessage) (json.RawMessage, error) {
+	if origin != nil {
+		raw, err := c.TaskRead(ctx, project, id, 0)
+		if err != nil {
+			return nil, err
+		}
+		var task storage.Task
+		if json.Unmarshal(raw, &task) != nil {
+			return nil, fmt.Errorf("invalid task response")
+		}
+		if !storage.IsActiveTaskStatus(task.Status) || task.OwnerOrigin == nil || *task.OwnerOrigin != *origin {
+			return nil, fmt.Errorf("only the exact owning execution may release this active task; no status update was sent")
+		}
+	}
+	return c.TaskUpdate(ctx, project, id, storage.TaskWorkflowUpdate{Status: "todo", Changeset: change}, origin, goal)
 }

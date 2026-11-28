@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var ErrArtifactLinkProjectMismatch = errors.New("artifact link is outside the requested project")
@@ -16,7 +16,7 @@ var ErrArtifactLinkProjectMismatch = errors.New("artifact link is outside the re
 // CreateArtifactLinkForProject validates project scope and any associated run
 // in the same transaction as link replay/creation and resumed-run completion.
 func (s *Store) CreateArtifactLinkForProject(ctx context.Context, projectIdent string, input ArtifactLinkInsert) (*ArtifactLinkWrite, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	if projectIdent == "" {
 		return nil, fmt.Errorf("project ident is required")
 	}
@@ -40,7 +40,7 @@ func (s *Store) CreateArtifactLinkForProject(ctx context.Context, projectIdent s
 // before inserting; this transaction preserves that behavior for concurrent Go
 // requests with different workflow idempotency keys.
 func (s *Store) CreateSpecTaskArtifactLink(ctx context.Context, projectIdent string, input ArtifactLinkInsert) (*ArtifactLinkWrite, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	if projectIdent == "" || input.LinkType != "task_generated_from_spec" || input.SourceKind != "artifact_version" || input.TargetKind != "task" || input.SourceChildAddress == nil {
 		return nil, fmt.Errorf("invalid spec task artifact link")
 	}

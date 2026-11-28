@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 type gatedReminderPresence struct {
@@ -17,7 +17,7 @@ type gatedReminderPresence struct {
 	entered, released chan struct{}
 }
 
-func (p *gatedReminderPresence) ReconcileRouterPresence(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (p *gatedReminderPresence) ReconcileRouterPresence(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	p.once.Do(func() { close(p.entered) })
 	select {
 	case <-p.released:
@@ -42,10 +42,10 @@ func TestReminderRuntimeRejectsSupersededLifetimeAfterPresenceDependency(t *test
 		t.Fatalf("first lifetime: %v %v", ok, err)
 	}
 	gate := &gatedReminderPresence{Store: s, entered: make(chan struct{}), released: make(chan struct{})}
-	definitions := append(nativePresenceDefinitions(), plugins.NotificationEventDefinitions()...)
-	runtime, err := router.NewRuntime(s, s.EventBus(), definitions, []router.Plugin{plugins.PresencePlugin(gate), plugins.ReminderPlugin(s), {
-		Definition: router.PluginDefinition{ID: "notification-sink", Subscriptions: []router.Subscription{{Event: plugins.NotifyEventID, MinVersion: 1, MaxVersion: 1}}},
-	}}, router.RunConfig{Capacity: 4})
+	definitions := append(nativePresenceDefinitions(), controllers.NotificationEventDefinitions()...)
+	runtime, err := fism.NewRuntime(s, s.EventBus(), definitions, []fism.Controller{controllers.PresenceController(gate), controllers.ReminderController(s), {
+		Definition: fism.ControllerDefinition{ID: "notification-sink", Subscriptions: []fism.Subscription{{Event: controllers.NotifyEventID, MinVersion: 1, MaxVersion: 1}}},
+	}}, fism.RunConfig{Capacity: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

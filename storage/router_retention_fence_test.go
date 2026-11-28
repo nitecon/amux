@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestRouterRetentionFencesUnacknowledgedCompletion(t *testing.T) {
@@ -40,7 +40,7 @@ func TestRouterRetentionFencesUnacknowledgedCompletion(t *testing.T) {
 	}
 	assertRetentionFenceCount(t, s, `SELECT COUNT(*) FROM router_events WHERE seq=?`, 1, run.Event.Seq)
 
-	if err := s.FinishRouterDelivery(ctx, token, registry, run, router.Outcome{Kind: router.Continue}, now+2); err != nil {
+	if err := s.FinishRouterDelivery(ctx, token, registry, run, fism.Outcome{Kind: fism.Continue}, now+2); err != nil {
 		t.Fatalf("idempotent finish acknowledgment: %v", err)
 	}
 	if err := s.ReleaseRouterRuntime(ctx, token); err != nil {
@@ -76,7 +76,7 @@ func TestRouterRetentionFenceTracksPluginAndAttempt(t *testing.T) {
 		t.Fatalf("first claim = %+v, %v", first, err)
 	}
 	for _, run := range first.Runs {
-		if err := s.FinishRouterDelivery(ctx, token, registry, run, router.Outcome{Kind: router.Fail, Error: "retry"}, now); err != nil {
+		if err := s.FinishRouterDelivery(ctx, token, registry, run, fism.Outcome{Kind: fism.Fail, Error: "retry"}, now); err != nil {
 			t.Fatalf("first attempt failure: %v", err)
 		}
 	}
@@ -88,7 +88,7 @@ func TestRouterRetentionFenceTracksPluginAndAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, run := range first.Runs {
-		if err := s.FinishRouterDelivery(ctx, token, registry, run, router.Outcome{Kind: router.Fail, Error: "stale"}, now+1001); err != nil {
+		if err := s.FinishRouterDelivery(ctx, token, registry, run, fism.Outcome{Kind: fism.Fail, Error: "stale"}, now+1001); err != nil {
 			t.Fatalf("stale finish should be idempotent: %v", err)
 		}
 	}
@@ -104,7 +104,7 @@ func TestRouterRetentionFenceTracksPluginAndAttempt(t *testing.T) {
 	}
 	assertRetentionFenceCount(t, s, `SELECT COUNT(*) FROM router_events WHERE seq=?`, 1, emitted.Event.Seq)
 	for _, run := range second.Runs {
-		if err := s.FinishRouterDelivery(ctx, token, registry, run, router.Outcome{Kind: router.Continue}, now+1002); err != nil {
+		if err := s.FinishRouterDelivery(ctx, token, registry, run, fism.Outcome{Kind: fism.Continue}, now+1002); err != nil {
 			t.Fatal(err)
 		}
 	}

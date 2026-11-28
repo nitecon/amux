@@ -13,6 +13,7 @@ import (
 
 	fynetest "fyne.io/fyne/v2/test"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -127,7 +128,7 @@ func TestTaskComposerOffersAllRoutesAndSubmitsFrozenExecution(t *testing.T) {
 	t.Cleanup(app.Quit)
 	const remote = "github.com/example/project"
 	const taskID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	target := storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", InstanceID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Provider: "claude", OS: "linux"}, Generation: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"}
+	target := storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", InstanceID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Provider: "claude", OS: "linux"}, Generation: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"}
 	now := time.Now().UnixMilli()
 	directory := storage.TargetDirectory{CanonicalRemote: stringPtr(remote), Targets: []storage.RegisteredTarget{{Target: target, SeenAt: now, ExpiresAt: now + 120_000}}}
 	var posts atomic.Int64
@@ -159,7 +160,7 @@ func TestTaskComposerOffersAllRoutesAndSubmitsFrozenExecution(t *testing.T) {
 				t.Errorf("automatic create should use the server default route: %+v", request)
 			}
 			ackRouting := gatewayclient.TaskRouting{Mode: gatewayclient.TaskRoutingAuto}
-			var owner *storage.AgentOrigin
+			var owner *agent.Origin
 			if request.Title == "Pinned task" {
 				ackRouting = gatewayclient.TaskRouting{Mode: gatewayclient.TaskRoutingSession, Target: &target}
 				owner = &target.Origin
@@ -247,7 +248,7 @@ func TestTaskComposerFencesDelayedTargetReadAfterProjectChange(t *testing.T) {
 	browser.mu.Unlock()
 	old := browser.taskComposer.createDraft("demo")
 	old.targetsReadGeneration, old.targetsLoading = 1, true
-	target := storage.RegisteredTarget{Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}, Generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}, SeenAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
+	target := storage.RegisteredTarget{Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}, Generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}, SeenAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
 	browser.taskComposer.finishRoutingTargets(browser.activeWorkspaceID, "demo", 0, 1, demoRemote, []storage.RegisteredTarget{target}, nil)
 	if old.targetsLoaded || len(old.targets) != 0 || !old.targetsLoading || old.targetsStatus != "" {
 		t.Fatalf("late recipient read was not fenced: %+v", old)
@@ -278,7 +279,7 @@ func TestTaskComposerRoutingUnavailableSelectionAndCallbackFence(t *testing.T) {
 	c := browser.taskComposer
 	c.activeProject = "demo"
 	now := time.Now()
-	oldTarget := storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}, Generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}
+	oldTarget := storage.RegisteredTargetIdentity{Origin: agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}, Generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}
 	replacement := oldTarget
 	replacement.Generation = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	draft := c.createDraft("demo")

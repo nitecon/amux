@@ -8,8 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const machineCheckoutsMigration = 36
@@ -84,7 +83,7 @@ func (s *Store) ReportMachineCheckouts(ctx context.Context, report MachineChecko
 	}
 	for _, checkout := range report.Checkouts {
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO amux_go_machine_checkouts(hostname,project_ident,origin,seen_at,unavailable) VALUES(?,?,?,?,?)`,
-			hostname, projects.NormalizeIdent(checkout.Project), safeCheckoutOrigin(checkout.Origin), now.UnixMilli(), checkout.Unavailable); err != nil {
+			hostname, projectid.NormalizeIdent(checkout.Project), safeCheckoutOrigin(checkout.Origin), now.UnixMilli(), checkout.Unavailable); err != nil {
 			return err
 		}
 	}
@@ -99,10 +98,10 @@ func safeCheckoutOrigin(origin *string) *string {
 		return nil
 	}
 	raw := *origin
-	if projectidentity.ValidateCloneSource(raw) != nil {
+	if projectid.ValidateCloneSource(raw) != nil {
 		return nil
 	}
-	safe, representable := projectidentity.SanitizeCloneOriginURL(raw)
+	safe, representable := projectid.SanitizeCloneOriginURL(raw)
 	if !representable || safe != raw {
 		// The wire report is admitted only when it already contains a safe,
 		// transport-preserving origin; local display may scrub HTTP credentials.

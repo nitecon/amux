@@ -6,10 +6,10 @@ import (
 	"fmt"
 
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/providerrpc"
+	"github.com/nitecon/amux/providers/rpc"
 )
 
-func (s *Session) handle(ctx context.Context, p *providerrpc.Peer, message providerrpc.Message) error {
+func (s *Session) handle(ctx context.Context, p *rpc.Peer, message rpc.Message) error {
 	if message.ID != nil {
 		return s.request(ctx, p, message)
 	}
@@ -169,12 +169,12 @@ func knownNotification(method string) bool {
 		return false
 	}
 }
-func (s *Session) request(ctx context.Context, p *providerrpc.Peer, message providerrpc.Message) error {
+func (s *Session) request(ctx context.Context, p *rpc.Peer, message rpc.Message) error {
 	unsupported := func() error {
 		if err := s.emit(ctx, conversation.Event{Kind: "unsupported_request", SessionID: s.ID(), Status: message.Method}); err != nil {
 			return err
 		}
-		return p.Respond(ctx, message.ID, nil, &providerrpc.RPCError{Code: -32601, Message: "amux does not implement this native client request"})
+		return p.Respond(ctx, message.ID, nil, &rpc.Error{Code: -32601, Message: "amux does not implement this native client request"})
 	}
 	switch message.Method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval":
@@ -190,14 +190,14 @@ func (s *Session) request(ctx context.Context, p *providerrpc.Peer, message prov
 		Permissions           json.RawMessage   `json:"permissions"`
 	}
 	if json.Unmarshal(message.Params, &params) != nil || params.ThreadID != s.ID() || params.ItemID == "" || params.TurnID == "" {
-		return p.Respond(ctx, message.ID, nil, &providerrpc.RPCError{Code: -32602, Message: "approval does not belong to this conversation"})
+		return p.Respond(ctx, message.ID, nil, &rpc.Error{Code: -32602, Message: "approval does not belong to this conversation"})
 	}
 	active, err := s.setTurn(params.TurnID)
 	if err != nil {
 		return err
 	}
 	if active == nil {
-		return p.Respond(ctx, message.ID, nil, &providerrpc.RPCError{Code: -32602, Message: "approval has no active turn"})
+		return p.Respond(ctx, message.ID, nil, &rpc.Error{Code: -32602, Message: "approval has no active turn"})
 	}
 	if params.Kind == "humanCommand" {
 		return unsupported()

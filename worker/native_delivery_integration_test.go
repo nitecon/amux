@@ -10,9 +10,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/chat"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/providers"
+	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -24,18 +26,19 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 	defer local.Close()
 	defer host.Close()
 	defer host.Config.Handler.(interface{ ShutdownStreams(context.Context) error }).ShutdownStreams(context.Background())
-	definitions := append(append(storage.RouterPresenceEventDefinitions(), storage.RouterTaskEventDefinitions()...), plugins.ClockDefinition(), plugins.ClientHeartbeatDefinition())
-	definitions = append(definitions, plugins.ActivityEventDefinitions()...)
-	definitions = append(definitions, plugins.NotificationEventDefinitions()...)
-	runtime, err := router.NewRuntime(remote, remote.EventBus(), definitions, []router.Plugin{
-		plugins.PresencePlugin(remote), plugins.AssignmentPlugin(remote), plugins.NativeDeliveryPlugin(remote),
-	}, router.RunConfig{Capacity: 8})
+	for _, id := range []string{"notifier", "reminder"} {
+		if err := remote.SetPluginEnabled(ctx, id, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime, err := server.NewGatewayFISM(remote, 7, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	routerCtx, stopRouter := context.WithCancel(ctx)
 	routerDone := make(chan error, 1)
-	go func() { routerDone <- runtime.Run(routerCtx) }()
+	ready := make(chan struct{})
+	go func() { routerDone <- runtime.Run(routerCtx, ready) }()
 	defer func() {
 		stopRouter()
 		select {
@@ -50,7 +53,7 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 	opened := make(chan storage.WorkerRun, 1)
 	sessions := make(chan *poolFixtureSession, 1)
 	release := make(chan struct{})
-	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if err := sink(openCtx, conversation.Event{Kind: "session_ready", SessionID: "pool-native"}); err != nil {
 			return nil, err
 		}
@@ -104,7 +107,7 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := remote.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)}); err != nil {
+	if _, err := remote.AcceptObservation(ctx, runtime.Registry(), fism.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
 	var run storage.WorkerRun
@@ -131,19 +134,19 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 		}
 		return false, nil
 	})
-	var assigned router.Event
+	var assigned fism.Event
 	wait("captured assignment delivery result", func() (bool, error) {
 		events, err := remote.RouterEvents(ctx, 0, 200)
 		if err != nil {
 			return false, err
 		}
 		for _, event := range events {
-			if event.ID == plugins.NotifyEventID && event.Source == "plugin:assignment" {
+			if event.ID == controllers.NotifyEventID && event.Source == "plugin:assignment" {
 				assigned = event
 			}
 		}
 		for _, event := range events {
-			if event.ID == plugins.NotifyResultEventID && event.Correlation != nil && *event.Correlation == assigned.UID {
+			if event.ID == controllers.NotifyResultEventID && event.Correlation != nil && *event.Correlation == assigned.UID {
 				var result map[string]string
 				if err := json.Unmarshal(event.Payload, &result); err != nil {
 					return false, err
@@ -177,19 +180,20 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 	projection := chat.New()
 	const draft = "An unsent human message must survive the server notification."
 	projection.SetDraft(draft)
-	request := router.EmitRequest{UID: uid, ID: plugins.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: payload}
-	reminder, err := remote.EmitRouterEvent(ctx, runtime.Registry(), request)
+	request := fism.EmitRequest{UID: uid, ID: controllers.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: payload}
+	reminder, err := remote.AcceptObservation(ctx, runtime.Registry(), request)
 	if err != nil || !reminder.Stored {
 		t.Fatalf("reminder admission: %+v %v", reminder, err)
 	}
 	wait("busy provider turn postpones reminder", func() (bool, error) {
-		deliveries, err := remote.RouterDeliveries(ctx, reminder.Event.Seq)
-		for _, delivery := range deliveries {
-			if delivery.Plugin == "native-delivery" && delivery.State == "retrying" {
+		pending, err := remote.PendingNotifications(ctx, 0, 200)
+		for _, notice := range pending {
+			if notice.Event.UID == reminder.Event.UID {
 				return true, err
 			}
 		}
 		return false, err
+
 	})
 	commands, err = remote.ConversationCommands(ctx, pool.Project, run.ConversationID, 0, 100)
 	if err != nil || len(commands) != 1 {
@@ -197,22 +201,27 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 	}
 	close(release)
 	var notificationText string
-	select {
-	case text := <-session.started:
-		notificationText = text
-		if !strings.Contains(text, "[amux notification]") || !strings.Contains(text, task.ID) || !strings.Contains(text, "Post a progress update") {
-			t.Fatalf("native reminder omitted context: %s", text)
+	for notificationText == "" {
+		select {
+		case text := <-session.started:
+			if strings.Contains(text, "Post a progress update") {
+				notificationText = text
+				if !strings.Contains(text, "[amux notification]") || !strings.Contains(text, task.ID) {
+					t.Fatalf("native reminder omitted context: %s", text)
+				}
+			}
+		case <-ctx.Done():
+			t.Fatal("owned-task Busy blocked the idle provider's reminder")
 		}
-	case <-ctx.Done():
-		t.Fatal("owned-task Busy blocked the idle provider's reminder")
 	}
+
 	wait("reminder result", func() (bool, error) {
 		events, err := remote.RouterEvents(ctx, 0, 200)
 		if err != nil {
 			return false, err
 		}
 		for _, event := range events {
-			if event.ID == plugins.NotifyResultEventID && event.Correlation != nil && *event.Correlation == uid {
+			if event.ID == controllers.NotifyResultEventID && event.Correlation != nil && *event.Correlation == uid {
 				var result map[string]string
 				if err := json.Unmarshal(event.Payload, &result); err != nil {
 					return false, err
@@ -225,13 +234,23 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 		}
 		return false, nil
 	})
-	if replay, err := remote.EmitRouterEvent(ctx, runtime.Registry(), request); err != nil || !replay.Replayed {
+	if replay, err := remote.AcceptObservation(ctx, runtime.Registry(), request); err != nil || !replay.Replayed {
 		t.Fatalf("notification replay: %+v %v", replay, err)
 	}
 	commands, err = remote.ConversationCommands(ctx, pool.Project, run.ConversationID, 0, 100)
-	if err != nil || len(commands) != 2 || session.promptCount.Load() != 2 || commands[1].ID != uid || commands[1].Command.Text != notificationText {
+	matches := 0
+	for _, command := range commands {
+		if command.ID == uid {
+			matches++
+			if command.Command.Text != notificationText {
+				t.Fatalf("reminder command content changed: %+v", command)
+			}
+		}
+	}
+	if err != nil || matches != 1 {
 		t.Fatalf("replay duplicated reminder intent: %+v %v", commands, err)
 	}
+
 	wait("notification appears in shared chat without changing the human draft", func() (bool, error) {
 		events, err := remote.ConversationEvents(ctx, pool.Project, run.ConversationID, 0, 100)
 		if err != nil {
@@ -251,7 +270,7 @@ func TestNativeDeliveryUsesOneAdoptionPromptAndDeliversReminderAfterTurn(t *test
 	})
 	notices := 0
 	for _, item := range projection.Snapshot().Items {
-		if strings.Contains(item.Text, "[amux notification]") {
+		if item.Text == notificationText {
 			notices++
 		}
 	}

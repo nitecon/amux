@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -34,7 +35,7 @@ func (a *api) registerWorkerAssignmentRoutes(mux *http.ServeMux) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		assignment, err := a.store.AdoptWorkerTask(r.Context(), r.PathValue("ident"), taskID, actor, goal, authenticatedPrincipal(r.Context()))
+		assignment, err := a.store.AdoptWorkerTask(r.Context(), r.PathValue("ident"), taskID, actor, goal, auth.PrincipalID(r.Context()))
 		if errors.Is(err, storage.ErrTaskOwnership) {
 			writeError(w, http.StatusForbidden, "assignment belongs to a different enrolled client")
 			return

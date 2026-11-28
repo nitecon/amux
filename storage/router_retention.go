@@ -7,7 +7,7 @@ import (
 	"sort"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const (
@@ -36,7 +36,7 @@ func migrateRouterRetention(ctx context.Context, tx *sql.Tx) error {
 
 // ReconcileRouterRetention runs startup cleanup immediately and clock cleanup
 // no more than once per day. All cleanup and its checkpoint share one tx.
-func (s *Store) ReconcileRouterRetention(ctx context.Context, event router.Event, retentionDays, botRetentionDays uint64) (ran bool, messagesDeleted int64, err error) {
+func (s *Store) ReconcileRouterRetention(ctx context.Context, event fism.Event, retentionDays, botRetentionDays uint64) (ran bool, messagesDeleted int64, err error) {
 	if event.Version != 1 || (event.ID != "retention.startup" && event.ID != "clock.tick") || !canonicalUUID(event.UID) {
 		return false, 0, fmt.Errorf("retention reconciliation requires a retention.startup or clock.tick v1 event with a canonical UID")
 	}
@@ -159,7 +159,11 @@ func pruneRouterRetentionIn(ctx context.Context, tx *sql.Tx, cutoffMS int64, thr
 			AND NOT EXISTS (SELECT 1 FROM router_deliveries d WHERE d.event_seq=e.seq
 				AND d.state NOT IN ('completed','stopped','skipped','failed'))
 			AND NOT EXISTS (SELECT 1 FROM amux_presence_outbox p WHERE p.correlation=e.uid)
+			AND (e.source<>'plugin:presence' OR NOT EXISTS (SELECT 1 FROM amux_presence_outbox p WHERE e.uid=` + presenceChangeUIDSQL + `))
+			AND (e.id<>'task.completed' OR e.source<>'tasks' OR NOT EXISTS (SELECT 1 FROM task_review_outbox r
+				WHERE r.source_task_id=json_extract(e.payload,'$.task.id') AND r.source_done_at=json_extract(e.payload,'$.task.done_at')))
 			AND NOT EXISTS (SELECT 1 FROM amux_heartbeat_outbox h WHERE h.uid=e.uid)
+			AND NOT EXISTS (SELECT 1 FROM router_task_outbox t WHERE e.source='tasks' AND e.uid=` + taskChangeUIDSQL + `)
 			`
 		args := []any{afterSeq, cutoffMS, throughSeq, throughSeq}
 		if len(heldIDs) != 0 {

@@ -11,23 +11,24 @@ import (
 	"testing"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 var routerTaskKinds = []string{"created", "updated", "commented", "assigned", "started", "user_review", "completed", "cancelled", "unclaimed"}
 
-func routerTaskRegistry(t *testing.T, subscribed bool) *router.Registry {
+func routerTaskRegistry(t *testing.T, subscribed bool) *fism.Registry {
 	t.Helper()
 	events := RouterTaskEventDefinitions()
-	plugins := []router.PluginDefinition(nil)
+	plugins := []fism.ControllerDefinition(nil)
 	if subscribed {
-		plugin := router.PluginDefinition{ID: "tasks-plugin"}
+		plugin := fism.ControllerDefinition{ID: "tasks-plugin"}
 		for _, event := range events {
-			plugin.Subscriptions = append(plugin.Subscriptions, router.Subscription{Event: event.ID, MinVersion: 1, MaxVersion: 1})
+			plugin.Subscriptions = append(plugin.Subscriptions, fism.Subscription{Event: event.ID, MinVersion: 1, MaxVersion: 1})
 		}
 		plugins = append(plugins, plugin)
 	}
-	registry, err := router.NewRegistry(events, plugins)
+	registry, err := fism.NewRegistry(events, plugins)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestRouterTaskOutboxNativeParentAndRootCommentSnapshots(t *testing.T) {
 		t.Fatalf("root task snapshot parent = %+v, %v", rootTask.Parent, err)
 	}
 	var comment TaskComment
-	var gotActor AgentOrigin
+	var gotActor agent.Origin
 	if err := json.Unmarshal(commentSnapshot, &comment); err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/auth"
+	"github.com/nitecon/amux/auth/authz"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -58,10 +60,10 @@ type artifactMutationResponse[T any] struct {
 // establishes project scope, gates an explicit quota override, then parses
 // the actor and idempotency envelope. Caller supplied gateway user headers
 // never participate in actor resolution.
-func (a *api) beginArtifactMutation(w http.ResponseWriter, r *http.Request, scopes ...string) (artifactMutationContext, artifactAuthorization, bool) {
+func (a *api) beginArtifactMutation(w http.ResponseWriter, r *http.Request, scopes ...string) (artifactMutationContext, authz.ArtifactDecision, bool) {
 	authorization, ok := a.authorizeArtifactMutation(w, r, scopes...)
 	if !ok {
-		return artifactMutationContext{}, artifactAuthorization{}, false
+		return artifactMutationContext{}, authz.ArtifactDecision{}, false
 	}
 	mutation, err := parseArtifactMutationContext(r)
 	if err != nil {
@@ -71,7 +73,7 @@ func (a *api) beginArtifactMutation(w http.ResponseWriter, r *http.Request, scop
 		} else {
 			writeError(w, http.StatusInternalServerError, "artifact mutation context unavailable")
 		}
-		return artifactMutationContext{}, artifactAuthorization{}, false
+		return artifactMutationContext{}, authz.ArtifactDecision{}, false
 	}
 	return mutation, authorization, true
 }
@@ -84,7 +86,7 @@ type artifactMutationInputError struct {
 func (e *artifactMutationInputError) Error() string { return e.token }
 
 func parseArtifactMutationContext(r *http.Request) (artifactMutationContext, error) {
-	if authenticatedPrincipal(r.Context()) == "" {
+	if auth.PrincipalID(r.Context()) == "" {
 		return artifactMutationContext{}, &artifactMutationInputError{status: http.StatusUnauthorized, token: "authentication_required"}
 	}
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -151,7 +153,7 @@ func (a *api) resolveArtifactMutationActor(ctx context.Context, mutation artifac
 	return a.store.ResolveArtifactActor(ctx, identity)
 }
 
-func writeArtifactMutation[T any](w http.ResponseWriter, status int, data T, actor *storage.ArtifactActor, mutation artifactMutationContext, authorization artifactAuthorization, generated map[string]any, replayed bool, warnings []storage.ArtifactQuotaWarning) {
+func writeArtifactMutation[T any](w http.ResponseWriter, status int, data T, actor *storage.ArtifactActor, mutation artifactMutationContext, authorization authz.ArtifactDecision, generated map[string]any, replayed bool, warnings []storage.ArtifactQuotaWarning) {
 	warningTokens := make([]string, 0, len(warnings))
 	for _, warning := range warnings {
 		warningTokens = append(warningTokens, warning.Token())

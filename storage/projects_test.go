@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 func testStore(t *testing.T) *Store {
@@ -107,7 +107,7 @@ func TestRepoBackfill(t *testing.T) {
 	if err := s.InsertProject(ctx, fixtureProject("proj")); err != nil {
 		t.Fatal(err)
 	}
-	repo, err := projects.ParseRemote("https://github.com/nitecon/proj.git")
+	repo, err := projectid.ParseRemote("https://github.com/nitecon/proj.git")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestRepoBackfill(t *testing.T) {
 	if p.RepoFullName == nil || *p.RepoFullName != "nitecon/proj" || *p.CanonicalRemote != "github.com/nitecon/proj" || p.Kind != "repo" {
 		t.Fatalf("backfilled %+v", p)
 	}
-	other, err := projects.ParseRemote("https://gitlab.com/x/y.git")
+	other, err := projectid.ParseRemote("https://gitlab.com/x/y.git")
 	if err != nil {
 		t.Fatal(err)
 	}

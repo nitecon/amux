@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/nitecon/amux/internal/localconversation"
+	"github.com/nitecon/amux/providers"
 	"io"
 	"os"
 
@@ -15,18 +15,19 @@ import (
 const maxNavigationPreferencesSize = 1 << 20
 
 type NavigationPreferences struct {
-	Favorites           map[string]bool                          `json:"favorites"`
-	Selections          map[string]NavigationSelection           `json:"selections"`
-	WorkerPools         map[string]string                        `json:"worker_pools,omitempty"`
-	ProjectsDirectory   string                                   `json:"projects_directory,omitempty"`
-	ProjectCheckouts    map[string]localProjectBinding           `json:"project_checkouts,omitempty"`
-	ProjectsDirectories map[string]string                        `json:"projects_directories,omitempty"`
-	WorkspaceIDs        map[string][]string                      `json:"workspace_ids,omitempty"`
-	ActiveWorkspace     map[string]string                        `json:"active_workspace,omitempty"`
-	ConversationLaunch  map[string]ConversationLaunchPreferences `json:"conversation_launch,omitempty"`
+	Favorites             map[string]bool                          `json:"favorites"`
+	Selections            map[string]NavigationSelection           `json:"selections"`
+	WorkerPools           map[string]string                        `json:"worker_pools,omitempty"`
+	NotificationConsumers map[string]string                        `json:"notification_consumers,omitempty"`
+	ProjectsDirectory     string                                   `json:"projects_directory,omitempty"`
+	ProjectCheckouts      map[string]localProjectBinding           `json:"project_checkouts,omitempty"`
+	ProjectsDirectories   map[string]string                        `json:"projects_directories,omitempty"`
+	WorkspaceIDs          map[string][]string                      `json:"workspace_ids,omitempty"`
+	ActiveWorkspace       map[string]string                        `json:"active_workspace,omitempty"`
+	ConversationLaunch    map[string]ConversationLaunchPreferences `json:"conversation_launch,omitempty"`
 }
 
-type ConversationLaunchPreferences = localconversation.Preferences
+type ConversationLaunchPreferences = providers.Preferences
 
 func workspaceSelectionKey(endpoint, workspaceID string) string {
 	return endpoint + "\x00workspace\x00" + workspaceID

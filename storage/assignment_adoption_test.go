@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func migrateTestAssignmentAdoption(t *testing.T, s *Store) {
@@ -24,7 +25,7 @@ func migrateTestAssignmentAdoption(t *testing.T, s *Store) {
 	}
 }
 
-func ownedInProgressTask(t *testing.T, s *Store, actor *AgentOrigin) *Task {
+func ownedInProgressTask(t *testing.T, s *Store, actor *agent.Origin) *Task {
 	t.Helper()
 	task := makeTask(t, s, actor)
 	if _, err := s.TransitionTask(context.Background(), "tasks", task.ID, "in_progress", actor); err != nil {

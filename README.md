@@ -50,6 +50,13 @@ conversation on any machine, read what the agent is doing, and type to it.
 
 ## Get started
 
+> **Existing deployments require an upgrade.** Upgrade the gateway and every
+> connected desktop or headless client to the same release before resuming work.
+> Back up the server profile or SQLite database first. Standalone servers need
+> a YAML configuration and must start with `amux server --config PATH`.
+> Follow the [deployment upgrade steps](deploy/README.md#upgrade-an-existing-deployment)
+> before restarting an old installation.
+
 You need Git and at least one signed-in agent CLI
 ([Claude Code](https://claude.com/claude-code),
 [Codex](https://developers.openai.com/codex), or
@@ -60,6 +67,10 @@ Run the same command to install, reinstall, or upgrade. It fetches the
 against the published checksums, and replaces any existing install in place,
 restoring the previous one if anything fails.
 No root or administrator rights needed.
+
+Before replacing an existing installation, stop the desktop and any associated
+gateway or headless client processes. The scripts update the per-user bundle.
+Use your service or container deployment procedure to upgrade a standalone host.
 
 **Linux (x86-64)**: installs to `~/amux`
 
@@ -73,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/nitecon/amux/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/nitecon/amux/main/install-macos.sh | sh
 ```
 
-**Windows (x86-64, PowerShell)**: installs to `%LOCALAPPDATA%\amux`. Close amux first.
+**Windows (x86-64, PowerShell)**: installs to `%LOCALAPPDATA%\amux`.
 
 ```powershell
 irm https://raw.githubusercontent.com/nitecon/amux/main/install.ps1 | iex
@@ -109,8 +120,10 @@ can open either machine's agents from either desktop.
 
 ### Run a headless worker
 
-On a machine with a configured client profile, run `amux headless`. Use
-`--config PATH` to select a profile. The client registers the same stdio MCP server for each managed agent, scoped to its session.
+On a machine with a configured client profile, run `amux headless`. Desktop,
+headless, and stdio MCP use `~/.amux/config.yaml` for gateway connectivity.
+Keep checkout and worker settings in `~/.amux/device.yaml`. The client
+registers the stdio MCP server for each managed agent, scoped to its session.
 
 To run the server itself without a desktop, see the
 [deployment guide](deploy/README.md) for systemd, Docker, and TLS setup.

@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -41,11 +42,11 @@ func migrateNativeDelivery(ctx context.Context, tx *sql.Tx) error {
 // captureNativeDeliveryAdoptionIn links an assignment offer to its original
 // atomic adoption effect before a later worker Resume may replace task owner.
 // No matching, still-valid offer is a normal no-op.
-func captureNativeDeliveryAdoptionIn(ctx context.Context, tx *sql.Tx, task *Task, owner AgentOrigin, runID, conversationID, promptID string) error {
+func captureNativeDeliveryAdoptionIn(ctx context.Context, tx *sql.Tx, task *Task, owner agent.Origin, runID, conversationID, promptID string) error {
 	if task == nil || task.ID == "" || !canonicalUUID(runID) || !canonicalUUID(conversationID) || !canonicalUUID(promptID) {
 		return fmt.Errorf("invalid native delivery adoption context")
 	}
-	normalizedOwner, err := NormalizeOrigin(&owner)
+	normalizedOwner, err := agent.NormalizeOrigin(&owner)
 	if err != nil || normalizedOwner == nil {
 		return fmt.Errorf("invalid native delivery adoption owner: %w", err)
 	}
@@ -67,11 +68,11 @@ func captureNativeDeliveryAdoptionIn(ctx context.Context, tx *sql.Tx, task *Task
 	if err != nil {
 		return err
 	}
-	var offered AgentOrigin
+	var offered agent.Origin
 	if !originJSON.Valid || json.Unmarshal([]byte(originJSON.String), &offered) != nil {
 		return nil
 	}
-	normalized, err := NormalizeOrigin(&offered)
+	normalized, err := agent.NormalizeOrigin(&offered)
 	if err != nil || normalized == nil || *normalized != owner || session != owner.SessionID || project != task.ProjectIdent {
 		return nil
 	}
@@ -254,15 +255,15 @@ func validateNativeAdoptionProof(ctx context.Context, q queryer, i nativeNoticeI
 // ReconcileNativeDelivery freezes the chosen receiver once and atomically
 // queues any prompt, records the result, and emits the correlated result event.
 // pending asks the durable router to retry the same event.
-func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Registry, event router.Event) (bool, error) {
-	if event.ID != plugins.NotifyEventID || event.Version != 1 || !canonicalUUID(event.UID) || registry == nil {
+func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *fism.Registry, event fism.Event) (bool, error) {
+	if event.ID != controllers.NotifyEventID || event.Version != 1 || !canonicalUUID(event.UID) || registry == nil {
 		return false, fmt.Errorf("native delivery requires a valid agent.notify v1 event and registry")
 	}
 	var notice nativeNotice
 	if err := json.Unmarshal(event.Payload, &notice); err != nil {
 		return false, fmt.Errorf("invalid agent.notify payload: %w", err)
 	}
-	if err := plugins.NotificationEventDefinitions()[0].Validate(event.Payload); err != nil {
+	if err := controllers.NotificationEventDefinitions()[0].Validate(event.Payload); err != nil {
 		return false, err
 	}
 	notice.TaskID = notificationTaskID(notice.Event.Task)
@@ -295,7 +296,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+		s.publishNativeDeliveryOutcome()
 		return false, nil
 	}
 	if notice.unsupported {
@@ -305,7 +306,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+		s.publishNativeDeliveryOutcome()
 		return false, nil
 	}
 	if identity.adopted {
@@ -322,7 +323,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+		s.publishNativeDeliveryOutcome()
 		return false, nil
 	}
 	if now >= identity.expiresAt {
@@ -332,7 +333,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+		s.publishNativeDeliveryOutcome()
 		return false, nil
 	}
 	if !identity.frozen {
@@ -362,7 +363,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 			if err := tx.Commit(); err != nil {
 				return false, err
 			}
-			_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+			s.publishNativeDeliveryOutcome()
 			return false, nil
 		}
 	}
@@ -377,7 +378,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+		s.publishNativeDeliveryOutcome()
 		return false, nil
 	}
 	if !bound {
@@ -398,7 +399,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 			if err := tx.Commit(); err != nil {
 				return false, err
 			}
-			_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+			s.publishNativeDeliveryOutcome()
 			return false, nil
 		}
 	}
@@ -446,7 +447,7 @@ func (s *Store) ReconcileNativeDelivery(ctx context.Context, registry *router.Re
 		return false, err
 	}
 	s.wakeConversations()
-	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+	s.publishNativeDeliveryOutcome()
 	return false, nil
 }
 
@@ -482,16 +483,16 @@ func notificationTaskID(raw json.RawMessage) string {
 	return id
 }
 
-func notificationTaskOwner(raw json.RawMessage) *AgentOrigin {
+func notificationTaskOwner(raw json.RawMessage) *agent.Origin {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return nil
 	}
-	var owner AgentOrigin
+	var owner agent.Origin
 	if json.Unmarshal(fields["owner_origin"], &owner) != nil {
 		return nil
 	}
-	normalized, err := NormalizeOrigin(&owner)
+	normalized, err := agent.NormalizeOrigin(&owner)
 	if err != nil {
 		return nil
 	}
@@ -515,7 +516,7 @@ func capturedRequesterResult(notice nativeNotice, identity nativeNoticeIdentity)
 	if json.Unmarshal(task.Requester, &requester) != nil || !canonicalUUID(requester.Generation) || requester.Generation == "00000000-0000-0000-0000-000000000000" {
 		return RegisteredTargetIdentity{}, false
 	}
-	origin, err := NormalizeOrigin(&requester.Origin)
+	origin, err := agent.NormalizeOrigin(&requester.Origin)
 	if err != nil || origin == nil || origin.SessionID != notice.Target {
 		return RegisteredTargetIdentity{}, false
 	}
@@ -541,7 +542,7 @@ func currentTaskRequesterMatches(task *Task, identity nativeNoticeIdentity, capt
 	if json.Unmarshal(task.Requester, &current) != nil || current != captured || !canonicalUUID(current.Generation) || current.Generation == "00000000-0000-0000-0000-000000000000" {
 		return false
 	}
-	origin, err := NormalizeOrigin(&current.Origin)
+	origin, err := agent.NormalizeOrigin(&current.Origin)
 	return err == nil && origin != nil && *origin == current.Origin
 }
 
@@ -574,8 +575,8 @@ type nativeReceiver struct {
 	Goal       *string `json:"goal,omitempty"`
 }
 
-func (r nativeReceiver) origin() AgentOrigin {
-	return AgentOrigin{SessionID: r.SessionID, InstanceID: r.InstanceID, Provider: r.Provider, OS: r.OS}
+func (r nativeReceiver) origin() agent.Origin {
+	return agent.Origin{SessionID: r.SessionID, InstanceID: r.InstanceID, Provider: r.Provider, OS: r.OS}
 }
 
 type nativeNoticeIdentity struct {
@@ -586,7 +587,7 @@ type nativeNoticeIdentity struct {
 	actualOffer, adopted, staleOffer, frozen                                                                  bool
 }
 
-func freezeNativeNotice(ctx context.Context, tx *sql.Tx, event router.Event, notice nativeNotice, now int64) (nativeNoticeIdentity, error) {
+func freezeNativeNotice(ctx context.Context, tx *sql.Tx, event fism.Event, notice nativeNotice, now int64) (nativeNoticeIdentity, error) {
 	i := nativeNoticeIdentity{uid: event.UID, project: notice.Project, taskID: notice.TaskID, status: "pending", expiresAt: nativeDeliveryDeadline(event.EmittedAt)}
 	var receiverJSON, source, principal, resultSource, resultPrincipal, status sql.NullString
 	var conversationID, commandID, runID, promptID sql.NullString
@@ -630,11 +631,11 @@ func freezeNativeNotice(ctx context.Context, tx *sql.Tx, event router.Event, not
 			i.staleOffer = true
 			i.receiver.SessionID = notice.Target
 		} else {
-			var captured AgentOrigin
+			var captured agent.Origin
 			if !originJSON.Valid || json.Unmarshal([]byte(originJSON.String), &captured) != nil {
 				i.staleOffer = true
 			} else {
-				normalized, normalizeErr := NormalizeOrigin(&captured)
+				normalized, normalizeErr := agent.NormalizeOrigin(&captured)
 				taskOwner := notificationTaskOwner(notice.Event.Task)
 				if normalizeErr != nil || normalized == nil || normalized.SessionID != session || taskOwner == nil || *taskOwner != *normalized {
 					i.staleOffer = true
@@ -790,14 +791,14 @@ func conversationIDs(ctx context.Context, tx *sql.Tx, query string, args ...any)
 	return ids, rows.Err()
 }
 
-func completeNativeNotice(ctx context.Context, tx *sql.Tx, registry *router.Registry, event router.Event, i nativeNoticeIdentity, status, reason string, now int64) error {
+func completeNativeNotice(ctx context.Context, tx *sql.Tx, registry *fism.Registry, event fism.Event, i nativeNoticeIdentity, status, reason string, now int64) error {
 	resultSource := i.resultSource
 	if resultSource == "" || i.resultPrincipal == "" {
 		resultSource = "plugin:native-delivery"
 	}
 	payload, _ := json.Marshal(map[string]any{"target": i.receiver.SessionID, "status": status, "reason": reason})
 	correlation := event.UID
-	emitted, err := emitRouterEventIn(ctx, tx, registry, router.EmitRequest{ID: plugins.NotifyResultEventID, Version: 1, Source: resultSource, Payload: payload, Correlation: &correlation})
+	emitted, err := acceptObservationIn(ctx, tx, registry, fism.EmitRequest{ID: controllers.NotifyResultEventID, Version: 1, Source: resultSource, Payload: payload, Correlation: &correlation})
 	if err != nil {
 		return err
 	}
@@ -810,4 +811,9 @@ func completeNativeNotice(ctx context.Context, tx *sql.Tx, registry *router.Regi
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE amux_native_delivery_receipts SET status=?,conversation_id=COALESCE(NULLIF(? ,''),conversation_id),command_id=COALESCE(NULLIF(? ,''),command_id),result_source=?,result_principal=?,updated_at=? WHERE notify_uid=? AND status='pending'`, receiptStatus, i.conversationID, i.commandID, resultSource, i.resultPrincipal, now, event.UID)
 	return err
+}
+
+func (s *Store) publishNativeDeliveryOutcome() {
+	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
+	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.ObservationAccepted})
 }

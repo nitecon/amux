@@ -10,7 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -32,7 +33,7 @@ type ProjectMessageReceipt struct {
 // CreateProjectMessageRoom returns the registered project and provisioned room.
 // It performs one POST and never retries an uncertain response.
 func (c *Client) CreateProjectMessageRoom(ctx context.Context, project string) (*storage.Project, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
@@ -58,27 +59,27 @@ func (c *Client) CreateProjectMessageRoom(ctx context.Context, project string) (
 	return &result, nil
 }
 
-func (c *Client) SendProjectMessage(ctx context.Context, project string, input ProjectMessageInput, origin storage.AgentOrigin) (*ProjectMessageReceipt, error) {
+func (c *Client) SendProjectMessage(ctx context.Context, project string, input ProjectMessageInput, origin agent.Origin) (*ProjectMessageReceipt, error) {
 	return c.writeProjectMessage(ctx, project, 0, "messages", input, origin)
 }
 
-func (c *Client) ReplyToProjectMessage(ctx context.Context, project string, parentID int64, input ProjectMessageInput, origin storage.AgentOrigin) (*ProjectMessageReceipt, error) {
+func (c *Client) ReplyToProjectMessage(ctx context.Context, project string, parentID int64, input ProjectMessageInput, origin agent.Origin) (*ProjectMessageReceipt, error) {
 	return c.writeProjectMessage(ctx, project, parentID, "reply", input, origin)
 }
 
-func (c *Client) TakeProjectMessageAction(ctx context.Context, project string, parentID int64, input ProjectMessageInput, origin storage.AgentOrigin) (*ProjectMessageReceipt, error) {
+func (c *Client) TakeProjectMessageAction(ctx context.Context, project string, parentID int64, input ProjectMessageInput, origin agent.Origin) (*ProjectMessageReceipt, error) {
 	return c.writeProjectMessage(ctx, project, parentID, "action", input, origin)
 }
 
-func (c *Client) writeProjectMessage(ctx context.Context, project string, parentID int64, operation string, input ProjectMessageInput, origin storage.AgentOrigin) (*ProjectMessageReceipt, error) {
-	project = projects.NormalizeIdent(project)
+func (c *Client) writeProjectMessage(ctx context.Context, project string, parentID int64, operation string, input ProjectMessageInput, origin agent.Origin) (*ProjectMessageReceipt, error) {
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
 	if operation != "messages" && parentID <= 0 {
 		return nil, fmt.Errorf("parent message ID must be positive")
 	}
-	actor, err := storage.NormalizeOrigin(&origin)
+	actor, err := agent.NormalizeOrigin(&origin)
 	if err != nil {
 		return nil, err
 	}

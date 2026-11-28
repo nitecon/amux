@@ -9,37 +9,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestNativeMCPArgsUseSavedRunIdentity(t *testing.T) {
 	config := NativeToolsConfig{Executable: "/opt/amux path/amux", Server: "https://gateway.example/path with space", APIKeyEnv: "AMUX_API_KEY", WorkPreferencesPath: "/saved/config/work-preferences.json"}
 	goal := "release"
-	run := storage.WorkerRun{Server: config.Server, Project: "project with space", Directory: "/saved checkout/worker", ConversationID: "conversation-id", Owner: storage.AgentOrigin{
+	run := storage.WorkerRun{Server: config.Server, Project: "project with space", Directory: "/saved checkout/worker", ConversationID: "conversation-id", Owner: agent.Origin{
 		SessionID: "session-id", InstanceID: "new-instance-after-cas", Provider: "codex", OS: "darwin",
 	}, Goal: &goal}
-	want := []string{"mcp", "--server", config.Server, "--project", run.Project,
+	want := []string{"--project", run.Project,
 		"--directory", run.Directory,
 		"--conversation", run.ConversationID, "--session", run.Owner.SessionID,
 		"--instance", run.Owner.InstanceID, "--provider", run.Owner.Provider,
-		"--os", run.Owner.OS, "--api-key-env", config.APIKeyEnv,
-		"--work-preferences", config.WorkPreferencesPath, "--goal", goal}
-	if got := nativeMCPArgs(config, run); !reflect.DeepEqual(got, want) {
+		"--os", run.Owner.OS, "--goal", goal}
+	if got := nativeMCPArgs(run, config.LocalConversation); !reflect.DeepEqual(got, want) {
 		t.Fatalf("native MCP args = %#v, want %#v", got, want)
 	}
 }
 
-func TestNativeMCPArgsPassOnlyEnrolledManifest(t *testing.T) {
+func TestNativeMCPEnrolledLaunchOmitsCredentialArguments(t *testing.T) {
 	config := NativeToolsConfig{Executable: "/opt/amux", Server: "https://gateway.example", EnrolledProfile: "/private/profile/local-client.json"}
-	run := storage.WorkerRun{Server: config.Server, Project: "demo", Directory: "/checkout", ConversationID: "conversation", Owner: storage.AgentOrigin{SessionID: "session", InstanceID: "instance", Provider: "codex", OS: "linux"}}
-	args := nativeMCPArgs(config, run)
+	run := storage.WorkerRun{Server: config.Server, Project: "demo", Directory: "/checkout", ConversationID: "conversation", Owner: agent.Origin{SessionID: "session", InstanceID: "instance", Provider: "codex", OS: "linux"}}
+	args := nativeMCPArgs(run, config.LocalConversation)
 	for _, arg := range args {
 		if arg == "--api-key-env" {
 			t.Fatalf("enrolled MCP args included bearer credential configuration: %#v", args)
 		}
 	}
-	if !containsPair(args, "--enrolled-profile", config.EnrolledProfile) {
-		t.Fatalf("enrolled MCP args omitted manifest path: %#v", args)
+	if containsPair(args, "--enrolled-profile", config.EnrolledProfile) {
+		t.Fatalf("enrolled MCP args included manifest path: %#v", args)
 	}
 	if got := nativeMCPEnvVars(nativeMCPAPIKeyEnv(config)); len(got) != len(nativeMCPEnvVars("")) {
 		t.Fatalf("enrolled MCP environment added a bearer variable: %#v", got)
@@ -101,7 +101,7 @@ func TestNativeMCPEnvVarsIncludeSavedIdentityGitAuthAndConfiguredAPIName(t *test
 	want := []string{
 		"AMUX_AGENT_SESSION_ID", "AMUX_AGENT_INSTANCE_ID", "AMUX_AGENT_PROVIDER", "AMUX_AGENT_OS",
 		"AMUX_AGENT_PROJECT", "AMUX_GATEWAY_PROJECT", "AMUX_GATEWAY_URL", "AMUX_GATEWAY_API_KEY_ENV",
-		"AMUX_BUNDLED_DIR", "AMUX_DESKTOP_GUIDANCE",
+		"AMUX_BUNDLED_DIR", "AMUX_DESKTOP_GUIDANCE", "HOME", "USERPROFILE",
 		"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST",
 		"GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_ASKPASS", "SSH_AUTH_SOCK",
 		"CUSTOM_API_KEY",
@@ -124,7 +124,7 @@ func TestNativeMCPEnvVarsIncludeSavedIdentityGitAuthAndConfiguredAPIName(t *test
 func TestNativeProviderEnvUsesSavedRunIdentityWithoutDuplicateOverrides(t *testing.T) {
 	run := storage.WorkerRun{
 		Directory: "/saved/canonical-checkout", Project: "saved-project", Server: "https://gateway.example",
-		Owner: storage.AgentOrigin{SessionID: "saved-session", InstanceID: "saved-instance", Provider: "codex", OS: "linux"},
+		Owner: agent.Origin{SessionID: "saved-session", InstanceID: "saved-instance", Provider: "codex", OS: "linux"},
 	}
 	inherited := []string{
 		"PATH=/usr/bin", "AMUX_AGENT_SESSION_ID=stale-session", "CUSTOM_API_KEY=secret-value",
@@ -145,7 +145,7 @@ func TestNativeProviderEnvUsesSavedRunIdentityWithoutDuplicateOverrides(t *testi
 
 func TestNativeMCPArgsEncodeUnscopedGoalExplicitly(t *testing.T) {
 	config := NativeToolsConfig{Server: "https://gateway.example", APIKeyEnv: "GATEWAY_API_KEY"}
-	args := nativeMCPArgs(config, storage.WorkerRun{Server: config.Server})
+	args := nativeMCPArgs(storage.WorkerRun{Server: config.Server}, false)
 	if len(args) < 2 || args[len(args)-2] != "--goal" || args[len(args)-1] != "" {
 		t.Fatalf("unscoped goal was not explicit in MCP args: %#v", args)
 	}
@@ -164,18 +164,6 @@ func TestValidEnvName(t *testing.T) {
 	}
 }
 
-func TestAntigravityDefaultsApproveOnlyKnownAmuxTools(t *testing.T) {
-	for name, allowed := range map[string]bool{
-		"mcp_amux_task_get": true, "mcp_amux_task_done": true, "mcp_amux_memory_get": true,
-		"mcp_other_task_get": false, "mcp_amux_unknown": false, "mcp_amux_task_get_more": false,
-		"terminal_exec": false, "mcp_amux_": false, "": false,
-	} {
-		if antigravityAmuxTool(name) != allowed {
-			t.Errorf("incorrect permission decision for %q", name)
-		}
-	}
-}
-
 func TestLocalConversationMCPArgsAndValidation(t *testing.T) {
 	executable := filepath.Join(t.TempDir(), "amux")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0700); err != nil {
@@ -187,12 +175,12 @@ func TestLocalConversationMCPArgsAndValidation(t *testing.T) {
 	}
 	run := storage.WorkerRun{
 		Project: "demo", Directory: t.TempDir(), ConversationID: "018f0000-0000-7000-8000-000000000001",
-		Owner: storage.AgentOrigin{
+		Owner: agent.Origin{
 			SessionID: "018f0000-0000-7000-8000-000000000002", InstanceID: "018f0000-0000-7000-8000-000000000003",
 			Provider: "codex", OS: "macos",
 		},
 	}
-	args := nativeMCPArgs(config, run)
+	args := nativeMCPArgs(run, config.LocalConversation)
 	foundLocalFlag := false
 	for _, arg := range args {
 		if arg == "--local-conversation" {

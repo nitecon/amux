@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -25,12 +26,12 @@ func TestServerRouterOwnsCompleteRegistryAndCompletionSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.UseRouterReviews()
-	builtins, err := server.NewGatewayRouter(s, 30, 7)
+	builtins, err := server.NewGatewayFISM(s, 30, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"assignment", "inbound", "native-delivery", "notifier", "presence", "project-inbox", "reclaim", "reminder", "remote", "retention", "review"}
-	if got := builtins.Registry().PluginIDs(); !reflect.DeepEqual(got, want) {
+	if got := builtins.Registry().ControllerIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("incomplete registry: %v", got)
 	}
 	runCtx, stop := context.WithCancel(ctx)
@@ -60,7 +61,7 @@ func TestServerRouterOwnsCompleteRegistryAndCompletionSources(t *testing.T) {
 	}
 	watch := s.EventBus().Subscribe(128)
 	defer watch.Unsubscribe()
-	actor := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	task, err := s.InsertTask(ctx, storage.TaskInsert{Project: "builtin", Title: "Finish through the full router", Reporter: "fixture"}, actor)
 	if err != nil {
 		t.Fatal(err)

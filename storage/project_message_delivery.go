@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const (
@@ -32,7 +33,7 @@ type projectInboxRecipient struct {
 // for the exact live native session that owns a taskless project conversation. The
 // message confirmation and command are committed together, so replayed ticks
 // cannot lose or duplicate an inbox item.
-func (s *Store) ReconcileProjectInbox(ctx context.Context, event router.Event) error {
+func (s *Store) ReconcileProjectInbox(ctx context.Context, event fism.Event) error {
 	if event.ID != "clock.tick" || event.Version != 1 || !canonicalUUID(event.UID) {
 		return fmt.Errorf("project inbox reconciliation requires a clock.tick v1 event with a canonical UID")
 	}
@@ -47,10 +48,7 @@ func (s *Store) ReconcileProjectInbox(ctx context.Context, event router.Event) e
 	if len(recipients) == 0 {
 		return nil
 	}
-	start := int(event.Seq % int64(len(recipients)))
-	if start < 0 {
-		start += len(recipients)
-	}
+	start := int(uint64(crc32.ChecksumIEEE([]byte(event.UID))) % uint64(len(recipients)))
 	var failures []error
 	wake := false
 	remaining := projectInboxTickBudget

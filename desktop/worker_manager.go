@@ -10,9 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
-	"github.com/nitecon/amux/providerprocess"
+	projectid "github.com/nitecon/amux/identity/project"
+	"github.com/nitecon/amux/providers/process"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -131,7 +130,7 @@ func (m *WorkerManager) RunConversationWithCommand(ctx context.Context, project,
 		return err
 	}
 	if directory == "" {
-		if m.conversationRoot == "" || project == "" || projects.SanitizeIdent(project) != project {
+		if m.conversationRoot == "" || project == "" || projectid.SanitizeIdent(project) != project {
 			return fmt.Errorf("a valid project and conversation directory are required")
 		}
 		directory = filepath.Join(m.conversationRoot, project, "conversations")
@@ -181,7 +180,7 @@ func (m *WorkerManager) conversationDirectory(ctx context.Context, project, dire
 		if directory == "" {
 			return "", fmt.Errorf("attach the source checkout to this workspace before starting a conversation")
 		}
-		identity, err := projectidentity.ResolveCheckout(ctx, directory)
+		identity, err := projectid.ResolveCheckout(ctx, directory)
 		if err != nil {
 			return "", err
 		}
@@ -280,7 +279,7 @@ func (m *WorkerManager) validateSavedPool(ctx context.Context, id string) (*stor
 	if pool.Server != m.client.Endpoint() {
 		return nil, fmt.Errorf("saved worker pool belongs to another gateway")
 	}
-	directory, err := providerprocess.ValidateDirectory(pool.Directory, pool.Provider)
+	directory, err := process.ValidateDirectory(pool.Directory, pool.Provider)
 	if err != nil || directory != pool.Directory {
 		return nil, fmt.Errorf("saved worker pool checkout is unavailable")
 	}

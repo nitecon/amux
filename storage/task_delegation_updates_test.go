@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestTaskDelegationContractUpdateMirrorsMetadataAndNudgesTarget(t *testing.T) {
@@ -247,7 +249,7 @@ func TestTaskDelegationUpdateAndCommentEffectsRollbackTogether(t *testing.T) {
 	}
 }
 
-func delegationUpdatesFixture(t *testing.T) (*Store, context.Context, *AgentOrigin, *TaskDelegationResult) {
+func delegationUpdatesFixture(t *testing.T) (*Store, context.Context, *agent.Origin, *TaskDelegationResult) {
 	t.Helper()
 	ctx := context.Background()
 	s := taskStore(t)

@@ -14,7 +14,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/projectidentity"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -38,7 +40,7 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var streams, adoptionRequests, opens atomic.Int32
-	manager, local, remote, client, _ := workerManagerFixture(t, func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	manager, local, remote, client, _ := workerManagerFixture(t, func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		opens.Add(1)
 		if run.Owner.Provider != "codex" {
 			t.Errorf("opened unexpected provider %q", run.Owner.Provider)
@@ -111,7 +113,7 @@ func testAutomaticAssignment(t *testing.T, native bool) {
 			return false
 		}
 		for _, registered := range targets {
-			name := worker.AgentDisplayName(registered.Target.Origin)
+			name := agent.DisplayName(registered.Target.Origin)
 			if registered.DisplayName == nil || *registered.DisplayName != name || !strings.Contains(name, " - ") {
 				t.Fatalf("agent registration omitted identity name: %+v", registered.DisplayName)
 			}
@@ -238,16 +240,16 @@ func TestAutomaticWorkersRetryTransientCheckoutTimeout(t *testing.T) {
 	if output, err := exec.Command("git", "-C", checkout, "init", "--quiet").CombinedOutput(); err != nil {
 		t.Fatalf("initialize fixture checkout: %v: %s", err, output)
 	}
-	resolved, err := projectidentity.ResolveCheckout(ctx, checkout)
+	resolved, err := projectid.ResolveCheckout(ctx, checkout)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var attempts, poolStarts atomic.Int32
-	resolveAutomaticCheckout = func(ctx context.Context, directory string) (projectidentity.Identity, error) {
+	resolveAutomaticCheckout = func(ctx context.Context, directory string) (projectid.Identity, error) {
 		n := attempts.Add(1)
 		if n == 1 || n == 3 {
-			return projectidentity.Identity{}, fmt.Errorf("inspect Git checkout: %w", context.DeadlineExceeded)
+			return projectid.Identity{}, fmt.Errorf("inspect Git checkout: %w", context.DeadlineExceeded)
 		}
 		return resolved, nil
 	}
@@ -347,9 +349,9 @@ func TestAutomaticWorkersKeepSteadyIntervalOnPersistentErrors(t *testing.T) {
 		}
 
 		var attempts, reports atomic.Int32
-		resolveAutomaticCheckout = func(_ context.Context, directory string) (projectidentity.Identity, error) {
+		resolveAutomaticCheckout = func(_ context.Context, directory string) (projectid.Identity, error) {
 			attempts.Add(1)
-			return projectidentity.Identity{Directory: directory}, nil
+			return projectid.Identity{Directory: directory}, nil
 		}
 		var lastStatus atomic.Value
 		lastStatus.Store("")
@@ -410,9 +412,9 @@ func TestAutomaticWorkersKeepSteadyIntervalOnPersistentErrors(t *testing.T) {
 		manager, _, _, _, _ := workerManagerFixture(t, nil)
 
 		var attempts, poolStarts, reports atomic.Int32
-		resolveAutomaticCheckout = func(_ context.Context, directory string) (projectidentity.Identity, error) {
+		resolveAutomaticCheckout = func(_ context.Context, directory string) (projectid.Identity, error) {
 			attempts.Add(1)
-			return projectidentity.Identity{Directory: directory}, nil
+			return projectid.Identity{Directory: directory}, nil
 		}
 		runAutomaticPool = func(_ context.Context, _ worker.PoolConfig) error {
 			poolStarts.Add(1)

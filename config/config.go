@@ -1,76 +1,90 @@
 package config
 
 import (
+	"context"
 	"errors"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 )
 
 var (
-	configLock sync.RWMutex
-	current    AppConfig
-	serverPath string
+	clientLock   sync.RWMutex
+	activeClient Client
 )
 
-type AppConfig struct {
-	Client Client
-	Server Server
-}
-
-// InitConfig loads the client configuration selected at startup.
-func InitConfig(loc string) error {
-	configLock.Lock()
-	defer configLock.Unlock()
-	selected, err := ReadClient(loc)
+// LoadClient publishes client YAML settings after validation and any read-only reload checks succeed.
+func LoadClient(path string, checks ...func(Client) error) error {
+	selected, err := ReadClient(path)
+	if errors.Is(err, os.ErrNotExist) && filepath.Base(path) == clientConfigName {
+		if migrateErr := migrateClientFiles(path); migrateErr != nil && !errors.Is(migrateErr, os.ErrNotExist) {
+			return migrateErr
+		}
+		selected, err = ReadClient(path)
+	}
 	if err != nil {
 		return err
 	}
-	current.Client = cloneClient(selected)
+	return publishClient(selected, checks)
+}
+
+// LoadClientFleet publishes device settings combined with the gateway's active fleet settings.
+func LoadClientFleet(ctx context.Context, path string, gateway fleetSource, checks ...func(Client) error) error {
+	selected, err := ReadClient(path)
+	if err != nil {
+		return err
+	}
+	selected.Providers, err = fleetProviders(ctx, gateway, selected.Providers)
+	if err != nil {
+		return err
+	}
+	return publishClient(selected, checks)
+}
+
+func publishClient(selected Client, checks []func(Client) error) error {
+	for _, check := range checks {
+		if err := check(selected); err != nil {
+			return err
+		}
+	}
+	clientLock.Lock()
+	defer clientLock.Unlock()
+	activeClient = selected
 	return nil
 }
 
-// UseClient publishes a validated client configuration from startup or reload.
-func UseClient(selected Client) error {
+// Get returns the active client settings. Referenced data is read-only.
+func Get() Client {
+	clientLock.RLock()
+	defer clientLock.RUnlock()
+	return activeClient
+}
+
+var (
+	serverLock   sync.RWMutex
+	activeServer Server
+)
+
+// GetServer returns the active server settings. Referenced data is read-only.
+func GetServer() Server {
+	serverLock.RLock()
+	defer serverLock.RUnlock()
+	return activeServer
+}
+
+// LoadServer loads and publishes the server YAML settings.
+func LoadServer(path string) error {
+	selected, err := ReadServer(path)
+	if err != nil {
+		return err
+	}
 	if err := selected.Validate(); err != nil {
 		return err
 	}
-	configLock.Lock()
-	defer configLock.Unlock()
-	current.Client = cloneClient(selected)
+	serverLock.Lock()
+	defer serverLock.Unlock()
+	activeServer = selected
 	return nil
-}
-
-// Get returns an isolated snapshot of the configuration currently in use.
-func Get() *AppConfig {
-	configLock.RLock()
-	defer configLock.RUnlock()
-	return &AppConfig{Client: cloneClient(current.Client), Server: cloneServer(current.Server)}
-}
-
-func cloneClient(value Client) Client {
-	value.Projects = maps.Clone(value.Projects)
-	value.ExcludedProjects = maps.Clone(value.ExcludedProjects)
-	value.ProjectURLs = slices.Clone(value.ProjectURLs)
-	value.Providers = slices.Clone(value.Providers)
-	if value.HostedGateway != nil {
-		gateway := *value.HostedGateway
-		value.HostedGateway = &gateway
-	}
-	return value
-}
-
-func absolutePath(path string) string {
-	if path == "" {
-		return ""
-	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	return absolute
 }
 
 // WriteFile atomically replaces a configuration or preference file.

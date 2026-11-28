@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestCallTaskToolWithGoalUsesPerRequestHeader(t *testing.T) {
@@ -26,14 +26,14 @@ func TestCallTaskToolWithGoalUsesPerRequestHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	goal := "  release  "
-	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", storage.AgentOrigin{}, &goal, "task_list", json.RawMessage(`{}`)); err != nil {
+	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", agent.Origin{}, &goal, "task_list", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CallTaskTool(context.Background(), "tasks", "conv", storage.AgentOrigin{}, "task_list", json.RawMessage(`{}`)); err != nil {
+	if _, err := client.CallTaskTool(context.Background(), "tasks", "conv", agent.Origin{}, "task_list", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	empty := ""
-	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", storage.AgentOrigin{}, &empty, "task_list", json.RawMessage(`{}`)); err != nil {
+	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", agent.Origin{}, &empty, "task_list", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if len(observed) != 2 || observed[0] != "release" || observed[1] != "" {
@@ -54,10 +54,10 @@ func TestCallTaskToolWithGoalDoesNotMutateSharedClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := "alpha", "beta"
-	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", storage.AgentOrigin{}, &first, "task_list", json.RawMessage(`{}`)); err != nil {
+	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", agent.Origin{}, &first, "task_list", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", storage.AgentOrigin{}, &second, "task_list", json.RawMessage(`{}`)); err != nil {
+	if _, err := client.CallTaskToolWithGoal(context.Background(), "tasks", "conv", agent.Origin{}, &second, "task_list", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if len(observed) != 2 || len(observed[0]) != 1 || observed[0][0] != first || len(observed[1]) != 1 || observed[1][0] != second {

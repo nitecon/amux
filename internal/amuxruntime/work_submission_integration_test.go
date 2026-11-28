@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/worksubmission"
 )
 
 type submissionEndToEnd struct {
@@ -29,7 +31,7 @@ type submissionEndToEnd struct {
 	host                                    *httptest.Server
 	client                                  *gatewayclient.Client
 	task                                    *storage.Task
-	origin                                  storage.AgentOrigin
+	origin                                  agent.Origin
 }
 
 func submissionFixtureGit(t *testing.T, root string, args ...string) string {
@@ -52,7 +54,7 @@ func newSubmissionEndToEnd(t *testing.T, wrap func(http.Handler) http.Handler) s
 	t.Helper()
 	ctx := context.Background()
 	base := t.TempDir()
-	f := submissionEndToEnd{root: filepath.Join(base, "checkout"), remote: filepath.Join(base, "remote.git"), preferences: filepath.Join(base, "work-preferences.json"), origin: storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}}
+	f := submissionEndToEnd{root: filepath.Join(base, "checkout"), remote: filepath.Join(base, "remote.git"), preferences: filepath.Join(base, "work-preferences.json"), origin: agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}}
 	for _, directory := range []string{f.root, f.remote} {
 		if err := os.Mkdir(directory, 0700); err != nil {
 			t.Fatal(err)
@@ -130,7 +132,7 @@ func submissionFixtureEnv(key string) string {
 	return ""
 }
 
-func assertSubmissionEndToEnd(t *testing.T, f submissionEndToEnd, receipt submitWorkReceipt) {
+func assertSubmissionEndToEnd(t *testing.T, f submissionEndToEnd, receipt worksubmission.Receipt) {
 	t.Helper()
 	if receipt.TaskID != f.task.ID || receipt.Reference == "" || receipt.CommentID == "" || len(receipt.Files) != 1 || receipt.Files[0] != "a.txt" {
 		t.Fatalf("incomplete submission receipt: %+v", receipt)
@@ -193,7 +195,7 @@ func TestWorkSubmissionCLIPathFileAndTopLevelAliasPublishAndPostOneReceipt(t *te
 			if err != nil {
 				t.Fatalf("submission CLI: %v\n%s", err, &stderr)
 			}
-			var receipt submitWorkReceipt
+			var receipt worksubmission.Receipt
 			decoder := json.NewDecoder(&stdout)
 			if err := decoder.Decode(&receipt); err != nil {
 				t.Fatal(err)
@@ -214,13 +216,13 @@ func TestNativeMCPSubmitWorkUsesPinnedCheckoutAndScopedUntaggedTask(t *testing.T
 	input := "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"submission-fixture\",\"version\":\"1\"}}}\n" +
 		"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n" +
 		"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n" + string(call) + "\n"
-	args := append(f.actorArgs(), "--conversation", f.conversation, "--directory", f.root, "--goal", "release")
+	args := append(f.mcpArgs(t, f.preferences), "--goal", "release")
 	var stdout, stderr bytes.Buffer
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
 		t.Fatalf("native MCP: %v %s", err, &stderr)
 	}
 	decoder := json.NewDecoder(&stdout)
-	var receipt submitWorkReceipt
+	var receipt worksubmission.Receipt
 	foundReceipt, foundTool := false, false
 	for decoder.More() {
 		var response struct {
@@ -238,7 +240,7 @@ func TestNativeMCPSubmitWorkUsesPinnedCheckoutAndScopedUntaggedTask(t *testing.T
 			foundTool = bytes.Contains(response.Result, []byte(`"submit_work"`))
 		}
 		if response.ID == 3 {
-			var result mcpstdio.Result
+			var result storage.ToolResult
 			if err := json.Unmarshal(response.Result, &result); err != nil {
 				t.Fatal(err)
 			}
@@ -289,7 +291,7 @@ func TestWorkSubmissionUnconfirmedCommentRetainsPublishedReferenceWithoutReplay(
 						_ = json.NewEncoder(w).Encode(saved)
 						return
 					}
-					var result mcpstdio.Result
+					var result storage.ToolResult
 					if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || len(result.Content) != 1 {
 						t.Errorf("bad tool fixture: %+v %v", result, err)
 						return
@@ -307,13 +309,13 @@ func TestWorkSubmissionUnconfirmedCommentRetainsPublishedReferenceWithoutReplay(
 			var failure string
 			if native {
 				args, _ := json.Marshal(map[string]any{"task_id": f.task.ID, "message": "Native submission", "paths": []string{"a.txt"}})
-				result, err := callSubmitWorkMCP(context.Background(), f.client, "demo", f.conversation, f.root, f.origin, nil, f.preferences, args)
+				result, err := callSubmitWorkMCP(t, f, f.preferences, args)
 				if err != nil || !result.IsError || len(result.Content) != 1 {
 					t.Fatalf("unconfirmed native comment reported success: %+v %v", result, err)
 				}
 				failure = result.Content[0].Text
 			} else {
-				receipt, err := submitWork(context.Background(), f.client, submitWorkInput{Project: "demo", Root: f.root, TaskID: f.task.ID, Message: "CLI submission", Paths: []string{"a.txt"}, Origin: &f.origin}, f.preferences)
+				receipt, err := worksubmission.SubmitTask(context.Background(), f.client, worksubmission.Input{Project: "demo", Root: f.root, TaskID: f.task.ID, Message: "CLI submission", Paths: []string{"a.txt"}, Origin: &f.origin}, f.preferences)
 				if err == nil || receipt.Reference == "" {
 					t.Fatalf("unconfirmed CLI comment reported success or lost receipt: %+v %v", receipt, err)
 				}
@@ -346,11 +348,11 @@ func TestNativeMCPSubmissionRetainsExistingOwnedTaskScopeBeyondBoundTask(t *test
 	}
 	f.task = owned
 	args, _ := json.Marshal(map[string]any{"task_id": owned.ID, "message": "Owned same-project work", "paths": []string{"a.txt"}})
-	result, err := callSubmitWorkMCP(context.Background(), f.client, "demo", f.conversation, f.root, f.origin, nil, f.preferences, args)
+	result, err := callSubmitWorkMCP(t, f, f.preferences, args)
 	if err != nil || result.IsError || len(result.Content) != 1 {
 		t.Fatalf("submission narrowed existing same-project exact-owner task-tool scope: %+v %v", result, err)
 	}
-	var receipt submitWorkReceipt
+	var receipt worksubmission.Receipt
 	if err := json.Unmarshal([]byte(result.Content[0].Text), &receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +372,7 @@ func TestLargeSubmissionPublishesAndEntersReview(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	receipt, err := submitWork(context.Background(), f.client, submitWorkInput{
+	receipt, err := worksubmission.SubmitTask(context.Background(), f.client, worksubmission.Input{
 		Project: "demo", Root: f.root, TaskID: f.task.ID, Message: "Large submission", Paths: paths, Origin: &f.origin,
 	}, f.preferences)
 	if err != nil || len(receipt.Files) != len(paths) || receipt.CommentID == "" {
@@ -393,7 +395,7 @@ func TestLargeSubmissionPublishesAndEntersReview(t *testing.T) {
 	if err != nil || len(reviews) != 1 {
 		t.Fatalf("expected one code review before closing: %+v %v", reviews, err)
 	}
-	reviewer := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	reviewer := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	review := reviews[0]
 	if _, err := f.store.ApplyTaskTransition(ctx, "demo", review.ID, "in_progress", reviewer, storage.TaskTransitionPolicy{}); err != nil {
 		t.Fatal(err)
@@ -420,7 +422,7 @@ func TestLargeSubmissionPublishesAndEntersReview(t *testing.T) {
 func TestReviewCorrectionsTargetImplementerAndQueueSeparateFinding(t *testing.T) {
 	f := newSubmissionEndToEnd(t, nil)
 	ctx := context.Background()
-	if _, err := submitWork(ctx, f.client, submitWorkInput{
+	if _, err := worksubmission.SubmitTask(ctx, f.client, worksubmission.Input{
 		Project: "demo", Root: f.root, TaskID: f.task.ID, Message: "Review this work", Paths: []string{"a.txt"}, Origin: &f.origin,
 	}, f.preferences); err != nil {
 		t.Fatal(err)
@@ -429,7 +431,7 @@ func TestReviewCorrectionsTargetImplementerAndQueueSeparateFinding(t *testing.T)
 	if err != nil || len(reviews) != 1 {
 		t.Fatalf("expected a code review: %+v %v", reviews, err)
 	}
-	reviewer := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	reviewer := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	review := reviews[0]
 	if _, err := f.store.ApplyTaskTransition(ctx, "demo", review.ID, "in_progress", &reviewer, storage.TaskTransitionPolicy{}); err != nil {
 		t.Fatal(err)
@@ -506,17 +508,18 @@ func TestNativeMCPLargeSubmitWorkListReachesTaskValidationWithoutArgvExpansion(t
 	}
 	input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"large-submission-fixture","version":"1"}}}` + "\n" + `{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" + string(request) + "\n"
 	var stdout, stderr bytes.Buffer
-	args := []string{"--server", host.URL, "--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux", "--directory", t.TempDir(), "--work-preferences", filepath.Join(t.TempDir(), "settings.json")}
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: host.URL, WorkPreferences: filepath.Join(t.TempDir(), "settings.json")})
+	args := []string{"--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux", "--directory", t.TempDir()}
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
 		t.Fatalf("source-sized MCP request did not reach local task validation: %v", err)
 	}
 	decoder := json.NewDecoder(&stdout)
 	found := false
 	for {
 		var response struct {
-			ID     int             `json:"id"`
-			Result mcpstdio.Result `json:"result"`
-			Error  json.RawMessage `json:"error"`
+			ID     int                `json:"id"`
+			Result storage.ToolResult `json:"result"`
+			Error  json.RawMessage    `json:"error"`
 		}
 		err := decoder.Decode(&response)
 		if err == io.EOF {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -88,7 +89,7 @@ func metadataPresent(m TaskMetadataUpdate) bool {
 
 // applyTaskMetadata applies metadata before lifecycle status writes so any
 // status-triggered durable event contains the final metadata and rank.
-func applyTaskMetadata(ctx context.Context, tx *sql.Tx, current *Task, update TaskMetadataUpdate, status string, policy TaskTransitionPolicy, actor *AgentOrigin) (*Task, error) {
+func applyTaskMetadata(ctx context.Context, tx *sql.Tx, current *Task, update TaskMetadataUpdate, status string, policy TaskTransitionPolicy, actor *agent.Origin) (*Task, error) {
 	if !metadataPresent(update) {
 		if status == "" {
 			if _, err := tx.ExecContext(ctx, "UPDATE tasks SET updated_at=? WHERE id=? AND project_ident=?", time.Now().UnixMilli(), current.ID, current.ProjectIdent); err != nil {
@@ -243,7 +244,7 @@ func sameReviewMarkers(current, next []string) bool {
 	return true
 }
 
-func taskOSMismatch(required string, owner *AgentOrigin) bool {
+func taskOSMismatch(required string, owner *agent.Origin) bool {
 	return required != "" && (owner == nil || owner.OS != required)
 }
 
@@ -258,7 +259,7 @@ func routingOSMismatch(raw json.RawMessage, required string) bool {
 	var routing struct {
 		Mode   string `json:"mode"`
 		Target struct {
-			Origin AgentOrigin `json:"origin"`
+			Origin agent.Origin `json:"origin"`
 		} `json:"target"`
 	}
 	return required != "" && json.Unmarshal(raw, &routing) == nil && routing.Mode == "session" && routing.Target.Origin.OS != required

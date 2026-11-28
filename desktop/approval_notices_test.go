@@ -9,8 +9,9 @@ import (
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
-	"github.com/nitecon/amux/worker"
 )
 
 func TestApprovalNotificationIdentifiesPendingPermission(t *testing.T) {
@@ -71,11 +72,11 @@ func TestProviderApprovalSurfacesInEventsBeforeOpeningChat(t *testing.T) {
 	}
 	ctx := context.Background()
 	var emit conversation.Sink
-	open := b.watchApprovals(func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	open := b.watchApprovals(func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		emit = sink
 		return &markdownFixtureSession{done: make(chan struct{})}, nil
 	}, nil)
-	run := storage.WorkerRun{Project: "demo", ConversationID: "conversation", Owner: storage.AgentOrigin{InstanceID: "instance", Provider: "antigravity"}}
+	run := storage.WorkerRun{Project: "demo", ConversationID: "conversation", Owner: agent.Origin{InstanceID: "instance", Provider: "antigravity"}}
 	session, err := open(ctx, run, func(context.Context, conversation.Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)

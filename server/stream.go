@@ -19,9 +19,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/nitecon/amux/channels"
 	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/wsock"
 )
 
 const streamFrameBytes = 65536
@@ -44,10 +44,7 @@ type api struct {
 	shutdownStarted           atomic.Bool
 	bootstrapMu               sync.Mutex
 	bootstrapAttempts         map[string]bootstrapAttempt
-	mu                        sync.Mutex
-	connections               map[*websocket.Conn]struct{}
-	closing                   bool
-	streams                   sync.WaitGroup
+	sockets                   wsock.SocketManager
 }
 
 func (a *api) taskConsumerStatuses(w http.ResponseWriter, r *http.Request) {
@@ -66,53 +63,19 @@ func (a *api) taskConsumerStatuses(w http.ResponseWriter, r *http.Request) {
 }
 
 func newAPI(store *storage.Store, secret string) *api {
-	return &api{store: store, secret: secret, connections: map[*websocket.Conn]struct{}{}, bootstrapAttempts: map[string]bootstrapAttempt{}}
+	return &api{store: store, secret: secret, bootstrapAttempts: map[string]bootstrapAttempt{}}
 }
 
 func (a *api) ShutdownStreams(ctx context.Context) error {
-	a.mu.Lock()
-	a.closing = true
-	conns := make([]*websocket.Conn, 0, len(a.connections))
-	for c := range a.connections {
-		conns = append(conns, c)
-	}
-	a.mu.Unlock()
-	for _, c := range conns {
-		c.CloseNow()
-	}
-	done := make(chan struct{})
-	go func() { a.streams.Wait(); close(done) }()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("stop event streams: %w", ctx.Err())
-	}
+	return a.sockets.Shutdown(ctx)
 }
 
 func (a *api) taskStream(w http.ResponseWriter, r *http.Request) {
 	a.withStream(w, r, streamFrameBytes, a.serveTaskStream)
 }
 
-// withStream owns every accepted socket, including hijacked HTTP connections,
-// so server shutdown fences new streams and drains both wire protocols.
 func (a *api) withStream(w http.ResponseWriter, r *http.Request, readLimit int64, serve func(context.Context, *websocket.Conn)) {
-	c, err := websocket.Accept(w, r, nil)
-	if err != nil {
-		return
-	}
-	a.mu.Lock()
-	if a.closing {
-		a.mu.Unlock()
-		c.CloseNow()
-		return
-	}
-	a.connections[c] = struct{}{}
-	a.streams.Add(1)
-	a.mu.Unlock()
-	defer func() { c.CloseNow(); a.mu.Lock(); delete(a.connections, c); a.mu.Unlock(); a.streams.Done() }()
-	c.SetReadLimit(readLimit)
-	serve(r.Context(), c)
+	a.sockets.Serve(w, r, readLimit, serve)
 }
 
 func (a *api) taskEvents(w http.ResponseWriter, r *http.Request) {
@@ -189,9 +152,7 @@ type streamMessage struct {
 }
 
 func sendFrame(ctx context.Context, c *websocket.Conn, value any) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	return wsjson.Write(ctx, c, value)
+	return wsock.WriteJSON(ctx, c, 5*time.Second, value)
 }
 func strictFrame(data []byte, value any) error {
 	d := json.NewDecoder(bytes.NewReader(data))

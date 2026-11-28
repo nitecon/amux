@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestPresencePrincipalBindingSequenceAndTrustedReports(t *testing.T) {
@@ -153,14 +153,14 @@ func TestAssignmentOfferCapturesCurrentNativeReporterPrincipal(t *testing.T) {
 	if accepted, err := s.ReportPresenceWithPrincipal(ctx, PresenceReport{Source: "worker:assignment", Sequence: 2, Agents: []PresenceAgent{agent}}, old.Add(time.Second), "api-key"); err != nil || !accepted {
 		t.Fatalf("authenticated assignment reporter: accepted=%v err=%v", accepted, err)
 	}
-	definitions := append(append(nativePresenceDefinitions(), RouterTaskEventDefinitions()...), plugins.NotificationEventDefinitions()...)
-	runtime, err := router.NewRuntime(s, s.EventBus(), definitions, []router.Plugin{
-		plugins.PresencePlugin(s), plugins.AssignmentPlugin(s), assignmentNotifyObserver(),
-	}, router.RunConfig{Capacity: 4})
+	definitions := append(append(nativePresenceDefinitions(), RouterTaskEventDefinitions()...), controllers.NotificationEventDefinitions()...)
+	runtime, err := fism.NewRuntime(s, s.EventBus(), definitions, []fism.Controller{
+		controllers.PresenceController(s), controllers.AssignmentController(s), assignmentNotifyObserver(),
+	}, fism.RunConfig{Capacity: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
+	clock, err := s.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

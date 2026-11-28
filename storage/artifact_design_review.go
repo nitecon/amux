@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // MarkDesignReviewCollecting applies the state transition performed after a
@@ -17,7 +17,7 @@ func (s *Store) MarkDesignReviewCollecting(ctx context.Context, projectIdent, ar
 		return nil, err
 	}
 	defer tx.Rollback()
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	result, err := tx.ExecContext(ctx, `UPDATE artifacts
 SET lifecycle_state='active', review_state='collecting_reviews', updated_at=?
 WHERE project_ident=? AND artifact_id=? AND kind='design_review'`, time.Now().UnixMilli(), projectIdent, artifactID)

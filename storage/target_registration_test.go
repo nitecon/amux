@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestTargetRegistrationLeaseIsExplicitAndIndependentOfPresence(t *testing.T) {
@@ -17,7 +19,7 @@ func TestTargetRegistrationLeaseIsExplicitAndIndependentOfPresence(t *testing.T)
 	}
 	start := time.UnixMilli(1_800_200_000_000)
 	request := TargetRegistration{
-		Origin: AgentOrigin{
+		Origin: agent.Origin{
 			SessionID:  "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 			Provider:   "codex", OS: "linux",
@@ -61,7 +63,7 @@ func TestRegisterTargetRequiresProjectBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := TargetRegistration{
-		Origin: AgentOrigin{
+		Origin: agent.Origin{
 			SessionID:  "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 			Provider:   "codex", OS: "linux",
@@ -197,7 +199,7 @@ BEGIN SELECT RAISE(ABORT,'registration rejected'); END;`); err != nil {
 		t.Fatal(err)
 	}
 	request := TargetRegistration{
-		Origin:     AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"},
+		Origin:     agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"},
 		Generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 	}
 	if _, err := s.RegisterTarget(ctx, "presence", request, time.UnixMilli(1_800_400_000_000)); err == nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -26,8 +27,8 @@ func delegationTestReceipt() map[string]any {
 	}
 }
 
-func delegationTestActor() storage.AgentOrigin {
-	return storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+func delegationTestActor() agent.Origin {
+	return agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 }
 
 func TestDelegationPreservesLiteralContextAndRequiresExactLinkedReceipt(t *testing.T) {

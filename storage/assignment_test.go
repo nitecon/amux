@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func assignmentOrigin(session, instance, provider, os string) AgentOrigin {
-	return AgentOrigin{SessionID: session, InstanceID: instance, Provider: provider, OS: os}
+func assignmentOrigin(session, instance, provider, os string) agent.Origin {
+	return agent.Origin{SessionID: session, InstanceID: instance, Provider: provider, OS: os}
 }
 
 func reportAssignmentPresence(t *testing.T, s *Store, now time.Time, source string, sequence int64, agents ...PresenceAgent) {
@@ -19,7 +21,7 @@ func reportAssignmentPresence(t *testing.T, s *Store, now time.Time, source stri
 	}
 }
 
-func idleAssignmentAgent(project string, origin AgentOrigin, now time.Time) PresenceAgent {
+func idleAssignmentAgent(project string, origin agent.Origin, now time.Time) PresenceAgent {
 	activity := now.Add(-time.Duration(presenceIdleAfter) * time.Millisecond).UnixMilli()
 	return PresenceAgent{ProjectIdent: project, Origin: origin, AutoAssign: true, LastActivityAt: &activity}
 }
@@ -56,7 +58,7 @@ func TestReconcileAssignmentsUsesFIFOAcrossSessions(t *testing.T) {
 	if err := s.ReconcileAssignments(ctx, now); err != nil {
 		t.Fatal(err)
 	}
-	owners := make(map[string]AgentOrigin)
+	owners := make(map[string]agent.Origin)
 	for _, task := range []*Task{first, second} {
 		got, err := s.Task(ctx, "tasks", task.ID)
 		if err != nil || got == nil || got.Task.Status != "in_progress" || got.Task.OwnerOrigin == nil ||
@@ -77,7 +79,7 @@ func TestReconcileAssignmentsUsesFIFOAcrossSessions(t *testing.T) {
 	for rows.Next() {
 		var id string
 		var raw string
-		var origin AgentOrigin
+		var origin agent.Origin
 		if err := rows.Scan(&id, &raw); err != nil {
 			t.Fatal(err)
 		}

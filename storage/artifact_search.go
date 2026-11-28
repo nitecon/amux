@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ArtifactFilters limits a project-scoped artifact search.
@@ -17,7 +17,7 @@ type ArtifactFilters struct {
 // Rust read API. Every query remains scoped to the normalized project.
 func (s *Store) SearchArtifacts(ctx context.Context, projectIdent string, filter ArtifactFilters) ([]Artifact, error) {
 	query := artifactSelect + ` WHERE project_ident=?`
-	args := []any{projects.NormalizeIdent(projectIdent)}
+	args := []any{projectid.NormalizeIdent(projectIdent)}
 	for _, f := range []struct{ col, value string }{{"kind", filter.Kind}, {"subkind", filter.Subkind}, {"lifecycle_state", filter.LifecycleState}} {
 		if value := strings.TrimSpace(f.value); value != "" {
 			query += ` AND ` + f.col + `=?`

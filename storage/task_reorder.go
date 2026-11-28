@@ -7,22 +7,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ReorderTasks applies a client supplied order to one status column. Only
 // movedTaskID may cross status; any other stale row rejects the whole reorder.
 // Rank-only updates preserve reservations and review state; column crossings
 // use the existing task workflow in the same mutation transaction.
-func (s *Store) ReorderTasks(ctx context.Context, project, status, movedTaskID string, order []string, origin *AgentOrigin, policy TaskTransitionPolicy) ([]TaskSummary, error) {
+func (s *Store) ReorderTasks(ctx context.Context, project, status, movedTaskID string, order []string, origin *agent.Origin, policy TaskTransitionPolicy) ([]TaskSummary, error) {
 	if !IsReorderableTaskStatus(status) {
 		return nil, fmt.Errorf("%w: invalid task status", ErrTaskConflict)
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if policy.HumanRequest && origin != nil {
 		return nil, fmt.Errorf("%w: user controls require a human task request", ErrTaskConflict)
 	}
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		crossing := false
 		for i, id := range order {
 			t, err := readTask(ctx, tx, project, id)

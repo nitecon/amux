@@ -10,6 +10,7 @@ import (
 	"runtime"
 
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -24,7 +25,7 @@ func desktopWorkerOpenWithPreferences(command, endpoint, keyEnv, workPreferences
 }
 
 func desktopWorkerOpenWithEnrolledProfile(command, endpoint, keyEnv, workPreferencesPath, enrolledProfile string) worker.Open {
-	return func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	return func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		executable, err := resolveTaskTools(command)
 		if err != nil {
 			return nil, err

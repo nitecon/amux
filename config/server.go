@@ -5,64 +5,81 @@ import (
 	"fmt"
 	"io"
 	"net"
-
-	"github.com/google/uuid"
 	"os"
-	"slices"
 	"strconv"
 
-	"github.com/urfave/cli/v3"
+	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
 )
 
 type Server struct {
-	Database                  string   `yaml:"database"`
-	Profile                   string   `yaml:"profile"`
-	SecureInstance            string   `yaml:"secure-instance-id"`
-	DiscoveryBind             string   `yaml:"discovery-bind"`
-	ProfileTLSNames           []string `yaml:"profile-tls-name"`
-	Listen                    string   `yaml:"listen"`
-	KeyEnv                    string   `yaml:"api-key-env"`
-	CertPath                  string   `yaml:"tls-cert"`
-	KeyPath                   string   `yaml:"tls-key"`
-	RetentionDays             uint64   `yaml:"message-retention-days"`
-	BotRetentionDays          uint64   `yaml:"bot-message-retention-days"`
-	DiscordTokenEnv           string   `yaml:"discord-token-env"`
-	DiscordGuildID            string   `yaml:"discord-guild-id"`
-	DiscordCategoryID         string   `yaml:"discord-category-id"`
-	ArtifactAuthEnforced      *bool    `yaml:"artifact-auth-enforced,omitempty"`
-	ArtifactBodySchemaEnabled *bool    `yaml:"artifact-body-schema-enabled,omitempty"`
+	GCP                       GoogleConfig `yaml:"gcp,omitempty"`
+	Aws                       AwsConfig    `yaml:"aws,omitempty"`
+	Database                  string       `yaml:"database"`
+	Profile                   string       `yaml:"profile"`
+	SecureInstance            string       `yaml:"secure-instance-id"`
+	DiscoveryBind             string       `yaml:"discovery-bind"`
+	ProfileTLSNames           []string     `yaml:"profile-tls-name"`
+	Listen                    string       `yaml:"listen"`
+	KeyEnv                    string       `yaml:"api-key-env"`
+	CertPath                  string       `yaml:"tls-cert"`
+	KeyPath                   string       `yaml:"tls-key"`
+	RetentionDays             uint64       `yaml:"message-retention-days"`
+	BotRetentionDays          uint64       `yaml:"bot-message-retention-days"`
+	DiscordTokenEnv           string       `yaml:"discord-token-env"`
+	DiscordGuildID            string       `yaml:"discord-guild-id"`
+	DiscordCategoryID         string       `yaml:"discord-category-id"`
+	ArtifactAuthEnforced      *bool        `yaml:"artifact-auth-enforced,omitempty"`
+	ArtifactBodySchemaEnabled *bool        `yaml:"artifact-body-schema-enabled,omitempty"`
+}
+
+type GoogleConfig struct {
+	ProjectID        string `yaml:"project-id"`
+	QueueEndpoint    string `yaml:"queue-endpoint"`
+	QueueSubEndpoint string `yaml:"queue-sub-endpoint"`
+}
+
+type AwsConfig struct {
+	SQSEndpoint string `yaml:"sqs-endpoint"`
+}
+
+// DefaultServer supplies defaults for omitted YAML settings.
+func DefaultServer() Server {
+	return Server{
+		Listen: "127.0.0.1:7913", KeyEnv: "GATEWAY_API_KEY",
+		RetentionDays: 30, BotRetentionDays: 7,
+	}
 }
 
 // Validate checks the server settings that do not require opening resources.
 func (settings Server) Validate() error {
 	if (settings.Database == "") == (settings.Profile == "") {
-		return errors.New("supply exactly one of --database or --profile")
+		return errors.New("supply exactly one of database or profile")
 	}
 	if settings.DiscoveryBind != "" && settings.SecureInstance == "" {
-		return errors.New("--discovery-bind requires --secure-instance-id")
+		return errors.New("discovery-bind requires secure-instance-id")
 	}
 	if settings.SecureInstance != "" {
 		instance, err := uuid.Parse(settings.SecureInstance)
 		if err != nil || instance == uuid.Nil || instance.String() != settings.SecureInstance {
-			return errors.New("--secure-instance-id requires a canonical nonzero UUID")
+			return errors.New("secure-instance-id requires a canonical nonzero UUID")
 		}
 		if settings.Profile == "" || settings.CertPath != "" || settings.KeyPath != "" {
-			return errors.New("--secure-instance-id requires --profile and profile-managed TLS")
+			return errors.New("secure-instance-id requires profile and profile-managed TLS")
 		}
 	}
 	if len(settings.ProfileTLSNames) > 0 && settings.Profile == "" {
-		return errors.New("--profile-tls-name requires --profile")
+		return errors.New("profile-tls-name requires profile")
 	}
 	if len(settings.ProfileTLSNames) > 0 && (settings.CertPath != "" || settings.KeyPath != "") {
-		return errors.New("--profile-tls-name cannot be combined with --tls-cert or --tls-key")
+		return errors.New("profile-tls-name cannot be combined with tls-cert or tls-key")
 	}
 	if (settings.CertPath == "") != (settings.KeyPath == "") {
-		return errors.New("--tls-cert and --tls-key must be supplied together")
+		return errors.New("tls-cert and tls-key must be supplied together")
 	}
 	if (settings.DiscordTokenEnv != "" || settings.DiscordGuildID != "" || settings.DiscordCategoryID != "") &&
 		(settings.DiscordTokenEnv == "" || settings.DiscordGuildID == "") {
-		return errors.New("--discord-token-env and --discord-guild-id must be supplied together")
+		return errors.New("discord-token-env and discord-guild-id must be supplied together")
 	}
 	if _, _, err := net.SplitHostPort(settings.Listen); err != nil {
 		return errors.New("invalid listen address")
@@ -70,37 +87,26 @@ func (settings Server) Validate() error {
 	return nil
 }
 
-func InitServer(path string, cmd *cli.Command) error {
-	configLock.Lock()
-	defer configLock.Unlock()
-	selected, err := ReadServer(path, cmd)
-	if err != nil {
-		return err
-	}
-	if err := selected.Validate(); err != nil {
-		return err
-	}
-	serverPath = absolutePath(path)
-	current.Server = cloneServer(selected)
-	return nil
-}
-
-func ServerFromFlags(cmd *cli.Command) Server {
-	return Server{
-		Database: cmd.String("database"), Profile: cmd.String("profile"), SecureInstance: cmd.String("secure-instance-id"),
-		DiscoveryBind: cmd.String("discovery-bind"), ProfileTLSNames: cmd.StringSlice("profile-tls-name"),
-		Listen: cmd.String("listen"), KeyEnv: cmd.String("api-key-env"), CertPath: cmd.String("tls-cert"), KeyPath: cmd.String("tls-key"),
-		RetentionDays: cmd.Uint64("message-retention-days"), BotRetentionDays: cmd.Uint64("bot-message-retention-days"),
-		DiscordTokenEnv: cmd.String("discord-token-env"), DiscordGuildID: cmd.String("discord-guild-id"), DiscordCategoryID: cmd.String("discord-category-id"),
-	}
-}
-
-// ReadServer overlays file values on unset CLI flags and returns the effective server configuration.
-func ReadServer(path string, cmd *cli.Command) (Server, error) {
-	selected := ServerFromFlags(cmd)
+// ReadServer reads server settings and fills in omitted defaults.
+func ReadServer(path string) (Server, error) {
 	if path == "" {
-		return selected, nil
+		return Server{}, errors.New("server configuration is required; use --config PATH")
 	}
+	file, err := os.Open(path)
+	if err != nil {
+		return Server{}, err
+	}
+	defer file.Close()
+	settings, err := DecodeServer(file)
+	if err != nil {
+		return Server{}, fmt.Errorf("read server config %s: %w", path, err)
+	}
+	return settings, nil
+}
+
+// DecodeServer overlays YAML settings on defaults.
+func DecodeServer(reader io.Reader) (Server, error) {
+	selected := DefaultServer()
 	fields := map[string]any{
 		"database": &selected.Database, "profile": &selected.Profile,
 		"secure-instance-id": &selected.SecureInstance, "discovery-bind": &selected.DiscoveryBind,
@@ -112,7 +118,7 @@ func ReadServer(path string, cmd *cli.Command) (Server, error) {
 		"artifact-auth-enforced":       &selected.ArtifactAuthEnforced,
 		"artifact-body-schema-enabled": &selected.ArtifactBodySchemaEnabled,
 	}
-	values, err := readServerConfig(path)
+	values, err := decodeServerFields(reader)
 	if err != nil {
 		return Server{}, err
 	}
@@ -121,14 +127,14 @@ func ReadServer(path string, cmd *cli.Command) (Server, error) {
 		if !ok {
 			return Server{}, fmt.Errorf("unknown server setting %q", name)
 		}
-		if err := setServerField(field, node, cmd.IsSet(name)); err != nil {
+		if err := setServerField(field, node); err != nil {
 			return Server{}, fmt.Errorf("server setting %s: %w", name, err)
 		}
 	}
 	return selected, nil
 }
 
-func setServerField(field any, node yaml.Node, override bool) error {
+func setServerField(field any, node yaml.Node) error {
 	if setting, ok := field.(**bool); ok {
 		if node.Tag != "!!bool" {
 			return errors.New("must be a boolean")
@@ -148,16 +154,11 @@ func setServerField(field any, node yaml.Node, override bool) error {
 			}
 			values = append(values, entry.Value)
 		}
-		if !override {
-			*names = values
-		}
+		*names = values
 		return nil
 	}
 	if node.Kind != yaml.ScalarNode || (node.Tag != "!!str" && node.Tag != "!!int") {
 		return errors.New("requires a string or integer")
-	}
-	if override {
-		return nil
 	}
 	switch target := field.(type) {
 	case *string:
@@ -174,20 +175,7 @@ func setServerField(field any, node yaml.Node, override bool) error {
 	return nil
 }
 
-func cloneServer(value Server) Server {
-	value.ProfileTLSNames = slices.Clone(value.ProfileTLSNames)
-	if value.ArtifactAuthEnforced != nil {
-		copy := *value.ArtifactAuthEnforced
-		value.ArtifactAuthEnforced = &copy
-	}
-	if value.ArtifactBodySchemaEnabled != nil {
-		copy := *value.ArtifactBodySchemaEnabled
-		value.ArtifactBodySchemaEnabled = &copy
-	}
-	return value
-}
-
-// SaveServer writes the selected configuration and refreshes its active snapshot.
+// SaveServer validates and writes the server configuration file.
 func SaveServer(path string, selected Server) error {
 	if err := selected.Validate(); err != nil {
 		return err
@@ -196,35 +184,22 @@ func SaveServer(path string, selected Server) error {
 	if err != nil {
 		return err
 	}
-	configLock.Lock()
-	defer configLock.Unlock()
-	if err := WriteFile(path, data); err != nil {
-		return err
-	}
-	if serverPath != "" && serverPath == absolutePath(path) {
-		current.Server = cloneServer(selected)
-	}
-	return nil
+	return WriteFile(path, data)
 }
 
 func GenerateServer(path string, selected Server, notes string) error {
 	return generateYAML(path, selected, notes)
 }
 
-func readServerConfig(path string) (map[string]yaml.Node, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+func decodeServerFields(reader io.Reader) (map[string]yaml.Node, error) {
 	var values map[string]yaml.Node
-	decoder := yaml.NewDecoder(file)
+	decoder := yaml.NewDecoder(reader)
 	if err := decoder.Decode(&values); err != nil {
-		return nil, fmt.Errorf("read server config %s: %w", path, err)
+		return nil, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("server config %s must contain one YAML document", path)
+		return nil, errors.New("expected a single YAML document")
 	}
 	return values, nil
 }

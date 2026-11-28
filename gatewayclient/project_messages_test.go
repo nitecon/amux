@@ -10,13 +10,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
 
-func projectMessageActor() storage.AgentOrigin {
-	return storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+func projectMessageActor() agent.Origin {
+	return agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 }
 
 func TestUnreadProjectMessagesValidatesExactProjectAndNativeOrigin(t *testing.T) {
@@ -196,7 +197,7 @@ func TestConfirmProjectMessageCommittedLostAckIsNotRetried(t *testing.T) {
 	if err := store.InsertProject(ctx, storage.Project{Ident: "inbox", ChannelName: "discord", RoomID: "room-a", Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{Seq: 1, ID: "channel.message_received", Version: 1, EmittedAt: 1234,
+	event := fism.Event{Seq: 1, ID: "channel.message_received", Version: 1, EmittedAt: 1234,
 		Payload: []byte(`{"channel_name":"discord","room_id":"room-a","message":{"id":"msg-1","content":"persist this","author_kind":"human"}}`)}
 	if stop, err := store.IngestRouterInbound(ctx, event); err != nil || stop {
 		t.Fatalf("ingest message stop=%t err=%v", stop, err)

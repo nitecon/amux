@@ -12,26 +12,27 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 // WorkerRun is local recovery state, not server task authority. Credentials are
 // supplied at runtime; the gateway credential is never stored in this journal.
 type WorkerRun struct {
-	ID                string      `json:"id"`
-	Server            string      `json:"server"`
-	Project           string      `json:"project"`
-	ConversationID    string      `json:"conversation_id"`
-	LocalTaskID       string      `json:"-"` // Task ID for a gateway without server-side conversations.
-	Directory         string      `json:"directory"`
-	Command           []string    `json:"command,omitempty"`
-	Owner             AgentOrigin `json:"owner"`
-	NativeSessionID   string      `json:"native_session_id"`
-	PendingInstanceID string      `json:"pending_instance_id"`
-	CommandCursor     int64       `json:"command_cursor"`
-	EventCursor       int64       `json:"event_cursor"`
-	OutboxCursor      int64       `json:"outbox_cursor"`
-	PresenceSequence  int64       `json:"presence_sequence"`
-	Goal              *string     `json:"goal,omitempty"`
+	ID                string       `json:"id"`
+	Server            string       `json:"server"`
+	Project           string       `json:"project"`
+	ConversationID    string       `json:"conversation_id"`
+	LocalTaskID       string       `json:"-"` // Task ID for a gateway without server-side conversations.
+	Directory         string       `json:"directory"`
+	Command           []string     `json:"command,omitempty"`
+	Owner             agent.Origin `json:"owner"`
+	NativeSessionID   string       `json:"native_session_id"`
+	PendingInstanceID string       `json:"pending_instance_id"`
+	CommandCursor     int64        `json:"command_cursor"`
+	EventCursor       int64        `json:"event_cursor"`
+	OutboxCursor      int64        `json:"outbox_cursor"`
+	PresenceSequence  int64        `json:"presence_sequence"`
+	Goal              *string      `json:"goal,omitempty"`
 }
 type WorkerOutboxEntry struct {
 	Sequence int64
@@ -120,7 +121,7 @@ func insertWorkerRun(ctx context.Context, q queryer, r WorkerRun) error {
 		return fmt.Errorf("invalid worker run goal: %w", err)
 	}
 	r.Goal = goal
-	actor, err := NormalizeOrigin(&r.Owner)
+	actor, err := agent.NormalizeOrigin(&r.Owner)
 	if err != nil {
 		return err
 	}

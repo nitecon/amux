@@ -7,24 +7,26 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 const requesterContractRemote = "github.com/example/requester-contract"
 
-func requesterContractSetup(t *testing.T) (*Store, context.Context, AgentOrigin, AgentOrigin, AgentOrigin) {
+func requesterContractSetup(t *testing.T) (*Store, context.Context, agent.Origin, agent.Origin, agent.Origin) {
 	t.Helper()
 	ctx := context.Background()
 	s := taskStore(t)
 	if _, err := s.db.ExecContext(ctx, "UPDATE projects SET canonical_remote=? WHERE ident='tasks'", requesterContractRemote); err != nil {
 		t.Fatal(err)
 	}
-	requester := AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
-	executor := AgentOrigin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "claude", OS: "linux"}
-	peer := AgentOrigin{SessionID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", InstanceID: "ffffffff-ffff-4fff-8fff-ffffffffffff", Provider: "antigravity", OS: "linux"}
+	requester := agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+	executor := agent.Origin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "claude", OS: "linux"}
+	peer := agent.Origin{SessionID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", InstanceID: "ffffffff-ffff-4fff-8fff-ffffffffffff", Provider: "antigravity", OS: "linux"}
 	return s, ctx, requester, executor, peer
 }
 
-func registerRequesterContractTarget(t *testing.T, s *Store, origin AgentOrigin, generation string, seenAt time.Time) RegisteredTarget {
+func registerRequesterContractTarget(t *testing.T, s *Store, origin agent.Origin, generation string, seenAt time.Time) RegisteredTarget {
 	t.Helper()
 	remote := requesterContractRemote
 	target, err := s.RegisterTarget(context.Background(), "tasks", TargetRegistration{
@@ -105,7 +107,7 @@ func TestTaskRequesterOwnerAndPriorRequesterCanSetOrClearWithoutChangingWork(t *
 	requesterTarget := registerRequesterContractTarget(t, s, requester, "11111111-1111-4111-8111-111111111111", time.Now())
 	executorTarget := registerRequesterContractTarget(t, s, executor, "22222222-2222-4222-8222-222222222222", time.Now())
 	peerTarget := registerRequesterContractTarget(t, s, peer, "33333333-3333-4333-8333-333333333333", time.Now())
-	foreign := AgentOrigin{SessionID: "99999999-9999-4999-8999-999999999999", InstanceID: "88888888-8888-4888-8888-888888888888", Provider: "codex", OS: "linux"}
+	foreign := agent.Origin{SessionID: "99999999-9999-4999-8999-999999999999", InstanceID: "88888888-8888-4888-8888-888888888888", Provider: "codex", OS: "linux"}
 	foreignTarget := registerRequesterContractTarget(t, s, foreign, "44444444-4444-4444-8444-444444444444", time.Now())
 	humanTask, err := s.InsertTask(ctx, TaskInsert{Project: "tasks", Title: "Human selects requester", Reporter: "fixture"}, nil)
 	if err != nil {

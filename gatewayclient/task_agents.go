@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -18,11 +18,11 @@ func (c *Client) TaskAgents(ctx context.Context, project, checkoutRemote, requir
 	if requiredOS != "" && requiredOS != "linux" && requiredOS != "windows" && requiredOS != "macos" {
 		return storage.TargetDirectory{}, fmt.Errorf("unsupported OS %q: use linux, windows or macos", requiredOS)
 	}
-	remote, err := projects.CanonicalRemote(checkoutRemote)
+	remote, err := projectid.CanonicalRemote(checkoutRemote)
 	if err != nil {
 		return storage.TargetDirectory{}, fmt.Errorf("current checkout has no canonical repository binding")
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	listed, err := c.Projects(ctx)
 	if err != nil {
 		return storage.TargetDirectory{}, err
@@ -60,7 +60,7 @@ func selectLiveTaskTargets(directory storage.TargetDirectory, requiredOS string,
 	selected := make([]storage.RegisteredTarget, 0, len(directory.Targets))
 	for _, entry := range directory.Targets {
 		generation, generationErr := uuid.Parse(entry.Target.Generation)
-		origin, originErr := storage.NormalizeOrigin(&entry.Target.Origin)
+		origin, originErr := agent.NormalizeOrigin(&entry.Target.Origin)
 		if generationErr != nil || generation == uuid.Nil || generation.String() != entry.Target.Generation || originErr != nil || origin == nil || *origin != entry.Target.Origin || entry.SeenAt <= 0 || entry.ExpiresAt <= entry.SeenAt || entry.ExpiresAt-entry.SeenAt > 120000 {
 			return nil, fmt.Errorf("invalid gateway target directory response")
 		}

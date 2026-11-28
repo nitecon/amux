@@ -12,7 +12,7 @@ import (
 	"time"
 
 	fynetest "fyne.io/fyne/v2/test"
-	"github.com/nitecon/amux/projectidentity"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 func TestBrowserFilesFollowAttachedWorkspace(t *testing.T) {
@@ -27,7 +27,7 @@ func TestBrowserFilesFollowAttachedWorkspace(t *testing.T) {
 	}
 	// FromParts canonicalizes the fixture path without spawning Git, whose
 	// bounded two-second observer can time out under a loaded full test run.
-	identity, err := projectidentity.FromParts(checkout, "")
+	identity, err := projectid.FromParts(checkout, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const taskCancellationReasonBytes = 16384
@@ -17,16 +18,16 @@ const taskCancellationReasonBytes = 16384
 var ErrTaskCancellationInput = errors.New("invalid task cancellation input")
 
 type Cancellation struct {
-	TaskID                string       `json:"task_id"`
-	ProjectIdent          string       `json:"project_ident"`
-	Reason                string       `json:"reason"`
-	PriorStatus           string       `json:"prior_status"`
-	PriorOwnerAgentID     *string      `json:"prior_owner_agent_id"`
-	PriorOwnerOrigin      *AgentOrigin `json:"prior_owner_origin"`
-	PriorStartedAt        *int64       `json:"prior_started_at"`
-	ReporterOrigin        AgentOrigin  `json:"reporter_origin"`
-	CancelledAt           int64        `json:"cancelled_at"`
-	ExecutorStopConfirmed bool         `json:"executor_stop_confirmed"`
+	TaskID                string        `json:"task_id"`
+	ProjectIdent          string        `json:"project_ident"`
+	Reason                string        `json:"reason"`
+	PriorStatus           string        `json:"prior_status"`
+	PriorOwnerAgentID     *string       `json:"prior_owner_agent_id"`
+	PriorOwnerOrigin      *agent.Origin `json:"prior_owner_origin"`
+	PriorStartedAt        *int64        `json:"prior_started_at"`
+	ReporterOrigin        agent.Origin  `json:"reporter_origin"`
+	CancelledAt           int64         `json:"cancelled_at"`
+	ExecutorStopConfirmed bool          `json:"executor_stop_confirmed"`
 }
 
 type CancelResponse struct {
@@ -60,11 +61,11 @@ func ValidateTaskCancellationReason(reason string) (string, error) {
 	return reason, nil
 }
 
-func (s *Store) CancelTask(ctx context.Context, project, id string, reason string, changeset json.RawMessage, origin *AgentOrigin) (*CancelResponse, error) {
+func (s *Store) CancelTask(ctx context.Context, project, id string, reason string, changeset json.RawMessage, origin *agent.Origin) (*CancelResponse, error) {
 	if origin == nil {
 		return nil, ErrTaskOwnership
 	}
-	actor, err := NormalizeOrigin(origin)
+	actor, err := agent.NormalizeOrigin(origin)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrTaskCancellationInput, err)
 	}
@@ -81,7 +82,7 @@ func (s *Store) CancelTask(ctx context.Context, project, id string, reason strin
 	}
 
 	var response *CancelResponse
-	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, actor *agent.Origin) error {
 		task, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err
@@ -205,7 +206,7 @@ func taskCancellation(ctx context.Context, q queryer, project, id string) (*Canc
 	var ownerOrigin, reporterOrigin *string
 	err := q.QueryRowContext(ctx, `SELECT task_id,project_ident,reason,prior_status,prior_owner_agent_id,
 		prior_owner_origin_json,prior_started_at,reporter_origin_json,cancelled_at
-		FROM task_cancellations WHERE task_id=? AND project_ident=?`, id, projects.NormalizeIdent(project)).Scan(
+		FROM task_cancellations WHERE task_id=? AND project_ident=?`, id, projectid.NormalizeIdent(project)).Scan(
 		&cancellation.TaskID, &cancellation.ProjectIdent, &cancellation.Reason, &cancellation.PriorStatus,
 		&cancellation.PriorOwnerAgentID, &ownerOrigin, &cancellation.PriorStartedAt, &reporterOrigin, &cancellation.CancelledAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -215,7 +216,7 @@ func taskCancellation(ctx context.Context, q queryer, project, id string) (*Canc
 		return nil, err
 	}
 	if ownerOrigin != nil {
-		var origin AgentOrigin
+		var origin agent.Origin
 		if err := json.Unmarshal([]byte(*ownerOrigin), &origin); err != nil {
 			return nil, err
 		}

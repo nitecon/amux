@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestCreateAgentProjectMessageStoresInternalReceiptAndSenderAtomically(t *testing.T) {
@@ -109,7 +111,7 @@ func TestCreateAgentProjectMessageRejectsInvalidOriginAndExternalProjectBeforeWr
 	}
 	actor := *taskActor()
 	input := AgentProjectMessageInput{Content: "must not persist", MessageType: "message"}
-	if _, err := s.CreateAgentProjectMessage(ctx, "native", AgentOrigin{}, input); !errors.Is(err, ErrProjectMessageInput) {
+	if _, err := s.CreateAgentProjectMessage(ctx, "native", agent.Origin{}, input); !errors.Is(err, ErrProjectMessageInput) {
 		t.Fatalf("invalid origin error=%v, want ErrProjectMessageInput", err)
 	}
 	if _, err := s.CreateAgentProjectMessage(ctx, "external", actor, input); !errors.Is(err, ErrProjectMessageUnsupportedChannel) {

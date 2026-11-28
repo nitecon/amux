@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -60,7 +59,7 @@ func TestRequesterToolsRequireCapabilityAndExactSelfAcknowledgement(t *testing.T
 						receipt = v
 					}
 					encoded, _ := json.Marshal(receipt)
-					json.NewEncoder(w).Encode(mcpstdio.Result{Content: []mcpstdio.TextContent{{Type: "text", Text: string(encoded)}}})
+					json.NewEncoder(w).Encode(storage.ToolResult{Content: []storage.ToolText{{Type: "text", Text: string(encoded)}}})
 				}))
 				defer host.Close()
 				client, _ := New(host.URL, "fixture-key", host.Client())
@@ -119,7 +118,7 @@ func TestRequesterToolClearRequiresExplicitNullWithoutDiscovery(t *testing.T) {
 					receipt["requester"] = nil
 				}
 				raw, _ := json.Marshal(receipt)
-				json.NewEncoder(w).Encode(mcpstdio.Result{Content: []mcpstdio.TextContent{{Type: "text", Text: string(raw)}}})
+				json.NewEncoder(w).Encode(storage.ToolResult{Content: []storage.ToolText{{Type: "text", Text: string(raw)}}})
 			}))
 			defer host.Close()
 			client, _ := New(host.URL, "fixture-key", host.Client())

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestTaskConversationDurableReplayAndRetry(t *testing.T) {
@@ -256,10 +257,10 @@ func TestResumeConversationPersistsOwnerHandoffAtomically(t *testing.T) {
 		t.Fatalf("invalid handoff event %+v: %v", handoff, err)
 	}
 	var data struct {
-		NativeSessionID string      `json:"native_session_id"`
-		InstanceID      string      `json:"instance_id"`
-		PreviousOrigin  AgentOrigin `json:"previous_origin"`
-		CurrentOrigin   AgentOrigin `json:"current_origin"`
+		NativeSessionID string       `json:"native_session_id"`
+		InstanceID      string       `json:"instance_id"`
+		PreviousOrigin  agent.Origin `json:"previous_origin"`
+		CurrentOrigin   agent.Origin `json:"current_origin"`
 	}
 	if err = json.Unmarshal(handoff.Event.Data, &data); err != nil || data.NativeSessionID != "native-session" || data.InstanceID != next.InstanceID || data.PreviousOrigin != *previous || data.CurrentOrigin != next {
 		t.Fatalf("handoff origin data %+v: %v", data, err)

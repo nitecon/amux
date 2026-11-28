@@ -10,8 +10,8 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	agentid "github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
-	"github.com/nitecon/amux/worker"
 )
 
 func isLocalConversationAgent(agent storage.AgentPresence, host string) bool {
@@ -78,7 +78,7 @@ func (b *Browser) loadConversationAgents(project string, generation uint64) {
 					b.conversationAgents.Add(browserSectionHeading(group))
 					heading = group
 				}
-				label := worker.AgentDisplayName(agent.Origin) + " · " + providerConversationLabel(agent.Origin.Provider)
+				label := agentid.DisplayName(agent.Origin) + " · " + providerConversationLabel(agent.Origin.Provider)
 				if local {
 					button := widget.NewButton(label, func() {
 						b.conversationSelection++

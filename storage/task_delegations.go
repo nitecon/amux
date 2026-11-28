@@ -11,7 +11,8 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -119,13 +120,13 @@ func ensureTaskDelegationSchema(ctx context.Context, tx *sql.Tx) error {
 // DelegateTask atomically creates the source tracking task, an unowned target
 // task, their hierarchy/link records, comments, durable event snapshots, and
 // the destination nudge.
-func (s *Store) DelegateTask(ctx context.Context, input TaskDelegationInput, origin *AgentOrigin) (*TaskDelegationResult, error) {
-	actor, err := NormalizeOrigin(origin)
+func (s *Store) DelegateTask(ctx context.Context, input TaskDelegationInput, origin *agent.Origin) (*TaskDelegationResult, error) {
+	actor, err := agent.NormalizeOrigin(origin)
 	if err != nil {
 		return nil, err
 	}
-	input.SourceProject = projects.NormalizeIdent(input.SourceProject)
-	input.TargetProject = projects.NormalizeIdent(input.TargetProject)
+	input.SourceProject = projectid.NormalizeIdent(input.SourceProject)
+	input.TargetProject = projectid.NormalizeIdent(input.TargetProject)
 	input.Title = strings.TrimSpace(input.Title)
 	if input.SourceProject == "" || input.TargetProject == "" || input.SourceProject == input.TargetProject || input.Title == "" || len(input.Title) > 1024 || strings.IndexFunc(input.Title, unicode.IsControl) >= 0 {
 		return nil, fmt.Errorf("%w: source and target projects must differ and title must be non-empty, at most 1024 bytes, and contain no control characters", ErrTaskDelegation)
@@ -153,7 +154,7 @@ func (s *Store) DelegateTask(ctx context.Context, input TaskDelegationInput, ori
 		input.Reporter = "user"
 	}
 	if input.Requester != nil {
-		normalized, err := NormalizeOrigin(&input.Requester.Origin)
+		normalized, err := agent.NormalizeOrigin(&input.Requester.Origin)
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid requester origin", ErrTaskDelegation)
 		}
@@ -162,7 +163,7 @@ func (s *Store) DelegateTask(ctx context.Context, input TaskDelegationInput, ori
 		input.Requester = &requester
 	}
 	var result *TaskDelegationResult
-	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, current *AgentOrigin) error {
+	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, current *agent.Origin) error {
 		sourceProject, err := getProject(ctx, tx, input.SourceProject)
 		if err != nil {
 			return err
@@ -268,9 +269,9 @@ func (s *Store) DelegateTask(ctx context.Context, input TaskDelegationInput, ori
 
 // UpdateTaskDelegationContract mirrors source-owned contract metadata onto the
 // linked target and records both task notes plus a destination nudge atomically.
-func (s *Store) UpdateTaskDelegationContract(ctx context.Context, sourceProject, sourceTaskID string, update TaskDelegationUpdate, origin *AgentOrigin) (*TaskDelegationResult, error) {
+func (s *Store) UpdateTaskDelegationContract(ctx context.Context, sourceProject, sourceTaskID string, update TaskDelegationUpdate, origin *agent.Origin) (*TaskDelegationResult, error) {
 	var result *TaskDelegationResult
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		delegation, err := delegationBySource(ctx, tx, sourceProject, sourceTaskID)
 		if err != nil {
 			return err
@@ -377,7 +378,7 @@ func (s *Store) UpdateTaskDelegationContract(ctx context.Context, sourceProject,
 // managed-task, review-marker, label, and OS-release behavior. The Rust
 // update_task path also enforces ownership for any OS change when no origin is
 // present, so retain that fence here before the shared metadata writer.
-func applyDelegationContractMetadata(ctx context.Context, tx *sql.Tx, current *Task, metadata TaskMetadataUpdate, actor *AgentOrigin) (*Task, error) {
+func applyDelegationContractMetadata(ctx context.Context, tx *sql.Tx, current *Task, metadata TaskMetadataUpdate, actor *agent.Origin) (*Task, error) {
 	var dispatchTable bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_dispatches')").Scan(&dispatchTable); err != nil {
 		return nil, err
@@ -410,7 +411,7 @@ func applyDelegationContractMetadata(ctx context.Context, tx *sql.Tx, current *T
 	return applyTaskMetadata(ctx, tx, current, metadata, "", TaskTransitionPolicy{}, actor)
 }
 
-func validateTaskRequester(ctx context.Context, q queryer, project string, labels []string, target *RegisteredTargetIdentity, actor *AgentOrigin) error {
+func validateTaskRequester(ctx context.Context, q queryer, project string, labels []string, target *RegisteredTargetIdentity, actor *agent.Origin) error {
 	if target == nil {
 		return nil
 	}
@@ -424,8 +425,8 @@ func validateTaskRequester(ctx context.Context, q queryer, project string, label
 	return nil
 }
 
-func validateRegisteredTaskTarget(ctx context.Context, q queryer, project string, target *RegisteredTargetIdentity, actor *AgentOrigin, now time.Time) (*AgentOrigin, error) {
-	origin, err := NormalizeOrigin(&target.Origin)
+func validateRegisteredTaskTarget(ctx context.Context, q queryer, project string, target *RegisteredTargetIdentity, actor *agent.Origin, now time.Time) (*agent.Origin, error) {
+	origin, err := agent.NormalizeOrigin(&target.Origin)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid requester origin", ErrTaskDelegation)
 	}
@@ -438,7 +439,7 @@ func validateRegisteredTaskTarget(ctx context.Context, q queryer, project string
 	}
 	var registeredOrigin, storedGeneration, storedRemote string
 	var seenAt int64
-	err = q.QueryRowContext(ctx, `SELECT origin_json,generation,seen_at,canonical_remote FROM task_target_presence WHERE project_ident=? AND instance_id=? AND session_id=? AND advertised=1`, projects.NormalizeIdent(project), origin.InstanceID, origin.SessionID).Scan(&registeredOrigin, &storedGeneration, &seenAt, &storedRemote)
+	err = q.QueryRowContext(ctx, `SELECT origin_json,generation,seen_at,canonical_remote FROM task_target_presence WHERE project_ident=? AND instance_id=? AND session_id=? AND advertised=1`, projectid.NormalizeIdent(project), origin.InstanceID, origin.SessionID).Scan(&registeredOrigin, &storedGeneration, &seenAt, &storedRemote)
 	if err != nil || storedGeneration != target.Generation || seenAt < now.UnixMilli()-targetRegistrationLease {
 		return nil, fmt.Errorf("%w: requester must be a current same-project task target", ErrTaskConflict)
 	}
@@ -453,14 +454,14 @@ func validateRegisteredTaskTarget(ctx context.Context, q queryer, project string
 	if _, err := validateTargetProjectBinding(currentProject, remote); err != nil {
 		return nil, fmt.Errorf("%w: requester registration no longer matches its project binding", ErrTaskConflict)
 	}
-	var stored AgentOrigin
+	var stored agent.Origin
 	if err := json.Unmarshal([]byte(registeredOrigin), &stored); err != nil || stored != *origin {
 		return nil, fmt.Errorf("%w: requester registration changed", ErrTaskConflict)
 	}
 	return origin, nil
 }
 
-func insertDelegationTask(ctx context.Context, tx *sql.Tx, id, project, title string, input TaskDelegationInput, owner *AgentOrigin, source bool, requester *RegisteredTargetIdentity, now int64) (*Task, error) {
+func insertDelegationTask(ctx context.Context, tx *sql.Tx, id, project, title string, input TaskDelegationInput, owner *agent.Origin, source bool, requester *RegisteredTargetIdentity, now int64) (*Task, error) {
 	var rank int64
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(rank),0)+1 FROM tasks WHERE project_ident=? AND status='todo'", project).Scan(&rank); err != nil {
 		return nil, err
@@ -538,20 +539,20 @@ func readTaskDelegation(ctx context.Context, q queryer, where string, args ...an
 }
 
 func delegationBySource(ctx context.Context, q queryer, project, id string) (*TaskDelegation, error) {
-	return readTaskDelegation(ctx, q, "source_project_ident=? AND source_task_id=?", projects.NormalizeIdent(project), id)
+	return readTaskDelegation(ctx, q, "source_project_ident=? AND source_task_id=?", projectid.NormalizeIdent(project), id)
 }
 
 func delegationByTarget(ctx context.Context, q queryer, project, id string) (*TaskDelegation, error) {
-	return readTaskDelegation(ctx, q, "target_project_ident=? AND target_task_id=?", projects.NormalizeIdent(project), id)
+	return readTaskDelegation(ctx, q, "target_project_ident=? AND target_task_id=?", projectid.NormalizeIdent(project), id)
 }
 
 func taskDelegationReady(ctx context.Context, q queryer, project, id string) (bool, error) {
 	var ready bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_delegations d JOIN tasks target ON target.id=d.target_task_id AND target.project_ident=d.target_project_ident AND target.status='done' WHERE d.source_project_ident=? AND d.source_task_id=?)`, projects.NormalizeIdent(project), id).Scan(&ready)
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_delegations d JOIN tasks target ON target.id=d.target_task_id AND target.project_ident=d.target_project_ident AND target.status='done' WHERE d.source_project_ident=? AND d.source_task_id=?)`, projectid.NormalizeIdent(project), id).Scan(&ready)
 	return ready, err
 }
 
-func completeTaskDelegation(ctx context.Context, tx *sql.Tx, before, after *Task, actor *AgentOrigin) error {
+func completeTaskDelegation(ctx context.Context, tx *sql.Tx, before, after *Task, actor *agent.Origin) error {
 	if before.Status == after.Status {
 		return nil
 	}
@@ -633,7 +634,7 @@ func patchNewDelegationSnapshots(ctx context.Context, tx *sql.Tx, taskID string,
 	return err
 }
 
-func recordDelegationInspection(ctx context.Context, tx *sql.Tx, task *Task, actor *AgentOrigin) error {
+func recordDelegationInspection(ctx context.Context, tx *sql.Tx, task *Task, actor *agent.Origin) error {
 	link, err := delegationBySource(ctx, tx, task.ProjectIdent, task.ID)
 	if err != nil {
 		return err

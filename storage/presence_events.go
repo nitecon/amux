@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // eventPresenceStored describes the canonical row changed by a raw event.
@@ -96,7 +96,7 @@ func storeEventPresenceIn(ctx context.Context, tx *sql.Tx, source string, raw js
 				return stored, nil
 			}
 			if value = strings.TrimSpace(value); value != "" {
-				repo, err := projects.ParseRemote(value)
+				repo, err := projectid.ParseRemote(value)
 				if err != nil {
 					return stored, nil
 				}
@@ -198,7 +198,7 @@ func storeEventPresenceIn(ctx context.Context, tx *sql.Tx, source string, raw js
 
 // ReconcilePresenceEvent applies one raw heartbeat or activity event and emits
 // its derived transitions in the same transaction as the router checkpoint.
-func (s *Store) ReconcilePresenceEvent(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (s *Store) ReconcilePresenceEvent(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	if event.Version != 1 || !validRouterSource(event.Source) || event.Seq < 0 || event.EmittedAt < 0 || !canonicalUUID(event.UID) {
 		return nil
 	}
@@ -394,11 +394,8 @@ func (s *Store) ReconcilePresenceEvent(ctx context.Context, registry *router.Reg
 	if err != nil {
 		return err
 	}
-	stored, err := emitRouterPresenceRows(ctx, tx, registry, rows)
+	_, stored, err := publishPresenceRows(ctx, tx, registry, rows)
 	if err != nil {
-		return err
-	}
-	if err := acknowledgeRouterPresenceRows(ctx, tx, rows); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

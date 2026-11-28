@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/channels"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 type inboundSourceFaultEmitter struct {
@@ -19,8 +19,8 @@ type inboundSourceFaultEmitter struct {
 	lostAckUID string
 }
 
-func (e *inboundSourceFaultEmitter) EmitRouterEvent(ctx context.Context, registry *router.Registry, request router.EmitRequest) (router.EmitResult, error) {
-	result, err := e.Store.EmitRouterEvent(ctx, registry, request)
+func (e *inboundSourceFaultEmitter) EmitRouterEvent(ctx context.Context, registry *fism.Registry, request fism.EmitRequest) (fism.EmitResult, error) {
+	result, err := e.Store.AcceptObservation(ctx, registry, request)
 	if err != nil {
 		select {
 		case e.failed <- request.UID:
@@ -30,7 +30,7 @@ func (e *inboundSourceFaultEmitter) EmitRouterEvent(ctx context.Context, registr
 	}
 	if result.Stored && e.lostAckUID == "" {
 		e.lostAckUID = request.UID
-		return router.EmitResult{}, errors.New("fixture committed acknowledgement lost")
+		return fism.EmitResult{}, errors.New("fixture committed acknowledgement lost")
 	}
 	return result, nil
 }
@@ -43,8 +43,8 @@ func TestInboundSourceStartupBacklogSurvivesPersistenceFailureAndLostCommitAck(t
 		t.Fatal(err)
 	}
 	defer store.Close()
-	registry, err := router.NewRegistry([]router.EventDefinition{plugins.InboundDefinition()}, []router.PluginDefinition{
-		plugins.InboundPlugin(store).Definition,
+	registry, err := fism.NewRegistry([]fism.EventDefinition{controllers.InboundDefinition()}, []fism.ControllerDefinition{
+		controllers.InboundController(store).Definition,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestInboundSourceStartupBacklogSurvivesPersistenceFailureAndLostCommitAck(t
 	sourceStopped := make(chan struct{})
 	go func() {
 		defer close(sourceStopped)
-		sourceDone <- plugins.RunInboundSource(ctx, emitter, registry, input)
+		sourceDone <- controllers.RunInboundSource(ctx, emitter.EmitRouterEvent, registry, input)
 	}()
 	producerDone := make(chan struct{})
 	go func() {
@@ -115,6 +115,8 @@ func TestInboundSourceStartupBacklogSurvivesPersistenceFailureAndLostCommitAck(t
 		t.Fatalf("logical input UID changed across failure/commit/replay: failed=%q committed=%q", failedUID, emitter.lostAckUID)
 	}
 	assertEqual(t, store.db, "SELECT COUNT(*) FROM router_events WHERE id='channel.message_received'", int64(300))
+	assertEqual(t, store.db, "SELECT COUNT(*) FROM amux_heartbeat_outbox h JOIN router_events e ON e.uid=h.uid WHERE e.id='channel.message_received'", int64(300))
+	assertEqual(t, store.db, "SELECT COUNT(*) FROM router_deliveries", int64(0))
 	rows, err := store.db.QueryContext(ctx, `SELECT json_extract(payload,'$.message.id') FROM router_events
 		WHERE id='channel.message_received' ORDER BY seq`)
 	if err != nil {

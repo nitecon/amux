@@ -2,18 +2,15 @@ package worker
 
 import (
 	"context"
-	"os"
-	"runtime"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
-func registerAndReportPresence(ctx context.Context, client *gatewayclient.Client, project, directory string, origin storage.AgentOrigin, hostname *string, report storage.PresenceReport) error {
+func registerAndReportPresence(ctx context.Context, client *gatewayclient.Client, project, directory string, origin agent.Origin, hostname *string, report storage.PresenceReport) error {
 	if err := RegisterTaskTarget(ctx, client, project, directory, origin, hostname); err != nil {
 		return err
 	}
@@ -22,32 +19,17 @@ func registerAndReportPresence(ctx context.Context, client *gatewayclient.Client
 }
 
 // RegisterTaskTarget refreshes the target directory supported by both gateways.
-func RegisterTaskTarget(ctx context.Context, client *gatewayclient.Client, project, directory string, origin storage.AgentOrigin, hostname *string) error {
-	identity, err := projectidentity.Resolve(ctx, directory)
+func RegisterTaskTarget(ctx context.Context, client *gatewayclient.Client, project, directory string, origin agent.Origin, hostname *string) error {
+	identity, err := projectid.Resolve(ctx, directory)
 	if err != nil {
 		return err
 	}
-	name := AgentDisplayName(origin)
+	name := agent.DisplayName(origin)
 	_, err = client.RegisterTarget(ctx, project, storage.TargetRegistration{
 		Origin: origin, Generation: origin.InstanceID,
 		CanonicalRemote: optionalNonEmpty(identity.Upstream), Hostname: hostname, DisplayName: &name,
 	})
 	return err
-}
-
-func workerMachineMetadata() (string, *string) {
-	machineOS := runtime.GOOS
-	if machineOS == "darwin" {
-		machineOS = "macos"
-	}
-	var hostname *string
-	if value, err := os.Hostname(); err == nil {
-		value = strings.TrimSpace(value)
-		if value != "" && len(value) <= 128 && strings.IndexFunc(value, unicode.IsControl) < 0 {
-			hostname = &value
-		}
-	}
-	return machineOS, hostname
 }
 
 func optionalNonEmpty(value string) *string {
@@ -62,7 +44,7 @@ func nextRunPresence(ctx context.Context, store *storage.Store, runID, clientRun
 	if err != nil {
 		return storage.WorkerRun{}, storage.PresenceReport{}, nil, err
 	}
-	machineOS, hostname := workerMachineMetadata()
+	machineOS, hostname := agent.MachineMetadata()
 	report := storage.PresenceReport{
 		Source: "worker:" + current.ID, Sequence: current.PresenceSequence,
 		OS: machineOS, Hostname: hostname, ClientRun: &clientRun,

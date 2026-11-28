@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 const notifierOwnerSession = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -21,12 +22,12 @@ func notifierTestAgent(session, instance string) notifierAgent {
 	return notifierAgent{SessionID: session, InstanceID: instance, OS: "linux"}
 }
 
-func notifierRegistry(t *testing.T) *router.Registry {
+func notifierRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
 	return notificationRegistry(t)
 }
 
-func notifierCause(t *testing.T, s *Store, id string, payload string) router.Event {
+func notifierCause(t *testing.T, s *Store, id string, payload string) fism.Event {
 	t.Helper()
 	uid := uuid.NewString()
 	result, err := s.db.ExecContext(context.Background(), `INSERT INTO router_events(uid,id,version,payload,source,emitted_at)
@@ -38,7 +39,7 @@ func notifierCause(t *testing.T, s *Store, id string, payload string) router.Eve
 	if err != nil {
 		t.Fatal(err)
 	}
-	return router.Event{Seq: seq, UID: uid, ID: id, Version: 1, Payload: json.RawMessage(payload), Source: "tasks", EmittedAt: time.Now().UnixMilli()}
+	return fism.Event{Seq: seq, UID: uid, ID: id, Version: 1, Payload: json.RawMessage(payload), Source: "tasks", EmittedAt: time.Now().UnixMilli()}
 }
 
 func notifierPayload(task, actor string) string {
@@ -112,7 +113,7 @@ func TestReconcileRouterNotifiersUsesLivePresenceAndEnabledSetting(t *testing.T)
 	ctx := context.Background()
 	registry := notifierRegistry(t)
 	now := time.Now().UTC()
-	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{owner}}, now); err != nil || !ok {
 		t.Fatalf("presence accepted=%t err=%v", ok, err)
 	}
@@ -198,7 +199,7 @@ func TestReconcileRouterNotifiersBroadcastsOwnerlessTasksButSuppressesUnassigned
 	defer s.Close()
 	ctx := context.Background()
 	registry := notifierRegistry(t)
-	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
 	if accepted, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-routing", Sequence: 1, Agents: []PresenceAgent{owner}}, time.Now().UTC()); err != nil || !accepted {
 		t.Fatalf("presence accepted=%t err=%v", accepted, err)
 	}
@@ -239,7 +240,7 @@ func TestRouterNotifierPresenceTTLBoundary(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 	start := time.UnixMilli(100_000)
-	agent := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	agent := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
 	if accepted, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-ttl", Sequence: 1, Agents: []PresenceAgent{agent}}, start); err != nil || !accepted {
 		t.Fatalf("seed presence accepted=%t err=%v", accepted, err)
 	}
@@ -271,8 +272,8 @@ func TestReconcileRouterNotifiersRollsBackRetriesAndPreservesRawSnapshots(t *tes
 	registry := notifierRegistry(t)
 	now := time.Now().UTC()
 	ownerHost, requesterHost := "OwnerMachine", "RequesterMachine"
-	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}, Hostname: &ownerHost}
-	requester := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierRequesterSession, InstanceID: notifierRequesterInstance, Provider: "codex", OS: "linux"}, Hostname: &requesterHost}
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}, Hostname: &ownerHost}
+	requester := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierRequesterSession, InstanceID: notifierRequesterInstance, Provider: "codex", OS: "linux"}, Hostname: &requesterHost}
 	if accepted, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{owner, requester}}, now); err != nil || !accepted {
 		t.Fatalf("report presence accepted=%t err=%v", accepted, err)
 	}
@@ -365,7 +366,7 @@ func TestUserCommentNotificationAsksForTaskReply(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 	registry := notifierRegistry(t)
-	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{owner}}, time.Now().UTC()); err != nil || !ok {
 		t.Fatalf("presence accepted=%t err=%v", ok, err)
 	}
@@ -396,8 +397,8 @@ func TestUserCommentReplyCueOnlyForOwnerNotRequester(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 	registry := notifierRegistry(t)
-	owner := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
-	requester := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: "7c2f7a10-1111-4111-8111-111111111111", InstanceID: "7c2f7a10-2222-4222-8222-222222222222", Provider: "claude", OS: "linux"}}
+	owner := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	requester := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: "7c2f7a10-1111-4111-8111-111111111111", InstanceID: "7c2f7a10-2222-4222-8222-222222222222", Provider: "claude", OS: "linux"}}
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{owner, requester}}, time.Now().UTC()); err != nil || !ok {
 		t.Fatalf("presence accepted=%t err=%v", ok, err)
 	}
@@ -439,7 +440,7 @@ func TestUserCommentOnOwnerlessTerminalTaskSendsNoActionCue(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 	registry := notifierRegistry(t)
-	agent := PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
+	agent := PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: notifierOwnerSession, InstanceID: notifierOwnerInstance, Provider: "codex", OS: "linux"}}
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "notifier-native", Sequence: 1, Agents: []PresenceAgent{agent}}, time.Now().UTC()); err != nil || !ok {
 		t.Fatalf("presence accepted=%t err=%v", ok, err)
 	}

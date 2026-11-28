@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var ErrProjectMessageUnsupportedChannel = errors.New("agent project messages require an internal project or provider receipt")
@@ -30,9 +31,9 @@ type AgentProjectMessageInput struct {
 // registers and confirms the sender atomically. External projects require a
 // nonblank provider receipt; internal projects create a stable native receipt
 // when no external transport ID was supplied.
-func (s *Store) CreateAgentProjectMessage(ctx context.Context, project string, origin AgentOrigin, input AgentProjectMessageInput) (*ProjectMessage, error) {
-	project = projects.NormalizeIdent(project)
-	normalized, err := NormalizeOrigin(&origin)
+func (s *Store) CreateAgentProjectMessage(ctx context.Context, project string, origin agent.Origin, input AgentProjectMessageInput) (*ProjectMessage, error) {
+	project = projectid.NormalizeIdent(project)
+	normalized, err := agent.NormalizeOrigin(&origin)
 	if err != nil {
 		return nil, fmt.Errorf("invalid agent origin: %w", ErrProjectMessageInput)
 	}

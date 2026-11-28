@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const gatewayMemoryMigration = 45
@@ -185,7 +185,7 @@ const gatewayMemorySelect = `SELECT id,project_ident,server_revision,content,mem
 	FROM gateway_memories`
 
 func (s *Store) SearchGatewayMemories(ctx context.Context, projectIdent string, filters GatewayMemoryFilters) (*GatewayMemorySearchResponse, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -307,7 +307,7 @@ func (s *Store) DiscoverGatewayMemoryProjects(ctx context.Context) (*GatewayMemo
 }
 
 func (s *Store) PullGatewayMemories(ctx context.Context, projectIdent string, request GatewayMemoryPullRequest) (*GatewayMemoryPullResponse, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	since := int64(0)
 	if request.SinceRevision != nil && *request.SinceRevision > 0 {
 		since = *request.SinceRevision

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -37,7 +38,7 @@ func TestPresenceRoundTripAndReplayFence(t *testing.T) {
 	hostname := "WorkerMachine"
 	goal, generation, alias := "selected-goal", uuid.NewString(), "named-agent"
 	report := storage.PresenceReport{Source: "native-host", Sequence: 1, Agents: []storage.PresenceAgent{{
-		ProjectIdent: "demo", Origin: storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, LastActivityAt: &activity, Hostname: &hostname, Goal: &goal, Generation: &generation, AgentID: &alias,
+		ProjectIdent: "demo", Origin: agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, LastActivityAt: &activity, Hostname: &hostname, Goal: &goal, Generation: &generation, AgentID: &alias,
 	}}}
 	if accepted, err := c.ReportPresence(ctx, report); err != nil || !accepted {
 		t.Fatalf("report accepted=%v err=%v", accepted, err)

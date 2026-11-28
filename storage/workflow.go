@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 var ErrTaskGuidedQuestion = errors.New("task mutation confirmation required")
@@ -122,7 +123,7 @@ func ordinaryWorkflowTask(ctx context.Context, q queryer, t *Task) error {
 	return nil
 }
 
-func (s *Store) UpdateTaskWorkflow(ctx context.Context, project, id string, update TaskWorkflowUpdate, origin *AgentOrigin) (*Task, error) {
+func (s *Store) UpdateTaskWorkflow(ctx context.Context, project, id string, update TaskWorkflowUpdate, origin *agent.Origin) (*Task, error) {
 	if update.Status != "" && update.Status != "todo" && update.Status != "in_progress" && update.Status != "user_review" && update.Status != "done" {
 		return nil, fmt.Errorf("%w: invalid task status", ErrTaskConflict)
 	}
@@ -139,7 +140,7 @@ func (s *Store) UpdateTaskWorkflow(ctx context.Context, project, id string, upda
 	}
 	var result *Task
 	guided := false
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		t, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err
@@ -224,7 +225,7 @@ type taskConfirmationRequest struct {
 	Policy TaskTransitionPolicy `json:"policy"`
 }
 
-func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWorkflowUpdate, actor *AgentOrigin, routerReviews bool) (*Task, error) {
+func applyTaskWorkflow(ctx context.Context, tx *sql.Tx, t *Task, update TaskWorkflowUpdate, actor *agent.Origin, routerReviews bool) (*Task, error) {
 	if err := checkExpectedTaskStatus(update.ExpectedStatus, t.Status); err != nil {
 		return nil, err
 	}
@@ -495,7 +496,7 @@ type taskPending struct {
 	mutated        bool
 }
 
-func pendingTaskConfirmation(ctx context.Context, q queryer, t *Task, actor *AgentOrigin) (taskPending, error) {
+func pendingTaskConfirmation(ctx context.Context, q queryer, t *Task, actor *agent.Origin) (taskPending, error) {
 	var pending taskPending
 	var rawActor, snapshot string
 	err := q.QueryRowContext(ctx, "SELECT token,origin_json,snapshot_json,request_json,mutated FROM task_confirmations WHERE task_id=?", t.ID).Scan(&pending.token, &rawActor, &snapshot, &pending.request, &pending.mutated)
@@ -505,7 +506,7 @@ func pendingTaskConfirmation(ctx context.Context, q queryer, t *Task, actor *Age
 	if err != nil {
 		return pending, err
 	}
-	var savedActor *AgentOrigin
+	var savedActor *agent.Origin
 	var savedTask Task
 	if json.Unmarshal([]byte(rawActor), &savedActor) != nil || json.Unmarshal([]byte(snapshot), &savedTask) != nil {
 		return pending, fmt.Errorf("%w: invalid pending confirmation", ErrTaskConflict)
@@ -518,7 +519,7 @@ func pendingTaskConfirmation(ctx context.Context, q queryer, t *Task, actor *Age
 	return pending, nil
 }
 
-func (s *Store) ConfirmTaskWorkflow(ctx context.Context, project, id string, input TaskWorkflowConfirmation, origin *AgentOrigin) (TaskConfirmationResult, error) {
+func (s *Store) ConfirmTaskWorkflow(ctx context.Context, project, id string, input TaskWorkflowConfirmation, origin *agent.Origin) (TaskConfirmationResult, error) {
 	if (input.TaskType != nil) == (input.Changeset != nil) {
 		return TaskConfirmationResult{}, fmt.Errorf("%w: supply mutation confirmation or a changeset, not both", ErrTaskConflict)
 	}
@@ -531,7 +532,7 @@ func (s *Store) ConfirmTaskWorkflow(ctx context.Context, project, id string, inp
 		}
 	}
 	var result TaskConfirmationResult
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		t, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err

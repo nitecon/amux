@@ -122,7 +122,7 @@ is kept and reported.
 ## Validate before building
 
 - **Checkout identity.** The checkout ID includes the canonical directory
-  ([identity.go](../projectidentity/identity.go)), so a worktree is a separate
+  ([identity.go](../identity/project/project.go)), so a worktree is a separate
   checkout from the main one. Confirm that an agent launched in a worktree can
   register, claim, submit, and complete a task.
 - **Branch upstream.** Confirm that commit-and-push mode pushes to the task

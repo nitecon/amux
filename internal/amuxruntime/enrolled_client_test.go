@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -19,14 +22,14 @@ func TestGatewayClientForEnrolledManifestUsesPinnedIdentityAndEndpoint(t *testin
 		"--secure-instance-id", uuid.NewString(), "--listen", "127.0.0.1:0", "--discovery-bind", "127.0.0.1:0")
 	defer stop()
 	manifest := filepath.Join(profile, "local-client.json")
-	client, endpoint, err := gatewayClientForProfile("https://"+address, manifest, "ignored-bearer")
+	client, endpoint, err := gatewayclient.NewForProfile("https://"+address, manifest, "ignored-bearer")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if endpoint != "https://"+address || client.Endpoint() != endpoint {
 		t.Fatalf("resolved enrolled endpoint = %q, client=%q", endpoint, client.Endpoint())
 	}
-	if _, _, err := gatewayClientForProfile("https://other.example", manifest, "ignored-bearer"); err == nil {
+	if _, _, err := gatewayclient.NewForProfile("https://other.example", manifest, "ignored-bearer"); err == nil {
 		t.Fatal("enrolled profile accepted a different explicit endpoint")
 	}
 	if _, err := client.Projects(context.Background()); err != nil {
@@ -35,14 +38,14 @@ func TestGatewayClientForEnrolledManifestUsesPinnedIdentityAndEndpoint(t *testin
 }
 
 func TestGatewayClientForProfilePreservesBearerAndRequiresManifestPath(t *testing.T) {
-	client, endpoint, err := gatewayClientForProfile("http://127.0.0.1:7913", "", "bearer-secret")
+	client, endpoint, err := gatewayclient.NewForProfile("http://127.0.0.1:7913", "", "bearer-secret")
 	if err != nil || endpoint != "http://127.0.0.1:7913" || client == nil {
 		t.Fatalf("bearer selection = %v, %q, %v", client, endpoint, err)
 	}
-	if _, _, err := gatewayClientForProfile("", "", ""); err == nil {
+	if _, _, err := gatewayclient.NewForProfile("", "", ""); err == nil {
 		t.Fatal("missing gateway credentials were accepted")
 	}
-	if _, _, err := gatewayClientForProfile("https://gateway.example", "/profile", "bearer-secret"); err == nil {
+	if _, _, err := gatewayclient.NewForProfile("https://gateway.example", "/profile", "bearer-secret"); err == nil {
 		t.Fatal("profile directory accepted where manifest path is required")
 	}
 }
@@ -65,12 +68,12 @@ func TestEnrolledMCPKeepsNativeTaskToolsAndCallsGateway(t *testing.T) {
 		"--secure-instance-id", uuid.NewString(), "--listen", "127.0.0.1:0", "--discovery-bind", "127.0.0.1:0")
 	defer stop()
 	manifest := filepath.Join(profile, "local-client.json")
-	client, _, err := gatewayClientForProfile("https://"+address, manifest, "")
+	client, _, err := gatewayclient.NewForProfile("https://"+address, manifest, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	sessionID, instanceID := uuid.NewString(), uuid.NewString()
-	owner := storage.AgentOrigin{SessionID: sessionID, InstanceID: instanceID, Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: sessionID, InstanceID: instanceID, Provider: "codex", OS: "linux"}
 	conversation, err := client.CreateConversation(context.Background(), "demo", task.ID, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +86,8 @@ func TestEnrolledMCPKeepsNativeTaskToolsAndCallsGateway(t *testing.T) {
 		"",
 	}
 	var stdout bytes.Buffer
-	err = runMCP(context.Background(), []string{"--server", "https://" + address, "--enrolled-profile", manifest,
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://" + address, EnrolledProfile: manifest})
+	err = runMCP(t, context.Background(), []string{
 		"--project", "demo", "--conversation", conversation.ID, "--session", sessionID,
 		"--instance", instanceID, "--provider", "codex", "--os", "linux"},
 		io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))), &stdout, io.Discard, func(string) string { return "unused-bearer" })

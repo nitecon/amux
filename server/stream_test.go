@@ -118,6 +118,16 @@ func TestStreamPushReplayAndReceipts(t *testing.T) {
 	if frame := readStream(t, other); frameType(frame) != "event" {
 		t.Fatalf("replay %s", frame)
 	}
+
+	// The second consumer still owes an acknowledgment. The first can advance.
+	nextID, err := store.AppendTaskEvent(context.Background(), storage.TaskEvent{Kind: "created", ProjectIdent: "example", Task: json.RawMessage(`{"id":"next"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame = readStream(t, c)
+	if err := json.Unmarshal(frame["event"], &event); err != nil || frameType(frame) != "event" || event.ID != nextID {
+		t.Fatalf("first consumer did not advance: %s (%v)", frame, err)
+	}
 }
 
 func TestTaskConsumerStatusesReportDurableLeaseAndRedactCredential(t *testing.T) {

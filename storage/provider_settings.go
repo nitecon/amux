@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 var switchableProviderIDs = [...]string{"antigravity", "claude", "codex"}
@@ -91,7 +93,7 @@ func (s *Store) SetProviderEnabled(ctx context.Context, id string, enabled bool)
 		value = "true"
 	}
 	released := 0
-	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES(?,?)
 			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, "provider."+id+".enabled", value); err != nil {
 			return err

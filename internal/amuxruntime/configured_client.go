@@ -19,11 +19,10 @@ import (
 	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/internal/gatewayprocess"
 	"github.com/nitecon/amux/internal/localconversation"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -50,11 +49,11 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		return err
 	}
 	defer owner.Close()
-	if err := config.InitConfig(path); err != nil {
+	if err := config.LoadClient(path); err != nil {
 		return fmt.Errorf("load client configuration: %w", err)
 	}
 
-	settings := config.Get().Client
+	settings := config.Get()
 	if state == "" {
 		state = settings.WorkerJournal
 	}
@@ -86,10 +85,14 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		}
 		defer stopGateway()
 	}
-	client, _, err := gatewayClientForProfile(settings.GatewayEndpoint, settings.EnrolledProfile, os.Getenv(settings.APIKeyEnv))
+	client, _, err := gatewayclient.NewForProfile(settings.GatewayEndpoint, settings.EnrolledProfile, os.Getenv(settings.APIKeyEnv))
 	if err != nil {
 		return err
 	}
+	if err := config.LoadClientFleet(ctx, path, client); err != nil {
+		return err
+	}
+	settings = config.Get()
 	store, err := storage.Open(ctx, state)
 	if err != nil {
 		return err
@@ -113,7 +116,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	archive := localconversation.ArchiveTaskWorker(conversationRoot, client)
 	tools := worker.NativeToolsConfig{Executable: executable, Server: client.Endpoint(),
 		EnrolledProfile: settings.EnrolledProfile, APIKeyEnv: settings.APIKeyEnv,
-		WorkPreferencesPath: settings.WorkPreferences, ManagedMCPEnv: ManagedMCPEnv}
+		WorkPreferencesPath: settings.WorkPreferences}
 	open := worker.OpenWithNativeTools(tools)
 	active := make(map[configuredPoolKey]*configuredPoolRun)
 	exits := make(chan configuredPoolExit)
@@ -156,10 +159,6 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 	legacyWorker := localconversation.LegacyTaskWorker{Store: store, Client: client, TranscriptRoot: conversationRoot, Open: open, Approvals: taskApprovals}
 	capabilityKnown, native := false, false
-	profile := config.Client{
-		EnrolledProfile: settings.EnrolledProfile, GatewayEndpoint: client.Endpoint(), APIKeyEnv: settings.APIKeyEnv,
-		HostedGateway: settings.HostedGateway,
-	}
 	type workspaceSnapshot struct {
 		clientcontrol.Workspace
 		providers []string
@@ -200,15 +199,12 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 		defer func() { stopFleet(); <-fleetDone }()
 	}
 	stopControl, err := serveClientControl(path, client.Endpoint(), build, reloads, ctx.Done(), func(mux *http.ServeMux) func() {
-		mux.HandleFunc("GET /profile", func(w http.ResponseWriter, _ *http.Request) {
-			_ = json.NewEncoder(w).Encode(profile)
-		})
 		mux.Handle("POST /checkout", configuredCheckoutHandler(client, reloads, ctx.Done(), func() string {
 			return currentWorkspace.Load().(workspaceSnapshot).Workspace.ProjectsDirectory
 		}))
 		mux.HandleFunc("GET /workspace", func(w http.ResponseWriter, r *http.Request) {
 			workspace := currentWorkspace.Load().(workspaceSnapshot).Workspace
-			workspace.LocalCheckouts = projectidentity.DiscoverLocalCheckouts(r.Context(), workspace.ProjectsDirectory)
+			workspace.LocalCheckouts = projectid.DiscoverLocalCheckouts(r.Context(), workspace.ProjectsDirectory)
 			_ = json.NewEncoder(w).Encode(workspace)
 		})
 		mux.HandleFunc("POST /shutdown", func(w http.ResponseWriter, _ *http.Request) {
@@ -236,13 +232,13 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 	checks := make(map[string]providerCheck)
 	reconcile := func() string {
-		settings := config.Get().Client
+		settings := config.Get()
 		publishWorkspace(settings)
 		wanted := make(map[configuredPoolKey]string)
 		report := make([]storage.CheckoutReportItem, 0, len(bindings))
 		var failures []string
 		for project, directory := range bindings {
-			checkout, err := projectidentity.ResolveCheckout(ctx, directory)
+			checkout, err := projectid.ResolveCheckout(ctx, directory)
 			if err != nil {
 				report = append(report, storage.CheckoutReportItem{Project: project, Unavailable: true})
 				failures = append(failures, fmt.Sprintf("%s: %v", project, err))
@@ -353,16 +349,28 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 	}
 
 	reload := func(change *clientcontrol.CheckoutChange) string {
-		settings := config.Get().Client
-		candidate, err := config.ReadClient(path)
-		if err == nil && (candidate.EnrolledProfile != settings.EnrolledProfile || candidate.GatewayEndpoint != settings.GatewayEndpoint ||
-			candidate.APIKeyEnv != settings.APIKeyEnv || candidate.TaskToolsCommand != settings.TaskToolsCommand || candidate.WorkPreferences != settings.WorkPreferences) {
-			err = fmt.Errorf("changing gateway credentials or task tool settings requires restarting the client")
+		settings := config.Get()
+		checkReload := func(candidate config.Client) error {
+			if candidate.EnrolledProfile != settings.EnrolledProfile || candidate.GatewayEndpoint != settings.GatewayEndpoint ||
+				candidate.APIKeyEnv != settings.APIKeyEnv || candidate.TaskToolsCommand != settings.TaskToolsCommand || candidate.WorkPreferences != settings.WorkPreferences {
+				return fmt.Errorf("changing gateway credentials or task tool settings requires restarting the client")
+			}
+			if !config.SameHostedGateway(settings.HostedGateway, candidate.HostedGateway) {
+				return fmt.Errorf("changing hosted_gateway requires restarting the client")
+			}
+			if candidate.WorkerJournal != settings.WorkerJournal {
+				return fmt.Errorf("changing worker_journal requires restarting the client")
+			}
+			return nil
 		}
-		if err == nil && !config.SameHostedGateway(settings.HostedGateway, candidate.HostedGateway) {
-			err = fmt.Errorf("changing hosted_gateway requires restarting the client")
-		}
-		if err == nil && change != nil {
+		if change != nil {
+			candidate, err := config.ReadClient(path)
+			if err == nil {
+				err = checkReload(candidate)
+			}
+			if err != nil {
+				return "Rejected configuration: " + err.Error()
+			}
 			if change.ExcludeExecution != nil {
 				if *change.ExcludeExecution {
 					if candidate.ExcludedProjects == nil {
@@ -382,28 +390,24 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 				}
 				candidate.Projects[change.Project] = change.Checkout
 			}
-			err = candidate.Validate()
-		}
-		if err == nil && candidate.WorkerJournal != settings.WorkerJournal {
-			err = fmt.Errorf("changing worker_journal requires restarting the client")
-		}
-		var candidateBindings map[string]string
-		if err == nil {
-			recreate := ""
-			if change != nil && change.Recreate {
-				recreate = change.Project
-			}
-			candidateBindings, err = resolveConfiguredBindings(ctx, client, candidate, recreate)
-		}
-		if err != nil {
-			return "Rejected configuration: " + err.Error()
-		}
-		if change != nil {
 			if err := config.SaveClient(path, candidate); err != nil {
 				return "Rejected configuration: " + err.Error()
 			}
 		}
-		if err := config.UseClient(candidate); err != nil {
+		var candidateBindings map[string]string
+		err := config.LoadClientFleet(ctx, path, client, func(candidate config.Client) error {
+			if err := checkReload(candidate); err != nil {
+				return err
+			}
+			recreate := ""
+			if change != nil && change.Recreate {
+				recreate = change.Project
+			}
+			var err error
+			candidateBindings, err = resolveConfiguredBindings(ctx, client, candidate, recreate)
+			return err
+		})
+		if err != nil {
 			return "Rejected configuration: " + err.Error()
 		}
 		bindings, bindingErr = candidateBindings, nil
@@ -423,7 +427,7 @@ func runConfiguredClient(parent context.Context, path, state string, stdout, std
 			fmt.Fprintln(stdout, result)
 			request.reply <- result
 		case <-tick.C:
-			if updated, err := configuredBindings(ctx, client, config.Get().Client); err == nil {
+			if updated, err := configuredBindings(ctx, client, config.Get()); err == nil {
 				bindings, bindingErr = updated, nil
 			}
 			if bindingErr == nil {
@@ -467,7 +471,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		return nil, fmt.Errorf("read gateway projects: %w", err)
 	}
 	checkouts := make(map[string]string)
-	for _, checkout := range projectidentity.DiscoverLocalCheckouts(ctx, settings.ProjectsDirectory) {
+	for _, checkout := range projectid.DiscoverLocalCheckouts(ctx, settings.ProjectsDirectory) {
 		if checkout.CanonicalRemote != nil && checkouts[*checkout.CanonicalRemote] == "" {
 			checkouts[*checkout.CanonicalRemote] = checkout.Directory
 		}
@@ -482,7 +486,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		if project.ArchivedAt != nil || project.CanonicalRemote == nil {
 			continue
 		}
-		remote, err := projects.CanonicalRemote(*project.CanonicalRemote)
+		remote, err := projectid.CanonicalRemote(*project.CanonicalRemote)
 		if err == nil {
 			byRemote[remote] = append(byRemote[remote], project.Ident)
 			if directory := checkouts[remote]; directory != "" {
@@ -492,7 +496,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 	}
 	pending := make(map[string]string)
 	for id, path := range settings.Projects {
-		checkout, err := projectidentity.ResolveCheckout(ctx, path)
+		checkout, err := projectid.ResolveCheckout(ctx, path)
 		if err != nil {
 			return nil, fmt.Errorf("project %s: %w", id, err)
 		}
@@ -500,11 +504,11 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 			if project.ArchivedAt != nil {
 				return nil, fmt.Errorf("project %q is archived on the gateway", id)
 			}
-			if err := projectidentity.ValidateBinding(project.Kind, project.CanonicalRemote, checkout); err != nil {
+			if err := projectid.ValidateBinding(project.Kind, project.CanonicalRemote, checkout); err != nil {
 				return nil, fmt.Errorf("project %s: %w", id, err)
 			}
 		} else {
-			if _, err := projects.ParseRemote(checkout.Upstream); err != nil || projects.SanitizeIdent(id) != id {
+			if _, err := projectid.ParseRemote(checkout.Upstream); err != nil || projectid.SanitizeIdent(id) != id {
 				return nil, fmt.Errorf("new project %q requires a valid project ID and Git origin", id)
 			}
 			pending[id] = checkout.Upstream
@@ -513,14 +517,14 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		bindings[id] = checkout.Directory
 	}
 	for _, url := range settings.ProjectURLs {
-		repo, err := projects.ParseRemote(url)
+		repo, err := projectid.ParseRemote(url)
 		if err != nil {
 			return nil, err
 		}
 		ids := byRemote[repo.Canonical]
 		switch len(ids) {
 		case 0:
-			id := projects.SanitizeIdent(repo.Name)
+			id := projectid.SanitizeIdent(repo.Name)
 			if _, exists := byID[id]; exists || pending[id] != "" {
 				return nil, fmt.Errorf("project ID %q is already used by a different or archived project", id)
 			}
@@ -561,7 +565,7 @@ func resolveConfiguredBindings(parent context.Context, client *gatewayclient.Cli
 		if !exists || project.ArchivedAt != nil || project.CanonicalRemote == nil {
 			continue
 		}
-		remote, err := projects.CanonicalRemote(*project.CanonicalRemote)
+		remote, err := projectid.CanonicalRemote(*project.CanonicalRemote)
 		if err == nil && remote == expected {
 			delete(pending, project.Ident)
 		}

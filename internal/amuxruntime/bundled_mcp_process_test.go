@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/nitecon/amux/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,19 +17,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/mcpstdio"
-
+	"github.com/nitecon/amux/bundledtools"
 	"github.com/nitecon/amux/internal/testfixture"
+	"github.com/nitecon/amux/storage"
 )
 
 func TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools(t *testing.T) {
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://gateway.example"})
 	binDirectory := t.TempDir()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledToolFileName("memory")))
-	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledToolFileName("agent-tools")))
+	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledtools.FileName("memory")))
+	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledtools.FileName("agent-tools")))
 	workDirectory := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "child.json")
 	t.Setenv("AMUX_BUNDLED_DIR", binDirectory)
@@ -51,7 +53,7 @@ func TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools(t *testing.T) {
 		"",
 	}, "\n")
 	var output, stderr bytes.Buffer
-	if err := runMCP(context.Background(), nil, io.NopCloser(strings.NewReader(input)), &output, &stderr, os.Getenv); err != nil {
+	if err := runMCP(t, context.Background(), nil, io.NopCloser(strings.NewReader(input)), &output, &stderr, os.Getenv); err != nil {
 		t.Fatalf("standalone MCP: %v; stderr=%s", err, stderr.String())
 	}
 	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
@@ -60,14 +62,14 @@ func TestStandaloneMCPListsAndRunsOnlyAvailableBundledTools(t *testing.T) {
 	}
 	var listed struct {
 		Result struct {
-			Tools []mcpstdio.Tool `json:"tools"`
+			Tools []storage.TaskTool `json:"tools"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(lines[1]), &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Result.Tools) != len(bundledToolCatalog) {
-		t.Fatalf("standalone catalog has %d tools, want %d: %s", len(listed.Result.Tools), len(bundledToolCatalog), lines[1])
+	if len(listed.Result.Tools) != 12 {
+		t.Fatalf("standalone catalog has %d tools, want %d: %s", len(listed.Result.Tools), 12, lines[1])
 	}
 	for _, tool := range listed.Result.Tools {
 		if strings.HasPrefix(tool.Name, "task_") || tool.Name == "submit_work" {
@@ -104,7 +106,7 @@ func TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledToolFileName("agent-tools")))
+	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledtools.FileName("agent-tools")))
 	workDirectory := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "native-child.json")
 	var gatewayRequests atomic.Int32
@@ -133,7 +135,8 @@ func TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest(t *testing.T) {
 	}, "\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, executable, "mcp", "--server", trap.URL, "--project", "native-project",
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: trap.URL})
+	command := exec.CommandContext(ctx, executable, "mcp", "--project", "native-project",
 		"--conversation", "018f0000-0000-7000-8000-000000000001", "--session", "018f0000-0000-7000-8000-000000000002",
 		"--instance", "018f0000-0000-7000-8000-000000000003", "--provider", "codex", "--os", "linux", "--directory", workDirectory)
 	command.Env = os.Environ()
@@ -150,7 +153,7 @@ func TestNativeMCPRunsBundledToolsLocallyWithoutGatewayRequest(t *testing.T) {
 	}
 	var listed struct {
 		Result struct {
-			Tools []mcpstdio.Tool `json:"tools"`
+			Tools []storage.TaskTool `json:"tools"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(lines[1]), &listed); err != nil {
@@ -193,7 +196,7 @@ func TestNativeMCPInitializeUsesMemoryOnlyRecallAndCapabilityHints(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledToolFileName("memory")))
+	copyBundledTestBinary(t, executable, filepath.Join(binDirectory, bundledtools.FileName("memory")))
 	workDirectory := t.TempDir()
 	if err := os.Mkdir(filepath.Join(workDirectory, ".claude"), 0700); err != nil {
 		t.Fatal(err)
@@ -225,7 +228,8 @@ func TestNativeMCPInitializeUsesMemoryOnlyRecallAndCapabilityHints(t *testing.T)
 	}, "\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, executable, "mcp", "--server", "https://gateway.example", "--project", "native-project",
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://gateway.example"})
+	command := exec.CommandContext(ctx, executable, "mcp", "--project", "native-project",
 		"--conversation", "018f0000-0000-7000-8000-000000000001", "--session", "018f0000-0000-7000-8000-000000000002",
 		"--instance", "018f0000-0000-7000-8000-000000000003", "--provider", "claude", "--os", "linux", "--directory", workDirectory)
 	command.Env = os.Environ()
@@ -276,9 +280,9 @@ func TestNativeMCPInitializeUsesMemoryOnlyRecallAndCapabilityHints(t *testing.T)
 }
 
 func TestMCPRejectsPartialNativeConfigurationAndInvalidExplicitDirectory(t *testing.T) {
-	for _, args := range [][]string{{"--server", "https://gateway.example"}, {"--goal", "release"}} {
+	for _, args := range [][]string{{"--project", "demo"}, {"--goal", "release"}} {
 		var output bytes.Buffer
-		err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader("")), &output, &bytes.Buffer{}, func(string) string { return "" })
+		err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader("")), &output, &bytes.Buffer{}, func(string) string { return "" })
 		if err == nil || !strings.Contains(err.Error(), "native MCP requires") || output.Len() != 0 {
 			t.Errorf("runMCP(%q) = %v output=%s, want partial native config error before serving", args, err, output.String())
 		}
@@ -286,7 +290,7 @@ func TestMCPRejectsPartialNativeConfigurationAndInvalidExplicitDirectory(t *test
 	t.Setenv("AMUX_AGENT_PROJECT", t.TempDir())
 	missing := filepath.Join(t.TempDir(), "missing-checkout")
 	var output bytes.Buffer
-	err := runMCP(context.Background(), []string{"--directory", missing}, io.NopCloser(strings.NewReader("")), &output, &bytes.Buffer{}, os.Getenv)
+	err := runMCP(t, context.Background(), []string{"--directory", missing}, io.NopCloser(strings.NewReader("")), &output, &bytes.Buffer{}, os.Getenv)
 	if err == nil || !strings.Contains(err.Error(), "existing directory") || output.Len() != 0 {
 		t.Fatalf("invalid explicit directory = %v output=%s, want early error despite valid environment fallback", err, output.String())
 	}

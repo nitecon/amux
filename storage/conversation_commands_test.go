@@ -9,9 +9,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func commandConversation(t *testing.T) (*Store, *Conversation, *AgentOrigin) {
+func commandConversation(t *testing.T) (*Store, *Conversation, *agent.Origin) {
 	t.Helper()
 	s := taskStore(t)
 	task := makeTask(t, s, nil)
@@ -60,7 +61,7 @@ func TestPendingTaskConversationsUsesPendingPromptIndex(t *testing.T) {
 		t.Fatalf("discovery must scan pending prompts and look up conversations by ID:\n%s", details)
 	}
 
-	check := func(project string, owner AgentOrigin, want bool) {
+	check := func(project string, owner agent.Origin, want bool) {
 		t.Helper()
 		ids, err := s.PendingTaskConversations(ctx, project, owner, "api-key")
 		if err != nil {

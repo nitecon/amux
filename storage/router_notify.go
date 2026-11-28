@@ -9,8 +9,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 // routerNewAssignment matches the Rust notifier's retained-history check.
@@ -66,31 +66,31 @@ func routerNewAssignment(ctx context.Context, q queryer, task json.RawMessage) (
 
 // emitRouterNotificationIn adds immutable host snapshots before appending the
 // notification to the caller's transaction. The caller owns commit and wakeup.
-func emitRouterNotificationIn(ctx context.Context, tx *sql.Tx, registry *router.Registry, pluginID, causeUID string, payload json.RawMessage) (router.EmitResult, error) {
+func emitRouterNotificationIn(ctx context.Context, tx *sql.Tx, registry *fism.Registry, pluginID, causeUID string, payload json.RawMessage) (fism.EmitResult, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &envelope); err != nil || envelope == nil {
 		if err == nil {
 			err = fmt.Errorf("expected notification object")
 		}
-		return router.EmitResult{}, fmt.Errorf("decode notification payload: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("decode notification payload: %w", err)
 	}
 	var project string
 	if err := json.Unmarshal(envelope["project"], &project); err != nil {
-		return router.EmitResult{}, fmt.Errorf("decode notification project: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("decode notification project: %w", err)
 	}
 	var event map[string]json.RawMessage
 	if err := json.Unmarshal(envelope["event"], &event); err != nil || event == nil {
 		if err == nil {
 			err = fmt.Errorf("expected event object")
 		}
-		return router.EmitResult{}, fmt.Errorf("decode notification event: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("decode notification event: %w", err)
 	}
 	var task map[string]json.RawMessage
 	if err := json.Unmarshal(event["task"], &task); err != nil || task == nil {
 		if err == nil {
 			err = fmt.Errorf("expected task object")
 		}
-		return router.EmitResult{}, fmt.Errorf("decode notification task: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("decode notification task: %w", err)
 	}
 	var ownerOrigin, senderOrigin json.RawMessage
 	if len(task["owner_origin"]) > 0 {
@@ -101,7 +101,7 @@ func emitRouterNotificationIn(ctx context.Context, tx *sql.Tx, registry *router.
 	}
 	ownerHost, err := registeredNotificationHost(ctx, tx, project, ownerOrigin)
 	if err != nil {
-		return router.EmitResult{}, fmt.Errorf("lookup notification owner host: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("lookup notification owner host: %w", err)
 	}
 	var mode, senderName string
 	_ = json.Unmarshal(envelope["mode"], &mode)
@@ -117,22 +117,22 @@ func emitRouterNotificationIn(ctx context.Context, tx *sql.Tx, registry *router.
 	} else {
 		senderHost, err = registeredNotificationHost(ctx, tx, project, senderOrigin)
 		if err != nil {
-			return router.EmitResult{}, fmt.Errorf("lookup notification sender host: %w", err)
+			return fism.EmitResult{}, fmt.Errorf("lookup notification sender host: %w", err)
 		}
 	}
 	event["sender_hostname"], _ = json.Marshal(senderHost)
 	event["owner_hostname"], _ = json.Marshal(ownerHost)
 	envelope["event"], err = json.Marshal(event)
 	if err != nil {
-		return router.EmitResult{}, fmt.Errorf("encode notification event: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("encode notification event: %w", err)
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
-		return router.EmitResult{}, fmt.Errorf("encode notification payload: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("encode notification payload: %w", err)
 	}
 	correlation := causeUID
-	return emitRouterEventIn(ctx, tx, registry, router.EmitRequest{
-		ID: plugins.NotifyEventID, Version: 1, Payload: encoded,
+	return acceptObservationIn(ctx, tx, registry, fism.EmitRequest{
+		ID: controllers.NotifyEventID, Version: 1, Payload: encoded,
 		Source: "plugin:" + pluginID, Correlation: &correlation,
 	})
 }

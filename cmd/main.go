@@ -8,7 +8,11 @@ import (
 	"syscall"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/internal/amuxruntime"
+	"github.com/nitecon/amux/providers/process"
+	"github.com/nitecon/amux/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -27,8 +31,8 @@ func main() {
 	setLogger()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if os.Getenv(amuxruntime.ManagedMCPEnv) == "1" {
-		if err := amuxruntime.ServeManagedMCP(ctx, os.Args[1:]); err != nil {
+	if os.Getenv(process.ManagedMCPEnv) == "1" {
+		if err := newMCPCommand(&sdk.StdioTransport{}).Run(ctx, os.Args); err != nil {
 			log.Error().Err(err).Msg("amux MCP")
 			os.Exit(1)
 		}
@@ -45,18 +49,13 @@ func newCommand() *cli.Command {
 		Name:    "amux",
 		Usage:   "Run the Amux desktop, server, or headless client",
 		Version: version,
-		Flags: append([]cli.Flag{
-			&cli.StringFlag{
-				Name:    "config",
-				Aliases: []string{"c"},
-				Usage:   "Load configuration from FILE",
-			},
+		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "debug",
 				Aliases: []string{"d"},
 				Usage:   "Enable debug logging",
 			},
-		}, desktopFlags()...),
+		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			zerolog.SetGlobalLevel(zerolog.InfoLevel)
 			if cmd.Bool("debug") {
@@ -64,19 +63,23 @@ func newCommand() *cli.Command {
 			}
 			return ctx, nil
 		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			// Start the client and desktop with the same shutdown context.
-			return startDesktop(ctx, cmd)
-		},
+		Action: startDesktop,
 		Commands: []*cli.Command{updateCommand(),
 			{
 				Name:    "server",
 				Aliases: []string{"s"},
 				Usage:   "Run the server",
-				Flags:   serverFlags(),
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "config", Aliases: []string{"c"}, Usage: "Load server YAML from FILE"},
+				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					// Run one server until shutdown.
-					return startServer(ctx, cmd)
+					if err := noArguments(cmd); err != nil {
+						return err
+					}
+					if err := config.LoadServer(cmd.String("config")); err != nil {
+						return err
+					}
+					return server.Start(ctx, cmd.Writer, cmd.ErrWriter)
 				},
 			},
 			{
@@ -85,14 +88,13 @@ func newCommand() *cli.Command {
 				Usage:   "Run the client without the desktop",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "state", Usage: "Durable worker journal"},
-					&cli.StringFlag{Name: "enrolled-profile", Usage: "Enrolled gateway manifest"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					// The configured client handles reloads and stops on cancellation.
 					if err := noArguments(cmd); err != nil {
 						return err
 					}
-					return amuxruntime.StartClient(ctx, cmd.String("config"), cmd.String("state"), cmd.String("enrolled-profile"), cmd.Writer, cmd.ErrWriter)
+					return amuxruntime.StartClient(ctx, cmd.String("state"), cmd.Writer, cmd.ErrWriter)
 				},
 			},
 		},

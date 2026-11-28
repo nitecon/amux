@@ -11,9 +11,9 @@ import (
 	"slices"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
-	"github.com/nitecon/amux/providerprocess"
+	"github.com/nitecon/amux/gatewayclient"
+	projectid "github.com/nitecon/amux/identity/project"
+	"github.com/nitecon/amux/providers/process"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -97,11 +97,11 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		}
 	}
 	if registerOnly {
-		checkout, err := projectidentity.ResolveCheckout(ctx, *directory)
+		checkout, err := projectid.ResolveCheckout(ctx, *directory)
 		if err != nil {
 			return fmt.Errorf("add project at %q: %w", *directory, err)
 		}
-		client, _, err := gatewayClientForProfile(*endpoint, *enrolledProfile, getenv(*keyEnv))
+		client, _, err := gatewayclient.NewForProfile(*endpoint, *enrolledProfile, getenv(*keyEnv))
 		if err != nil {
 			return err
 		}
@@ -111,7 +111,7 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		}
 		var matches []string
 		for _, candidate := range inventory {
-			if *project != "" && candidate.Ident != projects.NormalizeIdent(*project) {
+			if *project != "" && candidate.Ident != projectid.NormalizeIdent(*project) {
 				continue
 			}
 			if candidate.CanonicalRemote == nil {
@@ -120,7 +120,7 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 				}
 				continue
 			}
-			canonical, err := projects.CanonicalRemote(*candidate.CanonicalRemote)
+			canonical, err := projectid.CanonicalRemote(*candidate.CanonicalRemote)
 			if err == nil && canonical == checkout.Upstream {
 				matches = append(matches, candidate.Ident)
 			}
@@ -151,7 +151,7 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		}
 		*endpoint = pool.Server
 	}
-	client, resolvedEndpoint, err := gatewayClientForProfile(*endpoint, *enrolledProfile, getenv(*keyEnv))
+	client, resolvedEndpoint, err := gatewayclient.NewForProfile(*endpoint, *enrolledProfile, getenv(*keyEnv))
 	if err != nil {
 		return err
 	}
@@ -174,7 +174,7 @@ func runPoolMode(ctx context.Context, args []string, stdout, stderr io.Writer, g
 		}
 	}
 	if pool == nil {
-		absolute, err := providerprocess.ValidateDirectory(*directory, *provider)
+		absolute, err := process.ValidateDirectory(*directory, *provider)
 		if err != nil {
 			return err
 		}

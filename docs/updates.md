@@ -4,6 +4,12 @@ Use the complete portable bundle from [GitHub Releases](https://github.com/nitec
 Keep the bundled files together. On Apple Silicon, move the whole `amux.app`
 and keep its parent directory writable.
 
+If you are upgrading an existing gateway and its clients, follow the
+[deployment upgrade steps](../deploy/README.md#upgrade-an-existing-deployment)
+before opening the old database with the new server. A portable bundle update
+covers the installation you launch it from. Upgrade separately managed services
+and containers through their deployment procedures.
+
 ## Update and restart
 
 In the desktop app, save any work in running sessions, open **Settings → Updates**,

@@ -11,7 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -40,11 +42,11 @@ func (m LegacyTaskWorker) Run(ctx context.Context, pool storage.WorkerPool, drai
 	if err := register(); err != nil {
 		return err
 	}
-	checkout, err := projectidentity.Resolve(ctx, pool.Directory)
+	checkout, err := projectid.Resolve(ctx, pool.Directory)
 	if err != nil {
 		return err
 	}
-	agent := gatewayclient.RustPresenceAgent{AgentOrigin: owner, Name: worker.AgentDisplayName(owner), Project: pool.Project, Generation: owner.InstanceID, Goal: pool.Goal, ReviewClear: true}
+	agent := gatewayclient.RustPresenceAgent{Origin: owner, Name: agent.DisplayName(owner), Project: pool.Project, Generation: owner.InstanceID, Goal: pool.Goal, ReviewClear: true}
 	if checkout.Upstream != "" {
 		agent.CanonicalRemote = &checkout.Upstream
 	}
@@ -119,7 +121,7 @@ func (m LegacyTaskWorker) Run(ctx context.Context, pool storage.WorkerPool, drai
 	}
 }
 
-func (m LegacyTaskWorker) executeLegacyTask(ctx context.Context, pool storage.WorkerPool, owner storage.AgentOrigin, id string) error {
+func (m LegacyTaskWorker) executeLegacyTask(ctx context.Context, pool storage.WorkerPool, owner agent.Origin, id string) error {
 	task, err := m.Client.StartOwnedTask(ctx, pool.Project, id, owner)
 	if err != nil || task == nil {
 		return err
@@ -149,7 +151,7 @@ func (m LegacyTaskWorker) executeLegacyTask(ctx context.Context, pool storage.Wo
 		open = worker.OpenNative
 	}
 	run.NativeSessionID = header.Info.NativeSessionID
-	var session worker.Session
+	var session providers.Session
 	ready := make(chan struct{})
 	emit := archive.AppendEvent
 	if m.Approvals != nil {

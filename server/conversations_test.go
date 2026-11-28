@@ -3,15 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/coder/websocket"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -80,7 +81,7 @@ func TestConversationAPIRejectsMalformedRequests(t *testing.T) {
 	}
 	for _, test := range []struct {
 		method, suffix, body string
-		actor                *storage.AgentOrigin
+		actor                *agent.Origin
 		code                 int
 	}{
 		{"PUT", "/session", `{"native_session_id":"native"}`, nil, 400},

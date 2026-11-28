@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -91,12 +92,12 @@ func TestTasksListHelpIsUsefulWithoutConnectionAndWritesNoJSON(t *testing.T) {
 func TestTasksStartedRequiresExactActiveNativeOwnerAndOnlyComments(t *testing.T) {
 	for _, tc := range []struct {
 		name, status string
-		owner        *storage.AgentOrigin
+		owner        *agent.Origin
 		wantErr      bool
 	}{
-		{"exact active owner", "in_progress", &storage.AgentOrigin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}, false},
+		{"exact active owner", "in_progress", &agent.Origin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}, false},
 		{"unowned", "todo", nil, true},
-		{"other instance", "in_progress", &storage.AgentOrigin{SessionID: taskTestSession, InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "codex", OS: "linux"}, true},
+		{"other instance", "in_progress", &agent.Origin{SessionID: taskTestSession, InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "codex", OS: "linux"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var writes atomic.Int32
@@ -167,12 +168,12 @@ func TestTasksFailedMutationDoesNotRetryOrLeakServerBody(t *testing.T) {
 }
 
 func TestTaskReleasePreflightsNativeOwnerAndDoneReadsBeforeUpdate(t *testing.T) {
-	actor := storage.AgentOrigin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}
 	for _, tc := range []struct {
 		name       string
 		operation  string
 		status     string
-		owner      *storage.AgentOrigin
+		owner      *agent.Origin
 		wantWrites int
 	}{
 		{name: "release unowned task", operation: "release", status: "todo", wantWrites: 0},
@@ -223,7 +224,7 @@ func TestTaskOperationParserHonorsTerminator(t *testing.T) {
 	if _, err = parseOperation(context.Background(), commandFlags("tasks comment", ioDiscard{}), []string{taskTestID, "--unknown"}); err == nil {
 		t.Fatal("unknown flag accepted")
 	}
-	if _, err = canonicalTaskID("00000000-0000-0000-0000-000000000000"); err == nil {
+	if _, err = storage.CanonicalTaskID("00000000-0000-0000-0000-000000000000"); err == nil {
 		t.Fatal("zero UUID accepted")
 	}
 }

@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/browserauth"
+	"github.com/nitecon/amux/auth"
+	"github.com/nitecon/amux/auth/authn"
+	account "github.com/nitecon/amux/identity/user"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -20,7 +22,7 @@ const browserSessionTestAPIKey = "synthetic-browser-session-api-key"
 
 func TestBrowserSessionEventAndHistoryReadsRequireAdministrator(t *testing.T) {
 	store, srv, user := browserSessionTestFixture(t)
-	token := mintBrowserSessionToken(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
+	token := authn.MintBrowserSession(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
 	paths := []string{"/v1/task-events", "/v1/task-events/consumers", "/v1/execution/runs"}
 	for _, path := range paths {
 		response, body := browserSessionRequest(t, srv, http.MethodGet, path, "", token, "", true)
@@ -28,7 +30,7 @@ func TestBrowserSessionEventAndHistoryReadsRequireAdministrator(t *testing.T) {
 			t.Fatalf("member read %s status=%d body=%s", path, response.StatusCode, body)
 		}
 	}
-	role := storage.UserRoleAdmin
+	role := account.RoleAdmin
 	if _, err := store.UpdateUser(context.Background(), user.ID, storage.UserUpdate{Role: &role}); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func TestBrowserSessionAttributesSingleAndBulkMessageResolution(t *testing.T) {
 	if err := store.InsertProject(ctx, storage.Project{Ident: project, ChannelName: "unconfigured", Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
-	token := mintBrowserSessionToken(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
+	token := authn.MintBrowserSession(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
 	root := "/v1/projects/" + project + "/messages"
 	response, body := browserSessionRequest(t, srv, http.MethodPost, root+"/human", `{"content":"hello agents"}`, token, "", true)
 	var single humanProjectMessageResponse
@@ -72,7 +74,7 @@ func TestBrowserSessionAttributesSingleAndBulkMessageResolution(t *testing.T) {
 	assertMessageResolution(t, store, project, bulk.ID, true, "user:"+user.Username)
 }
 
-func browserSessionTestFixture(t *testing.T) (*storage.Store, *httptest.Server, *storage.User) {
+func browserSessionTestFixture(t *testing.T) (*storage.Store, *httptest.Server, *account.Account) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "browser-session.sqlite"))
@@ -80,11 +82,11 @@ func browserSessionTestFixture(t *testing.T) (*storage.Store, *httptest.Server, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	hash, err := browserauth.HashPassword("synthetic current password")
+	hash, err := authn.HashPassword("synthetic current password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	user, err := store.CreateUser(ctx, "session-member", "Session Member", storage.UserRoleMember, hash)
+	user, err := store.CreateUser(ctx, "session-member", "Session Member", account.RoleMember, hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func browserSessionRequest(t *testing.T, srv *httptest.Server, method, path, bod
 
 func TestBrowserSessionIngressRequiresMarkedRequestAndPreservesBearerPriority(t *testing.T) {
 	_, srv, user := browserSessionTestFixture(t)
-	token := mintBrowserSessionToken(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
+	token := authn.MintBrowserSession(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
 	response, body := browserSessionRequest(t, srv, http.MethodGet, "/v1/users/me", "", token, "", false)
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unmarked cookie status=%d body=%s", response.StatusCode, body)
@@ -149,7 +151,7 @@ func TestBrowserSessionIngressRequiresMarkedRequestAndPreservesBearerPriority(t 
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("malformed session status=%d body=%s", response.StatusCode, body)
 	}
-	expired := mintBrowserSessionToken(browserSessionTestAPIKey, *user, time.Now().Add(-time.Second).UnixMilli())
+	expired := authn.MintBrowserSession(browserSessionTestAPIKey, *user, time.Now().Add(-time.Second).UnixMilli())
 	response, body = browserSessionRequest(t, srv, http.MethodGet, "/v1/users/me", "", expired, "", true)
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expired session status=%d body=%s", response.StatusCode, body)
@@ -158,7 +160,7 @@ func TestBrowserSessionIngressRequiresMarkedRequestAndPreservesBearerPriority(t 
 
 func TestBrowserSessionPasswordChangeUsesSessionEpochFence(t *testing.T) {
 	store, srv, user := browserSessionTestFixture(t)
-	token := mintBrowserSessionToken(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
+	token := authn.MintBrowserSession(browserSessionTestAPIKey, *user, time.Now().Add(time.Hour).UnixMilli())
 	response, body := browserSessionRequest(t, srv, http.MethodPost, "/v1/users/me/password", `{"current_password":"wrong password","new_password":"synthetic new password"}`, token, "", true)
 	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "current password is incorrect") {
 		t.Fatalf("wrong current password status=%d body=%s", response.StatusCode, body)
@@ -168,7 +170,7 @@ func TestBrowserSessionPasswordChangeUsesSessionEpochFence(t *testing.T) {
 		t.Fatalf("change password status=%d body=%s", response.StatusCode, body)
 	}
 	updated, err := store.User(context.Background(), user.ID)
-	if err != nil || updated == nil || updated.SessionEpoch != user.SessionEpoch+1 || !browserauth.VerifyPassword("synthetic new password", updated.PasswordHash) {
+	if err != nil || updated == nil || updated.SessionEpoch != user.SessionEpoch+1 || !authn.VerifyPassword("synthetic new password", updated.PasswordHash) {
 		t.Fatalf("password transition=%+v err=%v", updated, err)
 	}
 	response, body = browserSessionRequest(t, srv, http.MethodGet, "/v1/users/me", "", token, "", true)
@@ -196,7 +198,7 @@ func TestBrowserSessionPasswordChangeRejectsDisableReenableRace(t *testing.T) {
 	api := newAPI(store, browserSessionTestAPIKey)
 	req := httptest.NewRequest(http.MethodPost, "/v1/users/me/password", strings.NewReader(`{"current_password":"synthetic current password","new_password":"synthetic replacement password"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), browserUserContextKey{}, &session))
+	req = req.WithContext(auth.WithBrowserUser(req.Context(), &session))
 	res := httptest.NewRecorder()
 	api.changeOwnPassword(res, req)
 	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "user credential or active state changed") {
@@ -214,8 +216,8 @@ func TestBrowserAuthenticationPreservesSecurePrincipalAndRemovesForgedIdentityHe
 	var principal, userHeader, roleHeader string
 	var browserPrincipal bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal = authenticatedPrincipal(r.Context())
-		browserPrincipal = authenticatedBrowserUser(r.Context()) != nil
+		principal = auth.PrincipalID(r.Context())
+		browserPrincipal = auth.BrowserUser(r.Context()) != nil
 		userHeader = r.Header.Get("X-Gateway-User")
 		roleHeader = r.Header.Get("X-Gateway-User-Role")
 		w.WriteHeader(http.StatusNoContent)
@@ -225,7 +227,7 @@ func TestBrowserAuthenticationPreservesSecurePrincipalAndRemovesForgedIdentityHe
 	request.Header.Set("X-Gateway-User", "999:forged:Admin")
 	request.Header.Set("X-Gateway-User-Role", "admin")
 	ctx := context.WithValue(request.Context(), securePrincipalContextKey{}, &securePrincipal{NodeID: "node-7", role: "administrator"})
-	ctx = context.WithValue(ctx, authenticatedPrincipalContextKey{}, "node-7")
+	ctx = auth.WithPrincipal(ctx, "node-7")
 	request = request.WithContext(ctx)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

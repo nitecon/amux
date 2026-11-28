@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func taskStore(t *testing.T) *Store {
@@ -19,10 +21,10 @@ func taskStore(t *testing.T) *Store {
 	}
 	return s
 }
-func taskActor() *AgentOrigin {
-	return &AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+func taskActor() *agent.Origin {
+	return &agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 }
-func makeTask(t *testing.T, s *Store, origin *AgentOrigin) *Task {
+func makeTask(t *testing.T, s *Store, origin *agent.Origin) *Task {
 	t.Helper()
 	task, err := s.InsertTask(context.Background(), TaskInsert{Project: "tasks", Title: "Work", Reporter: "fixture"}, origin)
 	if err != nil {
@@ -200,8 +202,8 @@ func TestConcurrentTaskClaimsHaveOneOwner(t *testing.T) {
 	second.SessionID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	start := make(chan struct{})
 	results := make(chan error, 2)
-	for _, actor := range []*AgentOrigin{first, &second} {
-		go func(actor *AgentOrigin) {
+	for _, actor := range []*agent.Origin{first, &second} {
+		go func(actor *agent.Origin) {
 			<-start
 			_, err := s.TransitionTask(ctx, "tasks", task.ID, "in_progress", actor)
 			results <- err

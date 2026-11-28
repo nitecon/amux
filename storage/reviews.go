@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func oppositeReviewProvider(provider string) *string {
@@ -226,7 +228,7 @@ func (s *Store) TaskReviewChildren(ctx context.Context, project, id string) ([]T
 // independent of the automatic review plugin's enabled/disabled setting.
 func (s *Store) EnqueueTaskReviews(ctx context.Context, project, id string) ([]Task, error) {
 	var result []Task
-	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	err := s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		source, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err

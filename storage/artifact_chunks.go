@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // artifactChunksMigration follows the artifact base schema (migration 37).
@@ -114,7 +114,7 @@ func (s *Store) CreateArtifactChunk(ctx context.Context, projectIdent, artifactI
 }
 
 func (s *Store) createArtifactChunkWithLimits(ctx context.Context, projectIdent, artifactID string, input ArtifactChunkInsert, suppliedLimits *ArtifactWriteLimits) (*ArtifactChunk, bool, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	if projectIdent == "" || artifactID == "" || input.ArtifactVersionID == "" || input.ChildAddress == "" {
 		return nil, false, fmt.Errorf("project, artifact, version, and child address are required")
 	}
@@ -177,12 +177,12 @@ func (s *Store) createArtifactChunkWithLimits(ctx context.Context, projectIdent,
 }
 
 func (s *Store) GetArtifactChunkByAddress(ctx context.Context, projectIdent, artifactID, versionID, address string) (*ArtifactChunk, error) {
-	return scanArtifactChunk(s.db.QueryRowContext(ctx, artifactChunkSelect+` WHERE artifact_id=? AND artifact_version_id=? AND child_address=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`, artifactID, versionID, address, artifactID, projects.NormalizeIdent(projectIdent)))
+	return scanArtifactChunk(s.db.QueryRowContext(ctx, artifactChunkSelect+` WHERE artifact_id=? AND artifact_version_id=? AND child_address=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`, artifactID, versionID, address, artifactID, projectid.NormalizeIdent(projectIdent)))
 }
 
 func (s *Store) ListArtifactChunks(ctx context.Context, projectIdent, artifactID string, filter ArtifactChunkFilter) ([]ArtifactChunk, error) {
 	query := artifactChunkSelect + ` WHERE artifact_id=? AND EXISTS(SELECT 1 FROM artifacts WHERE artifact_id=? AND project_ident=?)`
-	args := []any{artifactID, artifactID, projects.NormalizeIdent(projectIdent)}
+	args := []any{artifactID, artifactID, projectid.NormalizeIdent(projectIdent)}
 	if !filter.IncludeSuperseded {
 		query += ` AND superseded_by_chunk_id IS NULL`
 	}
@@ -227,7 +227,7 @@ func (s *Store) MarkArtifactChunkSuperseded(ctx context.Context, projectIdent, a
 	}
 	defer tx.Rollback()
 	var exists int
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM artifacts a JOIN artifact_chunks old ON old.artifact_id=a.artifact_id JOIN artifact_chunks newer ON newer.artifact_id=a.artifact_id WHERE a.project_ident=? AND a.artifact_id=? AND old.chunk_id=? AND newer.chunk_id=?`, projects.NormalizeIdent(projectIdent), artifactID, oldChunkID, newChunkID).Scan(&exists)
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM artifacts a JOIN artifact_chunks old ON old.artifact_id=a.artifact_id JOIN artifact_chunks newer ON newer.artifact_id=a.artifact_id WHERE a.project_ident=? AND a.artifact_id=? AND old.chunk_id=? AND newer.chunk_id=?`, projectid.NormalizeIdent(projectIdent), artifactID, oldChunkID, newChunkID).Scan(&exists)
 	if err == sql.ErrNoRows {
 		return nil
 	}

@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/nitecon/amux/projectidentity"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 type worktreeStatusView struct {
@@ -58,7 +58,7 @@ func (v *worktreeStatusView) bind(checkout string, parent context.Context) (uint
 	return generation, ctx
 }
 
-func (v *worktreeStatusView) finish(generation uint64, result projectidentity.WorktreeStatus, err error) {
+func (v *worktreeStatusView) finish(generation uint64, result projectid.WorktreeStatus, err error) {
 	if generation != v.generation {
 		return
 	}
@@ -118,7 +118,7 @@ func (b *Browser) refreshWorktreeStatus() {
 		defer b.wg.Done()
 		readCtx, cancel := context.WithTimeout(ctx, 11*time.Second)
 		defer cancel()
-		result, err := projectidentity.ReadWorktreeStatus(readCtx, checkout)
+		result, err := projectid.ReadWorktreeStatus(readCtx, checkout)
 		b.dispatch(func() {
 			b.mu.Lock()
 			closing := b.closing

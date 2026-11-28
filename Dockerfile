@@ -15,10 +15,11 @@ FROM scratch
 
 COPY --from=builder --chown=65532:65532 /src/bin/amux /usr/local/bin/amux
 COPY --from=builder --chown=65532:65532 /out/data /data
+COPY deploy/amux-server.yml /etc/amux/amux-server.yml
 
 USER 65532:65532
 WORKDIR /data
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/local/bin/amux"]
-CMD ["server", "--database", "/data/amux.db"]
+CMD ["server", "--config", "/etc/amux/amux-server.yml"]

@@ -96,7 +96,7 @@ func TestPresenceHostnameMigrationValidationReplayAndTransitions(t *testing.T) {
 	}
 
 	registry := routerPresenceRegistry(t, true)
-	if n, err := s.DrainRouterPresenceOutbox(ctx, registry, 200); err != nil || n != 2 {
+	if n, err := drainPresenceFixture(ctx, s, registry, 200); err != nil || n != 2 {
 		t.Fatalf("initial transitions drained=%d err=%v", n, err)
 	}
 	events, err := s.RouterEvents(ctx, 0, 20)

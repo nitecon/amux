@@ -9,7 +9,8 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -64,7 +65,7 @@ func migrateReviewAssignment(ctx context.Context, tx *sql.Tx) error {
 
 type assignmentCandidate struct {
 	presence AgentPresence
-	origin   AgentOrigin
+	origin   agent.Origin
 }
 
 // ReconcileAssignments refreshes presence first, then allocates at most one
@@ -73,16 +74,16 @@ func (s *Store) ReconcileAssignments(ctx context.Context, now time.Time) error {
 	if err := s.ReconcilePresence(ctx, now); err != nil {
 		return err
 	}
-	return s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	return s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		return allocateAssignments(ctx, tx, now.UnixMilli())
 	})
 }
 
 func allocateAssignments(ctx context.Context, tx *sql.Tx, nowMS int64) error {
-	return allocateAssignmentsWithOffers(ctx, tx, nowMS, nil, router.Event{})
+	return allocateAssignmentsWithOffers(ctx, tx, nowMS, nil, fism.Event{})
 }
 
-func allocateAssignmentsWithOffers(ctx context.Context, tx *sql.Tx, nowMS int64, registry *router.Registry, cause router.Event) error {
+func allocateAssignmentsWithOffers(ctx context.Context, tx *sql.Tx, nowMS int64, registry *fism.Registry, cause fism.Event) error {
 	enabled, err := pluginEnabled(ctx, tx, "assignment")
 	if err != nil || !enabled {
 		return err
@@ -210,7 +211,7 @@ func allocateAssignmentsWithOffers(ctx context.Context, tx *sql.Tx, nowMS int64,
 	return nil
 }
 
-func reserveAssignment(ctx context.Context, tx *sql.Tx, task Task, owner AgentOrigin, ownerJSON []byte) (*Task, error) {
+func reserveAssignment(ctx context.Context, tx *sql.Tx, task Task, owner agent.Origin, ownerJSON []byte) (*Task, error) {
 	if err := ordinaryWorkflowTask(ctx, tx, &task); err != nil {
 		return nil, err
 	}
@@ -272,7 +273,7 @@ func assignmentReadyCandidates(ctx context.Context, q queryer, observed int64) (
 			if presence.ProjectIdent != project || presence.State == "gone" {
 				continue
 			}
-			origin, err := NormalizeOrigin(&presence.Origin)
+			origin, err := agent.NormalizeOrigin(&presence.Origin)
 			if err != nil {
 				continue
 			}

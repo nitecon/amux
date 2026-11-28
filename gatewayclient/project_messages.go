@@ -7,7 +7,8 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -16,12 +17,12 @@ type UnreadProjectMessagesResponse struct {
 	Status   string                   `json:"status"`
 }
 
-func (c *Client) UnreadProjectMessages(ctx context.Context, project string, origin storage.AgentOrigin) (*UnreadProjectMessagesResponse, error) {
-	project = projects.NormalizeIdent(project)
+func (c *Client) UnreadProjectMessages(ctx context.Context, project string, origin agent.Origin) (*UnreadProjectMessagesResponse, error) {
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
-	actor, err := storage.NormalizeOrigin(&origin)
+	actor, err := agent.NormalizeOrigin(&origin)
 	if err != nil {
 		return nil, err
 	}
@@ -53,15 +54,15 @@ func (c *Client) UnreadProjectMessages(ctx context.Context, project string, orig
 // ConfirmProjectMessage acknowledges one message for this exact native
 // session. A lost or malformed response is uncertain; inspect unread messages
 // before deciding whether to issue another confirmation.
-func (c *Client) ConfirmProjectMessage(ctx context.Context, project string, messageID int64, origin storage.AgentOrigin) (bool, error) {
-	project = projects.NormalizeIdent(project)
+func (c *Client) ConfirmProjectMessage(ctx context.Context, project string, messageID int64, origin agent.Origin) (bool, error) {
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return false, fmt.Errorf("project is required")
 	}
 	if messageID <= 0 {
 		return false, fmt.Errorf("message ID must be positive")
 	}
-	actor, err := storage.NormalizeOrigin(&origin)
+	actor, err := agent.NormalizeOrigin(&origin)
 	if err != nil {
 		return false, err
 	}

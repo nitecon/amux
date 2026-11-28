@@ -6,9 +6,11 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func reassignmentFixture(t *testing.T, labels []string, now time.Time) (*Store, *Task, AgentOrigin, RegisteredTargetIdentity) {
+func reassignmentFixture(t *testing.T, labels []string, now time.Time) (*Store, *Task, agent.Origin, RegisteredTargetIdentity) {
 	t.Helper()
 	ctx := context.Background()
 	s := taskStore(t)
@@ -25,7 +27,7 @@ func reassignmentFixture(t *testing.T, labels []string, now time.Time) (*Store, 
 			t.Fatal(err)
 		}
 	}
-	target := AgentOrigin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "codex", OS: "linux"}
+	target := agent.Origin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "codex", OS: "linux"}
 	registered, err := s.RegisterTarget(ctx, "tasks", TargetRegistration{Origin: target, Generation: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}, now)
 	if err != nil {
 		t.Fatal(err)

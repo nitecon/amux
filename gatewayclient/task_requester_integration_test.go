@@ -12,11 +12,12 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
 
-func requesterClientFixture(t *testing.T) (*storage.Store, http.Handler, *storage.Task, storage.AgentOrigin) {
+func requesterClientFixture(t *testing.T) (*storage.Store, http.Handler, *storage.Task, agent.Origin) {
 	t.Helper()
 	ctx := context.Background()
 	s, err := storage.Open(ctx, filepath.Join(t.TempDir(), "requesters.db"))
@@ -63,7 +64,7 @@ func TestRequesterClientRoundTripAndDelegationCapabilityInteroperate(t *testing.
 	if json.Unmarshal(raw, &task) != nil {
 		t.Fatalf("invalid created task %s", raw)
 	}
-	watcher := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	watcher := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	watcherRegistration, err := client.RegisterTarget(ctx, "source", storage.TargetRegistration{Origin: watcher, Generation: watcher.InstanceID})
 	if err != nil {
 		t.Fatal(err)

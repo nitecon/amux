@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -36,7 +37,7 @@ func TestTasksCancelRequiresNativeOriginBeforeNetwork(t *testing.T) {
 }
 
 func TestTasksCancelUsesNativeCancellationRouteWithoutPreflight(t *testing.T) {
-	origin := storage.AgentOrigin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}
+	origin := agent.Origin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}
 	var calls atomic.Int32
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -77,7 +78,7 @@ func TestTasksCancellationIsReadonlyAndRequiresNoActor(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/projects/demo/tasks/"+taskTestID+"/cancellation" {
 			t.Errorf("request %s %s", r.Method, r.URL)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"task_id": taskTestID, "project_ident": "demo", "reason": "superseded", "prior_status": "todo", "reporter_origin": storage.AgentOrigin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}, "cancelled_at": 123, "executor_stop_confirmed": false})
+		_ = json.NewEncoder(w).Encode(map[string]any{"task_id": taskTestID, "project_ident": "demo", "reason": "superseded", "prior_status": "todo", "reporter_origin": agent.Origin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}, "cancelled_at": 123, "executor_stop_confirmed": false})
 	}))
 	defer host.Close()
 	var out, diag bytes.Buffer
@@ -133,7 +134,7 @@ func TestHeadlessCancellationCLIUsesGatewayAliasAndKeyFallback(t *testing.T) {
 	})
 
 	t.Run("actorless cancellation read", func(t *testing.T) {
-		origin := storage.AgentOrigin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}
+		origin := agent.Origin{SessionID: taskTestSession, InstanceID: taskTestInstance, Provider: "codex", OS: "linux"}
 		want := storage.Cancellation{
 			TaskID: taskTestID, ProjectIdent: "demo", Reason: "requested", PriorStatus: "todo",
 			ReporterOrigin: origin, CancelledAt: 123, ExecutorStopConfirmed: false,

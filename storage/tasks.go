@@ -12,7 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -67,8 +68,8 @@ type Task struct {
 	Labels                  []string        `json:"labels"`
 	Hostname                *string         `json:"hostname"`
 	OwnerAgentID            *string         `json:"owner_agent_id"`
-	OwnerOrigin             *AgentOrigin    `json:"owner_origin"`
-	CompletionOwner         *AgentOrigin    `json:"completion_owner"`
+	OwnerOrigin             *agent.Origin   `json:"owner_origin"`
+	CompletionOwner         *agent.Origin   `json:"completion_owner"`
 	Reporter                string          `json:"reporter"`
 	CreatedAt               int64           `json:"created_at"`
 	UpdatedAt               int64           `json:"updated_at"`
@@ -82,14 +83,14 @@ type Task struct {
 	WaitingOnUser bool `json:"waiting_on_user"`
 }
 type TaskComment struct {
-	ID         string       `json:"id"`
-	TaskID     string       `json:"task_id"`
-	Author     string       `json:"author"`
-	AuthorType string       `json:"author_type"`
-	Content    string       `json:"content"`
-	CreatedAt  int64        `json:"created_at"`
-	Hostname   *string      `json:"hostname"`
-	Origin     *AgentOrigin `json:"origin"`
+	ID         string        `json:"id"`
+	TaskID     string        `json:"task_id"`
+	Author     string        `json:"author"`
+	AuthorType string        `json:"author_type"`
+	Content    string        `json:"content"`
+	CreatedAt  int64         `json:"created_at"`
+	Hostname   *string       `json:"hostname"`
+	Origin     *agent.Origin `json:"origin"`
 }
 type TaskDetail struct {
 	Task         Task          `json:"task"`
@@ -105,26 +106,6 @@ type TaskInsert struct {
 	Routing                                                    *TaskRouting
 }
 
-func NormalizeOrigin(origin *AgentOrigin) (*AgentOrigin, error) {
-	if origin == nil {
-		return nil, nil
-	}
-	copy := *origin
-	session, err := uuid.Parse(copy.SessionID)
-	if err != nil {
-		return nil, fmt.Errorf("agent session and instance IDs must be UUIDs")
-	}
-	instance, err := uuid.Parse(copy.InstanceID)
-	if err != nil {
-		return nil, fmt.Errorf("agent session and instance IDs must be UUIDs")
-	}
-	if (copy.Provider != "codex" && copy.Provider != "claude" && copy.Provider != "antigravity") || (copy.OS != "linux" && copy.OS != "windows" && copy.OS != "macos") {
-		return nil, fmt.Errorf("invalid agent provider or OS")
-	}
-	copy.SessionID = session.String()
-	copy.InstanceID = instance.String()
-	return &copy, nil
-}
 func NormalizeTaskGoal(goal *string) (*string, error) {
 	if goal == nil {
 		return nil, nil
@@ -139,8 +120,8 @@ func NormalizeTaskGoal(goal *string) (*string, error) {
 	return &clean, nil
 }
 
-func (s *Store) taskMutation(ctx context.Context, origin *AgentOrigin, mutate func(*sql.Tx, *AgentOrigin) error) error {
-	origin, err := NormalizeOrigin(origin)
+func (s *Store) taskMutation(ctx context.Context, origin *agent.Origin, mutate func(*sql.Tx, *agent.Origin) error) error {
+	origin, err := agent.NormalizeOrigin(origin)
 	if err != nil {
 		return err
 	}
@@ -243,12 +224,12 @@ func scanTask(row scanner) (*Task, error) {
 	return &t, nil
 }
 func readTask(ctx context.Context, q queryer, project, id string) (*Task, error) {
-	return scanTask(q.QueryRowContext(ctx, "SELECT "+taskSelect+" FROM tasks t WHERE t.id=? AND t.project_ident=?", id, projects.NormalizeIdent(project)))
+	return scanTask(q.QueryRowContext(ctx, "SELECT "+taskSelect+" FROM tasks t WHERE t.id=? AND t.project_ident=?", id, projectid.NormalizeIdent(project)))
 }
 
-func (s *Store) InsertTask(ctx context.Context, input TaskInsert, origin *AgentOrigin) (*Task, error) {
+func (s *Store) InsertTask(ctx context.Context, input TaskInsert, origin *agent.Origin) (*Task, error) {
 	if input.Requester != nil {
-		normalized, err := NormalizeOrigin(&input.Requester.Origin)
+		normalized, err := agent.NormalizeOrigin(&input.Requester.Origin)
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid requester origin", ErrTaskDelegation)
 		}
@@ -258,7 +239,7 @@ func (s *Store) InsertTask(ctx context.Context, input TaskInsert, origin *AgentO
 	}
 	var result *Task
 	linkedConversation := false
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		var err error
 		result, err = insertTaskRecord(ctx, tx, input, actor, "general")
 		if err != nil {
@@ -283,9 +264,9 @@ func (s *Store) InsertTask(ctx context.Context, input TaskInsert, origin *AgentO
 	return result, err
 }
 
-func insertTaskRecord(ctx context.Context, tx *sql.Tx, input TaskInsert, actor *AgentOrigin, taskType string) (*Task, error) {
+func insertTaskRecord(ctx context.Context, tx *sql.Tx, input TaskInsert, actor *agent.Origin, taskType string) (*Task, error) {
 
-	input.Project = projects.NormalizeIdent(input.Project)
+	input.Project = projectid.NormalizeIdent(input.Project)
 	if strings.TrimSpace(input.Title) == "" {
 		return nil, fmt.Errorf("title must be non-empty")
 	}
@@ -401,18 +382,18 @@ type TaskTransitionPolicy struct {
 	SelectedGoal            string
 }
 
-func (s *Store) TransitionTask(ctx context.Context, project, id, status string, origin *AgentOrigin) (*Task, error) {
+func (s *Store) TransitionTask(ctx context.Context, project, id, status string, origin *agent.Origin) (*Task, error) {
 	return s.ApplyTaskTransition(ctx, project, id, status, origin, TaskTransitionPolicy{})
 }
 
 // ApplyTaskTransition validates client queue context and confirmation in the
 // same transaction as ownership and status, rather than using a stale pre-read.
-func (s *Store) ApplyTaskTransition(ctx context.Context, project, id, status string, origin *AgentOrigin, policy TaskTransitionPolicy) (*Task, error) {
+func (s *Store) ApplyTaskTransition(ctx context.Context, project, id, status string, origin *agent.Origin, policy TaskTransitionPolicy) (*Task, error) {
 	if status != "todo" && status != "in_progress" {
 		return nil, ErrTaskUnsupported
 	}
 	var result *Task
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		var err error
 		result, err = transitionActiveTask(ctx, tx, project, id, status, actor, policy)
 		return err
@@ -420,7 +401,7 @@ func (s *Store) ApplyTaskTransition(ctx context.Context, project, id, status str
 	return result, err
 }
 
-func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status string, actor *AgentOrigin, policy TaskTransitionPolicy) (*Task, error) {
+func transitionActiveTask(ctx context.Context, tx *sql.Tx, project, id, status string, actor *agent.Origin, policy TaskTransitionPolicy) (*Task, error) {
 
 	t, err := readTask(ctx, tx, project, id)
 	if err != nil {
@@ -589,7 +570,7 @@ func capTaskComment(content string) string {
 	}
 	return content[:end] + marker
 }
-func insertTaskComment(ctx context.Context, q queryer, id, author, authorType, content string, hostname *string, origin *AgentOrigin) (*TaskComment, error) {
+func insertTaskComment(ctx context.Context, q queryer, id, author, authorType, content string, hostname *string, origin *agent.Origin) (*TaskComment, error) {
 	if authorType != "agent" && authorType != "user" && authorType != "system" {
 		return nil, fmt.Errorf("invalid author_type")
 	}
@@ -626,7 +607,7 @@ func insertTaskComment(ctx context.Context, q queryer, id, author, authorType, c
 	}
 	return &TaskComment{ID: commentID.String(), TaskID: id, Author: author, AuthorType: authorType, Content: content, CreatedAt: now, Hostname: hostname, Origin: origin}, nil
 }
-func (s *Store) AddTaskComment(ctx context.Context, project, id, author, authorType, content string, hostname *string, origin *AgentOrigin) (*TaskComment, error) {
+func (s *Store) AddTaskComment(ctx context.Context, project, id, author, authorType, content string, hostname *string, origin *agent.Origin) (*TaskComment, error) {
 	return s.addTaskComment(ctx, project, id, author, authorType, content, hostname, origin, "")
 }
 
@@ -639,9 +620,9 @@ func (s *Store) AnswerTaskQuestion(ctx context.Context, project, taskID, questio
 	return s.addTaskComment(ctx, project, taskID, "user", "user", content, nil, nil, questionID)
 }
 
-func (s *Store) addTaskComment(ctx context.Context, project, id, author, authorType, content string, hostname *string, origin *AgentOrigin, questionID string) (*TaskComment, error) {
+func (s *Store) addTaskComment(ctx context.Context, project, id, author, authorType, content string, hostname *string, origin *agent.Origin, questionID string) (*TaskComment, error) {
 	var result *TaskComment
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		t, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err

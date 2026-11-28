@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestAssignmentDeliveredReceiptConsumesOfferWithoutChangingClaim(t *testing.T) {
@@ -13,7 +13,7 @@ func TestAssignmentDeliveredReceiptConsumesOfferWithoutChangingClaim(t *testing.
 	actor := taskActor()
 	task := ownedInProgressTask(t, s, actor)
 	uid := addFeedbackOffer(t, s, task, actor, "worker:captured")
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "worker:captured", EmittedAt: task.UpdatedAt + 1, Correlation: &uid,
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "worker:captured", EmittedAt: task.UpdatedAt + 1, Correlation: &uid,
 		Payload: []byte(`{"target":"` + actor.SessionID + `","status":"delivered"}`)}
 	for range 2 {
 		if err := s.ReconcileRouterAssignmentFeedback(context.Background(), event); err != nil {

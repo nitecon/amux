@@ -6,13 +6,13 @@ import (
 	"strings"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ProjectMessage returns the addressed row only when it belongs to project.
 // It deliberately does not resolve replies to their thread root.
 func (s *Store) ProjectMessage(ctx context.Context, project string, id int64) (*ProjectMessage, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	message, err := readProjectMessageByID(ctx, s.db, project, id)
 	if err != nil {
 		return nil, err
@@ -27,7 +27,7 @@ func (s *Store) ProjectMessage(ctx context.Context, project string, id int64) (*
 // message has been sent. The addressed row must belong to the requested
 // project; the provider ID is stored verbatim.
 func (s *Store) SetProjectMessageExternalID(ctx context.Context, project string, id int64, externalID string) error {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" || id <= 0 || strings.TrimSpace(externalID) == "" {
 		return ErrProjectMessageInput
 	}
@@ -54,7 +54,7 @@ func (s *Store) SetProjectMessageExternalID(ctx context.Context, project string,
 // SetProjectRoom persists the provider room discovered while ensuring an
 // external project channel exists.
 func (s *Store) SetProjectRoom(ctx context.Context, project, room string) (*Project, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -17,7 +18,7 @@ func TestTaskAgentsChecksCheckoutBindingAndFiltersDirectoryOnce(t *testing.T) {
 	remote := "github.com/example/project"
 	makeTarget := func(os string, expires int64, display string) storage.RegisteredTarget {
 		return storage.RegisteredTarget{
-			Target: storage.RegisteredTargetIdentity{Origin: storage.AgentOrigin{
+			Target: storage.RegisteredTargetIdentity{Origin: agent.Origin{
 				SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: os,
 			}, Generation: uuid.NewString()},
 			SeenAt: now - 1000, ExpiresAt: expires,

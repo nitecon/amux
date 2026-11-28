@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -84,7 +85,7 @@ func TestWorkerManagerCreatesTasklessConversationBeforeOpeningProvider(t *testin
 	var created storage.Conversation
 	var opened storage.WorkerRun
 	stop := errors.New("synthetic provider stopped")
-	manager, _, _, client, _ := workerManagerFixture(t, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	manager, _, _, client, _ := workerManagerFixture(t, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		opened = run
 		return nil, stop
 	})
@@ -107,7 +108,7 @@ func TestWorkerManagerPersistsConversationLaunchPreferencesInRunCommand(t *testi
 	ctx := context.Background()
 	var opened storage.WorkerRun
 	stop := errors.New("fixture provider stopped")
-	manager, local, _, _, _ := workerManagerFixture(t, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	manager, local, _, _, _ := workerManagerFixture(t, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		opened = run
 		return nil, stop
 	})
@@ -134,7 +135,7 @@ func TestWorkerManagerBindsRepositoryConversationToCheckoutRoot(t *testing.T) {
 	ctx := context.Background()
 	var opened storage.WorkerRun
 	stop := errors.New("fixture provider stopped")
-	manager, _, remote, _, _ := workerManagerFixture(t, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	manager, _, remote, _, _ := workerManagerFixture(t, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		opened = run
 		return nil, stop
 	})
@@ -179,7 +180,7 @@ func TestWorkerManagerLiveACPTasklessReply(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	manager, _, remote, client, endpoint := workerManagerFixture(t, worker.OpenACP)
+	manager, _, remote, client, endpoint := workerManagerFixture(t, worker.OpenNative)
 	if executable := os.Getenv("AMUX_LIVE_ACP_TASK_TOOLS"); executable != "" {
 		const credentialEnv = "AMUX_LIVE_ACP_GATEWAY_KEY"
 		t.Setenv(credentialEnv, "manager-secret")
@@ -259,7 +260,7 @@ func TestBrowserNewConversationKeepsWorkerForWindowLifetime(t *testing.T) {
 	t.Cleanup(app.Quit)
 	deadlines := make(chan bool, 2)
 	stopped := make(chan string, 2)
-	manager, _, _, client, _ := workerManagerFixture(t, func(ctx context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	manager, _, _, client, _ := workerManagerFixture(t, func(ctx context.Context, run storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		_, bounded := ctx.Deadline()
 		deadlines <- bounded
 		<-ctx.Done()
@@ -333,7 +334,7 @@ func TestWorkerManagerCreateResumeStopAndSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	var opens atomic.Int32
-	manager, local, remote, _, endpoint := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (worker.Session, error) {
+	manager, local, remote, _, endpoint := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 		opens.Add(1)
 		return nil, nil
 	})
@@ -443,7 +444,7 @@ func TestWorkerManagerSnapshotsErrorsAndAllowsOnlyOneActivePool(t *testing.T) {
 func TestWorkerManagerPreservesNativeDeadlineFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	manager, _, remote, _, endpoint := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (worker.Session, error) {
+	manager, _, remote, _, endpoint := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 		return nil, context.DeadlineExceeded
 	})
 	if err := manager.Start(ctx); err != nil {
@@ -507,7 +508,7 @@ func TestWorkerManagerStartupValidationFailureKeepsPersistedPoolID(t *testing.T)
 func TestWorkerManagerKeepsStandaloneCanceledProviderFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	manager, _, remote, _, endpoint := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (worker.Session, error) {
+	manager, _, remote, _, endpoint := workerManagerFixture(t, func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 		return nil, context.Canceled
 	})
 	if err := manager.Start(ctx); err != nil {

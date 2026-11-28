@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 type DesignReviewStateWrite struct {
@@ -31,7 +31,7 @@ func (s *Store) UpdateDesignReviewState(ctx context.Context, projectIdent, artif
 		return nil, err
 	}
 	defer tx.Rollback()
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projectIdent, artifactID))
 	if err != nil {
 		return nil, err

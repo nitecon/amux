@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestReorderTasksPreservesSameColumnReservationAndRollsBackBatch(t *testing.T) {
@@ -102,8 +104,8 @@ func TestReorderTasksGoalPolicyRollsBackEarlierClaim(t *testing.T) {
 	}
 }
 
-func apiStorageActor() *AgentOrigin {
-	return &AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+func apiStorageActor() *agent.Origin {
+	return &agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 }
 
 func TestReorderCrossingEventCapturesFinalRank(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -39,7 +40,7 @@ func TestBrowserKeepsChatDraftAcrossTasksAndDiscoversNewConversations(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	c1, err := s.CreateConversation(ctx, "demo", first.ID, &owner)
 	if err != nil {
 		t.Fatal(err)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/worksubmission"
 	"github.com/urfave/cli/v3"
 )
@@ -53,7 +54,7 @@ func runTaskReport(ctx context.Context, args []string, jsonOutput bool, serverUR
 	} else {
 		if project == "" || (enrolledProfile == "" && (serverURL == "" || apiKey == "")) {
 			report.Partial = append(report.Partial, "Gateway task/review facts unavailable: no enrolled read-only Gateway connection and project supplied")
-		} else if client, _, clientErr := gatewayClientForProfile(serverURL, enrolledProfile, apiKey); clientErr != nil {
+		} else if client, _, clientErr := gatewayclient.NewForProfile(serverURL, enrolledProfile, apiKey); clientErr != nil {
 			report.Partial = append(report.Partial, fmt.Sprintf("Gateway task/review facts unavailable: %v", clientErr))
 		} else {
 			gatewayCtx, cancel := context.WithTimeout(ctx, time.Minute)

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestPresenceSummarySurvivesUnsubscribedHeartbeatDrainAndRestart(t *testing.T) {
@@ -28,7 +28,7 @@ func TestPresenceSummarySurvivesUnsubscribedHeartbeatDrainAndRestart(t *testing.
 		}
 	}
 	check(s, now, 1, []string{"linux"})
-	registry, err := router.NewRegistry([]router.EventDefinition{plugins.ClientHeartbeatDefinition()}, nil)
+	registry, err := fism.NewRegistry([]fism.EventDefinition{controllers.ClientHeartbeatDefinition()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

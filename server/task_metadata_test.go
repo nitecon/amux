@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -86,7 +87,7 @@ func TestTaskMetadataGoalChangesNeedSelectedGoalAndExactOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/v1/projects/tasks/tasks/" + task.ID
-	patch := func(actor *storage.AgentOrigin, selected string) *httptest.ResponseRecorder {
+	patch := func(actor *agent.Origin, selected string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(`{"goal":null}`))
 		req.Header.Set("Authorization", "Bearer task-key")
 		req.Header.Set("X-Agent-Session-Id", actor.SessionID)
@@ -101,7 +102,7 @@ func TestTaskMetadataGoalChangesNeedSelectedGoalAndExactOwner(t *testing.T) {
 	peer := *apiActor()
 	peer.InstanceID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	for _, attempt := range []struct {
-		actor *storage.AgentOrigin
+		actor *agent.Origin
 		goal  string
 	}{{&peer, goal}, {apiActor(), "different"}, {apiActor(), ""}} {
 		response := patch(attempt.actor, attempt.goal)
@@ -167,7 +168,7 @@ func TestTaskMetadataReviewLabelsAndOSChangesRemainGuarded(t *testing.T) {
 	if review == "" {
 		t.Fatal("missing generated review")
 	}
-	for _, actor := range []*storage.AgentOrigin{nil, apiActor()} {
+	for _, actor := range []*agent.Origin{nil, apiActor()} {
 		response := taskRequest(h, http.MethodPatch, "/v1/projects/tasks/tasks/"+review, `{"labels":[]}`, actor)
 		if response.Code != 409 {
 			t.Fatalf("review label mutation: %d %s", response.Code, response.Body)

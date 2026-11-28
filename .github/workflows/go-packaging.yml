@@ -90,7 +90,7 @@ jobs:
         run: |
           # --help validates argument parsing and binary startup only; it does
           # not open the GUI or prove that a graphical session can render it.
-          bin/amux-desktop${{ matrix.ext }} --project-dir "$GITHUB_WORKSPACE" --help
+          bin/amux-desktop${{ matrix.ext }} --help
       - name: Assemble and smoke test portable install
         id: package
         shell: bash

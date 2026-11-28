@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestProjectInventoryExcludesArchivedGlobalAndExpiredAgents(t *testing.T) {
@@ -21,8 +22,8 @@ func TestProjectInventoryExcludesArchivedGlobalAndExpiredAgents(t *testing.T) {
 	}
 	now := time.Now()
 	activity := now.Add(-2 * time.Minute).UnixMilli()
-	owner := func() AgentOrigin {
-		return AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := func() agent.Origin {
+		return agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	}
 	if _, err := s.ReportPresence(ctx, PresenceReport{Source: "expired", Sequence: 1, Agents: []PresenceAgent{{ProjectIdent: "zeta", Origin: owner(), LastActivityAt: &activity}}}, now.Add(-91*time.Second)); err != nil {
 		t.Fatal(err)

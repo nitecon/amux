@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -28,7 +29,7 @@ func TestWorkerAssignmentGoalHTTPGuardsAdoptionAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	if _, err := s.ApplyTaskTransition(ctx, "demo", task.ID, "in_progress", &owner, storage.TaskTransitionPolicy{CheckGoal: true, SelectedGoal: goal}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestWorkerAssignmentGoalHTTPGuardsAdoptionAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manualOwner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	manualOwner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	for _, selected := range []*string{nil, &wrong} {
 		_, err := client.CreateConversationWithGoal(ctx, "demo", manual.ID, manualOwner, selected)
 		var response *HTTPError

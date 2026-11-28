@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestInsertTaskPersistsCreationRoutingAndAuditAtomically(t *testing.T) {
@@ -50,7 +52,7 @@ func TestInsertTaskPersistsCreationRoutingAndAuditAtomically(t *testing.T) {
 		})
 	}
 
-	targetOrigin := AgentOrigin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "claude", OS: "windows"}
+	targetOrigin := agent.Origin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "claude", OS: "windows"}
 	const generation = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	if _, err := s.RegisterTarget(ctx, "tasks", TargetRegistration{Origin: targetOrigin, Generation: generation}, time.Now()); err != nil {
 		t.Fatal(err)
@@ -84,7 +86,7 @@ func TestInsertTaskRejectsInvalidCreationRoutingWithoutPartialTaskOrEvent(t *tes
 	if _, err := s.db.ExecContext(ctx, "UPDATE projects SET kind='adhoc',canonical_remote=NULL WHERE ident='tasks'"); err != nil {
 		t.Fatal(err)
 	}
-	targetOrigin := AgentOrigin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "claude", OS: "linux"}
+	targetOrigin := agent.Origin{SessionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", InstanceID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Provider: "claude", OS: "linux"}
 	const generation = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	if _, err := s.RegisterTarget(ctx, "tasks", TargetRegistration{Origin: targetOrigin, Generation: generation}, time.Now()); err != nil {
 		t.Fatal(err)
@@ -94,7 +96,7 @@ func TestInsertTaskRejectsInvalidCreationRoutingWithoutPartialTaskOrEvent(t *tes
 	if err := s.InsertProject(ctx, otherProject); err != nil {
 		t.Fatal(err)
 	}
-	wrongProjectOrigin := AgentOrigin{SessionID: "99999999-9999-4999-8999-999999999999", InstanceID: "88888888-8888-4888-8888-888888888888", Provider: "codex", OS: "linux"}
+	wrongProjectOrigin := agent.Origin{SessionID: "99999999-9999-4999-8999-999999999999", InstanceID: "88888888-8888-4888-8888-888888888888", Provider: "codex", OS: "linux"}
 	if _, err := s.RegisterTarget(ctx, "other", TargetRegistration{Origin: wrongProjectOrigin, Generation: generation}, time.Now()); err != nil {
 		t.Fatal(err)
 	}

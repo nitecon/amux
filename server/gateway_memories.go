@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -52,7 +52,7 @@ func (a *api) pushGatewayMemories(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("memory push batch exceeds %d records", storage.GatewayMemoryBatchLimit))
 		return
 	}
-	ident := projects.NormalizeIdent(r.PathValue("ident"))
+	ident := projectid.NormalizeIdent(r.PathValue("ident"))
 	source := storage.GatewayMemoryPushSource{
 		AgentID: optionalMemoryHeader(r, "X-Agent-ID"), Hostname: optionalMemoryHeader(r, "X-Agent-Hostname"),
 		ClientID: optionalMemoryHeader(r, "X-Memory-Client-ID"), ClientVersion: optionalMemoryHeader(r, "X-Memory-Client-Version"),
@@ -152,7 +152,7 @@ func (a *api) pullGatewayMemories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) gatewayMemoryProject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	projectIdent := projects.NormalizeIdent(r.PathValue("ident"))
+	projectIdent := projectid.NormalizeIdent(r.PathValue("ident"))
 	if projectIdent == storage.GatewayGlobalMemoryProjectIdent {
 		return projectIdent, true
 	}

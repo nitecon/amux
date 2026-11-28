@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/urfave/cli/v3"
 )
 
@@ -62,7 +62,7 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 
 	var (
 		messageID int64
-		origin    storage.AgentOrigin
+		origin    agent.Origin
 		body      string
 	)
 	switch operation {
@@ -102,7 +102,7 @@ func runMessages(ctx context.Context, args []string, stdout, stderr io.Writer, g
 			return err
 		}
 	}
-	client, _, err := gatewayClientForProfile(*gatewayURL, *enrolledProfile, apiKey)
+	client, _, err := gatewayclient.NewForProfile(*gatewayURL, *enrolledProfile, apiKey)
 	if err != nil {
 		return err
 	}
@@ -138,32 +138,32 @@ func messageAPIKey(getenv func(string) string, keyEnv, nativeKeyEnv string, expl
 	return key, nil
 }
 
-func messageActor(ctx context.Context, getenv func(string) string) (storage.AgentOrigin, error) {
-	origin, err := storage.NormalizeOrigin(&storage.AgentOrigin{
+func messageActor(ctx context.Context, getenv func(string) string) (agent.Origin, error) {
+	origin, err := agent.NormalizeOrigin(&agent.Origin{
 		SessionID: getenv("AMUX_AGENT_SESSION_ID"), InstanceID: getenv("AMUX_AGENT_INSTANCE_ID"),
 		Provider: getenv("AMUX_AGENT_PROVIDER"), OS: getenv("AMUX_AGENT_OS"),
 	})
 	if err != nil || origin == nil || origin.SessionID == "00000000-0000-0000-0000-000000000000" || origin.InstanceID == "00000000-0000-0000-0000-000000000000" {
-		return storage.AgentOrigin{}, fmt.Errorf("messages send requires a complete native identity from AMUX_AGENT_*")
+		return agent.Origin{}, fmt.Errorf("messages send requires a complete native identity from AMUX_AGENT_*")
 	}
 	launchDirectory := getenv("AMUX_AGENT_PROJECT")
 	if strings.TrimSpace(launchDirectory) == "" {
-		return storage.AgentOrigin{}, fmt.Errorf("messages send requires AMUX_AGENT_PROJECT")
+		return agent.Origin{}, fmt.Errorf("messages send requires AMUX_AGENT_PROJECT")
 	}
 	currentDirectory, err := os.Getwd()
 	if err != nil {
-		return storage.AgentOrigin{}, fmt.Errorf("resolve current checkout: %w", err)
+		return agent.Origin{}, fmt.Errorf("resolve current checkout: %w", err)
 	}
-	launch, err := projectidentity.Resolve(ctx, launchDirectory)
+	launch, err := projectid.Resolve(ctx, launchDirectory)
 	if err != nil {
-		return storage.AgentOrigin{}, fmt.Errorf("resolve agent checkout: %w", err)
+		return agent.Origin{}, fmt.Errorf("resolve agent checkout: %w", err)
 	}
-	current, err := projectidentity.Resolve(ctx, currentDirectory)
+	current, err := projectid.Resolve(ctx, currentDirectory)
 	if err != nil {
-		return storage.AgentOrigin{}, fmt.Errorf("resolve current checkout: %w", err)
+		return agent.Origin{}, fmt.Errorf("resolve current checkout: %w", err)
 	}
 	if launch.Directory != current.Directory {
-		return storage.AgentOrigin{}, fmt.Errorf("message publication requires the agent's launch checkout")
+		return agent.Origin{}, fmt.Errorf("message publication requires the agent's launch checkout")
 	}
 	return *origin, nil
 }

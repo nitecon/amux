@@ -12,8 +12,8 @@ import (
 
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
-	"github.com/nitecon/amux/worker"
 )
 
 type approvalTestProvider struct {
@@ -49,7 +49,7 @@ func TestManagedChatSurvivesViewerDisconnectAndResolvesApproval(t *testing.T) {
 	root := t.TempDir()
 	provider := &approvalTestProvider{done: make(chan struct{}), approved: make(chan struct{})}
 	mux := http.NewServeMux()
-	stop := RegisterControl(mux, ctx, root, func(string) string { return root }, func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	stop := RegisterControl(mux, ctx, root, func(string) string { return root }, func(_ context.Context, _ storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		provider.sink = sink
 		return provider, nil
 	}, nil)
@@ -61,7 +61,7 @@ func TestManagedChatSurvivesViewerDisconnectAndResolvesApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote := Remote{ConfigPath: config}
-	info, err := remote.Create(ctx, "demo", "codex", "", Preferences{})
+	info, err := remote.Create(ctx, "demo", "codex", "", providers.Preferences{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestLocalConversationPopulatesAgentOriginOnCreateAndLegacyFallback(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	root := t.TempDir()
-	created, err := Create(root, "demo", root, "claude", Preferences{})
+	created, err := Create(root, "demo", root, "claude", providers.Preferences{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestLocalConversationPopulatesAgentOriginOnCreateAndLegacyFallback(t *testi
 		t.Fatalf("created local conversation missing owner identity: %+v", created.Owner)
 	}
 	var opened storage.WorkerRun
-	s, err := Open(root, created, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	s, err := Open(root, created, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		opened = run
 		return &approvalTestProvider{done: make(chan struct{}), approved: make(chan struct{})}, nil
 	})
@@ -190,7 +190,7 @@ func TestLocalConversationPopulatesAgentOriginOnCreateAndLegacyFallback(t *testi
 		t.Fatal(err)
 	}
 	var legacyOpened storage.WorkerRun
-	ls, err := Open(root, legacy.Info, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (worker.Session, error) {
+	ls, err := Open(root, legacy.Info, func(_ context.Context, run storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 		legacyOpened = run
 		return &approvalTestProvider{done: make(chan struct{}), approved: make(chan struct{})}, nil
 	})

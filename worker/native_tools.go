@@ -11,10 +11,9 @@ import (
 	"sync/atomic"
 
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/providerprocess"
-	"github.com/nitecon/amux/providers/acp"
-	"github.com/nitecon/amux/providers/claude"
-	"github.com/nitecon/amux/providers/codex"
+	"github.com/nitecon/amux/identity/agent"
+	"github.com/nitecon/amux/providers"
+	"github.com/nitecon/amux/providers/process"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worksubmission"
 )
@@ -26,7 +25,6 @@ type NativeToolsConfig struct {
 	EnrolledProfile               string
 	WorkPreferencesPath           string
 	LocalConversation             bool
-	ManagedMCPEnv                 string
 }
 
 // OpenWithNativeTools returns an opener that registers one scoped amux MCP
@@ -34,7 +32,7 @@ type NativeToolsConfig struct {
 func OpenWithNativeTools(config NativeToolsConfig) Open {
 	preferencesPath, preferencesErr := nativeWorkPreferencesPath(config.WorkPreferencesPath)
 	config.WorkPreferencesPath = preferencesPath
-	open := func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if preferencesErr != nil {
 			return nil, preferencesErr
 		}
@@ -64,40 +62,27 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 				return nil, fmt.Errorf("amux MCP API key environment variable %q is not set", config.APIKeyEnv)
 			}
 		}
-		args := nativeMCPArgs(config, run)
+		args := nativeMCPArgs(run, config.LocalConversation)
 		env := nativeProviderEnv(os.Environ(), run, config.APIKeyEnv, config.EnrolledProfile != "")
-		mcp := providerprocess.MCPConfig{Command: config.Executable, Args: args, Env: nativeMCPEnvironment()}
-		acpEnv := nativeACPEnvironment()
-		if config.ManagedMCPEnv != "" {
-			mcp.Args = args[1:]
-			if mcp.Env == nil {
-				mcp.Env = make(map[string]string)
-			}
-			mcp.Env[config.ManagedMCPEnv] = "1"
-			acpEnv = append(acpEnv, acp.EnvVar{Name: config.ManagedMCPEnv, Value: "1"})
+		mcpEnv := nativeMCPEnvironment()
+		if mcpEnv == nil {
+			mcpEnv = make(map[string]string, 1)
 		}
-		var session Session
-		switch run.Owner.Provider {
-		case "antigravity":
-			session, err = acp.Start(ctx, acp.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
-				Command: run.Command, Env: env,
-				MCPServers:      []acp.MCPServer{{Name: "amux", Command: config.Executable, Args: mcp.Args, Env: acpEnv}},
-				AutoApproveTool: antigravityAmuxTool}, sink)
-		case "codex":
-			mcp.EnvVars = nativeMCPEnvVars(nativeMCPAPIKeyEnv(config))
-			session, err = codex.Start(ctx, codex.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
-				Command: run.Command, Env: env, MCP: &mcp,
-				DeveloperInstructions: nativeCodexDeveloperInstructions(run.Directory)}, sink)
-		case "claude":
-			session, err = claude.Start(ctx, claude.Config{Directory: run.Directory, ResumeID: run.NativeSessionID,
-				Command: run.Command, Env: env, MCP: &mcp}, sink)
-		default:
+		mcpEnv[process.ManagedMCPEnv] = "1"
+		provider, ok := providers.Lookup(run.Owner.Provider)
+		if !ok {
 			return nil, fmt.Errorf("provider %q is not implemented", run.Owner.Provider)
 		}
+		mcp := &process.MCPConfig{
+			Command: config.Executable, Args: args, Env: mcpEnv, EnvVars: nativeMCPEnvVars(nativeMCPAPIKeyEnv(config)),
+		}
+		session, err := provider.Start(ctx, providers.StartOptions{
+			Command: run.Command, Directory: run.Directory, ResumeID: run.NativeSessionID, Env: env, MCP: mcp,
+		}, sink)
 		if err != nil {
 			return nil, err
 		}
-		identity, _ := json.Marshal(CurrentAgentIdentity(run.Owner))
+		identity, _ := json.Marshal(agent.Current(run.Owner))
 		return &identitySession{Session: session, identity: string(identity)}, nil
 	}
 	return OpenWithToolApprovals(open, config.WorkPreferencesPath)
@@ -108,7 +93,7 @@ func OpenWithNativeTools(config NativeToolsConfig) Open {
 type toolApprovals struct {
 	path      string
 	directory string
-	session   atomic.Pointer[Session]
+	session   atomic.Pointer[providers.Session]
 }
 
 func (a *toolApprovals) sink(next conversation.Sink) conversation.Sink {
@@ -131,7 +116,7 @@ func (a *toolApprovals) sink(next conversation.Sink) conversation.Sink {
 // rules to any provider opener, including standalone local conversations.
 func OpenWithToolApprovals(open Open, preferencesPath string) Open {
 	path, pathErr := nativeWorkPreferencesPath(preferencesPath)
-	return func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	return func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if pathErr != nil {
 			return nil, pathErr
 		}
@@ -146,7 +131,7 @@ func OpenWithToolApprovals(open Open, preferencesPath string) Open {
 }
 
 type identitySession struct {
-	Session
+	providers.Session
 	identity string
 }
 
@@ -163,31 +148,11 @@ func (s *identitySession) Prompt(ctx context.Context, text string) (string, erro
 	return s.Session.Prompt(ctx, text)
 }
 
-// Antigravity qualifies tool names in ACP requests as mcp_<server>_<tool>.
-func antigravityAmuxTool(name string) bool {
-	tool, ok := strings.CutPrefix(name, "mcp_amux_")
-	if !ok || tool == "" {
-		return false
-	}
-	switch tool {
-	case "submit_work", "project_message_thread", "task_agents", "task_reassign", "agent_identity",
-		"task_get", "task_list", "task_create", "task_delegate", "task_update_delegation", "task_set_requester",
-		"task_claim", "task_started", "task_comment", "task_ask", "task_release", "task_user_review", "task_done",
-		"task_finish_review", "task_confirm_mutation", "task_set_changeset",
-		"memory_search", "memory_store", "memory_get", "memory_update",
-		"code_read", "code_symbols", "code_symbol", "code_search",
-		"doc_outline", "doc_section", "knowledge_get", "knowledge_graph":
-		return true
-	default:
-		return false
-	}
-}
-
 func nativeMCPEnvVars(apiKeyEnv string) []string {
 	names := []string{
 		"AMUX_AGENT_SESSION_ID", "AMUX_AGENT_INSTANCE_ID", "AMUX_AGENT_PROVIDER", "AMUX_AGENT_OS",
 		"AMUX_AGENT_PROJECT", "AMUX_GATEWAY_PROJECT", "AMUX_GATEWAY_URL", "AMUX_GATEWAY_API_KEY_ENV",
-		"AMUX_BUNDLED_DIR", "AMUX_DESKTOP_GUIDANCE",
+		"AMUX_BUNDLED_DIR", "AMUX_DESKTOP_GUIDANCE", "HOME", "USERPROFILE",
 		"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST",
 		"GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_ASKPASS", "SSH_AUTH_SOCK",
 	}
@@ -270,29 +235,20 @@ func validEnvName(name string) bool {
 	return true
 }
 
-func nativeMCPArgs(config NativeToolsConfig, run storage.WorkerRun) []string {
+func nativeMCPArgs(run storage.WorkerRun, localConversation bool) []string {
 	goal := ""
 	if run.Goal != nil {
 		goal = *run.Goal
 	}
-	args := []string{"mcp", "--server", config.Server, "--project", run.Project,
-		"--directory", run.Directory,
-		"--conversation", run.ConversationID, "--session", run.Owner.SessionID,
-		"--instance", run.Owner.InstanceID, "--provider", run.Owner.Provider,
-		"--os", run.Owner.OS}
-	if config.LocalConversation {
+	args := []string{"--project", run.Project,
+		"--directory", run.Directory, "--conversation", run.ConversationID,
+		"--session", run.Owner.SessionID, "--instance", run.Owner.InstanceID,
+		"--provider", run.Owner.Provider, "--os", run.Owner.OS}
+	if localConversation {
 		args = append(args, "--local-conversation")
 	}
 	if run.LocalTaskID != "" {
 		args = append(args, "--local-task", run.LocalTaskID)
-	}
-	if config.EnrolledProfile != "" {
-		args = append(args, "--enrolled-profile", config.EnrolledProfile)
-	} else {
-		args = append(args, "--api-key-env", config.APIKeyEnv)
-	}
-	if config.WorkPreferencesPath != "" {
-		args = append(args, "--work-preferences", config.WorkPreferencesPath)
 	}
 	return append(args, "--goal", goal)
 }

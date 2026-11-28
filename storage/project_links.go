@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const projectLinksMigration = 42
@@ -46,7 +46,7 @@ func migrateProjectLinks(ctx context.Context, tx *sql.Tx) error {
 }
 
 func (s *Store) ProjectLinks(ctx context.Context, projectIdent string) ([]ProjectLink, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,project_ident,label,url,rank FROM project_links WHERE project_ident=? ORDER BY rank ASC,id ASC`, projects.NormalizeIdent(projectIdent))
+	rows, err := s.db.QueryContext(ctx, `SELECT id,project_ident,label,url,rank FROM project_links WHERE project_ident=? ORDER BY rank ASC,id ASC`, projectid.NormalizeIdent(projectIdent))
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (s *Store) ProjectLinks(ctx context.Context, projectIdent string) ([]Projec
 }
 
 func (s *Store) AddProjectLink(ctx context.Context, projectIdent, label, rawURL string) (*ProjectLink, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,7 @@ func (s *Store) AddProjectLink(ctx context.Context, projectIdent, label, rawURL 
 }
 
 func (s *Store) DeleteProjectLink(ctx context.Context, projectIdent string, id int64) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM project_links WHERE project_ident=? AND id=?`, projects.NormalizeIdent(projectIdent), id)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM project_links WHERE project_ident=? AND id=?`, projectid.NormalizeIdent(projectIdent), id)
 	if err != nil {
 		return false, err
 	}

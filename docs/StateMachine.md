@@ -1,11 +1,36 @@
 # Server State Machine
 
-Status: proposed. This document is the end-to-end requirement and strategy for
-the server event router ("state machine") and its plugins. It supersedes the
-task scheduling parts of `architecture.md` and `ServerArchitecture.md` until
-those are uplifted.
+## Current Go implementation
 
-Baseline: file references and sizes are against main at v0.0.42 (705286c).
+The gateway state machine lives in `fism`. A controller subscribes to one or
+more event types and can declare dependencies on other controllers. `fism`
+uses the shared `queues` manager and Go channels to run independent controllers,
+wait for required outcomes, and apply retry policy. Intermediate execution
+state stays in memory for these reconciliation passes.
+
+The gateway accepts task snapshots, presence observations, notification inputs
+and feedback, inbound messages, and legacy review completions into durable
+domain records. After restart, it starts fresh passes from accepted inputs and
+current domain state. Active controllers participate in those passes. Committed
+outcomes and domain operation identities let controllers recognize effects that
+already happened. Settled inputs leave the source when their final writes commit.
+
+WebSocket consumers read the publication journal using their own acknowledgment
+cursors. Those cursors govern stream delivery. Reconciliation reads accepted
+domain inputs and uses publication identities where needed to preserve cursor
+ordering and deduplicate effects.
+
+At startup the gateway recovers valid inputs associated with unfinished SQLite
+delivery rows and retires the old progress in the same transaction. The active
+controllers reconcile those inputs against current state. Terminal outcomes and
+WebSocket publications stay available. The legacy scheduler is outside the
+gateway startup path. See the [state machine upgrade plan](goals/statemachine-upgrade.md).
+
+## Historical design proposal
+
+The sections below describe the original server event router and plugin design.
+Their file references and size estimates use main at v0.0.42 (705286c). The
+current implementation and upgrade plan above govern the Go cutover.
 
 ## Goal
 
@@ -53,6 +78,10 @@ the router and existing plugins are not modified.
 
 The router is the only component that is "the state machine".
 
+The router admits claimed deliveries to bounded per-plugin inboxes using the
+shared Go `queues` package. SQLite holds delivery claims and outcomes, including
+work that must resume after a restart.
+
 ```text
 emit(event) -> validate -> lookup subscribers(event.id, version)
             -> none: skip (nothing stored)
@@ -68,10 +97,11 @@ Responsibilities, and nothing more:
 - Accept events from the emitter (server code and remote clients).
 - Persist each event that has subscribers, with its deliveries, before
   acknowledging the emit.
-- Resolve subscribers from the registry.
+- Resolve subscribers from the registry when accepting an event. That set
+  determines the delivery rows created for the event.
 - Schedule plugin execution per the `depends_on` graph.
 - Record per-plugin delivery state (`pending`, `running`, `retrying`,
-  `completed`, `stopped`, `skipped`, `failed`) and retry/replay unfinished work.
+  `completed`, `stopped`, `skipped`, `failed`) for the current delivery journal.
 - Forward events to remote consumers that subscribed to them.
 
 It holds no timers (time comes from a Clock plugin) and no domain state.
@@ -151,7 +181,8 @@ enum RetryPolicy { Forever, MaxAttempts(NonZeroU32) }
   or a veto).
 - `Fail` aborts this run. The plugin's retry policy either retries from its
   first step or records a terminal `failed` delivery with its last error.
-  Steps must be idempotent because retries and restart recovery replay runs.
+  Steps must be idempotent because retries and restart recovery can rerun
+  an unfinished delivery.
   `MaxAttempts` counts failed runs including the initial run; one lets it fail
   without retrying. `Forever` preserves the default controller behaviour.
 - A plugin may subscribe to one or more events. Each subscription is an
@@ -160,6 +191,9 @@ enum RetryPolicy { Forever, MaxAttempts(NonZeroU32) }
   global FIFO delivery: its oldest unfinished event blocks its later events,
   including during retries. Other plugins remain parallel. Indexed head
   selection keeps a blocked FIFO backlog out of runnable claim pages.
+- A plugin receives events accepted after its subscription becomes active.
+  Adding a plugin or subscription creates no deliveries for retained events.
+  The router has no plugin history replay or backfill operation.
 - A plugin's state lives in its own tables; it never reads another plugin's
   tables directly. Presence exposes a typed live-agent snapshot read contract
   (`presence::agents`) for controllers, rather than separate copies of the
@@ -222,8 +256,9 @@ enum RetryPolicy { Forever, MaxAttempts(NonZeroU32) }
 
 - **At least once.** Events are persisted before the emit returns. Per-plugin
   and per-remote-consumer delivery state is persisted.
-- On restart the router replays every event that has an unfinished plugin or
-  consumer delivery.
+- The current delivery journal returns interrupted work to pending on restart.
+  The upgrade replaces that behavior with a fresh reconciliation run from the
+  last complete state. Remote consumers have their own acknowledgment cursors.
 - Failed plugin runs are retried with exponential backoff: first retry after
   1 s, doubling each time (1, 2, 4, 8, 16 s), capped at 30 s between attempts.
   By default retries continue at the 30 s cap until the run completes or stops.
@@ -244,8 +279,8 @@ enum RetryPolicy { Forever, MaxAttempts(NonZeroU32) }
 - The router scans pending work in bounded pages, runs at most 64 deliveries
   concurrently and owns their tasks. Delayed work does not hide other
   plugins’ runnable deliveries; an opted-in FIFO plugin holds its own tail.
-  Shutdown cancels controller execution; interrupted deliveries replay after
-  restart. Recording an outcome retries independently after storage failures,
+  Shutdown cancels controller execution. In the current delivery journal,
+  recording an outcome retries independently after storage failures,
   so a failed bookkeeping write does not rerun completed plugin steps.
 
 ## Event catalogue

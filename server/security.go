@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/storage"
 	"github.com/rs/zerolog/log"
 )
@@ -139,7 +140,7 @@ func (a *api) serveSecure(w http.ResponseWriter, r *http.Request, next http.Hand
 	principal := &securePrincipal{
 		enrollment: a.securityEnrollment, certificate: certificate, NodeID: node.NodeID, role: node.Role,
 	}
-	ctx := context.WithValue(r.Context(), authenticatedPrincipalContextKey{}, node.NodeID)
+	ctx := auth.WithPrincipal(r.Context(), node.NodeID)
 	ctx = context.WithValue(ctx, securePrincipalContextKey{}, principal)
 	next.ServeHTTP(w, r.WithContext(ctx))
 }

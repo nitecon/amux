@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 func waitRouterDeliveryState(t *testing.T, s *Store, seq int64, plugin, state string) {
@@ -49,7 +49,7 @@ func awaitRouterSignal(t *testing.T, ch <-chan struct{}) {
 	}
 }
 
-func runRouterFixture(t *testing.T, runtime *router.Runtime) context.CancelFunc {
+func runRouterFixture(t *testing.T, runtime *fism.Runtime) context.CancelFunc {
 	t.Helper()
 	return runOwnedRouterFixture(t, runtime.Run)
 }
@@ -82,39 +82,39 @@ func TestRouterRuntimeUsesDurableDependenciesAndParallelChannels(t *testing.T) {
 	gate, baseStarted, otherStarted, dependentStarted := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	var order []string
-	record := func(name string) router.Step {
-		return func(context.Context, router.Event, *router.StepContext) router.Outcome {
+	record := func(name string) fism.Step {
+		return func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 			mu.Lock()
 			order = append(order, name)
 			mu.Unlock()
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}
 	}
-	subscription := func(deps ...string) []router.Subscription {
-		return []router.Subscription{{Event: "test.runtime", MinVersion: 1, MaxVersion: 1, DependsOn: deps}}
+	subscription := func(deps ...string) []fism.Subscription {
+		return []fism.Subscription{{Event: "test.runtime", MinVersion: 1, MaxVersion: 1, DependsOn: deps}}
 	}
-	runtime, err := router.NewRuntime(s, s.EventBus(), []router.EventDefinition{{ID: "test.runtime", Version: 1, Validate: router.Object}}, []router.Plugin{
-		{Definition: router.PluginDefinition{ID: "base", Subscriptions: subscription()}, PreExec: []router.Step{record("pre")}, Exec: []router.Step{record("exec"), func(ctx context.Context, _ router.Event, _ *router.StepContext) router.Outcome {
+	runtime, err := fism.NewRuntime(s, s.EventBus(), []fism.EventDefinition{{ID: "test.runtime", Version: 1, Validate: fism.Object}}, []fism.Controller{
+		{Definition: fism.ControllerDefinition{ID: "base", Subscriptions: subscription()}, PreExec: []fism.Step{record("pre")}, Exec: []fism.Step{record("exec"), func(ctx context.Context, _ fism.Event, _ *fism.StepContext) fism.Outcome {
 			close(baseStarted)
 			select {
 			case <-gate:
 			case <-ctx.Done():
 			}
-			return router.Outcome{Kind: router.Continue}
-		}}, PostExec: []router.Step{record("post")}},
-		{Definition: router.PluginDefinition{ID: "other", Subscriptions: subscription()}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+			return fism.Outcome{Kind: fism.Continue}
+		}}, PostExec: []fism.Step{record("post")}},
+		{Definition: fism.ControllerDefinition{ID: "other", Subscriptions: subscription()}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 			close(otherStarted)
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}}},
-		{Definition: router.PluginDefinition{ID: "dependent", Subscriptions: subscription("base")}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+		{Definition: fism.ControllerDefinition{ID: "dependent", Subscriptions: subscription("base")}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 			close(dependentStarted)
-			return record("dependent")(context.Background(), router.Event{}, nil)
+			return record("dependent")(context.Background(), fism.Event{}, nil)
 		}}},
-	}, router.RunConfig{Capacity: 2})
+	}, fism.RunConfig{Capacity: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), router.EmitRequest{ID: "test.runtime", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	result, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), fism.EmitRequest{ID: "test.runtime", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,32 +154,32 @@ func TestRouterRuntimeTickMakesDurableRetryEligible(t *testing.T) {
 			var clock atomic.Int64
 			var runs, preRuns, dependentRuns atomic.Int32
 			second := make(chan struct{})
-			runtime, err := router.NewRuntime(s, s.EventBus(), []router.EventDefinition{{ID: "test.retry", Version: 1, Validate: router.Object}}, []router.Plugin{
-				{Definition: router.PluginDefinition{ID: "retry", Subscriptions: []router.Subscription{{Event: "test.retry", MinVersion: 1, MaxVersion: 1}}}, PreExec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+			runtime, err := fism.NewRuntime(s, s.EventBus(), []fism.EventDefinition{{ID: "test.retry", Version: 1, Validate: fism.Object}}, []fism.Controller{
+				{Definition: fism.ControllerDefinition{ID: "retry", Subscriptions: []fism.Subscription{{Event: "test.retry", MinVersion: 1, MaxVersion: 1}}}, PreExec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 					preRuns.Add(1)
-					return router.Outcome{Kind: router.Continue}
-				}}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+					return fism.Outcome{Kind: fism.Continue}
+				}}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 					attempt := runs.Add(1)
 					if attempt == 1 {
 						if panicFirst {
 							panic("offline")
 						}
-						return router.Outcome{Kind: router.Fail, Error: "offline"}
+						return fism.Outcome{Kind: fism.Fail, Error: "offline"}
 					}
 					if attempt == 2 {
 						close(second)
 					}
-					return router.Outcome{Kind: router.Continue}
+					return fism.Outcome{Kind: fism.Continue}
 				}}},
-				{Definition: router.PluginDefinition{ID: "dependent", Subscriptions: []router.Subscription{{Event: "test.retry", MinVersion: 1, MaxVersion: 1, DependsOn: []string{"retry"}}}}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+				{Definition: fism.ControllerDefinition{ID: "dependent", Subscriptions: []fism.Subscription{{Event: "test.retry", MinVersion: 1, MaxVersion: 1, DependsOn: []string{"retry"}}}}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 					dependentRuns.Add(1)
-					return router.Outcome{Kind: router.Continue}
+					return fism.Outcome{Kind: fism.Continue}
 				}}},
-			}, router.RunConfig{Capacity: 1, Now: func() time.Time { return time.UnixMilli(clock.Load()) }})
+			}, fism.RunConfig{Capacity: 1, Now: func() time.Time { return time.UnixMilli(clock.Load()) }})
 			if err != nil {
 				t.Fatal(err)
 			}
-			event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), router.EmitRequest{ID: "test.retry", Version: 1, Source: "test", Payload: []byte(`{}`)})
+			event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), fism.EmitRequest{ID: "test.retry", Version: 1, Source: "test", Payload: []byte(`{}`)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,12 +204,12 @@ func TestRouterRuntimeTickMakesDurableRetryEligible(t *testing.T) {
 }
 
 type flakyRouterFinish struct {
-	router.Journal
+	fism.Journal
 	failed chan struct{}
 	once   sync.Once
 }
 
-func (j *flakyRouterFinish) FinishRouterDelivery(ctx context.Context, token string, r *router.Registry, run router.ClaimedRun, outcome router.Outcome, now int64) error {
+func (j *flakyRouterFinish) FinishRouterDelivery(ctx context.Context, token string, r *fism.Registry, run fism.ClaimedRun, outcome fism.Outcome, now int64) error {
 	fail := false
 	j.once.Do(func() { fail = true; close(j.failed) })
 	if fail {
@@ -222,14 +222,14 @@ func TestRouterRuntimeRetriesCompletionWriteWithoutRepeatingStep(t *testing.T) {
 	s := testStore(t)
 	journal := &flakyRouterFinish{Journal: s, failed: make(chan struct{})}
 	var executions atomic.Int32
-	runtime, err := router.NewRuntime(journal, s.EventBus(), []router.EventDefinition{{ID: "test.finish", Version: 1, Validate: router.Object}}, []router.Plugin{{Definition: router.PluginDefinition{ID: "finish", Subscriptions: []router.Subscription{{Event: "test.finish", MinVersion: 1, MaxVersion: 1}}}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+	runtime, err := fism.NewRuntime(journal, s.EventBus(), []fism.EventDefinition{{ID: "test.finish", Version: 1, Validate: fism.Object}}, []fism.Controller{{Definition: fism.ControllerDefinition{ID: "finish", Subscriptions: []fism.Subscription{{Event: "test.finish", MinVersion: 1, MaxVersion: 1}}}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 		executions.Add(1)
-		return router.Outcome{Kind: router.Continue}
-	}}}}, router.RunConfig{Capacity: 1})
+		return fism.Outcome{Kind: fism.Continue}
+	}}}}, fism.RunConfig{Capacity: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), router.EmitRequest{ID: "test.finish", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), fism.EmitRequest{ID: "test.finish", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,28 +245,28 @@ func TestRouterRuntimeRetriesCompletionWriteWithoutRepeatingStep(t *testing.T) {
 func TestRouterRuntimeStopSkipsOnlyDeclaredDependents(t *testing.T) {
 	s := testStore(t)
 	var dependentRuns, postRuns atomic.Int32
-	sub := func(deps ...string) []router.Subscription {
-		return []router.Subscription{{Event: "test.stop", MinVersion: 1, MaxVersion: 1, DependsOn: deps}}
+	sub := func(deps ...string) []fism.Subscription {
+		return []fism.Subscription{{Event: "test.stop", MinVersion: 1, MaxVersion: 1, DependsOn: deps}}
 	}
-	runtime, err := router.NewRuntime(s, s.EventBus(), []router.EventDefinition{{ID: "test.stop", Version: 1, Validate: router.Object}}, []router.Plugin{
-		{Definition: router.PluginDefinition{ID: "veto", Subscriptions: sub()}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
-			return router.Outcome{Kind: router.Stop}
-		}}, PostExec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+	runtime, err := fism.NewRuntime(s, s.EventBus(), []fism.EventDefinition{{ID: "test.stop", Version: 1, Validate: fism.Object}}, []fism.Controller{
+		{Definition: fism.ControllerDefinition{ID: "veto", Subscriptions: sub()}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
+			return fism.Outcome{Kind: fism.Stop}
+		}}, PostExec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 			postRuns.Add(1)
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}}},
-		{Definition: router.PluginDefinition{ID: "dependent", Subscriptions: sub("veto")}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
+		{Definition: fism.ControllerDefinition{ID: "dependent", Subscriptions: sub("veto")}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
 			dependentRuns.Add(1)
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}}},
-		{Definition: router.PluginDefinition{ID: "independent", Subscriptions: sub()}, Exec: []router.Step{func(context.Context, router.Event, *router.StepContext) router.Outcome {
-			return router.Outcome{Kind: router.Continue}
+		{Definition: fism.ControllerDefinition{ID: "independent", Subscriptions: sub()}, Exec: []fism.Step{func(context.Context, fism.Event, *fism.StepContext) fism.Outcome {
+			return fism.Outcome{Kind: fism.Continue}
 		}}},
-	}, router.RunConfig{Capacity: 3})
+	}, fism.RunConfig{Capacity: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), router.EmitRequest{ID: "test.stop", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), fism.EmitRequest{ID: "test.stop", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,31 +282,31 @@ func TestRouterRuntimeStopSkipsOnlyDeclaredDependents(t *testing.T) {
 
 func TestRouterRuntimeStepEmissionPersistsSourceAndCorrelation(t *testing.T) {
 	s := testStore(t)
-	observed := make(chan router.Event, 1)
-	runtime, err := router.NewRuntime(s, s.EventBus(), []router.EventDefinition{{ID: "test.cause", Version: 1, Validate: router.Object}, {ID: "test.effect", Version: 1, Validate: router.Object}}, []router.Plugin{
-		{Definition: router.PluginDefinition{ID: "producer", Subscriptions: []router.Subscription{{Event: "test.cause", MinVersion: 1, MaxVersion: 1}}}, Exec: []router.Step{func(ctx context.Context, _ router.Event, step *router.StepContext) router.Outcome {
+	observed := make(chan fism.Event, 1)
+	runtime, err := fism.NewRuntime(s, s.EventBus(), []fism.EventDefinition{{ID: "test.cause", Version: 1, Validate: fism.Object}, {ID: "test.effect", Version: 1, Validate: fism.Object}}, []fism.Controller{
+		{Definition: fism.ControllerDefinition{ID: "producer", Subscriptions: []fism.Subscription{{Event: "test.cause", MinVersion: 1, MaxVersion: 1}}}, Exec: []fism.Step{func(ctx context.Context, _ fism.Event, step *fism.StepContext) fism.Outcome {
 			if _, err := step.Emit(ctx, "test.effect", 1, []byte(`{"effect":true}`)); err != nil {
-				return router.Outcome{Kind: router.Fail, Error: err.Error()}
+				return fism.Outcome{Kind: fism.Fail, Error: err.Error()}
 			}
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}}},
-		{Definition: router.PluginDefinition{ID: "observer", Subscriptions: []router.Subscription{{Event: "test.effect", MinVersion: 1, MaxVersion: 1}}}, Exec: []router.Step{func(ctx context.Context, event router.Event, _ *router.StepContext) router.Outcome {
+		{Definition: fism.ControllerDefinition{ID: "observer", Subscriptions: []fism.Subscription{{Event: "test.effect", MinVersion: 1, MaxVersion: 1}}}, Exec: []fism.Step{func(ctx context.Context, event fism.Event, _ *fism.StepContext) fism.Outcome {
 			select {
 			case observed <- event:
 			case <-ctx.Done():
 			}
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}}},
-	}, router.RunConfig{Capacity: 2})
+	}, fism.RunConfig{Capacity: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cause, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), router.EmitRequest{ID: "test.cause", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	cause, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), fism.EmitRequest{ID: "test.cause", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stop := runRouterFixture(t, runtime)
-	var effect router.Event
+	var effect fism.Event
 	select {
 	case effect = <-observed:
 	case <-time.After(5 * time.Second):
@@ -327,15 +327,15 @@ func TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures(t *testing.T)
 		t.Fatal(err)
 	}
 	defer s.Close()
-	defs := []router.EventDefinition{{ID: "test.recover", Version: 1, Validate: router.Object}}
-	plugin := func(id string, limit uint32) router.PluginDefinition {
-		return router.PluginDefinition{ID: id, MaxAttempts: limit, Subscriptions: []router.Subscription{{Event: "test.recover", MinVersion: 1, MaxVersion: 1}}}
+	defs := []fism.EventDefinition{{ID: "test.recover", Version: 1, Validate: fism.Object}}
+	plugin := func(id string, limit uint32) fism.ControllerDefinition {
+		return fism.ControllerDefinition{ID: id, MaxAttempts: limit, Subscriptions: []fism.Subscription{{Event: "test.recover", MinVersion: 1, MaxVersion: 1}}}
 	}
-	original, err := router.NewRegistry(defs, []router.PluginDefinition{plugin("working", 0), plugin("removed", 0), plugin("exhausted", 1)})
+	original, err := fism.NewRegistry(defs, []fism.ControllerDefinition{plugin("working", 0), plugin("removed", 0), plugin("exhausted", 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := s.EmitRouterEvent(ctx, original, router.EmitRequest{ID: "test.recover", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	event, err := s.EmitRouterEvent(ctx, original, fism.EmitRequest{ID: "test.recover", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures(t *testing.T)
 	}
 	for _, run := range batch.Runs {
 		if run.Plugin == "exhausted" {
-			if err := s.FinishRouterDelivery(ctx, token, original, run, router.Outcome{Kind: router.Fail, Error: "terminal"}, event.Event.EmittedAt); err != nil {
+			if err := s.FinishRouterDelivery(ctx, token, original, run, fism.Outcome{Kind: fism.Fail, Error: "terminal"}, event.Event.EmittedAt); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -363,7 +363,7 @@ func TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures(t *testing.T)
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	current, err := router.NewRegistry(defs, []router.PluginDefinition{plugin("working", 0), plugin("exhausted", 1)})
+	current, err := fism.NewRegistry(defs, []fism.ControllerDefinition{plugin("working", 0), plugin("exhausted", 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	states := map[string]router.Delivery{}
+	states := map[string]fism.Delivery{}
 	for _, row := range rows {
 		states[row.Plugin] = row
 	}
@@ -386,7 +386,7 @@ func TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures(t *testing.T)
 	if err != nil || len(batch.Runs) != 1 || batch.Runs[0].Plugin != "working" || batch.Runs[0].Event.UID != event.Event.UID {
 		t.Fatalf("replayed claim %+v %v", batch, err)
 	}
-	if err := reopened.FinishRouterDelivery(ctx, recoveredToken, current, batch.Runs[0], router.Outcome{Kind: router.Continue}, event.Event.EmittedAt+1); err != nil {
+	if err := reopened.FinishRouterDelivery(ctx, recoveredToken, current, batch.Runs[0], fism.Outcome{Kind: fism.Continue}, event.Event.EmittedAt+1); err != nil {
 		t.Fatal(err)
 	}
 	if err := reopened.ReleaseRouterRuntime(ctx, recoveredToken); err != nil {
@@ -397,16 +397,16 @@ func TestRouterRecoveryReplaysUnfinishedAndRetainsTerminalFailures(t *testing.T)
 func TestRouterRuntimeCancellationJoinsOwnedBlockedStep(t *testing.T) {
 	s := testStore(t)
 	started, stopped := make(chan struct{}), make(chan struct{})
-	runtime, err := router.NewRuntime(s, s.EventBus(), []router.EventDefinition{{ID: "test.shutdown", Version: 1, Validate: router.Object}}, []router.Plugin{{Definition: router.PluginDefinition{ID: "blocked", Subscriptions: []router.Subscription{{Event: "test.shutdown", MinVersion: 1, MaxVersion: 1}}}, Exec: []router.Step{func(ctx context.Context, _ router.Event, _ *router.StepContext) router.Outcome {
+	runtime, err := fism.NewRuntime(s, s.EventBus(), []fism.EventDefinition{{ID: "test.shutdown", Version: 1, Validate: fism.Object}}, []fism.Controller{{Definition: fism.ControllerDefinition{ID: "blocked", Subscriptions: []fism.Subscription{{Event: "test.shutdown", MinVersion: 1, MaxVersion: 1}}}, Exec: []fism.Step{func(ctx context.Context, _ fism.Event, _ *fism.StepContext) fism.Outcome {
 		close(started)
 		<-ctx.Done()
 		close(stopped)
-		return router.Outcome{Kind: router.Continue}
-	}}}}, router.RunConfig{Capacity: 1})
+		return fism.Outcome{Kind: fism.Continue}
+	}}}}, fism.RunConfig{Capacity: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), router.EmitRequest{ID: "test.shutdown", Version: 1, Source: "test", Payload: []byte(`{}`)})
+	event, err := s.EmitRouterEvent(context.Background(), runtime.Registry(), fism.EmitRequest{ID: "test.shutdown", Version: 1, Source: "test", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

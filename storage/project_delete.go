@@ -6,16 +6,16 @@ import (
 	"fmt"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 var ErrProjectDeleted = errors.New("project was permanently deleted")
 var ErrProjectDeleteInput = errors.New("project deletion requires its exact project identifier")
 
 // DeleteProject permanently removes gateway data for one project. Foreign keys
-// remain enabled and the transaction preserves tasks owned by other projects.
+// remain enabled and the transaction preserves tasks owned by other projectid.
 func (s *Store) DeleteProject(ctx context.Context, ident, confirmation string) (bool, error) {
-	if ident == "" || ident == "__global__" || ident != projects.NormalizeIdent(ident) || confirmation != ident {
+	if ident == "" || ident == "__global__" || ident != projectid.NormalizeIdent(ident) || confirmation != ident {
 		return false, ErrProjectDeleteInput
 	}
 	tx, err := s.db.BeginTx(ctx, nil)

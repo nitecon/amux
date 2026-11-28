@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -30,7 +30,7 @@ func (c *Client) CreateRoutedTask(ctx context.Context, project string, input Tas
 }
 
 func (c *Client) validateCreateRouting(ctx context.Context, project string, input *TaskCreateInput) error {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	routing := input.Routing
 	if routing.Mode == "" {
 		routing.Mode = TaskRoutingAuto
@@ -52,7 +52,7 @@ func (c *Client) validateCreateRouting(ctx context.Context, project string, inpu
 	}
 	requestedRemote := ""
 	if input.CanonicalRemote != nil {
-		remote, err := projects.CanonicalRemote(*input.CanonicalRemote)
+		remote, err := projectid.CanonicalRemote(*input.CanonicalRemote)
 		if err != nil {
 			return fmt.Errorf("invalid task repository")
 		}
@@ -82,7 +82,7 @@ func (c *Client) validateCreateRouting(ctx context.Context, project string, inpu
 		if candidate.CanonicalRemote == nil {
 			continue
 		}
-		remote, normalizeErr := projects.CanonicalRemote(*candidate.CanonicalRemote)
+		remote, normalizeErr := projectid.CanonicalRemote(*candidate.CanonicalRemote)
 		if normalizeErr != nil || remote != requestedRemote {
 			continue
 		}
@@ -93,7 +93,7 @@ func (c *Client) validateCreateRouting(ctx context.Context, project string, inpu
 		if remoteMatches > 1 {
 			return fmt.Errorf("gateway projects contain multiple active mappings for the requested repository")
 		}
-		if remoteMatches != 1 || projects.NormalizeIdent(remoteProject) != project {
+		if remoteMatches != 1 || projectid.NormalizeIdent(remoteProject) != project {
 			return fmt.Errorf("repository project changed; refresh before submitting")
 		}
 		input.CanonicalRemote = &requestedRemote

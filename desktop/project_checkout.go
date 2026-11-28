@@ -14,8 +14,8 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/clientcontrol"
-	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -162,7 +162,7 @@ func (b *Browser) scanProjectCheckouts() {
 		return
 	}
 	b.launch(func(ctx context.Context) {
-		var found []projectidentity.LocalCheckout
+		var found []projectid.LocalCheckout
 		var workspace clientcontrol.Workspace
 		if managed {
 			var err error
@@ -172,7 +172,7 @@ func (b *Browser) scanProjectCheckouts() {
 			}
 			found = workspace.LocalCheckouts
 		} else {
-			found = projectidentity.DiscoverLocalCheckouts(ctx, parent)
+			found = projectid.DiscoverLocalCheckouts(ctx, parent)
 		}
 		b.dispatch(func() {
 			b.mu.Lock()
@@ -216,7 +216,7 @@ func (b *Browser) applyClientWorkspace(workspace clientcontrol.Workspace) {
 	}
 }
 
-func (b *Browser) showLocalCheckouts(found []projectidentity.LocalCheckout) {
+func (b *Browser) showLocalCheckouts(found []projectid.LocalCheckout) {
 	b.localCheckouts = found
 	if b.localCheckoutSummary != nil {
 		switch {
@@ -345,7 +345,7 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 		var destination string
 		if method == cloneInProjects {
 			var err error
-			destination, err = projectidentity.CloneDestination(parent, repository)
+			destination, err = projectid.CloneDestination(parent, repository)
 			if err != nil {
 				status.SetText(err.Error())
 				return
@@ -393,7 +393,7 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 					}
 				})
 			}
-			var identity projectidentity.Identity
+			var identity projectid.Identity
 			var origin *string
 			var err error
 			if b.clientConfigPath != "" {
@@ -459,13 +459,13 @@ func (b *Browser) openProjectCheckout(project storage.ProjectOverview) {
 }
 
 const (
-	openInFolder    = projectidentity.OpenInFolder
-	cloneInProjects = projectidentity.CloneInProjects
-	cloneAtLocation = projectidentity.CloneAtLocation
+	openInFolder    = projectid.OpenInFolder
+	cloneInProjects = projectid.CloneInProjects
+	cloneAtLocation = projectid.CloneAtLocation
 )
 
-func prepareProjectCheckout(ctx context.Context, project storage.ProjectOverview, method, parent, location, source string) (projectidentity.Identity, *string, error) {
-	return projectidentity.PrepareCheckout(ctx, project.Kind, project.CanonicalRemote, method, parent, location, source)
+func prepareProjectCheckout(ctx context.Context, project storage.ProjectOverview, method, parent, location, source string) (projectid.Identity, *string, error) {
+	return projectid.PrepareCheckout(ctx, project.Kind, project.CanonicalRemote, method, parent, location, source)
 }
 
 func (b *Browser) updateClientCheckout(ctx context.Context, change clientcontrol.CheckoutChange) error {
@@ -502,7 +502,7 @@ func (b *Browser) setProjectExecutionExcluded(project string, excluded bool) {
 func (b *Browser) registerLocalProject(directory string) {
 	b.browserStatus.SetText("Registering checkout…")
 	b.launchWithTimeout(0, func(ctx context.Context) {
-		checkout, err := projectidentity.ResolveCheckout(ctx, directory)
+		checkout, err := projectid.ResolveCheckout(ctx, directory)
 		if err == nil && checkout.GatewayProject == "" {
 			err = fmt.Errorf("the checkout needs a Git origin before it can be registered")
 		}

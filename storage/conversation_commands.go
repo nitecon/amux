@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 // ConversationCommand records durable intent independently from delivery. A
@@ -236,7 +237,7 @@ const pendingTaskConversationsQuery = `SELECT c.id
 // Only conversations created under the caller's authenticated principal are
 // listed; origin headers alone reveal nothing, and conversations
 // without a recorded principal are withheld.
-func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner AgentOrigin, principal string) ([]string, error) {
+func (s *Store) PendingTaskConversations(ctx context.Context, project string, owner agent.Origin, principal string) ([]string, error) {
 	if principal == "" {
 		return []string{}, nil
 	}
@@ -313,18 +314,18 @@ func collectConversationCommands(rows *sql.Rows, withRevision bool) ([]Conversat
 	return result, rows.Err()
 }
 
-func (s *Store) ClaimConversationCommand(ctx context.Context, project, id, commandID string, origin *AgentOrigin) (*ConversationCommand, error) {
+func (s *Store) ClaimConversationCommand(ctx context.Context, project, id, commandID string, origin *agent.Origin) (*ConversationCommand, error) {
 	return s.transitionConversationCommand(ctx, project, id, commandID, "claimed", origin)
 }
-func (s *Store) FinishConversationCommand(ctx context.Context, project, id, commandID, state string, origin *AgentOrigin) (*ConversationCommand, error) {
+func (s *Store) FinishConversationCommand(ctx context.Context, project, id, commandID, state string, origin *agent.Origin) (*ConversationCommand, error) {
 	if state != "done" && state != "rejected" && state != "interrupted" {
 		return nil, fmt.Errorf("%w: invalid command outcome", ErrConversationInput)
 	}
 	return s.transitionConversationCommand(ctx, project, id, commandID, state, origin)
 }
-func (s *Store) transitionConversationCommand(ctx context.Context, project, id, commandID, state string, origin *AgentOrigin) (*ConversationCommand, error) {
+func (s *Store) transitionConversationCommand(ctx context.Context, project, id, commandID, state string, origin *agent.Origin) (*ConversationCommand, error) {
 	var result *ConversationCommand
-	_, err := s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor AgentOrigin) error {
+	_, err := s.mutateConversation(ctx, project, id, origin, func(tx *sql.Tx, c *Conversation, actor agent.Origin) error {
 		if c.Owner != actor {
 			return ErrTaskOwnership
 		}

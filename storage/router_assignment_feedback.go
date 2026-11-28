@@ -7,9 +7,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/projects"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // migrateRouterAssignmentFeedback is migration 30. Nullable additions preserve
@@ -59,15 +60,15 @@ func migrateRouterAssignmentFeedback(ctx context.Context, tx *sql.Tx) error {
 
 // createRouterAssignmentOffer emits the notification and captures its callback
 // authority in the caller's claim transaction.
-func createRouterAssignmentOffer(ctx context.Context, tx *sql.Tx, registry *router.Registry, cause router.Event, task *Task, owner AgentOrigin, reporterSource string, newTask bool) error {
+func createRouterAssignmentOffer(ctx context.Context, tx *sql.Tx, registry *fism.Registry, cause fism.Event, task *Task, owner agent.Origin, reporterSource string, newTask bool) error {
 	if registry == nil || task == nil || task.ID == "" || !validAssignmentCause(cause) || !validRouterSource(reporterSource) {
 		return fmt.Errorf("invalid assignment offer context")
 	}
-	normalized, err := NormalizeOrigin(&owner)
+	normalized, err := agent.NormalizeOrigin(&owner)
 	if err != nil || normalized == nil {
 		return fmt.Errorf("invalid assignment owner: %w", err)
 	}
-	project := projects.NormalizeIdent(task.ProjectIdent)
+	project := projectid.NormalizeIdent(task.ProjectIdent)
 	ownerJSON, err := json.Marshal(normalized)
 	if err != nil {
 		return err
@@ -133,18 +134,18 @@ func createRouterAssignmentOffer(ctx context.Context, tx *sql.Tx, registry *rout
 
 // ReconcileRouterAssignmentFeedback consumes one captured notify.result. Any
 // database error rolls back both the offer receipt and task compensation.
-func (s *Store) ReconcileRouterAssignmentFeedback(ctx context.Context, event router.Event) error {
+func (s *Store) ReconcileRouterAssignmentFeedback(ctx context.Context, event fism.Event) error {
 	if event.ID != "agent.notify_result" || event.Version != 1 || !canonicalUUID(event.UID) || !validRouterSource(event.Source) {
 		return fmt.Errorf("assignment feedback requires a valid agent.notify_result v1 event")
 	}
-	receipt, err := plugins.DecodeAssignmentFeedback(event.Payload)
+	receipt, err := controllers.DecodeAssignmentFeedback(event.Payload)
 	if err != nil {
 		return err
 	}
 	if event.Correlation == nil || !canonicalUUID(*event.Correlation) {
 		return nil
 	}
-	err = s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *AgentOrigin) error {
+	err = s.taskMutation(ctx, nil, func(tx *sql.Tx, _ *agent.Origin) error {
 		enabled, err := pluginEnabled(ctx, tx, "assignment")
 		if err != nil || !enabled {
 			return err
@@ -188,11 +189,11 @@ func (s *Store) ReconcileRouterAssignmentFeedback(ctx context.Context, event rou
 			if !ownerJSON.Valid || ownerJSON.String != originJSON.String || currentUpdated != claimUpdated.Int64 {
 				return nil
 			}
-			var owner AgentOrigin
+			var owner agent.Origin
 			if err := json.Unmarshal([]byte(originJSON.String), &owner); err != nil {
 				return err
 			}
-			normalizedOwner, normErr := NormalizeOrigin(&owner)
+			normalizedOwner, normErr := agent.NormalizeOrigin(&owner)
 			if normErr != nil {
 				return normErr
 			}

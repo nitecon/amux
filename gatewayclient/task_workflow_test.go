@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -60,8 +61,8 @@ func newWorkflowFixture(t *testing.T) (*storage.Store, *Client, *httptest.Server
 	return store, client, host, requests
 }
 
-func workflowOrigin() *storage.AgentOrigin {
-	return &storage.AgentOrigin{SessionID: workflowAgentID, InstanceID: workflowInstanceID, Provider: "codex", OS: "linux"}
+func workflowOrigin() *agent.Origin {
+	return &agent.Origin{SessionID: workflowAgentID, InstanceID: workflowInstanceID, Provider: "codex", OS: "linux"}
 }
 
 func TestDesktopCloseGeneralAndSoftwareWithoutAgentConfirmation(t *testing.T) {

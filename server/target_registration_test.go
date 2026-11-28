@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -100,11 +101,11 @@ func TestTargetRegistrationValidatesNativeOriginAndStrictBody(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		body  string
-		actor *storage.AgentOrigin
+		actor *agent.Origin
 	}{
 		{name: "missing origin", body: body},
-		{name: "partial origin", body: body, actor: &storage.AgentOrigin{SessionID: apiActor().SessionID}},
-		{name: "malformed origin", body: body, actor: &storage.AgentOrigin{SessionID: "bad", InstanceID: apiActor().InstanceID, Provider: "codex", OS: "linux"}},
+		{name: "partial origin", body: body, actor: &agent.Origin{SessionID: apiActor().SessionID}},
+		{name: "malformed origin", body: body, actor: &agent.Origin{SessionID: "bad", InstanceID: apiActor().InstanceID, Provider: "codex", OS: "linux"}},
 		{name: "missing generation", body: `{}`, actor: apiActor()},
 		{name: "invalid generation", body: `{"generation":"bad"}`, actor: apiActor()},
 		{name: "unknown field", body: `{"generation":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","origin":{}}`, actor: apiActor()},

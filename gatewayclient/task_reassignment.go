@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/taskplatform"
 )
@@ -17,8 +18,8 @@ import (
 // ReassignTask transfers an ordinary active task to one live execution bound
 // to the same repository. The gateway mutation is sent once; callers must
 // inspect the task after any uncertain response.
-func (c *Client) ReassignTask(ctx context.Context, project, id, recipient string, actor storage.AgentOrigin) (*storage.Task, error) {
-	project = projects.NormalizeIdent(project)
+func (c *Client) ReassignTask(ctx context.Context, project, id, recipient string, actor agent.Origin) (*storage.Task, error) {
+	project = projectid.NormalizeIdent(project)
 	if !canonicalDelegationID(id) {
 		return nil, fmt.Errorf("task ID must be a canonical non-nil UUID")
 	}
@@ -26,7 +27,7 @@ func (c *Client) ReassignTask(ctx context.Context, project, id, recipient string
 	if err != nil || session == uuid.Nil || session.String() != recipient {
 		return nil, fmt.Errorf("recipient session must be a canonical non-nil UUID")
 	}
-	normalized, err := storage.NormalizeOrigin(&actor)
+	normalized, err := agent.NormalizeOrigin(&actor)
 	if err != nil || normalized == nil {
 		return nil, fmt.Errorf("reassignment requires a complete native actor")
 	}
@@ -81,11 +82,11 @@ func (c *Client) ReassignTask(ctx context.Context, project, id, recipient string
 // selected live target. The server revalidates target generation and OS inside
 // the atomic assignment transaction.
 func (c *Client) AssignTask(ctx context.Context, project, id string, target storage.RegisteredTargetIdentity) (*storage.Task, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if !canonicalDelegationID(id) {
 		return nil, fmt.Errorf("task ID must be a canonical non-nil UUID")
 	}
-	origin, err := storage.NormalizeOrigin(&target.Origin)
+	origin, err := agent.NormalizeOrigin(&target.Origin)
 	if err != nil || origin == nil {
 		return nil, fmt.Errorf("assignment requires a complete target origin")
 	}

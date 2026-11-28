@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -28,7 +27,7 @@ func TestNativeTaskClaimCannotBypassUnboundGoal(t *testing.T) {
 	}
 	a := newAPI(s, "unused")
 	w := invokeTaskTool(t, a, actor, c.ID, `{"name":"task_claim","arguments":{"id":"`+task.ID+`"}}`)
-	var result mcpstdio.Result
+	var result storage.ToolResult
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || !result.IsError {
 		t.Fatalf("goal claim bypass: HTTP%d result=%+v err=%v", w.Code, result, err)
 	}

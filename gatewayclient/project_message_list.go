@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -26,7 +26,7 @@ type ProjectMessageListQuery struct {
 // project-wide counts. A nil limit leaves the server's default in effect;
 // limit=0 is forwarded so storage can apply its explicit-zero default.
 func (c *Client) ListProjectMessageThreads(ctx context.Context, project string, query ProjectMessageListQuery) (*storage.ProjectMessageThreadList, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project is required")
 	}

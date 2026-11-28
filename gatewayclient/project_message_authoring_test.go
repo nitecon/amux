@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -180,7 +181,7 @@ func TestPostHumanProjectMessageRoundTripDurableAndConfirmedPerNativeSession(t *
 	if err != nil || receipt.MessageID <= 0 || receipt.ParentMessageID != nil || !receipt.Delivered || receipt.DeliveryError != nil {
 		t.Fatalf("native post receipt=%+v err=%v", receipt, err)
 	}
-	for _, actor := range []storage.AgentOrigin{actorA, actorB} {
+	for _, actor := range []agent.Origin{actorA, actorB} {
 		unread, err := client.UnreadProjectMessages(ctx, "native", actor)
 		if err != nil || len(unread.Messages) != 1 || unread.Messages[0].ID != receipt.MessageID {
 			t.Fatalf("native session %s unread=%+v err=%v", actor.SessionID, unread, err)
@@ -190,7 +191,7 @@ func TestPostHumanProjectMessageRoundTripDurableAndConfirmedPerNativeSession(t *
 		t.Fatalf("confirm human message=%t err=%v", confirmed, err)
 	}
 	for _, tc := range []struct {
-		actor storage.AgentOrigin
+		actor agent.Origin
 		count int
 	}{{actorA, 0}, {actorB, 1}} {
 		unread, err := client.UnreadProjectMessages(ctx, "native", tc.actor)

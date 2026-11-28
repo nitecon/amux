@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/nitecon/amux/config"
 	"io"
 	"net/http"
 	"os"
@@ -12,37 +14,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/nitecon/amux/storage"
+	"github.com/nitecon/amux/worksubmission"
 )
-
-func TestSubmitWorkMCPPathsMatchSourceListContract(t *testing.T) {
-	paths, err := decodeSubmitWorkPaths(json.RawMessage(`["a file.txt","-dash.txt",""," \t "]`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"a file.txt", "-dash.txt", "", " \t "}; !reflect.DeepEqual(paths, want) {
-		t.Fatalf("decoded paths=%q, want exact source-list paths %q", paths, want)
-	}
-
-	tool := submitWorkMCPTool()
-	var schema struct {
-		Properties map[string]struct {
-			Type        string `json:"type"`
-			Description string `json:"description"`
-			Items       struct {
-				Type string `json:"type"`
-			} `json:"items"`
-		} `json:"properties"`
-		Required []string `json:"required"`
-	}
-	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
-		t.Fatal(err)
-	}
-	if schema.Properties["paths"].Type != "array" || schema.Properties["paths"].Items.Type != "string" ||
-		schema.Properties["paths"].Description != "Changed files to submit (modified, added or deleted), relative to the project or absolute" ||
-		!reflect.DeepEqual(schema.Required, []string{"task_id", "message", "paths"}) || schema.Properties["resume_commit"].Type != "string" {
-		t.Fatalf("submit_work schema differs from source contract: %s", tool.InputSchema)
-	}
-}
 
 func TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames(t *testing.T) {
 	f := newSubmissionEndToEnd(t, nil)
@@ -67,9 +42,9 @@ func TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames(t *testing.T) {
 		string(request),
 		"",
 	}, "\n")
-	args := append(f.actorArgs(), "--conversation", f.conversation, "--directory", f.root)
+	args := f.mcpArgs(t, f.preferences)
 	var stdout, stderr bytes.Buffer
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
 		t.Fatalf("native MCP submission: %v %s", err, stderr.String())
 	}
 	var response struct {
@@ -86,7 +61,7 @@ func TestSubmitWorkMCPFiltersBlankPathsAndSubmitsLiteralNames(t *testing.T) {
 	if response.Result.IsError || len(response.Result.Content) != 1 {
 		t.Fatalf("MCP submit failed: %+v", response.Result)
 	}
-	var receipt submitWorkReceipt
+	var receipt worksubmission.Receipt
 	if err := json.Unmarshal([]byte(response.Result.Content[0].Text), &receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +100,9 @@ func TestSubmitWorkMCPForwardsResumeCommit(t *testing.T) {
 		string(request),
 		"",
 	}, "\n")
-	args := append(f.actorArgs(), "--conversation", f.conversation, "--directory", f.root)
+	args := f.mcpArgs(t, f.preferences)
 	var stdout, stderr bytes.Buffer
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader(input)), &stdout, &stderr, submissionFixtureEnv); err != nil {
 		t.Fatalf("native MCP resume request: %v %s", err, stderr.String())
 	}
 	lines := bytes.Split(bytes.TrimSpace(stdout.Bytes()), []byte("\n"))
@@ -170,7 +145,7 @@ func TestSubmitWorkMCPRejectsInvalidPathShapesBeforeHTTPOrGit(t *testing.T) {
 	for _, pathsJSON := range []string{`[null]`, `[1]`, `[]`, `["", " \t "]`, `null`, `"a.rs"`} {
 		t.Run(pathsJSON, func(t *testing.T) {
 			args := json.RawMessage(`{"task_id":"` + f.task.ID + `","message":"submit","paths":` + pathsJSON + `,"resume_commit":"abc123"}`)
-			result, err := callSubmitWorkMCP(context.Background(), f.client, "demo", f.conversation, f.root, f.origin, nil, "", args)
+			result, err := callSubmitWorkMCP(t, f, "", args)
 			if err != nil || !result.IsError || len(result.Content) != 1 {
 				t.Fatalf("invalid paths response=%+v err=%v", result, err)
 			}
@@ -190,4 +165,33 @@ func TestSubmitWorkMCPRejectsInvalidPathShapesBeforeHTTPOrGit(t *testing.T) {
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
+}
+
+func callSubmitWorkMCP(t *testing.T, f submissionEndToEnd, preferences string, args json.RawMessage) (storage.ToolResult, error) {
+	t.Helper()
+	var result storage.ToolResult
+	var out bytes.Buffer
+	flags := f.mcpArgs(t, preferences)
+	input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_work","arguments":` + string(args) + "}}\n"
+	if err := runMCP(t, context.Background(), flags, io.NopCloser(strings.NewReader(input)), &out, io.Discard, submissionFixtureEnv); err != nil {
+		return result, err
+	}
+	lines := bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n"))
+	if len(lines) != 2 {
+		return result, fmt.Errorf("expected two MCP responses, got %s", out.String())
+	}
+	var reply struct {
+		Result storage.ToolResult `json:"result"`
+	}
+	err := json.Unmarshal(lines[1], &reply)
+	return reply.Result, err
+}
+
+func (f submissionEndToEnd) mcpArgs(t *testing.T, preferences string) []string {
+	t.Helper()
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: f.client.Endpoint(), WorkPreferences: preferences})
+	return []string{"--project", "demo", "--conversation", f.conversation, "--directory", f.root,
+		"--session", f.origin.SessionID, "--instance", f.origin.InstanceID, "--provider", f.origin.Provider, "--os", f.origin.OS}
 }

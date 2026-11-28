@@ -10,22 +10,25 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nitecon/amux/config"
 )
 
 func Start(ctx context.Context, cli, profile, instanceID, address string, remoteHosting bool, stderr io.Writer) (localEndpoint, publicEndpoint string, stop func(), err error) {
-	listen := "127.0.0.1:7913"
+	settings := config.DefaultServer()
+	settings.Profile = profile
+	settings.SecureInstance = instanceID
+	settings.ProfileTLSNames = []string{address}
 	if remoteHosting {
-		listen = "0.0.0.0:7913"
+		settings.Listen = "0.0.0.0:7913"
+	} else {
+		settings.DiscoveryBind = "127.0.0.1:0"
 	}
-	args := []string{"server", "--profile", profile, "--secure-instance-id", instanceID,
-		"--listen", listen, "--profile-tls-name", address}
-	if !remoteHosting {
-		args = append(args, "--discovery-bind", "127.0.0.1:0")
-	}
-	_, stop, err = start(ctx, cli, args, stderr)
+	_, stop, err = start(ctx, cli, settings, stderr)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -33,8 +36,11 @@ func Start(ctx context.Context, cli, profile, instanceID, address string, remote
 }
 
 func StartHTTP(ctx context.Context, cli, database, address, keyEnv string, stderr io.Writer) (string, func(), error) {
-	args := []string{"server", "--database", database, "--listen", address, "--api-key-env", keyEnv}
-	bound, stop, err := start(ctx, cli, args, stderr)
+	settings := config.DefaultServer()
+	settings.Database = database
+	settings.Listen = address
+	settings.KeyEnv = keyEnv
+	bound, stop, err := start(ctx, cli, settings, stderr)
 	if err != nil {
 		return "", nil, err
 	}
@@ -46,9 +52,18 @@ type startupResult struct {
 	err     error
 }
 
-func start(ctx context.Context, cli string, args []string, stderr io.Writer) (string, func(), error) {
+func start(ctx context.Context, cli string, settings config.Server, stderr io.Writer) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "amux-gateway-")
+	if err != nil {
+		return "", nil, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "server.yml")
+	if err := config.SaveServer(path, settings); err != nil {
+		return "", nil, fmt.Errorf("write local gateway configuration: %w", err)
+	}
 	childCtx, cancelChild := context.WithCancel(context.Background())
-	command := exec.CommandContext(childCtx, cli, args...)
+	command := exec.CommandContext(childCtx, cli, "server", "--config", path)
 	prepareProcess(command)
 	stdout, err := command.StdoutPipe()
 	if err != nil {

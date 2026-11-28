@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 	"github.com/rs/zerolog/log"
 )
@@ -127,7 +128,7 @@ func poolPresence(ctx context.Context, config PoolConfig, pool storage.WorkerPoo
 }
 
 func poolMachineMetadata() (string, *string) {
-	return workerMachineMetadata()
+	return agent.MachineMetadata()
 }
 
 func runPoolSlot(ctx context.Context, config PoolConfig, pool storage.WorkerPool, initial storage.WorkerPoolSlot) error {
@@ -452,7 +453,7 @@ func checkRunTask(ctx context.Context, store *storage.Store, client *gatewayclie
 	if before.Owner != run.Owner {
 		return nil
 	}
-	owned := func(owner *storage.AgentOrigin, expected storage.AgentOrigin) bool {
+	owned := func(owner *agent.Origin, expected agent.Origin) bool {
 		return owner != nil && *owner == expected
 	}
 	pendingOwner := run.Owner

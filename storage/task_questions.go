@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const (
@@ -24,15 +25,15 @@ var ErrTaskQuestionInput = errors.New("invalid task question")
 // TaskQuestion is a decision an owning agent needs from the user. It stays
 // open until the user answers it by ID with AnswerTaskQuestion.
 type TaskQuestion struct {
-	ID           string       `json:"id"`
-	TaskID       string       `json:"task_id"`
-	ProjectIdent string       `json:"project_ident"`
-	TaskTitle    string       `json:"task_title"`
-	Question     string       `json:"question"`
-	Options      []string     `json:"options"`
-	CommentID    string       `json:"comment_id"`
-	Origin       *AgentOrigin `json:"origin"`
-	CreatedAt    int64        `json:"created_at"`
+	ID           string        `json:"id"`
+	TaskID       string        `json:"task_id"`
+	ProjectIdent string        `json:"project_ident"`
+	TaskTitle    string        `json:"task_title"`
+	Question     string        `json:"question"`
+	Options      []string      `json:"options"`
+	CommentID    string        `json:"comment_id"`
+	Origin       *agent.Origin `json:"origin"`
+	CreatedAt    int64         `json:"created_at"`
 }
 
 func normalizeTaskQuestion(question string, options []string) (string, []string, error) {
@@ -69,7 +70,7 @@ func taskQuestionComment(question string, options []string) string {
 // AskTaskQuestion records an open question from the active owner of a task.
 // The question is also posted as an agent comment so the task thread keeps
 // the full history. Ownership and status are unchanged.
-func (s *Store) AskTaskQuestion(ctx context.Context, project, id, question string, options []string, origin *AgentOrigin) (*TaskQuestion, error) {
+func (s *Store) AskTaskQuestion(ctx context.Context, project, id, question string, options []string, origin *agent.Origin) (*TaskQuestion, error) {
 	question, options, err := normalizeTaskQuestion(question, options)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrTaskQuestionInput, err)
@@ -78,7 +79,7 @@ func (s *Store) AskTaskQuestion(ctx context.Context, project, id, question strin
 		return nil, ErrTaskOwnership
 	}
 	var result *TaskQuestion
-	err = s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err = s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		t, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err
@@ -147,7 +148,7 @@ func answerTaskQuestion(ctx context.Context, q queryer, taskID, questionID, comm
 }
 
 // OpenTaskQuestions lists unanswered questions on tasks that are not finished,
-// newest first. An empty project lists questions across all projects.
+// newest first. An empty project lists questions across all projectid.
 func (s *Store) OpenTaskQuestions(ctx context.Context, project string) ([]TaskQuestion, error) {
 	statement := `SELECT q.id,q.task_id,t.project_ident,t.title,q.question,q.options_json,q.comment_id,q.origin_json,q.created_at
  FROM task_questions q JOIN tasks t ON t.id=q.task_id
@@ -155,7 +156,7 @@ func (s *Store) OpenTaskQuestions(ctx context.Context, project string) ([]TaskQu
 	var params []any
 	if project != "" {
 		statement += " AND t.project_ident=?"
-		params = append(params, projects.NormalizeIdent(project))
+		params = append(params, projectid.NormalizeIdent(project))
 	}
 	rows, err := s.db.QueryContext(ctx, statement+" ORDER BY q.created_at DESC,q.id DESC", params...)
 	if err != nil {

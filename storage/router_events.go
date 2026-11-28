@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const routerDeliverySchema = `CREATE TABLE IF NOT EXISTS router_deliveries (
@@ -69,18 +69,27 @@ func migrateRouter(ctx context.Context, tx *sql.Tx) error {
 
 // EmitRouterEvent appends the event and its pending deliveries atomically.
 // SQLite is authoritative; the bus notification is sent only after commit.
-func (s *Store) EmitRouterEvent(ctx context.Context, registry *router.Registry, request router.EmitRequest) (router.EmitResult, error) {
+func (s *Store) EmitRouterEvent(ctx context.Context, registry *fism.Registry, request fism.EmitRequest) (fism.EmitResult, error) {
+	return s.publishEvent(ctx, registry, request, true)
+}
+
+// PublishBroadcast appends a WebSocket publication without admitting controller work.
+func (s *Store) PublishBroadcast(ctx context.Context, registry *fism.Registry, request fism.EmitRequest) (fism.EmitResult, error) {
+	return s.publishEvent(ctx, registry, request, false)
+}
+
+func (s *Store) publishEvent(ctx context.Context, registry *fism.Registry, request fism.EmitRequest, schedule bool) (fism.EmitResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return router.EmitResult{}, err
+		return fism.EmitResult{}, err
 	}
 	defer tx.Rollback()
-	result, err := emitRouterEventIn(ctx, tx, registry, request)
+	result, err := writeRouterEventIn(ctx, tx, registry, request, schedule)
 	if err != nil {
-		return router.EmitResult{}, err
+		return fism.EmitResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return router.EmitResult{}, err
+		return fism.EmitResult{}, err
 	}
 	if result.Stored {
 		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
@@ -90,42 +99,46 @@ func (s *Store) EmitRouterEvent(ctx context.Context, registry *router.Registry, 
 
 // emitRouterEventIn persists to the caller's transaction under a savepoint.
 // It never announces an event; only the outer transaction owner can do that.
-func emitRouterEventIn(ctx context.Context, tx *sql.Tx, registry *router.Registry, request router.EmitRequest) (router.EmitResult, error) {
+func emitRouterEventIn(ctx context.Context, tx *sql.Tx, registry *fism.Registry, request fism.EmitRequest) (fism.EmitResult, error) {
+	return writeRouterEventIn(ctx, tx, registry, request, true)
+}
+
+func writeRouterEventIn(ctx context.Context, tx *sql.Tx, registry *fism.Registry, request fism.EmitRequest, schedule bool) (fism.EmitResult, error) {
 	payloadValue, err := validateRouterEmit(registry, &request)
 	if err != nil {
-		return router.EmitResult{}, err
+		return fism.EmitResult{}, err
 	}
 	subscribers := append([]string(nil), registry.Subscribers(request.ID, request.Version)...)
 
 	if existing, err := readRouterEventByUID(ctx, tx, request.UID); err == nil {
 		storedPayload, decodeErr := semanticRouterJSON(existing.Payload)
 		if decodeErr != nil {
-			return router.EmitResult{}, fmt.Errorf("decode stored router event payload: %w", decodeErr)
+			return fism.EmitResult{}, fmt.Errorf("decode stored router event payload: %w", decodeErr)
 		}
 		if existing.ID != request.ID || existing.Version != request.Version || existing.Source != request.Source || !sameOptionalString(existing.Correlation, request.Correlation) || !reflect.DeepEqual(storedPayload, payloadValue) {
-			return router.EmitResult{}, router.ErrUIDConflict
+			return fism.EmitResult{}, fism.ErrUIDConflict
 		}
-		return router.EmitResult{Event: existing, Replayed: true}, nil
+		return fism.EmitResult{Event: existing, Replayed: true}, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return router.EmitResult{}, err
+		return fism.EmitResult{}, err
 	}
 
-	event := router.Event{UID: request.UID, ID: request.ID, Version: request.Version, Payload: append(json.RawMessage(nil), request.Payload...), Source: request.Source, Correlation: cloneString(request.Correlation)}
+	event := fism.Event{UID: request.UID, ID: request.ID, Version: request.Version, Payload: append(json.RawMessage(nil), request.Payload...), Source: request.Source, Correlation: cloneString(request.Correlation)}
 	if len(subscribers) == 0 {
-		return router.EmitResult{Event: event}, nil
+		return fism.EmitResult{Event: event}, nil
 	}
 
 	now := time.Now().UTC().UnixMilli()
 	event.EmittedAt = now
 	if _, err := tx.ExecContext(ctx, "SAVEPOINT router_emit"); err != nil {
-		return router.EmitResult{}, fmt.Errorf("create router emit savepoint: %w", err)
+		return fism.EmitResult{}, fmt.Errorf("create router emit savepoint: %w", err)
 	}
 	insertResult, insertErr := tx.ExecContext(ctx, `INSERT INTO router_events(uid,id,version,payload,source,emitted_at,correlation)
 	VALUES(?,?,?,?,?,?,?)`, request.UID, request.ID, request.Version, string(request.Payload), request.Source, now, nullableString(request.Correlation))
 	if insertErr == nil {
 		event.Seq, insertErr = insertResult.LastInsertId()
 	}
-	if insertErr == nil {
+	if insertErr == nil && schedule {
 		for _, plugin := range subscribers {
 			if _, insertErr = tx.ExecContext(ctx, `INSERT INTO router_deliveries(event_seq,plugin,state,next_attempt_at,updated_at)
 			VALUES(?,?,'pending',?,?)`, event.Seq, plugin, now, now); insertErr != nil {
@@ -135,13 +148,13 @@ func emitRouterEventIn(ctx context.Context, tx *sql.Tx, registry *router.Registr
 	}
 	if insertErr != nil {
 		rollbackErr := cleanupRouterSavepoint(ctx, tx)
-		return router.EmitResult{}, errors.Join(fmt.Errorf("persist router event: %w", insertErr), rollbackErr)
+		return fism.EmitResult{}, errors.Join(fmt.Errorf("persist router event: %w", insertErr), rollbackErr)
 	}
 	if _, err := tx.ExecContext(ctx, "RELEASE router_emit"); err != nil {
 		rollbackErr := cleanupRouterSavepoint(ctx, tx)
-		return router.EmitResult{}, errors.Join(fmt.Errorf("release router emit savepoint: %w", err), rollbackErr)
+		return fism.EmitResult{}, errors.Join(fmt.Errorf("release router emit savepoint: %w", err), rollbackErr)
 	}
-	return router.EmitResult{Event: event, Stored: true}, nil
+	return fism.EmitResult{Event: event, Stored: true}, nil
 }
 
 func cleanupRouterSavepoint(ctx context.Context, tx *sql.Tx) error {
@@ -152,12 +165,12 @@ func cleanupRouterSavepoint(ctx context.Context, tx *sql.Tx) error {
 	return errors.Join(wrapNonNil("rollback router emit savepoint", rollbackErr), wrapNonNil("release router emit savepoint after rollback", releaseErr))
 }
 
-func validateRouterEmit(registry *router.Registry, request *router.EmitRequest) (any, error) {
+func validateRouterEmit(registry *fism.Registry, request *fism.EmitRequest) (any, error) {
 	if registry == nil {
-		return nil, fmt.Errorf("%w: registry is nil", router.ErrInvalidEvent)
+		return nil, fmt.Errorf("%w: registry is nil", fism.ErrInvalidEvent)
 	}
 	if !validRouterSource(request.Source) {
-		return nil, fmt.Errorf("%w: source must be non-empty, trimmed, at most 256 bytes, and contain no control characters", router.ErrInvalidEvent)
+		return nil, fmt.Errorf("%w: source must be non-empty, trimmed, at most 256 bytes, and contain no control characters", fism.ErrInvalidEvent)
 	}
 	if request.UID == "" {
 		id, err := uuid.NewV7()
@@ -166,20 +179,20 @@ func validateRouterEmit(registry *router.Registry, request *router.EmitRequest) 
 		}
 		request.UID = id.String()
 	} else if !canonicalUUID(request.UID) {
-		return nil, fmt.Errorf("%w: UID must be a canonical UUID", router.ErrInvalidEvent)
+		return nil, fmt.Errorf("%w: UID must be a canonical UUID", fism.ErrInvalidEvent)
 	}
 	if request.Correlation != nil && !canonicalUUID(*request.Correlation) {
-		return nil, fmt.Errorf("%w: correlation must be a canonical UUID", router.ErrInvalidEvent)
+		return nil, fmt.Errorf("%w: correlation must be a canonical UUID", fism.ErrInvalidEvent)
 	}
 	if !json.Valid(request.Payload) {
-		return nil, fmt.Errorf("%w: malformed payload JSON", router.ErrInvalidEvent)
+		return nil, fmt.Errorf("%w: malformed payload JSON", fism.ErrInvalidEvent)
 	}
 	if err := registry.Validate(request.ID, request.Version, request.Payload); err != nil {
 		return nil, err
 	}
 	value, err := semanticRouterJSON(request.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("%w: malformed payload JSON: %v", router.ErrInvalidEvent, err)
+		return nil, fmt.Errorf("%w: malformed payload JSON: %v", fism.ErrInvalidEvent, err)
 	}
 	return value, nil
 }
@@ -248,7 +261,7 @@ func wrapNonNil(label string, err error) error {
 }
 
 // RouterEvents returns events with seq greater than after, in durable order.
-func (s *Store) RouterEvents(ctx context.Context, after int64, limit int) ([]router.Event, error) {
+func (s *Store) RouterEvents(ctx context.Context, after int64, limit int) ([]fism.Event, error) {
 	if after < 0 {
 		return nil, fmt.Errorf("router event cursor must be non-negative")
 	}
@@ -261,9 +274,9 @@ func (s *Store) RouterEvents(ctx context.Context, after int64, limit int) ([]rou
 		return nil, err
 	}
 	defer rows.Close()
-	events := make([]router.Event, 0)
+	events := make([]fism.Event, 0)
 	for rows.Next() {
-		var event router.Event
+		var event fism.Event
 		var payload []byte
 		var correlation sql.NullString
 		if err := rows.Scan(&event.Seq, &event.UID, &event.ID, &event.Version, &payload, &event.Source, &event.EmittedAt, &correlation); err != nil {
@@ -279,16 +292,16 @@ func (s *Store) RouterEvents(ctx context.Context, after int64, limit int) ([]rou
 }
 
 // RouterDeliveries returns every plugin delivery for one event sequence.
-func (s *Store) RouterDeliveries(ctx context.Context, eventSeq int64) ([]router.Delivery, error) {
+func (s *Store) RouterDeliveries(ctx context.Context, eventSeq int64) ([]fism.Delivery, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT event_seq,plugin,state,attempts,next_attempt_at,last_error,updated_at
 	FROM router_deliveries WHERE event_seq=? ORDER BY plugin`, eventSeq)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	deliveries := make([]router.Delivery, 0)
+	deliveries := make([]fism.Delivery, 0)
 	for rows.Next() {
-		var delivery router.Delivery
+		var delivery fism.Delivery
 		var lastError sql.NullString
 		if err := rows.Scan(&delivery.EventSeq, &delivery.Plugin, &delivery.State, &delivery.Attempts, &delivery.NextAttemptAt, &lastError, &delivery.UpdatedAt); err != nil {
 			return nil, err
@@ -301,14 +314,14 @@ func (s *Store) RouterDeliveries(ctx context.Context, eventSeq int64) ([]router.
 	return deliveries, rows.Err()
 }
 
-func readRouterEventByUID(ctx context.Context, q queryer, uid string) (router.Event, error) {
-	var event router.Event
+func readRouterEventByUID(ctx context.Context, q queryer, uid string) (fism.Event, error) {
+	var event fism.Event
 	var payload []byte
 	var correlation sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT seq,uid,id,version,payload,source,emitted_at,correlation
 	FROM router_events WHERE uid=?`, uid).Scan(&event.Seq, &event.UID, &event.ID, &event.Version, &payload, &event.Source, &event.EmittedAt, &correlation)
 	if err != nil {
-		return router.Event{}, err
+		return fism.Event{}, err
 	}
 	event.Payload = append(json.RawMessage(nil), payload...)
 	if correlation.Valid {

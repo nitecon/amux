@@ -13,6 +13,7 @@ import (
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -24,7 +25,7 @@ func TestConversationAgentsOrderLocalFirstThenByOperatingSystem(t *testing.T) {
 	}
 	makeAgent := func(id, platform string, hostname *string) storage.AgentPresence {
 		return storage.AgentPresence{PresenceAgent: storage.PresenceAgent{
-			Origin: storage.AgentOrigin{SessionID: id, OS: platform}, Hostname: hostname,
+			Origin: agent.Origin{SessionID: id, OS: platform}, Hostname: hostname,
 		}}
 	}
 	linuxHost, windowsHost := "linux-host", "windows-host"
@@ -54,8 +55,8 @@ func TestConversationAgentPickerOpensRemoteChatThroughGateway(t *testing.T) {
 		localOS = "macos"
 	}
 	remoteHost := "remote-linux"
-	remote := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
-	local := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: localOS}
+	remote := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	local := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: localOS}
 	chat := storage.Conversation{ID: uuid.NewString(), ProjectIdent: "demo", Provider: remote.Provider, Owner: remote}
 	fixture := startEditorBrowser(t, func(next http.Handler) http.Handler {
 		next = withoutComposerNavigationStream(next)

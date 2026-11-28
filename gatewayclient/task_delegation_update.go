@@ -9,19 +9,20 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
 // UpdateTaskDelegation edits one existing source contract. Its pre-read pins
 // the expected linked tasks; the server remains responsible for transactional
 // authorization and applying both sides. An uncertain PATCH is never retried.
-func (c *Client) UpdateTaskDelegation(ctx context.Context, project, id string, input storage.TaskDelegationUpdate, origin *storage.AgentOrigin) (*storage.TaskDelegationResult, error) {
+func (c *Client) UpdateTaskDelegation(ctx context.Context, project, id string, input storage.TaskDelegationUpdate, origin *agent.Origin) (*storage.TaskDelegationResult, error) {
 	before, err := c.readDelegationForUpdate(ctx, project, id)
 	if err != nil {
 		return nil, err
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	var receipt storage.TaskDelegationResult
 	if err := c.do(ctx, http.MethodPatch, taskPath(project)+"/"+url.PathEscape(id)+"/delegation", input, origin, &receipt); err != nil {
 		return nil, fmt.Errorf("delegation contract not confirmed; inspect both projects before retrying: %w", err)
@@ -39,7 +40,7 @@ func (c *Client) readDelegationForUpdate(ctx context.Context, project, id string
 	if !canonicalDelegationID(id) {
 		return storage.Task{}, fmt.Errorf("delegation source task must be a canonical non-nil UUID")
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	raw, err := c.TaskRead(ctx, project, id, 0)
 	if err != nil {
 		return storage.Task{}, err

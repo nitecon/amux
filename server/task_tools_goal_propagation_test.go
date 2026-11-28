@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
-func invokeTaskToolAtGoal(t *testing.T, a *api, actor *storage.AgentOrigin, conversationID, goal, body string, includeGoal bool) *httptest.ResponseRecorder {
+func invokeTaskToolAtGoal(t *testing.T, a *api, actor *agent.Origin, conversationID, goal, body string, includeGoal bool) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	r.SetPathValue("ident", "tasks")
@@ -29,9 +29,9 @@ func invokeTaskToolAtGoal(t *testing.T, a *api, actor *storage.AgentOrigin, conv
 	return w
 }
 
-func decodeGoalToolResult(t *testing.T, response *httptest.ResponseRecorder) mcpstdio.Result {
+func decodeGoalToolResult(t *testing.T, response *httptest.ResponseRecorder) storage.ToolResult {
 	t.Helper()
-	var result mcpstdio.Result
+	var result storage.ToolResult
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 {
 		t.Fatalf("task tool HTTP%d: %s (%v)", response.Code, response.Body.String(), err)
 	}

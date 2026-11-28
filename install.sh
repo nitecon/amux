@@ -9,6 +9,9 @@ dir="$HOME/amux"
 [ "$(uname -s)" = Linux ] || { echo "install.sh supports Linux only; use install-macos.sh or install.ps1" >&2; exit 1; }
 [ "$(uname -m)" = x86_64 ] || { echo "amux releases support Linux x86-64 only" >&2; exit 1; }
 
+guide="https://github.com/$repo/blob/main/deploy/README.md#upgrade-an-existing-deployment"
+echo "Upgrading? Stop the desktop, gateway, and headless clients and back up server state first. See $guide" >&2
+
 tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" | sed 's|.*/||')
 base="https://github.com/$repo/releases/download/$tag"
 archive="amux-linux-x86_64-$tag.tar.gz"
@@ -28,7 +31,7 @@ tar -xzf "$tmp/$archive" -C "$tmp/bundle"
 (cd "$tmp/bundle" && sha256sum -c --quiet SHA256SUMS)
 
 # Rename each bundle file into place, moving any existing copy aside first.
-# Running copies keep working until restart; other files in $dir are untouched.
+# Other files in $dir are untouched.
 installed=""
 replace() {
   for file in "$tmp/bundle"/*; do
@@ -57,4 +60,4 @@ if ! replace; then
 fi
 
 echo "amux $tag installed. Start it with: $dir/amux-desktop"
-echo "If amux was already running, restart it to use the new version."
+echo "For a standalone server, update the service binary and start it with amux server --config PATH. See $guide"

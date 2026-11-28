@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/taskplatform"
 )
@@ -17,7 +18,7 @@ import (
 const specificationHint = "If this is a complex task, make sure it has a proper specification so another agent can pick up the work if you drop it."
 const changesetQuestion = `Did this task mutate any files? Repeat the transition with changeset: ["path/to/file"] listing every modified, added or deleted file, or changeset: null if no files were mutated. The task has not moved.`
 
-func agentOrigin(headers http.Header) (*storage.AgentOrigin, error) {
+func agentOrigin(headers http.Header) (*agent.Origin, error) {
 	names := []string{"X-Agent-Session-Id", "X-Agent-Instance-Id", "X-Agent-Provider", "X-Agent-Os"}
 	any := false
 	for _, name := range names {
@@ -36,9 +37,9 @@ func agentOrigin(headers http.Header) (*storage.AgentOrigin, error) {
 		}
 		values[i] = entries[0]
 	}
-	return storage.NormalizeOrigin(&storage.AgentOrigin{SessionID: values[0], InstanceID: values[1], Provider: values[2], OS: values[3]})
+	return agent.NormalizeOrigin(&agent.Origin{SessionID: values[0], InstanceID: values[1], Provider: values[2], OS: values[3]})
 }
-func requestActor(w http.ResponseWriter, r *http.Request) (*storage.AgentOrigin, bool) {
+func requestActor(w http.ResponseWriter, r *http.Request) (*agent.Origin, bool) {
 	origin, err := agentOrigin(r.Header)
 	if err != nil {
 		writeError(w, 400, err.Error())

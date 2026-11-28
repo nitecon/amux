@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const reminderQuietForMS int64 = 10 * 60_000
@@ -57,7 +57,7 @@ func migrateRouterReminders(ctx context.Context, tx *sql.Tx) error {
 
 // ReconcileRouterReminders emits periodic task nudges on clock ticks and
 // continuity reminders for accepted client lifetime heartbeats.
-func (s *Store) ReconcileRouterReminders(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (s *Store) ReconcileRouterReminders(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	if event.Version != 1 || (event.ID != "clock.tick" && event.ID != "client.heartbeat") || !canonicalUUID(event.UID) {
 		return fmt.Errorf("reminder reconciliation requires a clock.tick or client.heartbeat v1 event with a canonical UID")
 	}
@@ -96,7 +96,7 @@ func (s *Store) ReconcileRouterReminders(ctx context.Context, registry *router.R
 	return nil
 }
 
-func (s *Store) remindQuietTasks(ctx context.Context, tx *sql.Tx, registry *router.Registry, event router.Event) (bool, error) {
+func (s *Store) remindQuietTasks(ctx context.Context, tx *sql.Tx, registry *fism.Registry, event fism.Event) (bool, error) {
 	agents, _, err := livePresenceSnapshot(ctx, tx, event.EmittedAt)
 	if err != nil {
 		return false, err
@@ -152,7 +152,7 @@ func (s *Store) remindQuietTasks(ctx context.Context, tx *sql.Tx, registry *rout
 	return stored, nil
 }
 
-func (s *Store) remindRestartedExecutions(ctx context.Context, tx *sql.Tx, registry *router.Registry, event router.Event, now int64) (bool, error) {
+func (s *Store) remindRestartedExecutions(ctx context.Context, tx *sql.Tx, registry *fism.Registry, event fism.Event, now int64) (bool, error) {
 	var payload struct {
 		ClientRun string            `json:"client_run"`
 		Agents    []json.RawMessage `json:"agents"`

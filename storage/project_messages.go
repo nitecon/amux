@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ProjectMessage is the Rust-compatible project inbox message record.
@@ -38,7 +38,7 @@ var ErrProjectMessageNotFound = errors.New("project message not found")
 // GetUnconfirmedProjectMessages returns user messages and explicitly
 // agent-deliverable messages not yet confirmed by this project agent.
 func (s *Store) GetUnconfirmedProjectMessages(ctx context.Context, project, agentID string) ([]ProjectMessage, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func readUnconfirmedProjectMessages(ctx context.Context, q queryer, project, age
 // deliberate native integrity boundary: Rust's current helper stores the
 // caller-supplied project tuple without checking the message's project.
 func (s *Store) ConfirmProjectMessage(ctx context.Context, project, agentID string, messageID int64) (bool, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err

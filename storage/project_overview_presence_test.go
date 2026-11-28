@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestProjectOverviewsUseBindingFilteredMonotonicPresenceSnapshot(t *testing.T) {
@@ -21,18 +22,18 @@ func TestProjectOverviewsUseBindingFilteredMonotonicPresenceSnapshot(t *testing.
 	}
 	base := time.Now().Add(-time.Minute).UnixMilli()
 	target := TargetRegistration{
-		Origin:     AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"},
+		Origin:     agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"},
 		Generation: uuid.NewString(), CanonicalRemote: ptr(oldRemote), Hostname: ptr("Manual-Host"),
 	}
 	if _, err := s.RegisterTarget(ctx, "presence", target, time.UnixMilli(base)); err != nil {
 		t.Fatal(err)
 	}
-	registry, err := router.NewRegistry(nativePresenceDefinitions(), []router.PluginDefinition{plugins.PresencePlugin(nil).Definition})
+	registry, err := fism.NewRegistry(nativePresenceDefinitions(), []fism.ControllerDefinition{controllers.PresenceController(nil).Definition})
 	if err != nil {
 		t.Fatal(err)
 	}
 	rawSession, rawInstance := uuid.NewString(), uuid.NewString()
-	heartbeat := emitObservationFixtureEvent(t, s, registry, plugins.ClientHeartbeatID, "raw:overview",
+	heartbeat := emitObservationFixtureEvent(t, s, registry, controllers.ClientHeartbeatID, "raw:overview",
 		`{"os":"linux","hostname":"Observed-Host","agents":[{"project":"presence","session_id":"`+rawSession+`","instance_id":"`+rawInstance+`","provider":"codex","os":"linux","canonical_remote":"`+oldRemote+`"}]}`, base)
 	if err := s.ReconcilePresenceEvent(ctx, registry, heartbeat); err != nil {
 		t.Fatal(err)

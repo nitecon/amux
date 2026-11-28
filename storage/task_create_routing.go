@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -17,12 +18,12 @@ type TaskRouting struct {
 	Target *RegisteredTargetIdentity `json:"target,omitempty"`
 }
 
-func taskCreationRouting(ctx context.Context, tx queryer, project *Project, canonicalRemote *string, labels []string, requested *TaskRouting) (json.RawMessage, *AgentOrigin, error) {
+func taskCreationRouting(ctx context.Context, tx queryer, project *Project, canonicalRemote *string, labels []string, requested *TaskRouting) (json.RawMessage, *agent.Origin, error) {
 	routing := TaskRouting{Mode: "auto"}
 	if requested != nil {
 		routing = *requested
 	}
-	var owner *AgentOrigin
+	var owner *agent.Origin
 	switch routing.Mode {
 	case "auto", "unassigned", "broadcast":
 		if routing.Target != nil {

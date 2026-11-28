@@ -10,16 +10,16 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 var routerPresenceKinds = [...]string{"online", "idle", "busy", "gone"}
 
 // RouterPresenceEventDefinitions declares the durable native presence events.
-func RouterPresenceEventDefinitions() []router.EventDefinition {
-	definitions := make([]router.EventDefinition, 0, len(routerPresenceKinds))
+func RouterPresenceEventDefinitions() []fism.EventDefinition {
+	definitions := make([]fism.EventDefinition, 0, len(routerPresenceKinds))
 	for _, kind := range routerPresenceKinds {
-		definitions = append(definitions, router.EventDefinition{
+		definitions = append(definitions, fism.EventDefinition{
 			ID: "agent." + kind, Version: 1, RemoteEmit: false, Validate: validateRouterPresencePayload,
 		})
 	}
@@ -76,34 +76,62 @@ type routerPresenceOutboxRow struct {
 	correlation sql.NullString
 }
 
-// DrainRouterPresenceOutbox atomically emits and acknowledges one bounded prefix.
-func (s *Store) DrainRouterPresenceOutbox(ctx context.Context, registry *router.Registry, limit int) (int, error) {
+const presenceChangeUIDFormat = "7ba4a832-%04x-5000-8000-%012x"
+const presenceChangeUIDSQL = "printf('" + presenceChangeUIDFormat + "', p.id >> 48, p.id & 281474976710655)"
+
+func presenceChangeUID(id int64) string {
+	return fmt.Sprintf(presenceChangeUIDFormat, id>>48, id&0xffffffffffff)
+}
+
+type PresenceChange struct {
+	ID    int64
+	Event fism.Event
+}
+
+// PublishPresenceChanges publishes the next accepted snapshots. Settlement
+// removes each snapshot after its current controller pass completes.
+func (s *Store) PublishPresenceChanges(ctx context.Context, registry *fism.Registry, limit int) ([]PresenceChange, error) {
 	if limit < 1 || limit > 200 {
-		return 0, fmt.Errorf("router presence outbox limit must be between 1 and 200")
+		return nil, fmt.Errorf("presence outbox limit must be between 1 and 200")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer tx.Rollback()
 	rows, err := readRouterPresenceOutbox(ctx, tx, "", limit)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	stored, err := emitRouterPresenceRows(ctx, tx, registry, rows)
+	changes, stored, err := publishPresenceRows(ctx, tx, registry, rows)
 	if err != nil {
-		return 0, err
-	}
-	if err := acknowledgeRouterPresenceRows(ctx, tx, rows); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if stored {
 		_ = s.bus.Publish(eventbus.Event{Topic: eventbus.RouterChanged})
 	}
-	return len(rows), nil
+	return changes, nil
+}
+
+func (s *Store) SettlePresenceChange(ctx context.Context, change PresenceChange, outcomes []fism.Delivery) error {
+	if change.ID <= 0 || change.Event.UID != presenceChangeUID(change.ID) {
+		return fmt.Errorf("presence change %d has a different event identity", change.ID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := writeControllerOutcomes(ctx, tx, change.Event, outcomes); err != nil {
+		return err
+	}
+	if err := acknowledgePresenceRow(ctx, tx, change.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func readRouterPresenceOutbox(ctx context.Context, tx *sql.Tx, correlation string, limit int) ([]routerPresenceOutboxRow, error) {
@@ -132,41 +160,42 @@ func readRouterPresenceOutbox(ctx context.Context, tx *sql.Tx, correlation strin
 	return batch, nil
 }
 
-func emitRouterPresenceRows(ctx context.Context, tx *sql.Tx, registry *router.Registry, rows []routerPresenceOutboxRow) (bool, error) {
+func publishPresenceRows(ctx context.Context, tx *sql.Tx, registry *fism.Registry, rows []routerPresenceOutboxRow) ([]PresenceChange, bool, error) {
+	changes := make([]PresenceChange, 0, len(rows))
 	stored := false
 	for _, row := range rows {
 		if !validRouterPresenceKind(row.kind) {
-			return false, fmt.Errorf("unknown router presence outbox kind %q", row.kind)
+			return nil, false, fmt.Errorf("unknown router presence outbox kind %q", row.kind)
 		}
 		var correlation *string
 		if row.correlation.Valid {
 			correlation = &row.correlation.String
 		}
-		result, err := emitRouterEventIn(ctx, tx, registry, router.EmitRequest{
-			ID: "agent." + row.kind, Version: 1, Payload: row.payload,
+		result, err := writeRouterEventIn(ctx, tx, registry, fism.EmitRequest{
+			UID: presenceChangeUID(row.id),
+			ID:  "agent." + row.kind, Version: 1, Payload: row.payload,
 			Source: "plugin:presence", Correlation: correlation,
-		})
+		}, false)
 		if err != nil {
-			return false, fmt.Errorf("emit router presence outbox row %d: %w", row.id, err)
+			return nil, false, fmt.Errorf("emit router presence outbox row %d: %w", row.id, err)
 		}
+		changes = append(changes, PresenceChange{ID: row.id, Event: result.Event})
 		stored = stored || result.Stored
 	}
-	return stored, nil
+	return changes, stored, nil
 }
 
-func acknowledgeRouterPresenceRows(ctx context.Context, tx *sql.Tx, rows []routerPresenceOutboxRow) error {
-	for _, row := range rows {
-		result, err := tx.ExecContext(ctx, "DELETE FROM amux_presence_outbox WHERE id=?", row.id)
-		if err != nil {
-			return fmt.Errorf("acknowledge router presence outbox row %d: %w", row.id, err)
-		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("count acknowledged router presence row %d: %w", row.id, err)
-		}
-		if count != 1 {
-			return fmt.Errorf("acknowledged %d router presence rows for id %d", count, row.id)
-		}
+func acknowledgePresenceRow(ctx context.Context, tx *sql.Tx, id int64) error {
+	result, err := tx.ExecContext(ctx, "DELETE FROM amux_presence_outbox WHERE id=?", id)
+	if err != nil {
+		return fmt.Errorf("acknowledge presence snapshot %d: %w", id, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("presence snapshot %d changed before settlement", id)
 	}
 	return nil
 }
@@ -182,7 +211,7 @@ func validRouterPresenceKind(kind string) bool {
 
 // ReconcileRouterPresence applies one monotonic clock tick and emits its causal
 // transitions in the same transaction. Earlier native rows retain no correlation.
-func (s *Store) ReconcileRouterPresence(ctx context.Context, registry *router.Registry, event router.Event) error {
+func (s *Store) ReconcileRouterPresence(ctx context.Context, registry *fism.Registry, event fism.Event) error {
 	if (event.ID == "client.heartbeat" || event.ID == "client.activity" || event.ID == "terminal.activity") && event.Version == 1 {
 		return s.ReconcilePresenceEvent(ctx, registry, event)
 	}
@@ -207,11 +236,8 @@ func (s *Store) ReconcileRouterPresence(ctx context.Context, registry *router.Re
 	if err != nil {
 		return err
 	}
-	stored, err := emitRouterPresenceRows(ctx, tx, registry, rows)
+	_, stored, err := publishPresenceRows(ctx, tx, registry, rows)
 	if err != nil {
-		return err
-	}
-	if err := acknowledgeRouterPresenceRows(ctx, tx, rows); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

@@ -12,7 +12,7 @@ import (
 	"fyne.io/fyne/v2"
 	fynetest "fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
-	"github.com/nitecon/amux/projectidentity"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -115,7 +115,7 @@ func TestProjectRailGroupsAndFiltersLocalAndGatewayProjects(t *testing.T) {
 	fixture := startEditorBrowser(t, func(handler http.Handler) http.Handler { return handler })
 	b := fixture.browser
 	local := filepath.Join(t.TempDir(), "amux-local")
-	b.localCheckouts = []projectidentity.LocalCheckout{{Directory: local}}
+	b.localCheckouts = []projectid.LocalCheckout{{Directory: local}}
 	b.projectItems = []storage.ProjectOverview{
 		{Project: storage.Project{Ident: "amux-favorite"}},
 		{Project: storage.Project{Ident: "amux-remote"}},

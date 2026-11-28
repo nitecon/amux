@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/taskplatform"
 )
 
 // SetTaskOS changes the OS requirement only for the exact owner of an active
 // task, and verifies the gateway atomically releases an incompatible owner.
-func (c *Client) SetTaskOS(ctx context.Context, project, id string, requiredOS *string, actor storage.AgentOrigin, goal *string) (json.RawMessage, error) {
+func (c *Client) SetTaskOS(ctx context.Context, project, id string, requiredOS *string, actor agent.Origin, goal *string) (json.RawMessage, error) {
 	if !canonicalDelegationID(id) {
 		return nil, fmt.Errorf("task ID must be a canonical non-nil UUID")
 	}
@@ -23,7 +24,7 @@ func (c *Client) SetTaskOS(ctx context.Context, project, id string, requiredOS *
 	if _, err := taskplatform.LabelsWithOS(nil, osValue); err != nil {
 		return nil, err
 	}
-	normalized, err := storage.NormalizeOrigin(&actor)
+	normalized, err := agent.NormalizeOrigin(&actor)
 	if err != nil || normalized == nil {
 		return nil, fmt.Errorf("task OS change requires a complete native actor")
 	}

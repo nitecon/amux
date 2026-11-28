@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	_ "modernc.org/sqlite"
@@ -91,16 +91,16 @@ func TestTaskReadsDoNotReclaimUntilClockTick(t *testing.T) {
 	}
 
 	definitions := append(storage.RouterTaskEventDefinitions(), storage.RouterPresenceEventDefinitions()...)
-	definitions = append(definitions, plugins.ClockDefinition(), plugins.ClientHeartbeatDefinition())
-	definitions = append(definitions, plugins.ActivityEventDefinitions()...)
-	runtime, err := router.NewRuntime(store, store.EventBus(), definitions, []router.Plugin{
-		plugins.PresencePlugin(store),
-		plugins.ReclaimPlugin(store),
-	}, router.RunConfig{})
+	definitions = append(definitions, controllers.ClockDefinition(), controllers.ClientHeartbeatDefinition())
+	definitions = append(definitions, controllers.ActivityEventDefinitions()...)
+	runtime, err := fism.NewRuntime(store, store.EventBus(), definitions, []fism.Controller{
+		controllers.PresenceController(store),
+		controllers.ReclaimController(store),
+	}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tick, err := store.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{
+	tick, err := store.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{
 		ID: "clock.tick", Version: 1, Source: "clock", Payload: []byte(`{}`),
 	})
 	if err != nil {

@@ -11,34 +11,34 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func routerPresenceRegistry(t *testing.T, subscribed bool) *router.Registry {
+func routerPresenceRegistry(t *testing.T, subscribed bool) *fism.Registry {
 	t.Helper()
 	events := RouterPresenceEventDefinitions()
-	plugins := []router.PluginDefinition(nil)
+	plugins := []fism.ControllerDefinition(nil)
 	if subscribed {
-		plugin := router.PluginDefinition{ID: "presence-consumer"}
+		plugin := fism.ControllerDefinition{ID: "presence-consumer"}
 		for _, event := range events {
-			plugin.Subscriptions = append(plugin.Subscriptions, router.Subscription{Event: event.ID, MinVersion: 1, MaxVersion: 1})
+			plugin.Subscriptions = append(plugin.Subscriptions, fism.Subscription{Event: event.ID, MinVersion: 1, MaxVersion: 1})
 		}
 		plugins = append(plugins, plugin)
 	}
-	registry, err := router.NewRegistry(events, plugins)
+	registry, err := fism.NewRegistry(events, plugins)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return registry
 }
 
-func presenceTick(at time.Time) router.Event {
-	return router.Event{UID: uuid.NewString(), ID: "clock.tick", Version: 1, Payload: json.RawMessage(`{"at":1}`), Source: "clock", EmittedAt: at.UnixMilli()}
+func presenceTick(at time.Time) fism.Event {
+	return fism.Event{UID: uuid.NewString(), ID: "clock.tick", Version: 1, Payload: json.RawMessage(`{"at":1}`), Source: "clock", EmittedAt: at.UnixMilli()}
 }
 
-func readPresenceOutboxEvents(t *testing.T, s *Store, registry *router.Registry) []router.Event {
+func readPresenceOutboxEvents(t *testing.T, s *Store, registry *fism.Registry) []fism.Event {
 	t.Helper()
-	if _, err := s.DrainRouterPresenceOutbox(context.Background(), registry, 200); err != nil {
+	if _, err := drainPresenceFixture(context.Background(), s, registry, 200); err != nil {
 		t.Fatal(err)
 	}
 	events, err := s.RouterEvents(context.Background(), 0, 200)
@@ -89,10 +89,10 @@ func TestRouterPresenceOutboxTransitionsReplayAndLiveRead(t *testing.T) {
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "worker:a", Sequence: 1, Agents: []PresenceAgent{agent}}, start); err != nil || ok {
 		t.Fatalf("replay accepted=%v err=%v", ok, err)
 	}
-	if _, err := s.DrainRouterPresenceOutbox(ctx, registry, 1); err != nil {
+	if _, err := drainPresenceFixture(ctx, s, registry, 1); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.DrainRouterPresenceOutbox(ctx, registry, 200); err != nil || n != 1 {
+	if n, err := drainPresenceFixture(ctx, s, registry, 200); err != nil || n != 1 {
 		t.Fatalf("remaining drain=%d err=%v", n, err)
 	}
 	// Heartbeat-only source changes do not reannounce online; capability changes do.
@@ -162,7 +162,7 @@ func TestPresenceRoutingMetadataNormalizationReplayAndCapabilityEvents(t *testin
 	if got := onlyPresence(t, s); got.Goal == nil || *got.Goal != "Ship safely" || got.Generation == nil || *got.Generation != generation || got.AgentID == nil || *got.AgentID != "worker-17" {
 		t.Fatalf("replay changed stored metadata=%+v", got)
 	}
-	if n, err := s.DrainRouterPresenceOutbox(ctx, registry, 200); err != nil || n != 2 {
+	if n, err := drainPresenceFixture(ctx, s, registry, 200); err != nil || n != 2 {
 		t.Fatalf("initial transitions drain=%d err=%v", n, err)
 	}
 
@@ -176,7 +176,7 @@ func TestPresenceRoutingMetadataNormalizationReplayAndCapabilityEvents(t *testin
 	if kinds := queryPresenceOutbox(t, s); len(kinds) != 1 || kinds[0] != "online" {
 		t.Fatalf("generation update transitions=%v", kinds)
 	}
-	if n, err := s.DrainRouterPresenceOutbox(ctx, registry, 200); err != nil || n != 1 {
+	if n, err := drainPresenceFixture(ctx, s, registry, 200); err != nil || n != 1 {
 		t.Fatalf("generation transition drain=%d err=%v", n, err)
 	}
 	events, err := s.RouterEvents(ctx, 0, 20)
@@ -359,7 +359,7 @@ func TestRouterPresenceTickCausalityAndRollback(t *testing.T) {
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "worker:a", Sequence: 1, Agents: []PresenceAgent{agent}}, start); err != nil || !ok {
 		t.Fatalf("report=%v %v", ok, err)
 	}
-	if n, err := s.DrainRouterPresenceOutbox(ctx, registry, 200); err != nil || n != 2 {
+	if n, err := drainPresenceFixture(ctx, s, registry, 200); err != nil || n != 2 {
 		t.Fatalf("native transition drain=%d err=%v", n, err)
 	}
 	changes := s.EventBus().Subscribe(4)
@@ -391,6 +391,21 @@ func TestRouterPresenceTickCausalityAndRollback(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, "SELECT observed_at FROM amux_presence_clock WHERE id=1").Scan(new(int64)); err != nil {
 		t.Fatal(err)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := pruneRouterRetentionIn(ctx, tx, time.Now().Add(time.Hour).UnixMilli(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := s.RouterEvents(ctx, 0, 20)
+	if err != nil || len(remaining) != 1 || remaining[0].Seq != events[2].Seq {
+		t.Fatalf("retention removed an unsettled presence broadcast: %+v %v", remaining, err)
+	}
 
 	// An invalid clock-tick event still advances/evaluates atomically only when all outputs can persist.
 	rollbackStore := presenceStore(t, filepath.Join(t.TempDir(), "presence-rollback.db"))
@@ -421,7 +436,7 @@ func TestRouterPresenceOutboxAckRollbackAndUnsubscribedDrain(t *testing.T) {
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "worker:a", Sequence: 1, Agents: []PresenceAgent{agent}}, start); err != nil || !ok {
 		t.Fatalf("report=%v %v", ok, err)
 	}
-	if n, err := s.DrainRouterPresenceOutbox(ctx, routerPresenceRegistry(t, false), 200); err != nil || n != 2 {
+	if n, err := drainPresenceFixture(ctx, s, routerPresenceRegistry(t, false), 200); err != nil || n != 2 {
 		t.Fatalf("unsubscribed drain=%d err=%v", n, err)
 	}
 	if count := countRouterEvents(t, s); count != 0 {
@@ -435,11 +450,11 @@ func TestRouterPresenceOutboxAckRollbackAndUnsubscribedDrain(t *testing.T) {
 	if ok, err := rollbackStore.ReportPresence(ctx, PresenceReport{Source: "worker:a", Sequence: 1, Agents: []PresenceAgent{agent}}, start); err != nil || !ok {
 		t.Fatalf("rollback fixture=%v %v", ok, err)
 	}
-	if _, err := rollbackStore.db.ExecContext(ctx, `CREATE TRIGGER fail_presence_delivery BEFORE INSERT ON router_deliveries BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
+	if _, err := rollbackStore.db.ExecContext(ctx, `CREATE TRIGGER fail_presence_publication BEFORE INSERT ON router_events BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rollbackStore.DrainRouterPresenceOutbox(ctx, routerPresenceRegistry(t, true), 200); err == nil {
-		t.Fatal("drain unexpectedly succeeded after injected delivery failure")
+	if _, err := drainPresenceFixture(ctx, rollbackStore, routerPresenceRegistry(t, true), 200); err == nil {
+		t.Fatal("drain unexpectedly succeeded after injected publication failure")
 	}
 	if pending := queryPresenceOutbox(t, rollbackStore); len(pending) != 2 || countRouterEvents(t, rollbackStore) != 0 {
 		t.Fatalf("failed ack did not rollback events/outbox: pending=%v", pending)
@@ -485,7 +500,7 @@ func countRouterEvents(t *testing.T, s *Store) int {
 	return count
 }
 
-func eventIDs(events []router.Event) []string {
+func eventIDs(events []fism.Event) []string {
 	ids := make([]string, len(events))
 	for i, event := range events {
 		ids[i] = event.ID

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -17,10 +18,10 @@ func TestPrepareRunSupportsTasklessProjectConversation(t *testing.T) {
 	ctx := context.Background()
 	conversationID := uuid.NewString()
 	var gotPath string
-	var gotOwner storage.AgentOrigin
+	var gotOwner agent.Origin
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotOwner = storage.AgentOrigin{
+		gotOwner = agent.Origin{
 			SessionID: r.Header.Get("X-Agent-Session-Id"), InstanceID: r.Header.Get("X-Agent-Instance-Id"),
 			Provider: r.Header.Get("X-Agent-Provider"), OS: r.Header.Get("X-Agent-OS"),
 		}

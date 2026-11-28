@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -31,7 +32,7 @@ func TestNativeTaskOperationsPreserveGoalOriginAndGuidedConfirmation(t *testing.
 	host := httptest.NewServer(handler)
 	defer host.Close()
 	client, _ := New(host.URL, "secret", nil)
-	actor := storage.AgentOrigin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", InstanceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Provider: "codex", OS: "linux"}
 	goal, spec, reason := "release", "User requested this task.", "user-directed"
 	raw, err := client.TaskCreate(ctx, "demo", TaskCreateInput{Title: "Native task", RootReason: &reason, Specification: &spec}, &actor, &goal)
 	if err != nil {

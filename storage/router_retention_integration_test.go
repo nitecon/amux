@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestRetentionOnFullRustProfilePreservesUnansweredInputAndDelegationHistory(t *testing.T) {
@@ -53,7 +54,7 @@ func TestRetentionOnFullRustProfilePreservesUnansweredInputAndDelegationHistory(
 	}
 	defer s.Close()
 	assertRustSchemaPreserved(t, s.db, original)
-	event := router.Event{UID: uuid.NewString(), ID: plugins.RetentionStartupID, Version: 1, EmittedAt: time.Now().UnixMilli()}
+	event := fism.Event{UID: uuid.NewString(), ID: controllers.RetentionStartupID, Version: 1, EmittedAt: time.Now().UnixMilli()}
 	ran, deleted, err := s.ReconcileRouterRetention(ctx, event, 1, 1)
 	if err != nil || !ran || deleted != 2 {
 		t.Fatalf("retained profile cleanup: ran=%v deleted=%d error=%v", ran, deleted, err)
@@ -119,23 +120,23 @@ func TestRetentionRuntimeKeepsOfflineNativeObligationsAndActiveDelivery(t *testi
 		t.Fatal(err)
 	}
 	entered := make(chan struct{})
-	blocked := router.Plugin{
-		Definition: router.PluginDefinition{ID: "blocked", Subscriptions: []router.Subscription{{Event: "fixture.work", MinVersion: 1, MaxVersion: 1}}},
-		Exec: []router.Step{func(ctx context.Context, _ router.Event, _ *router.StepContext) router.Outcome {
+	blocked := fism.Controller{
+		Definition: fism.ControllerDefinition{ID: "blocked", Subscriptions: []fism.Subscription{{Event: "fixture.work", MinVersion: 1, MaxVersion: 1}}},
+		Exec: []fism.Step{func(ctx context.Context, _ fism.Event, _ *fism.StepContext) fism.Outcome {
 			close(entered)
 			<-ctx.Done()
-			return router.Outcome{Kind: router.Continue}
+			return fism.Outcome{Kind: fism.Continue}
 		}},
 	}
-	definitions := append(RouterPresenceEventDefinitions(), plugins.ClockDefinition(), plugins.RetentionStartupDefinition(), router.EventDefinition{ID: "fixture.work", Version: 1, Validate: router.Object})
-	runtime, err := router.NewRuntime(s, s.EventBus(), definitions, []router.Plugin{plugins.RetentionPlugin(s, 1, 1), blocked}, router.RunConfig{})
+	definitions := append(RouterPresenceEventDefinitions(), controllers.ClockDefinition(), controllers.RetentionStartupDefinition(), fism.EventDefinition{ID: "fixture.work", Version: 1, Validate: fism.Object})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), definitions, []fism.Controller{controllers.RetentionController(s, 1, 1), blocked}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().UTC().Add(-3 * 24 * time.Hour)
-	seed := func(id string, completed bool) router.Event {
+	seed := func(id string, completed bool) fism.Event {
 		t.Helper()
-		emitted, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: id, Version: 1, Source: "fixture", Payload: []byte(`{}`)})
+		emitted, err := s.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{ID: id, Version: 1, Source: "fixture", Payload: []byte(`{}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,13 +153,13 @@ func TestRetentionRuntimeKeepsOfflineNativeObligationsAndActiveDelivery(t *testi
 	}
 	active, settled := seed("fixture.work", false), seed("fixture.work", true)
 	cause, unread := seed("clock.tick", true), seed("fixture.work", true)
-	// Materialize a real causal presence batch. Its tail still owes emission
-	// after the first atomic 200-row drain, so cleanup must retain its cause.
+	// Materialize a causal batch whose accepted snapshots still await
+	// controller settlement. Cleanup must retain their cause.
 	at := old.Add(-31 * time.Second)
 	agents := make([]PresenceAgent, 201)
 	activity := at.UnixMilli()
 	for i := range agents {
-		agents[i] = PresenceAgent{ProjectIdent: "tasks", Origin: AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, LastActivityAt: &activity}
+		agents[i] = PresenceAgent{ProjectIdent: "tasks", Origin: agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}, LastActivityAt: &activity}
 	}
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "native-retention", Sequence: 1, Agents: agents}, at); err != nil || !ok {
 		t.Fatalf("native presence backlog: %v %v", ok, err)
@@ -166,7 +167,7 @@ func TestRetentionRuntimeKeepsOfflineNativeObligationsAndActiveDelivery(t *testi
 	if err := s.ReconcileRouterPresence(ctx, runtime.Registry(), cause); err != nil {
 		t.Fatal(err)
 	}
-	assertEqual(t, s.db, "SELECT COUNT(*) FROM amux_presence_outbox WHERE correlation='"+cause.UID+"'", int64(1))
+	assertEqual(t, s.db, "SELECT COUNT(*) FROM amux_presence_outbox WHERE correlation='"+cause.UID+"'", int64(len(agents)))
 	if _, err := s.db.ExecContext(ctx, "INSERT INTO remote_consumers(consumer_id,connection_id,cursor,last_seen_at) VALUES('offline',NULL,?,?)", cause.Seq, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
@@ -183,12 +184,12 @@ func TestRetentionRuntimeKeepsOfflineNativeObligationsAndActiveDelivery(t *testi
 	}
 	stop := runRouterFixture(t, runtime)
 	awaitRouterSignal(t, entered)
-	startup, err := s.EmitRouterEvent(ctx, runtime.Registry(), router.EmitRequest{ID: plugins.RetentionStartupID, Version: 1, Source: "runtime", Payload: []byte(`{}`)})
+	startup, err := s.EmitRouterEvent(ctx, runtime.Registry(), fism.EmitRequest{ID: controllers.RetentionStartupID, Version: 1, Source: "runtime", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitRouterDeliveryState(t, s, startup.Event.Seq, "retention", "completed")
-	for _, event := range []router.Event{active, cause, unread} {
+	for _, event := range []fism.Event{active, cause, unread} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM router_events WHERE seq=?", event.Seq).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("deleted outstanding cause/replay/work seq=%d: %d %v", event.Seq, count, err)

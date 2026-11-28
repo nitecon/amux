@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func requesterTestFixture(t *testing.T) (*Store, context.Context, *AgentOrigin, RegisteredTargetIdentity) {
+func requesterTestFixture(t *testing.T) (*Store, context.Context, *agent.Origin, RegisteredTargetIdentity) {
 	t.Helper()
 	ctx := context.Background()
 	s := taskStore(t)
@@ -173,7 +174,7 @@ func TestNativeRequesterResultSkipsWhenSubscriptionChangesWhileDrafted(t *testin
 				"heading": "Review result", "instructions": "Inspect the requested result.",
 				"event": map[string]any{"kind": "task_commented", "task": task, "comment": map[string]any{"author": "owner", "content": "Review is ready"}},
 			})
-			emitted, err := s.EmitRouterEvent(ctx, registry, router.EmitRequest{ID: plugins.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: payload})
+			emitted, err := s.EmitRouterEvent(ctx, registry, fism.EmitRequest{ID: controllers.NotifyEventID, Version: 1, Source: "plugin:reminder", Payload: payload})
 			if err != nil || !emitted.Stored {
 				t.Fatalf("emit requester result: %+v err=%v", emitted, err)
 			}

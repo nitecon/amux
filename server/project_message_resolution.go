@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nitecon/amux/auth"
 )
 
 type projectMessageResolutionResponse struct {
@@ -94,7 +96,7 @@ func projectMessagePathID(w http.ResponseWriter, r *http.Request) (int64, bool) 
 }
 
 func projectMessageResolverIdentity(r *http.Request) string {
-	if user := authenticatedBrowserUser(r.Context()); user != nil {
+	if user := auth.BrowserUser(r.Context()); user != nil {
 		return "user:" + user.Username
 	}
 	if agentID := r.Header.Get("X-Agent-Id"); agentID != "" {

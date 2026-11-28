@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/nitecon/amux/config"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -102,7 +103,8 @@ func verifyEnrolledACPTools(params json.RawMessage) error {
 			Name string   `json:"name"`
 			Args []string `json:"args"`
 			Env  []struct {
-				Name string `json:"name"`
+				Name  string `json:"name"`
+				Value string `json:"value"`
 			} `json:"env"`
 		} `json:"mcpServers"`
 	}
@@ -111,8 +113,8 @@ func verifyEnrolledACPTools(params json.RawMessage) error {
 	}
 	server := request.Servers[0]
 	manifest := os.Getenv("AMUX_GO_EXPECT_CLIENT_PROFILE")
-	if server.Name != "amux" || !hasCLIArgPair(server.Args, "--enrolled-profile", manifest) {
-		return fmt.Errorf("worker MCP arguments omitted paired profile: %#v", server.Args)
+	if server.Name != "amux" {
+		return fmt.Errorf("worker MCP registration missing")
 	}
 	for _, arg := range server.Args {
 		if arg == "--api-key-env" {
@@ -124,6 +126,14 @@ func verifyEnrolledACPTools(params json.RawMessage) error {
 			return fmt.Errorf("worker MCP environment included bearer credential")
 		}
 	}
+	path, err := config.DefaultClientPath()
+	if err != nil {
+		return err
+	}
+	settings, err := config.ReadClient(path)
+	if err != nil || settings.EnrolledProfile != manifest || settings.APIKeyEnv != "" {
+		return fmt.Errorf("worker MCP did not receive enrolled configuration: %v", err)
+	}
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"native-fixture","version":"1"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
@@ -132,7 +142,7 @@ func verifyEnrolledACPTools(params json.RawMessage) error {
 		"",
 	}, "\n")
 	var output bytes.Buffer
-	if err := runMCP(context.Background(), server.Args[1:], io.NopCloser(strings.NewReader(input)), &output, io.Discard, os.Getenv); err != nil {
+	if err := runMCPIO(context.Background(), server.Args, io.NopCloser(strings.NewReader(input)), &output, io.Discard); err != nil {
 		return err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {

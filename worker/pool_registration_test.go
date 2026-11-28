@@ -17,13 +17,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
 
 type registrationTrace struct {
 	path         string
-	origin       storage.AgentOrigin
+	origin       agent.Origin
 	registration struct {
 		Generation      string  `json:"generation"`
 		CanonicalRemote *string `json:"canonical_remote"`
@@ -40,7 +41,7 @@ type loseRegistrationAck struct {
 
 func (t *loseRegistrationAck) RoundTrip(request *http.Request) (*http.Response, error) {
 	trace := registrationTrace{path: request.URL.Path}
-	trace.origin = storage.AgentOrigin{
+	trace.origin = agent.Origin{
 		SessionID: request.Header.Get("X-Agent-Session-Id"), InstanceID: request.Header.Get("X-Agent-Instance-Id"),
 		Provider: request.Header.Get("X-Agent-Provider"), OS: request.Header.Get("X-Agent-OS"),
 	}

@@ -17,12 +17,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/config"
+	agentid "github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/internal/localconversation"
-	"github.com/nitecon/amux/projectidentity"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -98,7 +100,7 @@ func makeConfiguredCheckout(t *testing.T, root, name, remote string) string {
 			t.Fatalf("git %v: %v: %s", args, err, output)
 		}
 	}
-	checkout, err := projectidentity.ResolveCheckout(context.Background(), dir)
+	checkout, err := projectid.ResolveCheckout(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +168,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 		}
 		poolIDs = append(poolIDs, strings.TrimSpace(strings.TrimPrefix(output.String(), "worker pool ")))
 	}
-	owners := make([]storage.AgentOrigin, 0, len(poolIDs))
+	owners := make([]agentid.Origin, 0, len(poolIDs))
 	workerStore, err := storage.Open(ctx, journal)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +181,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 		owners = append(owners, slots[0].Owner)
 	}
 	workerStore.Close()
-	configPath := filepath.Join(home, ".amux", "config.yml")
+	configPath := filepath.Join(home, ".amux", "config.yaml")
 	settings := config.Client{EnrolledProfile: workerProfile, WorkerJournal: journal, Providers: []string{"antigravity"}}
 	if err := config.SaveClient(configPath, settings); err != nil {
 		t.Fatal(err)
@@ -204,7 +206,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 			}
 		}
 	}
-	findTarget := func(owner storage.AgentOrigin) *storage.RegisteredTargetIdentity {
+	findTarget := func(owner agentid.Origin) *storage.RegisteredTargetIdentity {
 		targets, err := operator.Targets(ctx, project)
 		if err == nil {
 			for _, registered := range targets {
@@ -215,7 +217,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 		}
 		return nil
 	}
-	beginTask := func(title string, owner storage.AgentOrigin, dir string) (string, string) {
+	beginTask := func(title string, owner agentid.Origin, dir string) (string, string) {
 		t.Helper()
 		waitFor("worker did not register for "+dir, func() bool { return findTarget(owner) != nil })
 		task, err := operator.CreateTask(ctx, project, gatewayclient.TaskCreateInput{Title: title})
@@ -271,7 +273,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 		t.Fatalf("add checkout: %s", result)
 	}
 	attached, err := clientcontrol.PrepareCheckout(ctx, configPath, clientcontrol.CheckoutRequest{
-		Project: project, Method: projectidentity.OpenInFolder, Destination: first,
+		Project: project, Method: projectid.OpenInFolder, Destination: first,
 	})
 	if err != nil || attached.Identity.Directory != first {
 		t.Fatalf("client checkout returned %+v, %v", attached, err)
@@ -294,7 +296,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 	if target := findTarget(owners[1]); target != nil {
 		t.Fatal("replacement registered before the active task finished")
 	}
-	finishTask := func(task, thread, directory string, owner storage.AgentOrigin) {
+	finishTask := func(task, thread, directory string, owner agentid.Origin) {
 		t.Helper()
 		streamCtx, stopStream := context.WithTimeout(ctx, 5*time.Second)
 		defer stopStream()
@@ -362,7 +364,7 @@ func TestConfiguredClientDrainsWorkersAfterCheckoutMoveOrExecutionExclusion(t *t
 	if err != nil || !snapshot.ExcludedProjects[project] || snapshot.Projects[project] != second || len(snapshot.LocalCheckouts) != 2 {
 		t.Fatalf("excluded checkout was not preserved in the workspace: %+v, %v", snapshot, err)
 	}
-	if _, err := (localconversation.Remote{ConfigPath: configPath}).Create(ctx, project, "antigravity", "", localconversation.Preferences{}); err == nil {
+	if _, err := (localconversation.Remote{ConfigPath: configPath}).Create(ctx, project, "antigravity", "", providers.Preferences{}); err == nil {
 		t.Fatal("excluded project accepted a new local chat")
 	}
 	waitFor("excluded worker still advertised itself for assignments", func() bool {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // SetArtifactVersionPointers updates the supplied pointers together. A nil
@@ -24,7 +24,7 @@ func (s *Store) SetArtifactVersionPointers(ctx context.Context, project, artifac
 }
 
 func setArtifactVersionPointersTx(ctx context.Context, tx *sql.Tx, project, artifactID string, current, accepted *string) error {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	var found int
 	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM artifacts WHERE project_ident=? AND artifact_id=?", project, artifactID).Scan(&found); err != nil {
 		return err

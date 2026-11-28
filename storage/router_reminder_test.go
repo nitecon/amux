@@ -10,30 +10,31 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
-func reminderTestRegistry(t *testing.T) *router.Registry {
+func reminderTestRegistry(t *testing.T) *fism.Registry {
 	t.Helper()
-	definitions := append(RouterPresenceEventDefinitions(), plugins.ClockDefinition(), plugins.ClientHeartbeatDefinition())
-	definitions = append(definitions, plugins.NotificationEventDefinitions()...)
-	observer := router.PluginDefinition{ID: "reminder-test-observer", Subscriptions: []router.Subscription{
-		{Event: plugins.ClientHeartbeatID, MinVersion: 1, MaxVersion: 1},
-		{Event: plugins.NotifyEventID, MinVersion: 1, MaxVersion: 1},
+	definitions := append(RouterPresenceEventDefinitions(), controllers.ClockDefinition(), controllers.ClientHeartbeatDefinition())
+	definitions = append(definitions, controllers.NotificationEventDefinitions()...)
+	observer := fism.ControllerDefinition{ID: "reminder-test-observer", Subscriptions: []fism.Subscription{
+		{Event: controllers.ClientHeartbeatID, MinVersion: 1, MaxVersion: 1},
+		{Event: controllers.NotifyEventID, MinVersion: 1, MaxVersion: 1},
 	}}
-	registry, err := router.NewRegistry(definitions, []router.PluginDefinition{observer})
+	registry, err := fism.NewRegistry(definitions, []fism.ControllerDefinition{observer})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return registry
 }
 
-func reminderOwner(session, instance string) *AgentOrigin {
-	return &AgentOrigin{SessionID: session, InstanceID: instance, Provider: "codex", OS: "macos"}
+func reminderOwner(session, instance string) *agent.Origin {
+	return &agent.Origin{SessionID: session, InstanceID: instance, Provider: "codex", OS: "macos"}
 }
 
-func reminderInProgressTask(t *testing.T, s *Store, owner *AgentOrigin, updatedAt int64) *Task {
+func reminderInProgressTask(t *testing.T, s *Store, owner *agent.Origin, updatedAt int64) *Task {
 	t.Helper()
 	task, err := s.InsertTask(context.Background(), TaskInsert{Project: "tasks", Title: "Reminder work", Reporter: "fixture"}, owner)
 	if err != nil {
@@ -45,7 +46,7 @@ func reminderInProgressTask(t *testing.T, s *Store, owner *AgentOrigin, updatedA
 	return task
 }
 
-func reminderHeartbeat(t *testing.T, ctx context.Context, s *Store, registry *router.Registry, source string, sequence int64, run string, agents []PresenceAgent, at time.Time) router.Event {
+func reminderHeartbeat(t *testing.T, ctx context.Context, s *Store, registry *fism.Registry, source string, sequence int64, run string, agents []PresenceAgent, at time.Time) fism.Event {
 	t.Helper()
 	accepted, err := s.ReportPresence(ctx, PresenceReport{Source: source, Sequence: sequence, ClientRun: &run, Agents: agents}, at)
 	if err != nil || !accepted {
@@ -54,7 +55,7 @@ func reminderHeartbeat(t *testing.T, ctx context.Context, s *Store, registry *ro
 	if n, err := s.DrainRouterHeartbeatOutbox(ctx, registry, 20); err != nil || n != 1 {
 		t.Fatalf("drain native heartbeat seq=%d n=%d err=%v", sequence, n, err)
 	}
-	var event router.Event
+	var event fism.Event
 	var payload []byte
 	if err := s.db.QueryRowContext(ctx, `SELECT seq,uid,id,version,payload,source,emitted_at,correlation FROM router_events
 		WHERE id='client.heartbeat' AND source=? AND json_extract(payload,'$.report_sequence')=?`, source, sequence).Scan(
@@ -65,8 +66,8 @@ func reminderHeartbeat(t *testing.T, ctx context.Context, s *Store, registry *ro
 	return event
 }
 
-func reminderClock(at time.Time) router.Event {
-	return router.Event{UID: uuid.NewString(), ID: "clock.tick", Version: 1, EmittedAt: at.UnixMilli(), Payload: json.RawMessage(`{}`)}
+func reminderClock(at time.Time) fism.Event {
+	return fism.Event{UID: uuid.NewString(), ID: "clock.tick", Version: 1, EmittedAt: at.UnixMilli(), Payload: json.RawMessage(`{}`)}
 }
 
 func reminderNoticeCount(t *testing.T, s *Store) int {
@@ -317,7 +318,7 @@ func TestReconcileRouterRemindersStartupFreshnessDisabledPeriodicAndDurableRun(t
 	if err := s.db.QueryRow("SELECT owner_origin_json FROM tasks WHERE id=?", oldTask.ID).Scan(&durableOwner); err != nil {
 		t.Fatal(err)
 	}
-	var durableOrigin AgentOrigin
+	var durableOrigin agent.Origin
 	if err := json.Unmarshal([]byte(durableOwner), &durableOrigin); err != nil || durableOrigin != *previousOwner {
 		t.Fatalf("task owner changed or disappeared: %q err=%v", durableOwner, err)
 	}

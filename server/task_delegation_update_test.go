@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/nitecon/amux/mcpstdio"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
-func delegationUpdateAPIForTest(t *testing.T) (*storage.Store, http.Handler, *storage.AgentOrigin, *storage.Task, *storage.TaskDelegationResult) {
+func delegationUpdateAPIForTest(t *testing.T) (*storage.Store, http.Handler, *agent.Origin, *storage.Task, *storage.TaskDelegationResult) {
 	t.Helper()
 	store, handler := taskAPI(t)
 	ctx := context.Background()
@@ -84,7 +84,7 @@ func TestTaskUpdateDelegationToolUsesCurrentConversationFence(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("task tool HTTP %d: %s", response.Code, response.Body.String())
 	}
-	var result mcpstdio.Result
+	var result storage.ToolResult
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.IsError {
 		t.Fatalf("task tool result=%+v err=%v", result, err)
 	}

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/providerprocess"
-	"github.com/nitecon/amux/providerrpc"
+	"github.com/nitecon/amux/providers/process"
+	"github.com/nitecon/amux/providers/rpc"
 )
 
 type Config struct {
@@ -21,7 +21,7 @@ type Config struct {
 	Directory, ResumeID        string
 	Env                        []string
 	DeveloperInstructions      string
-	MCP                        *providerprocess.MCPConfig
+	MCP                        *process.MCPConfig
 	OpenTimeout, CancelTimeout time.Duration
 }
 type turn struct {
@@ -41,7 +41,7 @@ type permission struct {
 }
 type Session struct {
 	ctx            context.Context
-	peer           *providerrpc.Peer
+	peer           *rpc.Peer
 	sink           conversation.Sink
 	mu             sync.Mutex
 	id             string
@@ -61,7 +61,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	if sink == nil {
 		return nil, fmt.Errorf("Codex requires an event sink")
 	}
-	directory, err := providerprocess.ValidateDirectory(config.Directory, "Codex")
+	directory, err := process.ValidateDirectory(config.Directory, "Codex")
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	}
 	command = appendMCPConfig(command, config.MCP)
 	command = appendDeveloperInstructions(command, config.DeveloperInstructions)
-	process, err := providerprocess.Start(ctx, providerprocess.Options{Command: command, Directory: directory, Env: config.Env})
+	child, err := process.Start(ctx, process.Options{Command: command, Directory: directory, Env: config.Env})
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 		timeout = 5 * time.Second
 	}
 	s := &Session{ctx: ctx, sink: sink, id: config.ResumeID, pending: map[string]permission{}, cancelTimeout: timeout}
-	s.peer = providerrpc.New(ctx, process, providerrpc.Options{OmitVersion: true}, s.handle)
+	s.peer = rpc.New(ctx, child, rpc.Options{OmitVersion: true}, s.handle)
 	fail := func(err error) (*Session, error) { s.Close(); return nil, err }
 	timeout = config.OpenTimeout
 	if timeout <= 0 {
@@ -164,7 +164,7 @@ func hasConfigOverride(args []string, key string) bool {
 	return false
 }
 
-func appendMCPConfig(command []string, mcp *providerprocess.MCPConfig) []string {
+func appendMCPConfig(command []string, mcp *process.MCPConfig) []string {
 	command = append([]string(nil), command...)
 	if mcp == nil {
 		return command
@@ -270,7 +270,7 @@ func (s *Session) Prompt(ctx context.Context, text string) (string, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return "", providerrpc.ErrClosed
+		return "", rpc.ErrClosed
 	}
 	if s.active != nil {
 		s.mu.Unlock()

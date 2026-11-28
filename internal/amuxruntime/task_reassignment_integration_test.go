@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -45,8 +47,8 @@ func TestTasksReassignCLITransfersTaskToRegisteredRecipient(t *testing.T) {
 	if err := store.InsertProject(ctx, storage.Project{Ident: "demo", ChannelName: "demo", Kind: "repo", CanonicalRemote: &remote}); err != nil {
 		t.Fatal(err)
 	}
-	actor := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
-	recipient := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	recipient := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	task, err := store.InsertTask(ctx, storage.TaskInsert{Project: "demo", Title: "Transfer this task", Reporter: "fixture", Labels: []string{"keep:fixture", "os:linux"}}, &actor)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +183,8 @@ func TestTasksReassignCLITransfersTaskToRegisteredRecipient(t *testing.T) {
 			`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"agent_identity","arguments":{}}}`, "",
 		}, "\n")
 		var output bytes.Buffer
-		err = runMCP(ctx, []string{"--server", host.URL, "--project", "demo", "--conversation", chat.ID, "--directory", checkout, "--session", actor.SessionID, "--instance", actor.InstanceID, "--provider", actor.Provider, "--os", actor.OS},
+		writeMCPTestSettings(t, config.Client{GatewayEndpoint: host.URL})
+		err = runMCP(t, ctx, []string{"--project", "demo", "--conversation", chat.ID, "--directory", checkout, "--session", actor.SessionID, "--instance", actor.InstanceID, "--provider", actor.Provider, "--os", actor.OS},
 			io.NopCloser(strings.NewReader(input)), &output, io.Discard, func(string) string { return "reassign-e2e-key" })
 		if err != nil {
 			t.Fatal(err)

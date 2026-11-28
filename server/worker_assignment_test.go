@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/auth"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -36,7 +37,7 @@ func TestWorkerAssignmentReuseRequiresRecordedPrincipal(t *testing.T) {
 		r.Header.Set("X-Agent-Instance-Id", actor.InstanceID)
 		r.Header.Set("X-Agent-Provider", actor.Provider)
 		r.Header.Set("X-Agent-OS", actor.OS)
-		r = r.WithContext(context.WithValue(r.Context(), authenticatedPrincipalContextKey{}, principal))
+		r = r.WithContext(auth.WithPrincipal(r.Context(), principal))
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
 		return w

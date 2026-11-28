@@ -11,7 +11,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/internal/localconversation"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -40,7 +42,7 @@ func (b *Browser) watchApprovals(open worker.Open, local *storage.Conversation) 
 	if open == nil {
 		open = worker.OpenNative
 	}
-	return func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (worker.Session, error) {
+	return func(ctx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		key := approvalKey{project: run.Project, conversation: run.ConversationID, instance: run.Owner.InstanceID}
 		active := &approvalSession{}
 		ready := make(chan struct{})
@@ -119,7 +121,7 @@ func (b *Browser) watchApprovals(open worker.Open, local *storage.Conversation) 
 }
 
 type approvalSession struct {
-	worker.Session
+	providers.Session
 	report func(conversation.Event)
 }
 
@@ -291,7 +293,7 @@ func (b *Browser) watchManagedApprovals(ctx context.Context) {
 						title = "Agent requests approval"
 					}
 					notice := approvalNotice{
-						run:   storage.WorkerRun{Project: info.ProjectIdent, ConversationID: info.ID, Owner: storage.AgentOrigin{Provider: info.Provider}},
+						run:   storage.WorkerRun{Project: info.ProjectIdent, ConversationID: info.ID, Owner: agent.Origin{Provider: info.Provider}},
 						local: &info, title: title, options: event.Event.Options,
 						resolve: func(ctx context.Context, _, option string) error {
 							return remote.Enqueue(ctx, info.ProjectIdent, info.ID, uuid.NewString(), conversation.Command{

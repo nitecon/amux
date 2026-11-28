@@ -8,7 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/taskplatform"
 )
 
@@ -84,7 +85,7 @@ func resumeTaskOnUserComment(ctx context.Context, tx *sql.Tx, task *Task) error 
 
 // ReassignTask atomically transfers an ordinary active task from its exact
 // current owner to a fresh, compatible registered execution.
-func (s *Store) ReassignTask(ctx context.Context, project, id string, actor AgentOrigin, target RegisteredTargetIdentity, now time.Time) (*Task, error) {
+func (s *Store) ReassignTask(ctx context.Context, project, id string, actor agent.Origin, target RegisteredTargetIdentity, now time.Time) (*Task, error) {
 	return s.assignTask(ctx, project, id, &actor, target, now, false)
 }
 
@@ -93,9 +94,9 @@ func (s *Store) AssignTaskFromUser(ctx context.Context, project, id string, targ
 	return s.assignTask(ctx, project, id, nil, target, now, true)
 }
 
-func (s *Store) assignTask(ctx context.Context, project, id string, actor *AgentOrigin, target RegisteredTargetIdentity, now time.Time, human bool) (*Task, error) {
-	project = projects.NormalizeIdent(project)
-	origin, err := NormalizeOrigin(&target.Origin)
+func (s *Store) assignTask(ctx context.Context, project, id string, actor *agent.Origin, target RegisteredTargetIdentity, now time.Time, human bool) (*Task, error) {
+	project = projectid.NormalizeIdent(project)
+	origin, err := agent.NormalizeOrigin(&target.Origin)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid reassignment target origin", ErrTaskMetadataInput)
 	}
@@ -105,7 +106,7 @@ func (s *Store) assignTask(ctx context.Context, project, id string, actor *Agent
 	}
 
 	var result *Task
-	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, currentActor *AgentOrigin) error {
+	err = s.taskMutation(ctx, actor, func(tx *sql.Tx, currentActor *agent.Origin) error {
 		task, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err

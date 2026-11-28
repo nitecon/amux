@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func migrateWorkerTaskInbox(ctx context.Context, tx *sql.Tx) error {
@@ -50,10 +51,10 @@ func (s *Store) RecordWorkerTaskEvent(ctx context.Context, server string, event 
 	// Historical events may encode unrelated task fields differently. Decode
 	// only the routing fields. The gateway checks live ownership before work.
 	var task struct {
-		ID           string       `json:"id"`
-		ProjectIdent string       `json:"project_ident"`
-		Status       string       `json:"status"`
-		OwnerOrigin  *AgentOrigin `json:"owner_origin"`
+		ID           string        `json:"id"`
+		ProjectIdent string        `json:"project_ident"`
+		Status       string        `json:"status"`
+		OwnerOrigin  *agent.Origin `json:"owner_origin"`
 	}
 	if len(event.Task) > 0 {
 		if err := json.Unmarshal(event.Task, &task); err != nil {
@@ -99,7 +100,7 @@ type PendingWorkerTask struct {
 	EventID int64
 }
 
-func (s *Store) PendingWorkerTask(ctx context.Context, server, project string, origin AgentOrigin) (PendingWorkerTask, error) {
+func (s *Store) PendingWorkerTask(ctx context.Context, server, project string, origin agent.Origin) (PendingWorkerTask, error) {
 	var pending PendingWorkerTask
 	owner, err := json.Marshal(origin)
 	if err != nil {
@@ -125,7 +126,7 @@ func (s *Store) WorkerTaskChanges() <-chan struct{} {
 	return s.workerTaskChanges
 }
 
-func queueWorkerTask(ctx context.Context, tx *sql.Tx, server string, project, id string, origin *AgentOrigin, cursor int64) (bool, error) {
+func queueWorkerTask(ctx context.Context, tx *sql.Tx, server string, project, id string, origin *agent.Origin, cursor int64) (bool, error) {
 	owner, err := json.Marshal(origin)
 	if err != nil {
 		return false, err

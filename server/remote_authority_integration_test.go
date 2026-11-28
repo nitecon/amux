@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -28,7 +29,7 @@ func TestRemoteHeartbeatCannotAuthorizeNativeNotification(t *testing.T) {
 	if err := s.InsertProject(ctx, storage.Project{Ident: "remote-authority", ChannelName: "remote-authority", RoomID: "fixture"}); err != nil {
 		t.Fatal(err)
 	}
-	actor := &storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	actor := &agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	task, err := s.InsertTask(ctx, storage.TaskInsert{Project: "remote-authority", Title: "Observe without executing", Reporter: "fixture"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -44,18 +45,18 @@ func TestRemoteHeartbeatCannotAuthorizeNativeNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defs := append(plugins.NotificationEventDefinitions(), plugins.ClientHeartbeatDefinition(), plugins.ClockDefinition())
-	defs = append(defs, plugins.ActivityEventDefinitions()...)
+	defs := append(controllers.NotificationEventDefinitions(), controllers.ClientHeartbeatDefinition(), controllers.ClockDefinition())
+	defs = append(defs, controllers.ActivityEventDefinitions()...)
 	defs = append(defs, storage.RouterPresenceEventDefinitions()...)
-	reg, err := router.NewRegistry(defs, []router.PluginDefinition{
-		plugins.PresencePlugin(s).Definition,
-		plugins.NativeDeliveryPlugin(s).Definition,
-		{ID: "result-observer", Subscriptions: []router.Subscription{{Event: plugins.NotifyResultEventID, MinVersion: 1, MaxVersion: 1}}},
+	reg, err := fism.NewRegistry(defs, []fism.ControllerDefinition{
+		controllers.PresenceController(s).Definition,
+		controllers.NativeDeliveryController(s).Definition,
+		{ID: "result-observer", Subscriptions: []fism.Subscription{{Event: controllers.NotifyResultEventID, MinVersion: 1, MaxVersion: 1}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewHandlerWithRemote(s, "stream-secret", RemoteConfig{Context: ctx, Registry: reg, Forwarded: []string{plugins.NotifyEventID}})
+	h, err := NewHandlerWithRemote(s, "stream-secret", RemoteConfig{Context: ctx, Registry: reg, Forwarded: []string{controllers.NotifyEventID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,7 @@ func TestRemoteHeartbeatCannotAuthorizeNativeNotification(t *testing.T) {
 	defer conn.CloseNow()
 	reportRaw := func(agents []map[string]any) {
 		t.Helper()
-		sendStream(t, conn, map[string]any{"type": "emit", "id": plugins.ClientHeartbeatID, "version": 1, "payload": map[string]any{
+		sendStream(t, conn, map[string]any{"type": "emit", "id": controllers.ClientHeartbeatID, "version": 1, "payload": map[string]any{
 			"principal": "api-key", "source": "native:forged", "agents": agents,
 		}})
 		response := readStream(t, conn)
@@ -81,7 +82,7 @@ func TestRemoteHeartbeatCannotAuthorizeNativeNotification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var heartbeat *router.Event
+		var heartbeat *fism.Event
 		for i := range events {
 			if events[i].UID == emittedUID {
 				heartbeat = &events[i]
@@ -90,6 +91,10 @@ func TestRemoteHeartbeatCannotAuthorizeNativeNotification(t *testing.T) {
 		}
 		if heartbeat == nil || heartbeat.Source != "client:api-key" {
 			t.Fatalf("server-derived source: %+v", heartbeat)
+		}
+		observations, err := s.PendingObservations(ctx, 100)
+		if err != nil || len(observations) == 0 || observations[len(observations)-1].Event.UID != emittedUID {
+			t.Fatalf("heartbeat acknowledgment did not persist an observation: %+v %v", observations, err)
 		}
 		if err := s.ReconcilePresenceEvent(ctx, reg, *heartbeat); err != nil {
 			t.Fatal(err)
@@ -100,9 +105,9 @@ func TestRemoteHeartbeatCannotAuthorizeNativeNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	emitNotice := func() router.Event {
+	emitNotice := func() fism.Event {
 		t.Helper()
-		r, err := s.EmitRouterEvent(ctx, reg, router.EmitRequest{ID: plugins.NotifyEventID, Version: 1, Source: "plugin:notifier", Payload: notice})
+		r, err := s.EmitRouterEvent(ctx, reg, fism.EmitRequest{ID: controllers.NotifyEventID, Version: 1, Source: "plugin:notifier", Payload: notice})
 		if err != nil || !r.Stored {
 			t.Fatalf("emit notice: %+v %v", r, err)
 		}

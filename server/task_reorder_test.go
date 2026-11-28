@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -24,7 +25,7 @@ func TestReorderTasksSelectedGoalAndResponseFiltering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := func(path, body string, actor *storage.AgentOrigin, goal string) *httptest.ResponseRecorder {
+	request := func(path, body string, actor *agent.Origin, goal string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer task-key")
 		req.Header.Set("Content-Type", "application/json")

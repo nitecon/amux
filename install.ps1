@@ -5,9 +5,12 @@ $ProgressPreference = 'SilentlyContinue'
 
 $repo = 'nitecon/amux'
 $dir  = Join-Path $env:LOCALAPPDATA 'amux'
+$guide = "https://github.com/$repo/blob/main/deploy/README.md#upgrade-an-existing-deployment"
+
+Write-Warning "Upgrading? Stop the desktop, gateway, and headless clients and back up server state first. See $guide"
 
 if (Get-Process -Name amux, amux-desktop -ErrorAction SilentlyContinue) {
-    throw 'Close amux before installing or upgrading it.'
+    throw 'Stop the amux desktop, gateway, and headless client processes before installing or upgrading.'
 }
 
 $tag     = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
@@ -67,3 +70,4 @@ try {
 }
 
 Write-Host "amux $tag installed. Start it with: & `"$dir\amux-desktop.exe`""
+Write-Host "For a standalone server, update the service binary and start it with amux server --config PATH. See $guide"

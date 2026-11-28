@@ -19,8 +19,10 @@ import (
 	"github.com/nitecon/amux/chat"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/hidewindow"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -30,7 +32,7 @@ const chatRecord = "<!-- amux:"
 type Header struct {
 	Info        storage.Conversation
 	Directory   string
-	Preferences Preferences
+	Preferences providers.Preferences
 }
 
 type Session struct {
@@ -43,14 +45,14 @@ type Session struct {
 	events          []storage.ConversationEvent
 	wake            chan struct{}
 	lifetime        context.Context
-	session         worker.Session
+	session         providers.Session
 	active          string
 	cancel          context.CancelFunc
 	turns           sync.WaitGroup
 }
 
 func ProjectDirectory(root, project string) (string, error) {
-	if project == "" || project == "." || project == ".." || projects.SanitizeIdent(project) != project || filepath.Base(project) != project {
+	if project == "" || project == "." || project == ".." || projectid.SanitizeIdent(project) != project || filepath.Base(project) != project {
 		return "", fmt.Errorf("invalid local conversation project")
 	}
 	return filepath.Join(root, project), nil
@@ -157,7 +159,7 @@ func currentAgentOS() string {
 	return runtime.GOOS
 }
 
-func Create(root, project, directory, provider string, prefs Preferences) (storage.Conversation, error) {
+func Create(root, project, directory, provider string, prefs providers.Preferences) (storage.Conversation, error) {
 	dir, err := ProjectDirectory(root, project)
 	if err != nil {
 		return storage.Conversation{}, err
@@ -169,7 +171,7 @@ func Create(root, project, directory, provider string, prefs Preferences) (stora
 	now := time.Now().UnixMilli()
 	info := storage.Conversation{
 		ID: id, ProjectIdent: project, Provider: provider,
-		Owner:     storage.AgentOrigin{SessionID: uuid.NewString(), Provider: provider, OS: currentAgentOS()},
+		Owner:     agent.Origin{SessionID: uuid.NewString(), Provider: provider, OS: currentAgentOS()},
 		CreatedAt: now, UpdatedAt: now,
 	}
 	err = writeMarkdownChat(filepath.Join(dir, id+".md"), Header{Info: info, Directory: directory, Preferences: prefs})
@@ -400,7 +402,7 @@ func (c *Session) Enqueue(ctx context.Context, _, _, id string, cmd conversation
 	}
 }
 
-func (c *Session) connect(ctx context.Context) (worker.Session, error) {
+func (c *Session) connect(ctx context.Context) (providers.Session, error) {
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -561,7 +563,7 @@ func ProviderAvailable(parent context.Context, provider, directory string) bool 
 		return command.Run() == nil
 	case "antigravity":
 		session, err := worker.OpenNative(ctx, storage.WorkerRun{
-			Directory: directory, Owner: storage.AgentOrigin{Provider: provider},
+			Directory: directory, Owner: agent.Origin{Provider: provider},
 			Command: []string{ProviderExecutable("agy"), "acp", "--stdio"},
 		}, func(context.Context, conversation.Event) error { return nil })
 		if err != nil {

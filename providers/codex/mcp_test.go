@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nitecon/amux/providerprocess"
+	"github.com/nitecon/amux/providers/process"
 )
 
 func TestMCPConfigIsNativeAndContainsNoCredentialValue(t *testing.T) {
 	secret := "credential-value-must-not-appear"
 	t.Setenv("AMUX_API_KEY", secret)
-	config := &providerprocess.MCPConfig{Command: "/opt/amux tools/amux", Args: []string{"mcp", "--project", "project with spaces", "--api-key-env", "AMUX_API_KEY"}, EnvVars: []string{"AMUX_API_KEY"}}
+	config := &process.MCPConfig{Command: "/opt/amux tools/amux", Args: []string{"mcp", "--project", "project with spaces", "--api-key-env", "AMUX_API_KEY"}, EnvVars: []string{"AMUX_API_KEY"}}
 	got := appendMCPConfig([]string{"codex", "app-server"}, config)
 	joined := strings.Join(got, " ")
 	if strings.Contains(joined, secret) {
@@ -35,7 +35,7 @@ func TestCodexMCPPolicySettingsRequireConfiguredAmuxServer(t *testing.T) {
 }
 
 func TestMCPConfigPreservesExplicitPolicyOverrides(t *testing.T) {
-	config := &providerprocess.MCPConfig{Command: "/opt/amux", Args: []string{"mcp"}}
+	config := &process.MCPConfig{Command: "/opt/amux", Args: []string{"mcp"}}
 	forms := []struct {
 		name string
 		args func(string, string) []string
@@ -79,7 +79,7 @@ func TestMCPConfigPreservesExplicitPolicyOverrides(t *testing.T) {
 }
 
 func TestMCPConfigEscapesControlCharactersAsTOMLStrings(t *testing.T) {
-	got := appendMCPConfig([]string{"codex", "app-server"}, &providerprocess.MCPConfig{
+	got := appendMCPConfig([]string{"codex", "app-server"}, &process.MCPConfig{
 		Command: "/tmp/amux\x01binary", Args: []string{"mcp", "--project", "line\nbreak"},
 	})
 	joined := strings.Join(got, " ")

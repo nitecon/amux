@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -48,7 +47,7 @@ func TestDelegationToolPinsConversationParentAndValidatesReceiptWithoutRetry(t *
 					delete(receipt, "delegation")
 				}
 				encoded, _ := json.Marshal(receipt)
-				json.NewEncoder(w).Encode(mcpstdio.Result{Content: []mcpstdio.TextContent{{Type: "text", Text: string(encoded)}}})
+				json.NewEncoder(w).Encode(storage.ToolResult{Content: []storage.ToolText{{Type: "text", Text: string(encoded)}}})
 			}))
 			defer host.Close()
 			client, _ := New(host.URL, "fixture-key", host.Client())

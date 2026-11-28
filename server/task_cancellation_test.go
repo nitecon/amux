@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -45,12 +46,12 @@ func TestTaskCancellationHTTPPreservesClaimAndReplayReport(t *testing.T) {
 	var result struct {
 		Task         storage.Task `json:"task"`
 		Cancellation struct {
-			TaskID      string               `json:"task_id"`
-			Reason      string               `json:"reason"`
-			PriorStatus string               `json:"prior_status"`
-			PriorOwner  *storage.AgentOrigin `json:"prior_owner_origin"`
-			Reporter    storage.AgentOrigin  `json:"reporter_origin"`
-			Stopped     bool                 `json:"executor_stop_confirmed"`
+			TaskID      string        `json:"task_id"`
+			Reason      string        `json:"reason"`
+			PriorStatus string        `json:"prior_status"`
+			PriorOwner  *agent.Origin `json:"prior_owner_origin"`
+			Reporter    agent.Origin  `json:"reporter_origin"`
+			Stopped     bool          `json:"executor_stop_confirmed"`
 		} `json:"cancellation"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
@@ -80,7 +81,7 @@ func TestTaskCancellationHTTPPreservesClaimAndReplayReport(t *testing.T) {
 	}
 	for _, attempt := range []struct {
 		body  string
-		actor *storage.AgentOrigin
+		actor *agent.Origin
 	}{{`{"reason":"Different","changeset":null}`, actor}, {`{"reason":"Stop work","changeset":null}`, &peer}} {
 		if got := taskRequest(h, "POST", path, attempt.body, attempt.actor); got.Code != 409 {
 			t.Fatalf("conflicting replay: %d %s", got.Code, got.Body)

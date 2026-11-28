@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/nitecon/amux/providers"
+	"github.com/nitecon/amux/providers/process"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -13,10 +15,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/bundledtools"
 	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/internal/localconversation"
-	"github.com/nitecon/amux/mcpstdio"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -51,7 +53,7 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyBundledTestBinary(t, executable, filepath.Join(binDir, bundledToolFileName("agent-tools")))
+	copyBundledTestBinary(t, executable, filepath.Join(binDir, bundledtools.FileName("agent-tools")))
 	workDir := t.TempDir()
 	t.Setenv("AMUX_DESKTOP_GUIDANCE", "")
 	if err := os.Unsetenv("AMUX_DESKTOP_GUIDANCE"); err != nil {
@@ -67,10 +69,12 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	t.Setenv("AMUX_BUNDLED_RUNNER_FIXTURE_WAIT", "")
 
 	convID, sessionID, instanceID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: gateway.URL, APIKeyEnv: "LOCAL_MCP_KEY"})
+	t.Setenv("LOCAL_MCP_KEY", "local-mcp-key")
 	args := []string{
-		"--server", gateway.URL, "--project", "demo", "--directory", workDir,
+		"--project", "demo", "--directory", workDir,
 		"--conversation", convID, "--session", sessionID, "--instance", instanceID,
-		"--provider", "claude", "--os", "macos", "--local-conversation", "--api-key-env", "LOCAL_MCP_KEY",
+		"--provider", "claude", "--os", "macos", "--local-conversation",
 	}
 	getenv := func(name string) string {
 		if name == "LOCAL_MCP_KEY" {
@@ -87,16 +91,16 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 		}, requests...)
 		lines = append(lines, "")
 		var output, stderr bytes.Buffer
-		if err := runMCP(ctx, args, io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))), &output, &stderr, getenv); err != nil {
+		if err := runMCP(t, ctx, args, io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))), &output, &stderr, getenv); err != nil {
 			t.Fatalf("runMCP failed: %v stderr=%s", err, stderr.String())
 		}
 		return strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
 	}
 
-	parseToolResult := func(line string) mcpstdio.Result {
+	parseToolResult := func(line string) storage.ToolResult {
 		t.Helper()
 		var envelope struct {
-			Result mcpstdio.Result `json:"result"`
+			Result storage.ToolResult `json:"result"`
 		}
 		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
 			t.Fatalf("unmarshal response %s: %v", line, err)
@@ -149,13 +153,13 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	}
 	var listed struct {
 		Result struct {
-			Tools []mcpstdio.Tool `json:"tools"`
+			Tools []storage.TaskTool `json:"tools"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(responses[1]), &listed); err != nil {
 		t.Fatal(err)
 	}
-	toolsByName := make(map[string]mcpstdio.Tool, len(listed.Result.Tools))
+	toolsByName := make(map[string]storage.TaskTool, len(listed.Result.Tools))
 	for _, tool := range listed.Result.Tools {
 		toolsByName[tool.Name] = tool
 	}
@@ -230,7 +234,7 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 	}
 	for idx, forbidden := range []string{"task_set_requester", "task_claim", "submit_work", "task_finish_review", "task_reassign"} {
 		resp := responses[6+idx]
-		if !strings.Contains(resp, `"error"`) || !strings.Contains(resp, "unknown tool: "+forbidden) {
+		if !strings.Contains(resp, `"error"`) || !strings.Contains(resp, "unknown tool") || !strings.Contains(resp, forbidden) {
 			t.Fatalf("expected JSON-RPC unknown tool error for %s: %s", forbidden, resp)
 		}
 	}
@@ -272,16 +276,17 @@ func TestLocalConversationMCPListsAndExecutesGatewayAndBundledTools(t *testing.T
 }
 
 func TestLocalConversationMCPRejectsInvalidFlagCombinations(t *testing.T) {
-	if err := runMCP(context.Background(), []string{"--local-conversation"}, io.NopCloser(strings.NewReader("")), &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "native MCP requires") {
+	if err := runMCP(t, context.Background(), []string{"--local-conversation"}, io.NopCloser(strings.NewReader("")), &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "native MCP requires") {
 		t.Fatalf("partial --local-conversation = %v, want native MCP validation error", err)
 	}
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://gateway.example"})
 	combined := []string{
-		"--server", "https://gateway.example", "--project", "demo",
+		"--project", "demo",
 		"--conversation", uuid.NewString(), "--session", uuid.NewString(),
 		"--instance", uuid.NewString(), "--provider", "codex", "--os", "macos",
 		"--local-conversation", "--local-task", uuid.NewString(),
 	}
-	if err := runMCP(context.Background(), combined, io.NopCloser(strings.NewReader("")), &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "key" }); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+	if err := runMCP(t, context.Background(), combined, io.NopCloser(strings.NewReader("")), &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "key" }); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 		t.Fatalf("combined --local-conversation and --local-task = %v, want conflict error", err)
 	}
 }
@@ -334,7 +339,7 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 	writeShim("codex", codexArgsFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	configPath := filepath.Join(home, ".amux", "config.yml")
+	configPath := filepath.Join(home, ".amux", "config.yaml")
 	journal := filepath.Join(t.TempDir(), "workers.db")
 	cfg := config.Client{
 		GatewayEndpoint: gateway.URL,
@@ -371,7 +376,7 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 	remote := localconversation.Remote{ConfigPath: configPath}
 	openAndCapture := func(provider, outFile string) []string {
 		t.Helper()
-		info, err := remote.Create(ctx, project, provider, "", localconversation.Preferences{})
+		info, err := remote.Create(ctx, project, provider, "", providers.Preferences{})
 		if err != nil {
 			t.Fatalf("create %s chat: %v", provider, err)
 		}
@@ -412,11 +417,11 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 		t.Fatalf("invalid Claude --mcp-config JSON %q: %v", mcpConfigJSON, err)
 	}
 	amuxServer, ok := claudeMCP.Servers["amux"]
-	if !ok || amuxServer.Command == "" || amuxServer.Env[ManagedMCPEnv] != "1" {
+	if !ok || amuxServer.Command == "" || amuxServer.Env[process.ManagedMCPEnv] != "1" {
 		t.Fatalf("Claude --mcp-config missing amux server: %+v", claudeMCP)
 	}
 	claudeJoined := strings.Join(amuxServer.Args, "\x00")
-	for _, want := range []string{"--server\x00" + gateway.URL, "--project\x00" + project, "--directory\x00" + checkoutDir, "--local-conversation", "--api-key-env\x00LOCAL_CHAT_MCP_KEY"} {
+	for _, want := range []string{"--project\x00" + project, "--directory\x00" + checkoutDir, "--local-conversation"} {
 		if !strings.Contains(claudeJoined, want) {
 			t.Fatalf("Claude amux MCP args missing %q: %q", want, amuxServer.Args)
 		}
@@ -427,7 +432,7 @@ func TestConfiguredClientLocalConversationsRegisterAmuxMCP(t *testing.T) {
 	for _, want := range []string{
 		"mcp_servers.amux.command=",
 		"mcp_servers.amux.args=[",
-		`mcp_servers.amux.env={"` + ManagedMCPEnv + `" = "1"}`,
+		`"` + process.ManagedMCPEnv + `" = "1"`,
 		`"--local-conversation"`,
 		`"--project","` + project + `"`,
 		`mcp_servers.amux.default_tools_approval_mode="approve"`,

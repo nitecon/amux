@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
 const routerInboundMigration = 28
@@ -34,11 +34,11 @@ func migrateRouterInbound(ctx context.Context, tx *sql.Tx) error {
 
 // IngestRouterInbound applies one inbound event atomically. It returns stop for
 // an unknown room, allowing the durable router delivery to become stopped.
-func (s *Store) IngestRouterInbound(ctx context.Context, event router.Event) (stop bool, err error) {
+func (s *Store) IngestRouterInbound(ctx context.Context, event fism.Event) (stop bool, err error) {
 	if event.ID != "channel.message_received" || event.Version != 1 {
 		return false, fmt.Errorf("unsupported inbound event %q v%d", event.ID, event.Version)
 	}
-	payload, err := plugins.DecodeInboundPayload(event.Payload)
+	payload, err := controllers.DecodeInboundPayload(event.Payload)
 	if err != nil {
 		return false, err
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -27,7 +28,7 @@ func TestNavigationReadsProjectsTasksDetailsAndConversationPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	if _, err := s.AddTaskComment(ctx, "demo", task.ID, "user", "user", "Inspect history", nil, nil); err != nil {
 		t.Fatal(err)
 	}

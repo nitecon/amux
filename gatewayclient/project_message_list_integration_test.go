@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -47,7 +48,7 @@ func TestHumanMessageThreadListRoundTripWithUnavailableChannel(t *testing.T) {
 		t.Fatalf("listed thread=%+v err=%v", list, err)
 	}
 
-	for _, actor := range []storage.AgentOrigin{projectMessageActor(), projectMessageActor()} {
+	for _, actor := range []agent.Origin{projectMessageActor(), projectMessageActor()} {
 		unread, err := client.UnreadProjectMessages(ctx, "external", actor)
 		if err != nil || len(unread.Messages) != 2 || unread.Messages[0].ID != root.MessageID || unread.Messages[1].ID != reply.MessageID {
 			t.Fatalf("session %s unread=%+v err=%v", actor.SessionID, unread, err)

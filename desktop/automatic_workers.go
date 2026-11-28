@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/nitecon/amux/internal/localconversation"
-	"github.com/nitecon/amux/projectidentity"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
 )
@@ -48,7 +48,7 @@ type automaticWorkerRun struct {
 var (
 	automaticWorkerSteadyInterval = 30 * time.Second
 	automaticWorkerRetryInterval  = time.Second
-	resolveAutomaticCheckout      = projectidentity.ResolveCheckout
+	resolveAutomaticCheckout      = projectid.ResolveCheckout
 	runAutomaticPool              = worker.RunPool
 )
 

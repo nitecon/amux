@@ -21,7 +21,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -132,11 +133,11 @@ func secureFixtureFrom(t *testing.T, remote bool, remoteAddr string) (*storage.S
 		Shutdown: func() {},
 	}
 	if remote {
-		registry, registryErr := router.NewRegistry(nil, nil)
+		registry, registryErr := fism.NewRegistry(controllers.NotificationEventDefinitions(), []fism.ControllerDefinition{controllers.RemoteController([]string{controllers.NotifyEventID, controllers.GlobalNotifyEventID}).Definition})
 		if registryErr != nil {
 			t.Fatal(registryErr)
 		}
-		config.Remote = &RemoteConfig{Context: ctx, Registry: registry}
+		config.Remote = &RemoteConfig{Context: ctx, Registry: registry, Forwarded: []string{controllers.NotifyEventID, controllers.GlobalNotifyEventID}}
 	}
 	handler, err := NewHandlerWithConfig(store, "secure-test-key", config)
 	if err != nil {

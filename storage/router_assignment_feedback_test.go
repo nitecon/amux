@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func migrateTestRouterAssignmentFeedback(t *testing.T, s *Store) {
@@ -27,7 +28,7 @@ func migrateTestRouterAssignmentFeedback(t *testing.T, s *Store) {
 	}
 }
 
-func addFeedbackOffer(t *testing.T, s *Store, task *Task, actor *AgentOrigin, source string) string {
+func addFeedbackOffer(t *testing.T, s *Store, task *Task, actor *agent.Origin, source string) string {
 	t.Helper()
 	ctx := context.Background()
 	uid := uuid.NewString()
@@ -83,7 +84,7 @@ func TestRouterAssignmentFeedbackReleasesOnlyCapturedExactOwner(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO amux_assignment_offer_claims(notify_uid,origin_json,claim_updated_at) VALUES(?,?,?)`, notifyUID, string(origin), task.UpdatedAt); err != nil {
 		t.Fatal(err)
 	}
-	result := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:other", EmittedAt: task.UpdatedAt + 1, Correlation: &notifyUID, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
+	result := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:other", EmittedAt: task.UpdatedAt + 1, Correlation: &notifyUID, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
 	if err := s.ReconcileRouterAssignmentFeedback(ctx, result); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestRouterAssignmentFeedbackLegacyOfferFailsClosed(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO assignment_offers(notify_uid,task_id,project,session_id,reporter_source) VALUES(?,?,?,?,NULL)`, uid, task.ID, "tasks", taskActor().SessionID); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", Correlation: &uid, Payload: []byte(`{"target":"` + taskActor().SessionID + `","status":"failed"}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", Correlation: &uid, Payload: []byte(`{"target":"` + taskActor().SessionID + `","status":"failed"}`)}
 	if err := s.ReconcileRouterAssignmentFeedback(ctx, event); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestRouterAssignmentFeedbackRefusalFailureRollsBackForReplay(t *testing.T) 
 	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER reject_assignment_refusal BEFORE INSERT ON assignment_refusals BEGIN SELECT RAISE(ABORT,'refusal write rejected'); END`); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", EmittedAt: now.Add(40 * time.Second).UnixMilli(), Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"failed"}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", EmittedAt: now.Add(40 * time.Second).UnixMilli(), Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"failed"}`)}
 	if err := s.ReconcileRouterAssignmentFeedback(ctx, event); err == nil {
 		t.Fatal("refusal write failure was swallowed")
 	}
@@ -214,7 +215,7 @@ func TestRouterAssignmentFeedbackAdoptionFencesNativeRelease(t *testing.T) {
 	if err != nil || adopted == nil {
 		t.Fatalf("adopt: %+v %v", adopted, err)
 	}
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", EmittedAt: task.UpdatedAt + 1, Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", EmittedAt: task.UpdatedAt + 1, Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
 	if err := s.ReconcileRouterAssignmentFeedback(ctx, event); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestRouterAssignmentFeedbackStaleCommentCannotReleaseClaim(t *testing.T) {
 	if _, err := s.AddTaskComment(ctx, "tasks", task.ID, "someone", "user", "updated after notification", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
 	if err := s.ReconcileRouterAssignmentFeedback(ctx, event); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +270,7 @@ func TestRouterAssignmentFeedbackSameMillisecondNewClaimRejectsOldOffer(t *testi
 		t.Fatal(err)
 	}
 	newUID := addFeedbackOffer(t, s, current, actor, "agent:captured")
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", Correlation: &oldUID, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"failed"}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", Correlation: &oldUID, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"failed"}`)}
 	if err := s.ReconcileRouterAssignmentFeedback(ctx, event); err != nil {
 		t.Fatal(err)
 	}
@@ -328,9 +329,9 @@ func TestReconcileRouterAssignmentRefusalsUsesExactCurrentOutputOption(t *testin
 		presence    []AgentPresence
 		wantBlocked bool
 	}{
-		{name: "same output", presence: []AgentPresence{{PresenceAgent: PresenceAgent{Origin: AgentOrigin{SessionID: "session"}, LastActivityAt: int64Pointer(42)}, SeenAt: 2}}, wantBlocked: true},
-		{name: "new output", presence: []AgentPresence{{PresenceAgent: PresenceAgent{Origin: AgentOrigin{SessionID: "session"}, LastActivityAt: int64Pointer(43)}, SeenAt: 2}}},
-		{name: "identity reset to nil", presence: []AgentPresence{{PresenceAgent: PresenceAgent{Origin: AgentOrigin{SessionID: "session"}}, SeenAt: 2}}},
+		{name: "same output", presence: []AgentPresence{{PresenceAgent: PresenceAgent{Origin: agent.Origin{SessionID: "session"}, LastActivityAt: int64Pointer(42)}, SeenAt: 2}}, wantBlocked: true},
+		{name: "new output", presence: []AgentPresence{{PresenceAgent: PresenceAgent{Origin: agent.Origin{SessionID: "session"}, LastActivityAt: int64Pointer(43)}, SeenAt: 2}}},
+		{name: "identity reset to nil", presence: []AgentPresence{{PresenceAgent: PresenceAgent{Origin: agent.Origin{SessionID: "session"}}, SeenAt: 2}}},
 		{name: "departed", presence: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,7 +370,7 @@ func TestRouterAssignmentFeedbackAdoptionRaceNeverReleasesAdoptedRun(t *testing.
 	actor := taskActor()
 	task := ownedInProgressTask(t, s, actor)
 	uid := addFeedbackOffer(t, s, task, actor, "agent:captured")
-	event := router.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", EmittedAt: task.UpdatedAt + 1, Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
+	event := fism.Event{UID: uuid.NewString(), ID: "agent.notify_result", Version: 1, Source: "agent:captured", EmittedAt: task.UpdatedAt + 1, Correlation: &uid, Payload: []byte(`{"target":"` + actor.SessionID + `","status":"skipped"}`)}
 	start := make(chan struct{})
 	type adoptionResult struct {
 		result *WorkerAssignment

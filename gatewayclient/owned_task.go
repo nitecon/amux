@@ -5,12 +5,13 @@ import (
 	"errors"
 	"net/url"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
 // OwnedActiveTask checks the current task snapshot before a client launches
 // a provider. An assignment event alone cannot authorize execution.
-func (c *Client) OwnedActiveTask(ctx context.Context, project, id string, owner storage.AgentOrigin) (*storage.Task, error) {
+func (c *Client) OwnedActiveTask(ctx context.Context, project, id string, owner agent.Origin) (*storage.Task, error) {
 	detail, err := c.TaskDetail(ctx, project, id)
 	if err != nil {
 		var response *HTTPError
@@ -31,7 +32,7 @@ func (c *Client) OwnedActiveTask(ctx context.Context, project, id string, owner 
 
 // StartOwnedTask starts work through the legacy task API after verifying the
 // exact assignment. The returned task must still belong to the same origin.
-func (c *Client) StartOwnedTask(ctx context.Context, project, id string, owner storage.AgentOrigin) (*storage.Task, error) {
+func (c *Client) StartOwnedTask(ctx context.Context, project, id string, owner agent.Origin) (*storage.Task, error) {
 	task, err := c.OwnedActiveTask(ctx, project, id, owner)
 	if err != nil || task == nil || storage.IsActiveTaskStatus(task.Status) {
 		return task, err

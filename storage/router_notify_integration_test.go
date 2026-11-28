@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 func TestNotificationSnapshotsNativeRegisteredHostsAfterExecutionReplacement(t *testing.T) {
@@ -28,7 +28,7 @@ func TestNotificationSnapshotsNativeRegisteredHostsAfterExecutionReplacement(t *
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "native", Sequence: 2, Agents: []PresenceAgent{replacement, owner}}, now.Add(time.Second)); err != nil || !ok {
 		t.Fatalf("replacement native report: %v %v", ok, err)
 	}
-	registry, err := router.NewRegistry(plugins.NotificationEventDefinitions(), []router.PluginDefinition{{ID: "observer", Subscriptions: []router.Subscription{{Event: plugins.NotifyEventID, MinVersion: 1, MaxVersion: 1}}}})
+	registry, err := fism.NewRegistry(controllers.NotificationEventDefinitions(), []fism.ControllerDefinition{{ID: "observer", Subscriptions: []fism.Subscription{{Event: controllers.NotifyEventID, MinVersion: 1, MaxVersion: 1}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

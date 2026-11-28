@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	account "github.com/nitecon/amux/identity/user"
 )
 
 func TestUserAccountsRetainRustRowsAndApplyAccountTransitions(t *testing.T) {
@@ -39,7 +41,7 @@ VALUES(17,'retained','Retained User','admin','$argon2id$synthetic',9,123,456);`)
 	defer s.Close()
 
 	user, err := s.User(ctx, 17)
-	if err != nil || user == nil || user.Username != "retained" || user.Role != UserRoleAdmin || user.PasswordHash != "$argon2id$synthetic" || user.SessionEpoch != 9 || user.CreatedAt != 123 || user.LastLoginAt == nil || *user.LastLoginAt != 456 {
+	if err != nil || user == nil || user.Username != "retained" || user.Role != account.RoleAdmin || user.PasswordHash != "$argon2id$synthetic" || user.SessionEpoch != 9 || user.CreatedAt != 123 || user.LastLoginAt == nil || *user.LastLoginAt != 456 {
 		t.Fatalf("retained user=%+v err=%v", user, err)
 	}
 	encoded, err := json.Marshal(user)
@@ -47,15 +49,15 @@ VALUES(17,'retained','Retained User','admin','$argon2id$synthetic',9,123,456);`)
 		t.Fatalf("serialized account leaked password hash: %s, %v", encoded, err)
 	}
 
-	created, err := s.CreateUser(ctx, "  New.User ", "  New User  ", UserRoleMember, "$argon2id$member")
+	created, err := s.CreateUser(ctx, "  New.User ", "  New User  ", account.RoleMember, "$argon2id$member")
 	if err != nil || created.Username != "new.user" || created.DisplayName != "New User" || created.SessionEpoch != 1 {
 		t.Fatalf("created user=%+v err=%v", created, err)
 	}
-	if _, err := s.CreateUser(ctx, "NEW.USER", "", UserRoleMember, "hash"); err == nil {
+	if _, err := s.CreateUser(ctx, "NEW.USER", "", account.RoleMember, "hash"); err == nil {
 		t.Fatal("case-insensitive duplicate username accepted")
 	}
-	for _, input := range []struct{ username, role string }{{"bad name", UserRoleMember}, {"x", UserRoleMember}, {"valid", "root"}} {
-		if _, err := s.CreateUser(ctx, input.username, "", input.role, "hash"); !errors.Is(err, ErrInvalidUser) {
+	for _, input := range []struct{ username, role string }{{"bad name", account.RoleMember}, {"x", account.RoleMember}, {"valid", "root"}} {
+		if _, err := s.CreateUser(ctx, input.username, "", input.role, "hash"); !errors.Is(err, account.ErrInvalid) {
 			t.Fatalf("invalid user %+v err=%v", input, err)
 		}
 	}
@@ -107,7 +109,7 @@ VALUES(17,'retained','Retained User','admin','$argon2id$synthetic',9,123,456);`)
 	if admins, err := s.CountActiveAdmins(ctx); err != nil || admins != 1 {
 		t.Fatalf("active admins=%d err=%v", admins, err)
 	}
-	if _, err := s.UpdateUser(ctx, 17, UserUpdate{Role: userTestStringPtr(UserRoleMember)}); !errors.Is(err, ErrLastActiveAdmin) {
+	if _, err := s.UpdateUser(ctx, 17, UserUpdate{Role: userTestStringPtr(account.RoleMember)}); !errors.Is(err, ErrLastActiveAdmin) {
 		t.Fatalf("last admin demotion err=%v", err)
 	}
 	if changed, err := s.DeleteUser(ctx, 17); changed || !errors.Is(err, ErrLastActiveAdmin) {
@@ -117,7 +119,7 @@ VALUES(17,'retained','Retained User','admin','$argon2id$synthetic',9,123,456);`)
 		t.Fatalf("admin invariant lost: count=%d err=%v", admins, err)
 	}
 
-	promoted, err := s.UpdateUser(ctx, created.ID, UserUpdate{DisplayName: userTestStringPtr("Promoted User"), Role: userTestStringPtr(UserRoleAdmin)})
+	promoted, err := s.UpdateUser(ctx, created.ID, UserUpdate{DisplayName: userTestStringPtr("Promoted User"), Role: userTestStringPtr(account.RoleAdmin)})
 	if err != nil || promoted == nil || !promoted.IsAdmin() || promoted.DisplayName != "Promoted User" {
 		t.Fatalf("profile promotion: %+v err=%v", promoted, err)
 	}
@@ -143,14 +145,14 @@ func TestUserAccountsConcurrentDeletePreservesLastActiveAdmin(t *testing.T) {
 	if count, err := s.UserCount(ctx); err != nil || count != 0 {
 		t.Fatalf("fresh user count=%d err=%v", count, err)
 	}
-	one, err := s.CreateUser(ctx, "admin-one", "", UserRoleAdmin, "hash-one")
+	one, err := s.CreateUser(ctx, "admin-one", "", account.RoleAdmin, "hash-one")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if one == nil || one.DisplayName != "admin-one" {
 		t.Fatalf("empty display name should default to username: %+v", one)
 	}
-	two, err := s.CreateUser(ctx, "admin-two", "", UserRoleAdmin, "hash-two")
+	two, err := s.CreateUser(ctx, "admin-two", "", account.RoleAdmin, "hash-two")
 	if err != nil {
 		t.Fatal(err)
 	}

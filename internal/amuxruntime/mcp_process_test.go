@@ -14,22 +14,15 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/internal/testfixture"
 	"github.com/nitecon/amux/providers/acp"
+	"github.com/nitecon/amux/providers/process"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
-
-	"github.com/nitecon/amux/internal/testfixture"
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv(ManagedMCPEnv) == "1" {
-		if err := ServeManagedMCP(context.Background(), os.Args[1:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-
 	testfixture.RunGH()
 	if os.Getenv("AMUX_BUNDLED_RUNNER_FIXTURE") == "1" {
 		switch filepath.Base(os.Args[0]) {
@@ -37,6 +30,16 @@ func TestMain(m *testing.M) {
 			os.Exit(runBundledRunnerFixtureProcess())
 		}
 	}
+	if os.Getenv(process.ManagedMCPEnv) == "1" {
+		command := exec.Command(os.Getenv(mcpTestBinaryEnv), os.Args[1:]...)
+		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := command.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	if len(os.Args) > 1 && ((os.Getenv("AMUX_MCP_PROCESS_TEST") == "1" && os.Args[1] == "mcp") ||
 		(os.Getenv("AMUX_MESSAGES_CLI_PROCESS_TEST") == "1" && os.Args[1] == "messages")) {
 		if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, os.Getenv); err != nil {
@@ -45,7 +48,10 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	if os.Getenv(mcpTestBinaryEnv) != "" {
+		os.Exit(m.Run())
+	}
+	os.Exit(runTestsWithMCPBinary(m))
 }
 
 func TestNativeACPTaskToolHelper(t *testing.T) {
@@ -285,11 +291,12 @@ func TestManagedMCPUsesSDKStdioAndScopesAgentIdentity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	const identity = "a0000000-0000-4000-8000-000000000001"
-	cmd := exec.CommandContext(ctx, os.Args[0], "--server", "http://127.0.0.1:1",
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "http://127.0.0.1:1"})
+	cmd := exec.CommandContext(ctx, os.Getenv(mcpTestBinaryEnv),
 		"--project", "example", "--conversation", "b0000000-0000-4000-8000-000000000001",
 		"--session", identity, "--instance", "c0000000-0000-4000-8000-000000000001",
 		"--provider", "codex", "--os", "linux", "--directory", t.TempDir())
-	cmd.Env = append(os.Environ(), ManagedMCPEnv+"=1", "GATEWAY_API_KEY=test-key")
+	cmd.Env = append(os.Environ(), process.ManagedMCPEnv+"=1", "GATEWAY_API_KEY=test-key")
 	client := sdk.NewClient(&sdk.Implementation{Name: "amux-test", Version: "1"}, nil)
 	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)
 	if err != nil {

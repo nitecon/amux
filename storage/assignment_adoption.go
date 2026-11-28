@@ -11,7 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // WorkerAssignment binds the server task to its durable native worker run.
@@ -37,32 +38,32 @@ func migrateAssignmentAdoption(ctx context.Context, tx *sql.Tx) error {
 
 // AdoptWorkerAssignment returns the durable native run for the exact task
 // owner. Task, conversation, mapping and first prompt commit as one unit.
-func (s *Store) AdoptWorkerAssignment(ctx context.Context, project string, origin *AgentOrigin) (*WorkerAssignment, error) {
+func (s *Store) AdoptWorkerAssignment(ctx context.Context, project string, origin *agent.Origin) (*WorkerAssignment, error) {
 	return s.AdoptWorkerAssignmentWithGoal(ctx, project, origin, nil)
 }
 
 // AdoptWorkerAssignmentWithGoal adopts the exact task owned by origin after
 // validating that a tagged task is selected in the same goal scope.
-func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project string, origin *AgentOrigin, goal *string) (*WorkerAssignment, error) {
+func (s *Store) AdoptWorkerAssignmentWithGoal(ctx context.Context, project string, origin *agent.Origin, goal *string) (*WorkerAssignment, error) {
 	return s.AdoptWorkerTask(ctx, project, "", origin, goal, "")
 }
 
 // AdoptWorkerTask fences streamed adoption to the offered task and exact owner.
 // principal is the server-authenticated enrolled client recorded on a newly
 // created conversation (see CreateConversationWithPrincipal).
-func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, origin *AgentOrigin, goal *string, principal string) (*WorkerAssignment, error) {
+func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, origin *agent.Origin, goal *string, principal string) (*WorkerAssignment, error) {
 	selectedGoal, err := NormalizeTaskGoal(goal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid selected goal", ErrTaskConflict)
 	}
-	actor, err := NormalizeOrigin(origin)
+	actor, err := agent.NormalizeOrigin(origin)
 	if err != nil {
 		return nil, err
 	}
 	if actor == nil {
 		return nil, ErrTaskOwnership
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -104,7 +105,7 @@ func (s *Store) AdoptWorkerTask(ctx context.Context, project, taskID string, ori
 		if candidate == nil || candidate.OwnerOrigin == nil {
 			continue
 		}
-		owner, err := NormalizeOrigin(candidate.OwnerOrigin)
+		owner, err := agent.NormalizeOrigin(candidate.OwnerOrigin)
 		if err != nil {
 			return nil, err
 		}

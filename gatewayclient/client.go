@@ -20,6 +20,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayorigin"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -46,6 +47,7 @@ type Client struct {
 	key       string
 	http      *http.Client
 	clusterID string
+	nodeID    string
 }
 
 func New(endpoint, key string, httpClient *http.Client) (*Client, error) {
@@ -102,7 +104,7 @@ func (c *Client) ClusterID() string {
 	return c.clusterID
 }
 
-func (c *Client) headers(origin *storage.AgentOrigin) http.Header {
+func (c *Client) headers(origin *agent.Origin) http.Header {
 	h := make(http.Header)
 	if c.key != "" {
 		h.Set("Authorization", "Bearer "+c.key)
@@ -115,11 +117,11 @@ func (c *Client) headers(origin *storage.AgentOrigin) http.Header {
 	}
 	return h
 }
-func (c *Client) do(ctx context.Context, method, path string, body any, origin *storage.AgentOrigin, result any) error {
+func (c *Client) do(ctx context.Context, method, path string, body any, origin *agent.Origin, result any) error {
 	return c.doTaskGoal(ctx, method, path, body, origin, nil, result)
 }
 
-func (c *Client) doTaskGoal(ctx context.Context, method, path string, body any, origin *storage.AgentOrigin, goal *string, result any) error {
+func (c *Client) doTaskGoal(ctx context.Context, method, path string, body any, origin *agent.Origin, goal *string, result any) error {
 	var selectedGoal string
 	if goal != nil {
 		normalized, err := storage.NormalizeTaskGoal(goal)
@@ -192,13 +194,13 @@ func (c *Client) doTaskGoal(ctx context.Context, method, path string, body any, 
 func conversationPath(project, id string) string {
 	return "/v1/projects/" + url.PathEscape(project) + "/conversations/" + url.PathEscape(id)
 }
-func (c *Client) CreateConversation(ctx context.Context, project, task string, origin storage.AgentOrigin) (*storage.Conversation, error) {
+func (c *Client) CreateConversation(ctx context.Context, project, task string, origin agent.Origin) (*storage.Conversation, error) {
 	return c.CreateConversationWithGoal(ctx, project, task, origin, nil)
 }
 
 // CreateConversationWithGoal preserves queue selection for the initial native
 // claim made when opening a task conversation.
-func (c *Client) CreateConversationWithGoal(ctx context.Context, project, task string, origin storage.AgentOrigin, goal *string) (*storage.Conversation, error) {
+func (c *Client) CreateConversationWithGoal(ctx context.Context, project, task string, origin agent.Origin, goal *string) (*storage.Conversation, error) {
 	path := "/v1/projects/" + url.PathEscape(project)
 	if task != "" {
 		path += "/tasks/" + url.PathEscape(task)
@@ -212,12 +214,12 @@ func (c *Client) Conversation(ctx context.Context, project, id string) (*storage
 	err := c.do(ctx, "GET", conversationPath(project, id), nil, nil, &result)
 	return &result, err
 }
-func (c *Client) PendingTaskConversations(ctx context.Context, project string, origin storage.AgentOrigin) ([]string, error) {
+func (c *Client) PendingTaskConversations(ctx context.Context, project string, origin agent.Origin) ([]string, error) {
 	var ids []string
 	err := c.do(ctx, "GET", "/v1/projects/"+url.PathEscape(project)+"/worker-task-conversations/pending", nil, &origin, &ids)
 	return ids, err
 }
-func (c *Client) Resume(ctx context.Context, r storage.WorkerRun, origin storage.AgentOrigin) error {
+func (c *Client) Resume(ctx context.Context, r storage.WorkerRun, origin agent.Origin) error {
 	return c.do(ctx, "POST", conversationPath(r.Project, r.ConversationID)+"/resume", map[string]string{"previous_instance_id": r.Owner.InstanceID}, &origin, nil)
 }
 func (c *Client) Publish(ctx context.Context, r storage.WorkerRun, e storage.WorkerOutboxEntry) (int64, error) {
@@ -257,7 +259,7 @@ type Frame struct {
 	Type           string                       `json:"type"`
 	Version        int                          `json:"version"`
 	ConversationID string                       `json:"conversation_id"`
-	Owner          *storage.AgentOrigin         `json:"owner"`
+	Owner          *agent.Origin                `json:"owner"`
 	Event          *storage.ConversationEvent   `json:"event"`
 	Command        *storage.ConversationCommand `json:"command"`
 }

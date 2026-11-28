@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -45,14 +46,14 @@ func bootstrapAssignments(ctx context.Context, store *storage.Store, client *gat
 	if err != nil {
 		return err
 	}
-	owners := make(map[string]map[string]storage.AgentOrigin)
+	owners := make(map[string]map[string]agent.Origin)
 	for _, pool := range pools {
 		slots, err := store.WorkerPoolSlots(ctx, pool.ID)
 		if err != nil {
 			return err
 		}
 		if owners[pool.Project] == nil {
-			owners[pool.Project] = make(map[string]storage.AgentOrigin)
+			owners[pool.Project] = make(map[string]agent.Origin)
 		}
 		for _, slot := range slots {
 			owners[pool.Project][slot.Owner.SessionID] = slot.Owner

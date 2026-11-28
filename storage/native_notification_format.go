@@ -8,7 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/nitecon/amux/plugins"
+	"github.com/nitecon/amux/controllers"
 )
 
 const nativeNotificationMaxBytes = 64 * 1024
@@ -16,7 +16,7 @@ const nativeNotificationMaxBytes = 64 * 1024
 // renderNativeNotification turns a public notification payload into a bounded
 // prompt while preserving its immutable task and host snapshots.
 func renderNativeNotification(payload json.RawMessage) (string, error) {
-	definitions := plugins.NotificationEventDefinitions()
+	definitions := controllers.NotificationEventDefinitions()
 	if err := definitions[0].Validate(payload); err != nil {
 		return "", fmt.Errorf("invalid native notification: %w", err)
 	}

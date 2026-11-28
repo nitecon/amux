@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 // Exercise the real task trigger -> durable event -> plugin -> domain boundary,
@@ -22,7 +22,7 @@ func TestReviewPluginRetriesDurableCompletionWithoutDuplicatingLegacyReviews(t *
 	if err != nil || done.Status != "done" {
 		t.Fatalf("completion must survive review failure: %+v %v", done, err)
 	}
-	runtime, err := router.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []router.Plugin{plugins.ReviewPlugin(s)}, router.RunConfig{})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []fism.Controller{controllers.ReviewController(s)}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestReviewPluginRetriesDurableCompletionWithoutDuplicatingLegacyReviews(t *
 	if _, err := s.db.ExecContext(ctx, "UPDATE router_deliveries SET next_attempt_at=0 WHERE event_seq=? AND plugin='review'", seq); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := router.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []router.Plugin{plugins.ReviewPlugin(s)}, router.RunConfig{})
+	restarted, err := fism.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []fism.Controller{controllers.ReviewController(s)}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,6 @@ package desktopapp
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -19,20 +18,16 @@ import (
 	"github.com/nitecon/amux/config"
 	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/internal/amuxruntime"
-	"github.com/nitecon/amux/internal/clientcontrol"
-	"github.com/nitecon/amux/internal/gatewayprocess"
-	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/update"
 	"github.com/nitecon/amux/worksubmission"
-	"net/http"
+	"github.com/rs/zerolog/log"
 )
 
 var errRestartDesktop = errors.New("restart desktop")
 
-func Run(ctx context.Context, options Options, args []string) error {
-	err := run(ctx, options, args)
+func Run(ctx context.Context, args []string) error {
+	err := run(ctx, args)
 	if errors.Is(err, errRestartDesktop) {
 		return relaunchDesktop(args)
 	}
@@ -52,364 +47,153 @@ func relaunchDesktop(args []string) error {
 	return nil
 }
 
-type desktopView interface {
-	Content() fyne.CanvasObject
-	Start(context.Context)
-	Close()
-	Wait()
-}
-
-func gatewayStatePath(configDirectory, preferencesPath, explicitState string, preferencesExplicit bool) (string, error) {
-	stateDirectory := filepath.Join(configDirectory, "amux")
-	if explicitState != "" {
-		stateDirectory = explicitState
-	} else if preferencesExplicit {
-		stateDirectory = filepath.Join(filepath.Dir(preferencesPath), "gateway-profile")
+func run(parent context.Context, args []string) error {
+	serverURL, enrolledProfile := "", ""
+	keyEnv := "GATEWAY_API_KEY"
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("locate desktop configuration: %w", err)
 	}
-	return filepath.Abs(stateDirectory)
-}
-
-func run(parent context.Context, options Options, args []string) error {
-	serverURL := &options.ServerURL
-	database := &options.Database
-	project := &options.Project
-	projectDir := &options.ProjectDir
-	conversationID := &options.ConversationID
-	preferences := &options.Preferences
-	workPreferences := &options.WorkPreferences
-	gatewayPreferencesPath := &options.GatewayPreferencesPath
-	gatewayStateDir := &options.GatewayStateDir
-	keyEnv := &options.KeyEnv
-	enrolledProfile := &options.EnrolledProfile
-	state := &options.State
-	runID := &options.RunID
-	if *projectDir != "" {
-		if err := os.Chdir(*projectDir); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("set launch working directory: %w", err)
-		}
+	gatewayStateDirectory, err := filepath.Abs(filepath.Join(configDirectory, "amux"))
+	if err != nil {
+		return fmt.Errorf("resolve gateway state directory: %w", err)
 	}
-	if (*serverURL != "" || *enrolledProfile != "") && *database != "" {
-		return fmt.Errorf("--database cannot be combined with --server or --enrolled-profile")
-	}
-	if *conversationID != "" && *project == "" {
-		return fmt.Errorf("--conversation requires --project")
-	}
-	configDirectory, configErr := os.UserConfigDir()
-	if configErr != nil && *gatewayPreferencesPath == "" {
-		return fmt.Errorf("locate desktop configuration: supply --gateway-preferences: %w", configErr)
-	}
-	if *gatewayPreferencesPath == "" {
-		*gatewayPreferencesPath = filepath.Join(configDirectory, "amux", "gateway.json")
-	}
-	if configDirectory == "" {
-		configDirectory = filepath.Dir(filepath.Dir(*gatewayPreferencesPath))
-	}
-	gatewayPreferencesExplicit := options.IsSet("gateway-preferences")
-	gatewayStateDirectory, pathErr := gatewayStatePath(configDirectory, *gatewayPreferencesPath, *gatewayStateDir, gatewayPreferencesExplicit)
-	if pathErr != nil {
-		return fmt.Errorf("resolve gateway state directory: %w", pathErr)
-	}
-	gatewayPrefs, gatewayPrefsErr := desktop.LoadGatewayPreferences(*gatewayPreferencesPath)
+	gatewayPreferencesPath := filepath.Join(gatewayStateDirectory, "gateway.json")
+	preferences := filepath.Join(gatewayStateDirectory, "navigation.json")
+	gatewayPrefs, gatewayPrefsErr := desktop.LoadGatewayPreferences(gatewayPreferencesPath)
 	if gatewayPrefsErr != nil {
 		gatewayPrefs = desktop.DefaultGatewayPreferences()
 	}
-	var err error
-	serverExplicit := options.IsSet("server")
-	profileExplicit := options.IsSet("enrolled-profile")
-	databaseExplicit := options.IsSet("database")
-	connectionExplicit := serverExplicit || profileExplicit || databaseExplicit
-	clientConfigPath := options.ConfigPath
-	existingClientConfig := false
+	clientConfigPath, err := config.DefaultClientPath()
+	if err != nil {
+		return err
+	}
+	loadErr := config.LoadClient(clientConfigPath)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return fmt.Errorf("load local client configuration: %w", loadErr)
+	}
+	existingClientConfig := loadErr == nil
+	var clientSettings config.Client
 	var selectedHostedGateway *config.HostedGateway
-	if !connectionExplicit && !gatewayPreferencesExplicit && *conversationID == "" {
-		if clientConfigPath == "" {
-			clientConfigPath, err = config.DefaultClientPath()
-			if err != nil {
-				return err
-			}
+	if existingClientConfig {
+		clientSettings = config.Get()
+		enrolledProfile = clientSettings.EnrolledProfile
+		serverURL = clientSettings.GatewayEndpoint
+		if clientSettings.APIKeyEnv != "" {
+			keyEnv = clientSettings.APIKeyEnv
 		}
-		loadErr := config.InitConfig(clientConfigPath)
-		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
-			probeCtx, stop := context.WithTimeout(parent, time.Second)
-			accepted, probeErr := clientcontrol.LoadProfile(probeCtx, clientConfigPath)
-			stop()
-			if probeErr == nil {
-				loadErr = config.UseClient(accepted)
-			}
-		}
-		if loadErr == nil {
-			settings := config.Get().Client
-			*enrolledProfile = settings.EnrolledProfile
-			*serverURL = settings.GatewayEndpoint
-			if settings.APIKeyEnv != "" {
-				*keyEnv = settings.APIKeyEnv
-			}
-			existingClientConfig = true
-			selectedHostedGateway = settings.HostedGateway
-			gatewayPrefs.Mode = desktop.GatewayModeClient
-			gatewayPrefs.Endpoint, gatewayPrefs.EnrolledProfile = *serverURL, *enrolledProfile
-			if selectedHostedGateway != nil {
-				gatewayPrefs.Mode = desktop.GatewayModeServer
-				gatewayPrefs.RemoteHosting = selectedHostedGateway.RemoteHosting
-				gatewayPrefs.AdvertisedHost = selectedHostedGateway.AdvertisedHost
-				gatewayPrefs.ServerInstanceID = selectedHostedGateway.InstanceID
-			}
-		} else if !errors.Is(loadErr, os.ErrNotExist) {
-			return fmt.Errorf("load local client configuration: %w", loadErr)
+		selectedHostedGateway = clientSettings.HostedGateway
+		gatewayPrefs.Mode = desktop.GatewayModeClient
+		gatewayPrefs.Endpoint, gatewayPrefs.EnrolledProfile = serverURL, enrolledProfile
+		if selectedHostedGateway != nil {
+			gatewayPrefs.Mode = desktop.GatewayModeServer
+			gatewayPrefs.RemoteHosting = selectedHostedGateway.RemoteHosting
+			gatewayPrefs.AdvertisedHost = selectedHostedGateway.AdvertisedHost
+			gatewayPrefs.ServerInstanceID = selectedHostedGateway.InstanceID
 		}
 	}
 	if !existingClientConfig && gatewayPrefsErr != nil {
 		return gatewayPrefsErr
 	}
-	if !existingClientConfig && !connectionExplicit && *conversationID == "" {
-		if _, err := os.Stat(*gatewayPreferencesPath); errors.Is(err, os.ErrNotExist) {
-			return showGatewayOnboarding(parent, *gatewayPreferencesPath, gatewayStateDirectory)
+	if !existingClientConfig {
+		if _, err := os.Stat(gatewayPreferencesPath); errors.Is(err, os.ErrNotExist) {
+			return showGatewayOnboarding(parent, gatewayPreferencesPath, gatewayStateDirectory)
 		} else if err != nil {
 			return err
 		}
 	}
-	if !connectionExplicit && !existingClientConfig && gatewayPrefs.Mode == desktop.GatewayModeClient {
-		*serverURL = gatewayPrefs.Endpoint
-		*enrolledProfile = gatewayPrefs.EnrolledProfile
+	if !existingClientConfig && gatewayPrefs.Mode == desktop.GatewayModeClient {
+		serverURL = gatewayPrefs.Endpoint
+		enrolledProfile = gatewayPrefs.EnrolledProfile
 	}
-	stateExplicit := false
-	if *conversationID == "" {
-		preferencesExplicit := options.IsSet("preferences")
-		stateExplicit = options.IsSet("state")
-		if !preferencesExplicit || !stateExplicit {
-			directory, err := os.UserConfigDir()
-			if err != nil {
-				return fmt.Errorf("locate desktop configuration: supply --preferences and --state paths, or empty values to disable persistence and workers")
-			}
-			if !preferencesExplicit {
-				*preferences = filepath.Join(directory, "amux", "navigation.json")
-			}
-			if !stateExplicit {
-				*state = filepath.Join(directory, "amux", "workers.db")
-			}
-		}
-	}
-
-	configuredWorkPreferences := os.Getenv("AMUX_WORK_SUBMISSION_PREFERENCES")
-	preferencesOverride := *workPreferences
-	if preferencesOverride == "" && existingClientConfig {
-		preferencesOverride = config.Get().Client.WorkPreferences
-	}
-	workPreferencesPath, err := worksubmission.OptionalPreferencesPath(preferencesOverride, configuredWorkPreferences)
+	workPreferencesPath, err := worksubmission.OptionalPreferencesPath(clientSettings.WorkPreferences, os.Getenv("AMUX_WORK_SUBMISSION_PREFERENCES"))
 	if err != nil {
 		return fmt.Errorf("resolve work submission preferences: %w", err)
 	}
-	key := os.Getenv(*keyEnv)
+	key := os.Getenv(keyEnv)
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	managedClient := false
 	attachClient := func(endpoint string, hosted *config.HostedGateway) error {
-		journal := *state
-		if !stateExplicit {
-			if _, statErr := os.Stat(journal); errors.Is(statErr, os.ErrNotExist) {
-				journal = ""
-			}
-		}
 		if !existingClientConfig {
-			if err := writeClientConfig(ctx, clientConfigPath, *enrolledProfile, endpoint, *preferences, journal, true, hosted); err != nil {
+			if err := writeClientConfig(ctx, clientConfigPath, enrolledProfile, endpoint, preferences, "", true, hosted); err != nil {
 				return fmt.Errorf("configure local client: %w", err)
+			}
+			if err := config.LoadClient(clientConfigPath); err != nil {
+				return err
 			}
 		}
 		cli, err := amuxCLIPath()
 		if err != nil {
 			return err
 		}
-		if !stateExplicit {
-			journal = ""
-		}
-		if err := startOrAttachClient(ctx, cli, clientConfigPath, endpoint, journal); err != nil {
+		if err := startOrAttachClient(ctx, cli, clientConfigPath, endpoint); err != nil {
 			return err
-		}
-		if !existingClientConfig {
-			if err := config.InitConfig(clientConfigPath); err != nil {
-				return err
-			}
 		}
 		managedClient = true
 		return nil
 	}
 	serverProfile, serverEndpoint := "", ""
-	localGatewayStarted := false
-	if !connectionExplicit && !existingClientConfig && gatewayPrefs.Mode == desktop.GatewayModeServer {
-		if configDirectory == "" {
-			return fmt.Errorf("secure gateway hosting requires a user configuration directory")
-		}
+	if !existingClientConfig && gatewayPrefs.Mode == desktop.GatewayModeServer {
 		serverProfile = gatewayStateDirectory
 		hosted, err := hostedGatewaySettings(&gatewayPrefs)
 		if err != nil {
 			return err
 		}
-		if err := desktop.SaveGatewayPreferences(*gatewayPreferencesPath, gatewayPrefs); err != nil {
+		if err := desktop.SaveGatewayPreferences(gatewayPreferencesPath, gatewayPrefs); err != nil {
 			return err
 		}
 		advertisedHost := hosted.AdvertisedHost
-		*serverURL = config.LocalGatewayEndpoint
-		*enrolledProfile = filepath.Join(serverProfile, "local-client.json")
+		serverURL = config.LocalGatewayEndpoint
+		enrolledProfile = filepath.Join(serverProfile, "local-client.json")
 		serverEndpoint = "https://" + net.JoinHostPort(advertisedHost, "7913")
-		if clientConfigPath != "" && *state != "" {
-			if err := attachClient(*serverURL, hosted); err != nil {
-				return err
-			}
-		} else {
-			_, _, stop, err := startSecureGateway(ctx, serverProfile, gatewayPrefs.ServerInstanceID, advertisedHost, gatewayPrefs.RemoteHosting)
-			if err != nil {
-				return err
-			}
-			defer stop()
+		if err := attachClient(serverURL, hosted); err != nil {
+			return err
 		}
-	} else if selectedHostedGateway != nil && clientConfigPath != "" && *state != "" {
-		serverProfile = filepath.Dir(*enrolledProfile)
-		*serverURL = config.LocalGatewayEndpoint
+	} else if selectedHostedGateway != nil {
+		serverProfile = filepath.Dir(enrolledProfile)
+		serverURL = config.LocalGatewayEndpoint
 		serverEndpoint = "https://" + net.JoinHostPort(selectedHostedGateway.AdvertisedHost, "7913")
-		if err := attachClient(*serverURL, selectedHostedGateway); err != nil {
+		if err := attachClient(serverURL, selectedHostedGateway); err != nil {
 			return err
 		}
-	} else if *serverURL == "" && *enrolledProfile == "" {
-		if key == "" {
-			key = rand.Text()
-			if err := os.Setenv(*keyEnv, key); err != nil {
-				return fmt.Errorf("configure the local gateway credential: %w", err)
-			}
-		}
-		if *database == "" {
-			*database = filepath.Join(gatewayStateDirectory, "application.sqlite")
-		}
-		cli, err := amuxCLIPath()
-		if err != nil {
-			return err
-		}
-		startup, stopStartup := context.WithTimeout(ctx, 20*time.Second)
-		endpoint, stop, err := gatewayprocess.StartHTTP(startup, cli, *database, "127.0.0.1:7913", *keyEnv, os.Stderr)
-		stopStartup()
-		if err != nil {
-			return err
-		}
-		defer stop()
-		*serverURL = endpoint
-		serverEndpoint = endpoint
-		localGatewayStarted = true
 	}
-	if *enrolledProfile == "" && key == "" {
-		return fmt.Errorf("gateway API credential is not configured in %s", *keyEnv)
+	if enrolledProfile == "" && key == "" {
+		return fmt.Errorf("gateway API credential is not configured in %s", keyEnv)
 	}
 	var client *gatewayclient.Client
-	if *enrolledProfile != "" {
-		*enrolledProfile, err = filepath.Abs(*enrolledProfile)
+	if enrolledProfile != "" {
+		enrolledProfile, err = filepath.Abs(enrolledProfile)
 		if err == nil {
-			client, err = gatewayclient.NewEnrolledFromManifest(*serverURL, *enrolledProfile)
+			client, err = gatewayclient.NewEnrolledFromManifest(serverURL, enrolledProfile)
 		}
 	} else {
-		client, err = gatewayclient.New(*serverURL, key, nil)
+		client, err = gatewayclient.New(serverURL, key, nil)
 	}
 	if err != nil {
 		return err
 	}
-	if *conversationID != "" {
-		settings := config.Client{GatewayEndpoint: client.Endpoint(), EnrolledProfile: *enrolledProfile, WorkPreferences: workPreferencesPath}
-		if settings.EnrolledProfile == "" {
-			settings.APIKeyEnv = *keyEnv
-		}
-		if err := config.UseClient(settings); err != nil {
-			return err
-		}
-	}
 	if serverEndpoint == "" {
 		serverEndpoint = client.Endpoint()
 	}
-	if !managedClient && *conversationID == "" {
-		if clientConfigPath != "" && (existingClientConfig || *enrolledProfile != "") && *state != "" && *workPreferences == "" {
-			if err := attachClient(client.Endpoint(), nil); err != nil {
-				return err
-			}
-		} else {
-			override := config.Client{
-				EnrolledProfile: *enrolledProfile, GatewayEndpoint: client.Endpoint(),
-				WorkPreferences: workPreferencesPath,
-			}
-			if *enrolledProfile == "" {
-				override.APIKeyEnv = *keyEnv
-			}
-			if *state != "" {
-				override.Providers = []string{"antigravity", "codex", "claude"}
-				if stateExplicit {
-					override.WorkerJournal, err = filepath.Abs(*state)
-					if err != nil {
-						return err
-					}
-				}
-			}
-			if *state == "" {
-				override.Providers = []string{}
-			}
-			clientConfigPath, err = writeOverrideClient(ctx, gatewayStateDirectory, *preferences, override)
-			if err != nil {
-				return err
-			}
-			cli, err := amuxCLIPath()
-			if err != nil {
-				return err
-			}
-			if err := startOrAttachClient(ctx, cli, clientConfigPath, client.Endpoint(), ""); err != nil {
-				return err
-			}
-			if err := config.InitConfig(clientConfigPath); err != nil {
-				return err
-			}
-			managedClient = true
-			if localGatewayStarted || serverProfile != "" {
-				defer func() {
-					stop, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-					defer cancel()
-					_, _ = clientcontrol.Request(stop, clientConfigPath, http.MethodPost, "/shutdown", nil)
-				}()
-			}
-		}
-	}
-	activeGatewayMode := desktop.GatewayModeServer
-	if serverProfile == "" && !localGatewayStarted && (*serverURL != "" || *enrolledProfile != "") {
-		activeGatewayMode = desktop.GatewayModeClient
-	}
-
-	if *conversationID != "" && (*state == "") != (*runID == "") {
-		return fmt.Errorf("--state and --run-id must be supplied together")
-	}
-
-	if *runID != "" && *conversationID == "" {
-		return fmt.Errorf("hosting a saved worker requires --project and --conversation")
-	}
-
-	var local *storage.Store
-	var workerDone chan error
-	if *runID != "" {
-		lock, lockErr := server.LockProfile(*state)
-		if lockErr != nil {
-			return lockErr
-		}
-		defer lock.Close()
-		local, err = storage.Open(ctx, *state)
-		if err != nil {
+	if !managedClient {
+		if err := attachClient(client.Endpoint(), nil); err != nil {
 			return err
 		}
-		defer local.Close()
 	}
-	var chatRoot string
-	if *conversationID == "" {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return fmt.Errorf("locate local conversation directory: %w", homeErr)
-		}
-		chatRoot = filepath.Join(home, ".amux", "conversations")
+	fleetCtx, stopFleet := context.WithTimeout(ctx, 3*time.Second)
+	if err := config.LoadClientFleet(fleetCtx, clientConfigPath, client); err != nil {
+		log.Warn().Err(err).Msg("load desktop fleet settings")
 	}
+	stopFleet()
+	activeGatewayMode := gatewayPrefs.Mode
+
+	chatRoot := filepath.Join(filepath.Dir(clientConfigPath), "conversations")
 
 	windowApp := app.New()
 	windowApp.Settings().SetTheme(desktop.WorkspaceTheme())
 	restartRequested := false
-	var view desktopView
+	var view *desktop.Browser
 	var generatePeeringKey func(context.Context, bool) (string, error)
 	if serverProfile != "" && (gatewayPrefs.RemoteHosting || selectedHostedGateway != nil && selectedHostedGateway.RemoteHosting) {
 		generatePeeringKey = func(keyCtx context.Context, copyCurrent bool) (string, error) {
@@ -417,7 +201,7 @@ func run(parent context.Context, options Options, args []string) error {
 		}
 	}
 	hostedOnThisMachine := false
-	if activeGatewayMode == desktop.GatewayModeClient && serverProfile == "" && gatewayStateDirectory != "" && endpointIsThisHost(ctx, serverEndpoint) {
+	if activeGatewayMode == desktop.GatewayModeClient && endpointIsThisHost(ctx, serverEndpoint) {
 		// This desktop is a client of a gateway on this machine, so treat it as the host
 		// when the default server profile holds the loopback administrator credentials.
 		if _, err := storage.LoadLocalClientCredentials(gatewayStateDirectory); err == nil {
@@ -428,8 +212,8 @@ func run(parent context.Context, options Options, args []string) error {
 		}
 	}
 	setupConfig := &desktop.GatewaySetupConfig{
-		Preferences: gatewayPrefs, ActiveMode: activeGatewayMode, PreferencesPath: *gatewayPreferencesPath,
-		StateDirectory: gatewayStateDirectory, ServerEndpoint: serverEndpoint, ConnectionOverride: connectionExplicit,
+		Preferences: gatewayPrefs, ActiveMode: activeGatewayMode, PreferencesPath: gatewayPreferencesPath,
+		StateDirectory: gatewayStateDirectory, ServerEndpoint: serverEndpoint,
 		GeneratePeeringKey: generatePeeringKey, HostedOnThisMachine: hostedOnThisMachine,
 		Restart: func() {
 			restartRequested = true
@@ -438,61 +222,38 @@ func run(parent context.Context, options Options, args []string) error {
 			windowApp.Quit()
 		},
 	}
-	if managedClient && !connectionExplicit && !gatewayPreferencesExplicit && *state != "" {
-		setupConfig.Apply = func(changeCtx context.Context, prefs desktop.GatewayPreferences) (desktop.GatewayPreferences, error) {
-			var hosted *config.HostedGateway
-			enrollment, endpoint := prefs.EnrolledProfile, prefs.Endpoint
-			if prefs.Mode == desktop.GatewayModeServer {
-				var err error
-				hosted, err = hostedGatewaySettings(&prefs)
-				if err != nil {
-					return prefs, err
-				}
-				enrollment = filepath.Join(gatewayStateDirectory, "local-client.json")
-				endpoint = config.LocalGatewayEndpoint
+	setupConfig.Apply = func(changeCtx context.Context, prefs desktop.GatewayPreferences) (desktop.GatewayPreferences, error) {
+		var hosted *config.HostedGateway
+		enrollment, endpoint := prefs.EnrolledProfile, prefs.Endpoint
+		if prefs.Mode == desktop.GatewayModeServer {
+			var err error
+			hosted, err = hostedGatewaySettings(&prefs)
+			if err != nil {
+				return prefs, err
 			}
-			err := writeClientConfig(changeCtx, clientConfigPath, enrollment, endpoint, *preferences, "", true, hosted)
+			enrollment = filepath.Join(gatewayStateDirectory, "local-client.json")
+			endpoint = config.LocalGatewayEndpoint
+		}
+		if err := writeClientConfig(changeCtx, clientConfigPath, enrollment, endpoint, preferences, "", true, hosted); err != nil {
 			return prefs, err
 		}
+		return prefs, config.LoadClient(clientConfigPath)
 	}
 	cliExecutable, err := desktopCLI()
 	if err != nil {
 		return err
 	}
-	if *conversationID != "" {
-		view, err = desktop.New(desktop.Config{Client: client, Project: *project, ConversationID: *conversationID})
-	} else {
-		managedConfigPath := ""
-		if managedClient {
-			managedConfigPath = clientConfigPath
+	view, err = desktop.NewBrowser(desktop.BrowserConfig{ClientConfigPath: clientConfigPath, Client: client, LocalConversationsDirectory: chatRoot, PreferencesPath: preferences, WorkPreferencesPath: workPreferencesPath, GatewaySetup: setupConfig, NewWindow: windowApp.NewWindow, NotifyGlobal: func(message string) {
+		windowApp.SendNotification(fyne.NewNotification("Amux notification", message))
+	}, AppControls: desktop.NewAppControlsPanel(cliExecutable, func(archive string) error {
+		if err := scheduleDesktopUpdate(ctx, cliExecutable, clientConfigPath, client.Endpoint(), archive, args); err != nil {
+			return err
 		}
-		view, err = desktop.NewBrowser(desktop.BrowserConfig{ClientConfigPath: managedConfigPath, Client: client, LocalConversationsDirectory: chatRoot, Project: *project, PreferencesPath: *preferences, WorkPreferencesPath: workPreferencesPath, GatewaySetup: setupConfig, NewWindow: windowApp.NewWindow, AppControls: desktop.NewAppControlsPanel(cliExecutable, func(archive string) error {
-			if err := scheduleDesktopUpdate(ctx, cliExecutable, managedConfigPath, client.Endpoint(), archive, args); err != nil {
-				return err
-			}
-			fyne.Do(windowApp.Quit)
-			return nil
-		})})
-	}
+		fyne.Do(windowApp.Quit)
+		return nil
+	})})
 	if err != nil {
 		return err
-	}
-	if *runID != "" {
-		saved, loadErr := local.WorkerRun(ctx, *runID)
-		if loadErr != nil {
-			return loadErr
-		}
-		if saved.Server != client.Endpoint() || saved.Project != *project || saved.ConversationID != *conversationID {
-			return fmt.Errorf("saved worker does not match --server, --project and --conversation")
-		}
-		workerDone = make(chan error, 1)
-		go func() {
-			err := amuxruntime.RunSavedWorker(ctx, local, client, *runID, workPreferencesPath, *keyEnv, *enrolledProfile)
-			if ctx.Err() != nil {
-				err = nil
-			}
-			workerDone <- err
-		}()
 	}
 
 	window := windowApp.NewWindow("Amux")
@@ -519,18 +280,6 @@ func run(parent context.Context, options Options, args []string) error {
 	view.Close()
 	cancel()
 	view.Wait()
-	if workerDone != nil {
-		timer := time.NewTimer(10 * time.Second)
-		defer timer.Stop()
-		select {
-		case workerErr := <-workerDone:
-			if workerErr != nil {
-				return workerErr
-			}
-		case <-timer.C:
-			return fmt.Errorf("saved worker did not stop within 10 seconds")
-		}
-	}
 	if restartRequested {
 		return errRestartDesktop
 	}

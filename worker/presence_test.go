@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -99,15 +101,15 @@ func TestStandaloneWorkerStopsWhenTaskIsReassigned(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &waitingPresenceSession{done: make(chan struct{})}
-	opened := make(chan storage.AgentOrigin, 1)
+	opened := make(chan agent.Origin, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, Config{Store: local, Client: mustPoolClient(t, host.URL, http.DefaultTransport), RunID: run.ID, AdvertisePresence: true, Open: func(_ context.Context, current storage.WorkerRun, _ conversation.Sink) (Session, error) {
+		done <- Run(ctx, Config{Store: local, Client: mustPoolClient(t, host.URL, http.DefaultTransport), RunID: run.ID, AdvertisePresence: true, Open: func(_ context.Context, current storage.WorkerRun, _ conversation.Sink) (providers.Session, error) {
 			opened <- current.Owner
 			return provider, nil
 		}})
 	}()
-	var owner storage.AgentOrigin
+	var owner agent.Origin
 	select {
 	case owner = <-opened:
 	case err := <-done:
@@ -165,7 +167,7 @@ func TestRunPresenceRetriesLostAckAndOmitsAfterProviderStops(t *testing.T) {
 	done := make(chan error, 1)
 	provider := &waitingPresenceSession{done: make(chan struct{})}
 	go func() {
-		done <- Run(workerCtx, Config{Store: local, Client: client, RunID: run.ID, AdvertisePresence: true, Open: func(context.Context, storage.WorkerRun, conversation.Sink) (Session, error) {
+		done <- Run(workerCtx, Config{Store: local, Client: client, RunID: run.ID, AdvertisePresence: true, Open: func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 			opened <- struct{}{}
 			return provider, nil
 		}})
@@ -253,7 +255,7 @@ func TestRunPresenceRejectsWrongCheckoutBeforeProviderOpen(t *testing.T) {
 	}
 	runGit(t, pool.Directory, "remote", "set-url", "origin", "git@github.com:example/replacement.git")
 	var opened atomic.Int32
-	err = Run(ctx, Config{Store: local, Client: client, RunID: run.ID, AdvertisePresence: true, Open: func(context.Context, storage.WorkerRun, conversation.Sink) (Session, error) {
+	err = Run(ctx, Config{Store: local, Client: client, RunID: run.ID, AdvertisePresence: true, Open: func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
 		opened.Add(1)
 		return nil, errors.New("unexpected provider open")
 	}})

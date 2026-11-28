@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/nitecon/amux/conversation"
-	"github.com/nitecon/amux/providerprocess"
-	"github.com/nitecon/amux/providerrpc"
+	"github.com/nitecon/amux/providers/process"
+	"github.com/nitecon/amux/providers/rpc"
 )
 
 type EnvVar struct {
@@ -42,7 +42,7 @@ type permission struct {
 }
 type Session struct {
 	ctx             context.Context
-	peer            *providerrpc.Peer
+	peer            *rpc.Peer
 	sink            conversation.Sink
 	mu              sync.Mutex
 	id              string
@@ -60,7 +60,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	if sink == nil {
 		return nil, fmt.Errorf("ACP session requires an event sink")
 	}
-	directory, err := providerprocess.ValidateDirectory(config.Directory, "ACP")
+	directory, err := process.ValidateDirectory(config.Directory, "ACP")
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 	if len(command) == 0 {
 		command = []string{"agy", "acp", "--stdio"}
 	}
-	process, err := providerprocess.Start(ctx, providerprocess.Options{Command: command, Directory: directory, Env: config.Env})
+	child, err := process.Start(ctx, process.Options{Command: command, Directory: directory, Env: config.Env})
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func Start(ctx context.Context, config Config, sink conversation.Sink) (*Session
 		cancelTimeout = 5 * time.Second
 	}
 	session := &Session{ctx: ctx, sink: sink, id: config.ResumeID, pending: map[string]permission{}, cancelTimeout: cancelTimeout, autoApproveTool: config.AutoApproveTool}
-	session.peer = providerrpc.New(ctx, process, providerrpc.Options{}, session.handle)
+	session.peer = rpc.New(ctx, child, rpc.Options{}, session.handle)
 	fail := func(err error) (*Session, error) { session.Close(); return nil, err }
 	timeout := config.OpenTimeout
 	if timeout <= 0 {
@@ -164,7 +164,7 @@ func (s *Session) Prompt(ctx context.Context, text string) (string, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return "", providerrpc.ErrClosed
+		return "", rpc.ErrClosed
 	}
 	if s.busy {
 		s.mu.Unlock()
@@ -271,7 +271,7 @@ func (s *Session) ResolvePermission(ctx context.Context, requestID, optionID str
 	return nil
 }
 
-func (s *Session) handle(ctx context.Context, p *providerrpc.Peer, message providerrpc.Message) error {
+func (s *Session) handle(ctx context.Context, p *rpc.Peer, message rpc.Message) error {
 	switch message.Method {
 	case "session/update":
 		var params struct {
@@ -376,7 +376,7 @@ func (s *Session) handle(ctx context.Context, p *providerrpc.Peer, message provi
 		return s.emit(ctx, conversation.Event{Kind: "permission", SessionID: params.SessionID, ToolCallID: params.ToolCall.ID, RequestID: key, Title: params.ToolCall.Title, Data: message.Params, Options: choices})
 	default:
 		if message.ID != nil {
-			return p.Respond(ctx, message.ID, nil, &providerrpc.RPCError{Code: -32601, Message: "client method not supported"})
+			return p.Respond(ctx, message.ID, nil, &rpc.Error{Code: -32601, Message: "client method not supported"})
 		}
 		return nil
 	}

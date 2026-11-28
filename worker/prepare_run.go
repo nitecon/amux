@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -49,7 +50,7 @@ func PrepareRun(ctx context.Context, store *storage.Store, client *gatewayclient
 	if platform == "darwin" {
 		platform = "macos"
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: provider, OS: platform}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: provider, OS: platform}
 	conversation, err := client.CreateConversationWithGoal(ctx, project, taskID, owner, selectedGoal)
 	if err != nil {
 		return nil, nil, err

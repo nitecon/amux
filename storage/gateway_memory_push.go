@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const GatewayMemoryBatchLimit = 500
@@ -176,7 +176,7 @@ func rejectedMemoryPush(item GatewayMemoryPushItem, clientID *string, message st
 }
 
 func (s *Store) PushGatewayMemories(ctx context.Context, projectIdent string, source GatewayMemoryPushSource, items []GatewayMemoryPushItem) (*GatewayMemoryPushResponse, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	if len(items) > GatewayMemoryBatchLimit {
 		return nil, fmt.Errorf("memory push batch exceeds %d records", GatewayMemoryBatchLimit)
 	}
@@ -246,8 +246,8 @@ func pushGatewayMemoryItem(ctx context.Context, tx *sql.Tx, project string, sour
 			return reject(map[bool]string{true: "only global-scoped durable memories may be pushed under __global__", false: "only project-scoped durable memories may be pushed"}[global])
 		}
 	}
-	if itemProject := cleanMemoryString(item.ProjectIdent); itemProject != nil && projects.NormalizeIdent(*itemProject) != project {
-		return reject(fmt.Sprintf("memory project_ident '%s' does not match route project '%s'", projects.NormalizeIdent(*itemProject), project))
+	if itemProject := cleanMemoryString(item.ProjectIdent); itemProject != nil && projectid.NormalizeIdent(*itemProject) != project {
+		return reject(fmt.Sprintf("memory project_ident '%s' does not match route project '%s'", projectid.NormalizeIdent(*itemProject), project))
 	}
 	if err := validateGatewayMemoryOKF(item); err != nil {
 		return reject(err.Error())

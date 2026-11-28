@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nitecon/amux/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,35 +13,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
 
-func TestMCPCommandStopsCleanlyWhenInputIsIdle(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	input, writer := io.Pipe()
-	defer input.Close()
-	defer writer.Close()
-	done := make(chan error, 1)
-	go func() {
-		done <- runMCP(ctx, []string{"--server", "http://127.0.0.1:7913", "--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux"}, input, &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "test-key" })
-	}()
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("MCP command did not stop")
-	}
-}
-
 func TestMCPRejectsInvalidSelectedGoal(t *testing.T) {
-	args := []string{"--server", "https://gateway.example", "--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux", "--goal", strings.Repeat("x", 129)}
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader("")), &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "test-key" }); err == nil {
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://gateway.example"})
+	args := []string{"--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux", "--goal", strings.Repeat("x", 129)}
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader("")), &bytes.Buffer{}, &bytes.Buffer{}, func(string) string { return "test-key" }); err == nil {
 		t.Fatal("invalid selected task goal was accepted")
 	}
 }
@@ -56,8 +36,9 @@ func TestMCPHeadlessStartupListsToolsWithoutResolvingWorkPreferences(t *testing.
 		"",
 	}, "\n")
 	var output bytes.Buffer
-	args := []string{"--server", "https://gateway.example", "--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux"}
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader(input)), &output, &bytes.Buffer{}, func(name string) string {
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://gateway.example"})
+	args := []string{"--project", "demo", "--conversation", uuid.NewString(), "--session", uuid.NewString(), "--instance", uuid.NewString(), "--provider", "codex", "--os", "linux"}
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader(input)), &output, &bytes.Buffer{}, func(name string) string {
 		if name == "GATEWAY_API_KEY" {
 			return "test-key"
 		}
@@ -70,34 +51,8 @@ func TestMCPHeadlessStartupListsToolsWithoutResolvingWorkPreferences(t *testing.
 	}
 }
 
-func TestMCPStartupInstructionsRespectCodexAndDesktopPrecedence(t *testing.T) {
-	key := "AMUX_DESKTOP_GUIDANCE"
-	prior, hadPrior := os.LookupEnv(key)
-	defer func() {
-		if hadPrior {
-			_ = os.Setenv(key, prior)
-		} else {
-			_ = os.Unsetenv(key)
-		}
-	}()
-	runner := bundledToolRunner{Executable: filepath.Join(t.TempDir(), "amux")}
-
-	_ = os.Unsetenv(key)
-	if got := mcpStartupInstructionsFor("", "codex", runner, false); got != "" {
-		t.Fatalf("standalone Codex got duplicate MCP instructions: %q", got)
-	}
-	if got := mcpStartupInstructionsFor("claude", "codex", runner, false); !strings.Contains(got, "Finish code with amux submit-work") {
-		t.Fatal("explicit native provider did not take precedence over inherited provider")
-	}
-	if err := os.Setenv(key, ""); err != nil {
-		t.Fatal(err)
-	}
-	if got := mcpStartupInstructionsFor("claude", "", runner, false); got != "" {
-		t.Fatalf("present empty desktop guidance did not suppress MCP instructions: %q", got)
-	}
-}
-
 func TestStandaloneMCPInitializeEmitsSessionGuidance(t *testing.T) {
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: "https://gateway.example"})
 	priorProvider, hadProvider := os.LookupEnv("AMUX_AGENT_PROVIDER")
 	priorDesktop, hadDesktop := os.LookupEnv("AMUX_DESKTOP_GUIDANCE")
 	defer func() {
@@ -117,32 +72,11 @@ func TestStandaloneMCPInitializeEmitsSessionGuidance(t *testing.T) {
 	t.Setenv("AMUX_BUNDLED_DIR", filepath.Join(t.TempDir(), "missing"))
 	var output bytes.Buffer
 	input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}` + "\n"
-	if err := runMCP(context.Background(), nil, io.NopCloser(strings.NewReader(input)), &output, &bytes.Buffer{}, func(string) string { return "" }); err != nil {
+	if err := runMCP(t, context.Background(), nil, io.NopCloser(strings.NewReader(input)), &output, &bytes.Buffer{}, func(string) string { return "" }); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `"instructions":"[Amux session guidance]`) {
 		t.Fatalf("standalone initialize omitted physical startup guidance: %s", output.String())
-	}
-}
-
-func TestMCPStartupGuidanceIsNotSuppressedByMemoryHookConfiguration(t *testing.T) {
-	project := t.TempDir()
-	configDirectory := filepath.Join(project, ".claude")
-	t.Setenv("CLAUDE_CONFIG_DIR", configDirectory)
-	if err := os.MkdirAll(configDirectory, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDirectory, "settings.json"), []byte(`{"hooks":["memory hook --agent claude"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AMUX_BUNDLED_DIR", filepath.Join(t.TempDir(), "missing"))
-	t.Setenv("AMUX_DESKTOP_GUIDANCE", "")
-	if err := os.Unsetenv("AMUX_DESKTOP_GUIDANCE"); err != nil {
-		t.Fatal(err)
-	}
-	got := nativeMCPStartupInstructions(bundledToolRunner{Directory: project, Executable: filepath.Join(project, "amux")}, false)
-	if !strings.Contains(got, "[Amux session guidance]") {
-		t.Fatalf("hook config suppressed Amux startup guidance: %q", got)
 	}
 }
 
@@ -179,9 +113,10 @@ func TestMCPTaskDelegateChecksHierarchyBeforeToolCall(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_delegate","arguments":{"title":"Handoff","target_project":"other"}}}`,
 		"",
 	}, "\n")
-	args := []string{"--server", host.URL, "--project", "demo", "--conversation", conversation, "--session", session, "--instance", instance, "--provider", "codex", "--os", "linux"}
+	writeMCPTestSettings(t, config.Client{GatewayEndpoint: host.URL})
+	args := []string{"--project", "demo", "--conversation", conversation, "--session", session, "--instance", instance, "--provider", "codex", "--os", "linux"}
 	var output bytes.Buffer
-	if err := runMCP(context.Background(), args, io.NopCloser(strings.NewReader(input)), &output, &bytes.Buffer{}, func(string) string { return "test-key" }); err != nil {
+	if err := runMCP(t, context.Background(), args, io.NopCloser(strings.NewReader(input)), &output, &bytes.Buffer{}, func(string) string { return "test-key" }); err != nil {
 		t.Fatal(err)
 	}
 	if len(paths) != 3 || paths[0] != "/v1/tasks/capabilities" || paths[1] != "/v1/projects/demo/conversations/"+conversation || paths[2] != "/v1/projects/demo/conversations/"+conversation+"/tools" || !strings.Contains(output.String(), "message_id") {

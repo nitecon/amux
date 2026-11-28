@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
 )
 
-func routerReviewEvent(task Task, project string) router.Event {
+func routerReviewEvent(task Task, project string) fism.Event {
 	payload, _ := json.Marshal(struct {
 		Project string `json:"project"`
 		Task    Task   `json:"task"`
 	}{Project: project, Task: task})
-	return router.Event{ID: "task.completed", Version: 1, Payload: payload}
+	return fism.Event{ID: "task.completed", Version: 1, Payload: payload}
 }
 
 func routerReviewCounts(t *testing.T, s *Store, source string) (int, int) {
@@ -73,12 +73,12 @@ func TestReconcileRouterReviewsReplayAndCompletionIdentity(t *testing.T) {
 	}{Project: "tasks", Task: struct {
 		ID string `json:"id"`
 	}{ID: source.ID}})
-	if processed, err := s.ReconcileRouterReviews(ctx, router.Event{ID: "task.completed", Version: 1, Payload: legacy}); err != nil || !processed {
+	if processed, err := s.ReconcileRouterReviews(ctx, fism.Event{ID: "task.completed", Version: 1, Payload: legacy}); err != nil || !processed {
 		t.Fatalf("legacy id-only payload: processed=%v err=%v", processed, err)
 	}
 
 	for _, raw := range []string{`{"project":"tasks","task":{"id":"` + source.ID + `","done_at":null}}`, `{"project":"tasks","task":{"id":"` + source.ID + `","done_at":"bad"}}`} {
-		processed, err := s.ReconcileRouterReviews(ctx, router.Event{ID: "task.completed", Version: 1, Payload: json.RawMessage(raw)})
+		processed, err := s.ReconcileRouterReviews(ctx, fism.Event{ID: "task.completed", Version: 1, Payload: json.RawMessage(raw)})
 		if err != nil || processed {
 			t.Fatalf("invalid completion snapshot %s: processed=%v err=%v", raw, processed, err)
 		}
@@ -94,7 +94,7 @@ func TestReconcileRouterReviewsReplayAndCompletionIdentity(t *testing.T) {
 	}
 	snapshot["task"].(map[string]any)["done_at"] = old
 	stale, _ = json.Marshal(snapshot)
-	if processed, err := s.ReconcileRouterReviews(ctx, router.Event{ID: "task.completed", Version: 1, Payload: stale}); err != nil || processed {
+	if processed, err := s.ReconcileRouterReviews(ctx, fism.Event{ID: "task.completed", Version: 1, Payload: stale}); err != nil || processed {
 		t.Fatalf("stale completion snapshot: processed=%v err=%v", processed, err)
 	}
 }
@@ -107,12 +107,12 @@ func TestReconcileRouterReviewsStopsForObsoleteTasksAndRejectsEnvelope(t *testin
 		`{}`, `{"project":"tasks","task":{}}`,
 		`{"project":"tasks","task":{"id":"missing"}}`,
 	} {
-		processed, err := s.ReconcileRouterReviews(ctx, router.Event{ID: "task.completed", Version: 1, Payload: json.RawMessage(payload)})
+		processed, err := s.ReconcileRouterReviews(ctx, fism.Event{ID: "task.completed", Version: 1, Payload: json.RawMessage(payload)})
 		if err != nil || processed {
 			t.Fatalf("invalid/missing task payload %s: processed=%v err=%v", payload, processed, err)
 		}
 	}
-	for _, event := range []router.Event{{ID: "task.updated", Version: 1}, {ID: "task.completed", Version: 2}} {
+	for _, event := range []fism.Event{{ID: "task.updated", Version: 1}, {ID: "task.completed", Version: 2}} {
 		if _, err := s.ReconcileRouterReviews(ctx, event); err == nil {
 			t.Fatalf("accepted unsupported envelope %+v", event)
 		}

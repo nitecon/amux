@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -31,11 +32,13 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/eventbus"
+	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
 
 func TestServerCommandValidation(t *testing.T) {
+	t.Setenv("GATEWAY_API_KEY", profileTestEnv("GATEWAY_API_KEY"))
 	for _, args := range [][]string{
 		{}, {"desktop"}, {"server"}, {"server", "run"}, {"server", "run", "--database", filepath.Join(t.TempDir(), "db"), "--profile", t.TempDir()}, {"server", "run", "--database", filepath.Join(t.TempDir(), "db"), "--listen", "0.0.0.0:0"},
 		{"server", "run", "--database", filepath.Join(t.TempDir(), "db"), "--profile-tls-name", "localhost"},
@@ -47,6 +50,7 @@ func TestServerCommandValidation(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
+	t.Setenv("GATEWAY_API_KEY", "")
 	if err := run(context.Background(), []string{"server", "run", "--database", filepath.Join(t.TempDir(), "db")}, &out, &out, func(string) string { return "" }); err == nil {
 		t.Fatal("missing key accepted")
 	}
@@ -150,10 +154,10 @@ func TestProfileTLSListenerServesPersistentChainAndSANs(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := filepath.Join(t.TempDir(), "amux-server.yml")
-	if err := os.WriteFile(config, []byte("profile-tls-name: [gateway.example.test, gateway.example.test]\n"), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("profile: %q\nlisten: 127.0.0.1:0\nprofile-tls-name: [gateway.example.test, gateway.example.test]\n", profile)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--profile", profile, "--config", config, "--listen", "127.0.0.1:0"}
+	args := []string{"--config", config}
 	address, stop := startServerCommand(t, args...)
 	t.Cleanup(stop)
 	rootPEM := readProfileFile(t, filepath.Join(profile, "root.pem"))
@@ -436,7 +440,7 @@ func verifySecureDiscovery(t *testing.T, admin *http.Client, secureURL, address 
 	if enrolled.ClusterID != discovery.ClusterID || enrolled.NodeID == "" || enrolled.URL != secureURL {
 		t.Fatal("persisted client identity does not match the secure gateway")
 	}
-	peerClient, _, err := gatewayClientForProfile("", manifest, "")
+	peerClient, _, err := gatewayclient.NewForProfile("", manifest, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,6 +554,7 @@ func requestProfileTLS(t *testing.T, address, serverName string, roots *x509.Cer
 }
 
 func TestServerProfileStartupFailureReleasesBothLocks(t *testing.T) {
+	t.Setenv("GATEWAY_API_KEY", profileTestEnv("GATEWAY_API_KEY"))
 	profile := t.TempDir()
 	if err := os.Mkdir(filepath.Join(profile, "security.sqlite"), 0700); err != nil {
 		t.Fatal(err)
@@ -578,6 +583,7 @@ func startProfileServer(t *testing.T, profile string) (string, func()) {
 
 func startServerCommand(t *testing.T, serverArgs ...string) (string, func()) {
 	t.Helper()
+	t.Setenv("GATEWAY_API_KEY", profileTestEnv("GATEWAY_API_KEY"))
 	ctx, cancel := context.WithCancel(context.Background())
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)

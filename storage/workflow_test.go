@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestChangesetValidation(t *testing.T) {
@@ -389,7 +391,7 @@ func TestCompletionAllowedFromEveryOrdinaryLane(t *testing.T) {
 				if _, err := s.db.ExecContext(ctx, "UPDATE tasks SET status=?,done_at=CASE WHEN ?='done' THEN 1 ELSE NULL END WHERE id=?", lane, lane, source.ID); err != nil {
 					t.Fatal(err)
 				}
-				var closer *AgentOrigin
+				var closer *agent.Origin
 				if !human {
 					actor := *taskActor()
 					actor.SessionID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"

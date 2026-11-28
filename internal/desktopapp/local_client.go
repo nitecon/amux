@@ -4,9 +4,6 @@ package desktopapp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,11 +16,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/update"
-	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/config"
+	"github.com/nitecon/amux/desktop"
 	"github.com/nitecon/amux/internal/clientcontrol"
 	"github.com/nitecon/amux/server"
+	"github.com/nitecon/amux/update"
 )
 
 func desktopCLI() (string, error) {
@@ -69,7 +66,7 @@ func scheduleDesktopUpdate(ctx context.Context, cli, settings, endpoint, archive
 		if settings != "" {
 			clientCLI, resolveErr := amuxCLIPath()
 			if resolveErr == nil {
-				resolveErr = startOrAttachClient(ctx, clientCLI, settings, endpoint, "")
+				resolveErr = startOrAttachClient(ctx, clientCLI, settings, endpoint)
 			}
 			if resolveErr != nil {
 				return fmt.Errorf("schedule update: %w; restart local client: %v", err, resolveErr)
@@ -130,6 +127,8 @@ func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferen
 	settings := config.Client{EnrolledProfile: enrollment, HostedGateway: hosted, WorkerJournal: journal, Providers: []string{"antigravity", "codex", "claude"}}
 	if hadConfig {
 		settings.Providers = existing.Providers
+		settings.WorkPreferences = existing.WorkPreferences
+		settings.TaskToolsCommand = existing.TaskToolsCommand
 		settings.ProjectsDirectory = existing.ProjectsDirectory
 	}
 	if preferences != "" {
@@ -195,7 +194,7 @@ func writeClientConfig(ctx context.Context, path, enrollment, endpoint, preferen
 	return config.SaveClient(path, settings)
 }
 
-func startOrAttachClient(ctx context.Context, cli, path, endpoint, journal string) error {
+func startOrAttachClient(ctx context.Context, cli, path, endpoint string) error {
 	expected, err := clientcontrol.ExecutableDigest(cli)
 	if err != nil {
 		return fmt.Errorf("identify companion amux binary: %w", err)
@@ -243,11 +242,7 @@ func startOrAttachClient(ctx context.Context, cli, path, endpoint, journal strin
 			}
 		}
 	}
-	args := []string{"headless", "--config", path}
-	if journal != "" {
-		args = append(args, "--state", journal)
-	}
-	command := exec.Command(cli, args...)
+	command := exec.Command(cli, "headless")
 	hideClientWindow(command)
 	log, err := os.OpenFile(filepath.Join(filepath.Dir(path), "client.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
@@ -277,45 +272,6 @@ func startOrAttachClient(ctx context.Context, cli, path, endpoint, journal strin
 				return fmt.Errorf("local client started with a different build; see %s", log.Name())
 			}
 		}
-	}
-}
-
-// Explicit connection options get their own profile and journal. They can
-// coexist with the default desktop or a headless service.
-func writeOverrideClient(ctx context.Context, root, preferences string, settings config.Client) (string, error) {
-	encoded, err := json.Marshal(settings)
-	if err != nil {
-		return "", err
-	}
-	key := sha256.Sum256(encoded)
-	path := filepath.Join(root, "client-overrides", hex.EncodeToString(key[:16])+".yml")
-	if settings.WorkerJournal == "" {
-		settings.WorkerJournal = path + ".workers.db"
-	}
-	if _, err := config.ReadClient(path); err == nil {
-		return path, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	if preferences != "" {
-		prefs, err := desktop.LoadNavigationPreferences(preferences)
-		if err != nil {
-			return "", err
-		}
-		settings.ProjectsDirectory, settings.Projects = prefs.ClientCheckoutSettings(settings.GatewayEndpoint)
-	}
-	lock, err := server.LockProfile(path)
-	if err != nil {
-		return "", err
-	}
-	defer lock.Close()
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if _, err := config.ReadClient(path); errors.Is(err, os.ErrNotExist) {
-		return path, config.SaveClient(path, settings)
-	} else {
-		return path, err
 	}
 }
 

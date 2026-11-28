@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 const artifactBaseMigration = 37
@@ -301,7 +301,7 @@ func createArtifactWriteTx(ctx context.Context, tx *sql.Tx, input ArtifactInsert
 	if err != nil {
 		return nil, err
 	}
-	projectIdent := projects.NormalizeIdent(input.ProjectIdent)
+	projectIdent := projectid.NormalizeIdent(input.ProjectIdent)
 	if projectIdent == "" {
 		return nil, fmt.Errorf("project ident is required")
 	}
@@ -330,7 +330,7 @@ func createArtifactWriteTx(ctx context.Context, tx *sql.Tx, input ArtifactInsert
 }
 
 func (s *Store) Artifact(ctx context.Context, projectIdent, artifactID string) (*Artifact, error) {
-	return scanArtifact(s.db.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projects.NormalizeIdent(projectIdent), artifactID))
+	return scanArtifact(s.db.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projectid.NormalizeIdent(projectIdent), artifactID))
 }
 
 func (s *Store) ArtifactDetail(ctx context.Context, projectIdent, artifactID string) (*ArtifactDetail, error) {
@@ -339,7 +339,7 @@ func (s *Store) ArtifactDetail(ctx context.Context, projectIdent, artifactID str
 		return nil, err
 	}
 	defer tx.Rollback()
-	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projects.NormalizeIdent(projectIdent), artifactID))
+	artifact, err := scanArtifact(tx.QueryRowContext(ctx, artifactSelect+` WHERE project_ident=? AND artifact_id=?`, projectid.NormalizeIdent(projectIdent), artifactID))
 	if err != nil || artifact == nil {
 		return nil, err
 	}
@@ -424,7 +424,7 @@ func (s *Store) createArtifactVersionWithLimits(ctx context.Context, projectIden
 }
 
 func createArtifactVersionTx(ctx context.Context, tx *sql.Tx, projectIdent, artifactID string, input ArtifactVersionInsert, suppliedLimits *ArtifactWriteLimits, workflowAtomic bool) (*ArtifactVersionWrite, error) {
-	projectIdent = projects.NormalizeIdent(projectIdent)
+	projectIdent = projectid.NormalizeIdent(projectIdent)
 	var err error
 	if input.BodyFormat == "" {
 		input.BodyFormat = "markdown"
@@ -544,7 +544,7 @@ func (s *Store) ArtifactVersion(ctx context.Context, projectIdent, artifactID, v
 	return scanArtifactVersion(s.db.QueryRowContext(ctx, artifactVersionSelect+`
  WHERE artifact_id=? AND artifact_version_id=?
  AND EXISTS(SELECT 1 FROM artifacts WHERE project_ident=? AND artifacts.artifact_id=artifact_versions.artifact_id)`,
-		artifactID, versionID, projects.NormalizeIdent(projectIdent)))
+		artifactID, versionID, projectid.NormalizeIdent(projectIdent)))
 }
 
 func readArtifactVersion(ctx context.Context, q queryer, artifactID, versionID string) (*ArtifactVersion, error) {
@@ -553,7 +553,7 @@ func readArtifactVersion(ctx context.Context, q queryer, artifactID, versionID s
 
 func (s *Store) ArtifactVersions(ctx context.Context, projectIdent, artifactID string) ([]ArtifactVersion, error) {
 	var exists int
-	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifacts WHERE project_ident=? AND artifact_id=?", projects.NormalizeIdent(projectIdent), artifactID).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifacts WHERE project_ident=? AND artifact_id=?", projectid.NormalizeIdent(projectIdent), artifactID).Scan(&exists)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

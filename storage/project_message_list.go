@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // ProjectMessageThreadFilter selects a page of project inbox threads.
@@ -71,7 +71,7 @@ const (
 // counts from one transaction snapshot. A zero limit uses the source database
 // helper's default of 100; the HTTP route may apply its narrower default.
 func (s *Store) ListProjectMessageThreads(ctx context.Context, project string, filter ProjectMessageThreadFilter) (*ProjectMessageThreadList, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	if project == "" {
 		return nil, fmt.Errorf("project %q not found: %w", project, ErrTaskNotFound)
 	}
@@ -171,7 +171,7 @@ func (s *Store) ListProjectMessageThreads(ctx context.Context, project string, f
 // ResolveProjectMessagesBefore resolves every matching open root sent strictly
 // before beforeMS. An empty kinds slice selects every effective author kind.
 func (s *Store) ResolveProjectMessagesBefore(ctx context.Context, project string, beforeMS int64, kinds []string, resolvedBy string) (int64, error) {
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	query := `UPDATE messages SET resolved_at=?,resolved_by=? WHERE id IN (
 		SELECT m.id FROM messages m WHERE m.project_ident=? AND m.resolved_at IS NULL
 		AND m.parent_message_id IS NULL AND m.sent_at<?`

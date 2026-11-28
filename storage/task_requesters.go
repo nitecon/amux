@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nitecon/amux/projects"
+	"github.com/nitecon/amux/identity/agent"
+	projectid "github.com/nitecon/amux/identity/project"
 )
 
 // SetTaskRequester changes the durable result subscriber without changing task
 // status or assignment. Native callers must own the task or be its requester.
-func (s *Store) SetTaskRequester(ctx context.Context, project, id string, target *RegisteredTargetIdentity, origin *AgentOrigin) (*Task, error) {
+func (s *Store) SetTaskRequester(ctx context.Context, project, id string, target *RegisteredTargetIdentity, origin *agent.Origin) (*Task, error) {
 	if target != nil {
-		normalized, err := NormalizeOrigin(&target.Origin)
+		normalized, err := agent.NormalizeOrigin(&target.Origin)
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid requester origin", ErrTaskDelegation)
 		}
@@ -22,9 +23,9 @@ func (s *Store) SetTaskRequester(ctx context.Context, project, id string, target
 		copy.Origin = *normalized
 		target = &copy
 	}
-	project = projects.NormalizeIdent(project)
+	project = projectid.NormalizeIdent(project)
 	var result *Task
-	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *AgentOrigin) error {
+	err := s.taskMutation(ctx, origin, func(tx *sql.Tx, actor *agent.Origin) error {
 		task, err := readTask(ctx, tx, project, id)
 		if err != nil {
 			return err

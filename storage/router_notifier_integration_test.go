@@ -7,17 +7,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/controllers"
 	"github.com/nitecon/amux/eventbus"
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/fism"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestNotifierTaskSourceRoutesOwnerAndRequesterThenRejectsChangedGeneration(t *testing.T) {
 	s := taskStore(t)
 	ctx := context.Background()
 	owner := taskActor()
-	requester := AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
-	actor := AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "antigravity", OS: "linux"}
+	requester := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	actor := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "antigravity", OS: "linux"}
 	goal := "selected-goal"
 	task, err := s.InsertTask(ctx, TaskInsert{Project: "tasks", Title: "Notifier source work", Reporter: "fixture", Goal: &goal, Labels: []string{"os:linux"}}, nil)
 	if err != nil {
@@ -42,17 +43,17 @@ func TestNotifierTaskSourceRoutesOwnerAndRequesterThenRejectsChangedGeneration(t
 	if ok, err := s.ReportPresence(ctx, PresenceReport{Source: "native:notifier", Sequence: 1, Agents: agents}, time.Now().UTC()); err != nil || !ok {
 		t.Fatalf("report routing identities: %v %v", ok, err)
 	}
-	definitions := append(RouterTaskEventDefinitions(), plugins.NotificationEventDefinitions()...)
-	runtime, err := router.NewRuntime(s, s.EventBus(), definitions, []router.Plugin{plugins.NotifierPlugin(s), {
-		Definition: router.PluginDefinition{ID: "notification-sink", Subscriptions: []router.Subscription{{Event: plugins.NotifyEventID, MinVersion: 1, MaxVersion: 1}}},
-	}}, router.RunConfig{})
+	definitions := append(RouterTaskEventDefinitions(), controllers.NotificationEventDefinitions()...)
+	runtime, err := fism.NewRuntime(s, s.EventBus(), definitions, []fism.Controller{controllers.NotifierController(s), {
+		Definition: fism.ControllerDefinition{ID: "notification-sink", Subscriptions: []fism.Subscription{{Event: controllers.NotifyEventID, MinVersion: 1, MaxVersion: 1}}},
+	}}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopRuntime := runRouterFixture(t, runtime)
 	defer stopRuntime()
 	stopSource := runOwnedRouterFixture(t, func(ctx context.Context) error {
-		return plugins.RunTaskSource(ctx, s, runtime.Registry(), s.EventBus())
+		return controllers.RunTaskSource(ctx, s, runtime.Registry(), s.EventBus())
 	})
 	defer stopSource()
 	comment, err := s.AddTaskComment(ctx, "tasks", task.ID, "fixture", "agent", "Progress for both recipients", nil, &actor)
@@ -79,7 +80,7 @@ func TestNotifierTaskSourceRoutesOwnerAndRequesterThenRejectsChangedGeneration(t
 			Target string `json:"target"`
 			Idle   bool   `json:"require_idle"`
 			Event  struct {
-				Origin AgentOrigin `json:"origin"`
+				Origin agent.Origin `json:"origin"`
 				Task   struct {
 					Rank json.Number `json:"rank"`
 				} `json:"task"`

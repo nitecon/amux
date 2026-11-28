@@ -49,7 +49,7 @@ func TestRemoteConsumerOpenReplaysAcrossReopenAndExplicitAfterWins(t *testing.T)
 	if cursor, err := s.OpenRemoteConsumer(ctx, consumerID, firstConnection, &start); err != nil || cursor != 0 {
 		t.Fatalf("explicit replay cursor=%d err=%v", cursor, err)
 	}
-	got, err := s.NextRemoteEvent(ctx, consumerID, firstConnection, []string{"task.commented"}, nil)
+	got, err := s.NextRemoteEvent(ctx, consumerID, firstConnection, []string{"task.commented"}, nil, "", nil)
 	if err != nil || got == nil || got.Seq != secondSeq {
 		t.Fatalf("filtered replay event=%+v err=%v", got, err)
 	}
@@ -103,7 +103,7 @@ func TestRemoteConsumerUnackedOfflineReplayRetainsHistoryUntilSharedCursorAdvanc
 	if _, err := s.OpenRemoteConsumer(ctx, consumerID, firstConnection, &start); err != nil {
 		t.Fatal(err)
 	}
-	original, err := s.NextRemoteEvent(ctx, consumerID, firstConnection, []string{"task.changed"}, nil)
+	original, err := s.NextRemoteEvent(ctx, consumerID, firstConnection, []string{"task.changed"}, nil, "", nil)
 	if err != nil || original == nil || original.Seq != seq {
 		t.Fatalf("initial delivery=%+v err=%v", original, err)
 	}
@@ -117,7 +117,7 @@ func TestRemoteConsumerUnackedOfflineReplayRetainsHistoryUntilSharedCursorAdvanc
 	if _, err := s.OpenRemoteConsumer(ctx, secondID, secondConnection, &start); err != nil {
 		t.Fatal(err)
 	}
-	if event, err := s.NextRemoteEvent(ctx, secondID, secondConnection, nil, nil); err != nil || event != nil {
+	if event, err := s.NextRemoteEvent(ctx, secondID, secondConnection, nil, nil, "", nil); err != nil || event != nil {
 		t.Fatalf("nonmatching consumer event=%+v err=%v", event, err)
 	}
 	if cursor := remoteConsumerCursor(t, s, secondID); cursor != seq {
@@ -187,7 +187,7 @@ func TestRemoteConsumerUnackedOfflineReplayRetainsHistoryUntilSharedCursorAdvanc
 	if cursor, err := s.OpenRemoteConsumer(ctx, consumerID, resumedConnection, nil); err != nil || cursor != 0 {
 		t.Fatalf("offline consumer resumed at cursor=%d err=%v, want 0", cursor, err)
 	}
-	replayed, err := s.NextRemoteEvent(ctx, consumerID, resumedConnection, []string{"task.changed"}, nil)
+	replayed, err := s.NextRemoteEvent(ctx, consumerID, resumedConnection, []string{"task.changed"}, nil, "", nil)
 	if err != nil || replayed == nil || replayed.Seq != original.Seq || replayed.UID != original.UID || string(replayed.Payload) != string(original.Payload) {
 		t.Fatalf("reopened unacked event changed: original=%+v replayed=%+v err=%v", original, replayed, err)
 	}
@@ -233,7 +233,7 @@ func TestRemoteConsumerFiltersTargetsAndPersistsOnlySkippedCursor(t *testing.T) 
 	if _, err := s.OpenRemoteConsumer(ctx, consumerID, connectionID, &start); err != nil {
 		t.Fatal(err)
 	}
-	event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, []string{"receiver"})
+	event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, []string{"receiver"}, "", nil)
 	if err != nil || event == nil || event.Seq != third {
 		t.Fatalf("next matching event=%+v err=%v", event, err)
 	}
@@ -269,7 +269,7 @@ func TestRemoteConsumerUntargetedNullAndWrongTypesAndEmptyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range seqs[:3] {
-		event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, nil)
+		event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, nil, "", nil)
 		if err != nil || event == nil || event.Seq != expected {
 			t.Fatalf("untargeted seq %d returned event=%+v err=%v", expected, event, err)
 		}
@@ -277,7 +277,7 @@ func TestRemoteConsumerUntargetedNullAndWrongTypesAndEmptyTarget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, nil); err != nil || event != nil {
+	if event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, nil, "", nil); err != nil || event != nil {
 		t.Fatalf("empty-string target matched empty target set: event=%+v err=%v", event, err)
 	}
 	if cursor := remoteConsumerCursor(t, s, consumerID); cursor != seqs[3] {
@@ -288,7 +288,7 @@ func TestRemoteConsumerUntargetedNullAndWrongTypesAndEmptyTarget(t *testing.T) {
 	if _, err := s.OpenRemoteConsumer(ctx, otherConsumer, otherConnection, &resumeAt); err != nil {
 		t.Fatal(err)
 	}
-	event, err := s.NextRemoteEvent(ctx, otherConsumer, otherConnection, []string{"wanted"}, []string{""})
+	event, err := s.NextRemoteEvent(ctx, otherConsumer, otherConnection, []string{"wanted"}, []string{""}, "", nil)
 	if err != nil || event == nil || event.Seq != seqs[3] {
 		t.Fatalf("explicit empty target filter event=%+v err=%v", event, err)
 	}
@@ -308,7 +308,7 @@ func TestRemoteConsumerTakeoverRejectsStaleAckAndTouch(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"next": func() error {
-			_, err := s.NextRemoteEvent(ctx, consumerID, oldConnection, []string{"wanted"}, nil)
+			_, err := s.NextRemoteEvent(ctx, consumerID, oldConnection, []string{"wanted"}, nil, "", nil)
 			return err
 		}(),
 		"ack":   s.AckRemoteEvent(ctx, consumerID, oldConnection, seq),
@@ -400,7 +400,7 @@ func TestRemoteConsumerIdleNextDoesNotRenewLease(t *testing.T) {
 	if err := s.CheckRemoteConsumer(ctx, consumerID, connectionID); err != nil {
 		t.Fatalf("read-only ownership check: %v", err)
 	}
-	if event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, nil); err != nil || event != nil {
+	if event, err := s.NextRemoteEvent(ctx, consumerID, connectionID, []string{"wanted"}, nil, "", nil); err != nil || event != nil {
 		t.Fatalf("empty poll event=%+v err=%v", event, err)
 	}
 	var lastSeen int64

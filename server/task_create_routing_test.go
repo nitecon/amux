@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -243,7 +244,7 @@ func mustJSON(t *testing.T, value any) string {
 	return string(b)
 }
 
-func routedCreateRequest(handler http.Handler, method, path, body string, actor *storage.AgentOrigin, bearer bool) *httptest.ResponseRecorder {
+func routedCreateRequest(handler http.Handler, method, path, body string, actor *agent.Origin, bearer bool) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if bearer {
 		req.Header.Set("Authorization", "Bearer task-key")

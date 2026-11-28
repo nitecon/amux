@@ -7,10 +7,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func presenceAgent(session, instance string) PresenceAgent {
-	return PresenceAgent{ProjectIdent: "presence", Origin: AgentOrigin{
+	return PresenceAgent{ProjectIdent: "presence", Origin: agent.Origin{
 		SessionID: session, InstanceID: instance, Provider: "codex", OS: "linux",
 	}}
 }

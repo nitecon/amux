@@ -14,9 +14,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/projectidentity"
-	"github.com/nitecon/amux/projects"
-	"github.com/nitecon/amux/providerprocess"
+	projectid "github.com/nitecon/amux/identity/project"
+	"github.com/nitecon/amux/providers/process"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -238,12 +237,12 @@ func (p *workerPanel) refreshRecoverySources() {
 		if strings.EqualFold(strings.TrimSpace(machine.Hostname), strings.TrimSpace(hostname)) {
 			continue
 		}
-		if machine.Origin == nil || *machine.Origin == "[redacted]" || projectidentity.ValidateCloneSource(*machine.Origin) != nil {
+		if machine.Origin == nil || *machine.Origin == "[redacted]" || projectid.ValidateCloneSource(*machine.Origin) != nil {
 			continue
 		}
 		if selected.CanonicalRemote != nil {
-			got, err := projects.CanonicalRemote(*machine.Origin)
-			want, wantErr := projects.CanonicalRemote(*selected.CanonicalRemote)
+			got, err := projectid.CanonicalRemote(*machine.Origin)
+			want, wantErr := projectid.CanonicalRemote(*selected.CanonicalRemote)
 			if err != nil || wantErr != nil || got != want {
 				continue
 			}
@@ -251,7 +250,7 @@ func (p *workerPanel) refreshRecoverySources() {
 			if selected.Kind != "adhoc" {
 				continue
 			}
-			if _, err := projects.CanonicalRemote(*machine.Origin); err == nil {
+			if _, err := projectid.CanonicalRemote(*machine.Origin); err == nil {
 				continue
 			}
 		}
@@ -306,10 +305,10 @@ func (p *workerPanel) attachCheckoutToWorkspace() {
 	p.cloneCheckout.Disable()
 	p.discoveryStatus.SetText("Verifying checkout and project binding…")
 	if !b.launch(func(ctx context.Context) {
-		identity, err := projectidentity.ResolveCheckout(ctx, directory)
+		identity, err := projectid.ResolveCheckout(ctx, directory)
 		var origin *string
 		if err == nil {
-			origin, err = projectidentity.CloneOrigin(ctx, identity.Directory)
+			origin, err = projectid.CloneOrigin(ctx, identity.Directory)
 		}
 		b.dispatch(func() {
 			p.finishCheckoutBinding(attachGeneration, workspaceID, revision, project, identity, origin, err, "attached")
@@ -340,14 +339,14 @@ func (p *workerPanel) cloneCheckoutForWorkspace() {
 	p.cloneCheckout.Disable()
 	p.discoveryStatus.SetText("Cloning the entered repository source…")
 	if !b.launch(func(ctx context.Context) {
-		directory, err := projectidentity.CloneRepository(ctx, parent, source)
-		var identity projectidentity.Identity
+		directory, err := projectid.CloneRepository(ctx, parent, source)
+		var identity projectid.Identity
 		var origin *string
 		if err == nil {
-			identity, err = projectidentity.ResolveCheckout(ctx, directory)
+			identity, err = projectid.ResolveCheckout(ctx, directory)
 		}
 		if err == nil {
-			origin, err = projectidentity.CloneOrigin(ctx, identity.Directory)
+			origin, err = projectid.CloneOrigin(ctx, identity.Directory)
 		}
 		b.dispatch(func() {
 			p.finishCheckoutBinding(operation, workspaceID, revision, project, identity, origin, err, "cloned")
@@ -359,7 +358,7 @@ func (p *workerPanel) cloneCheckoutForWorkspace() {
 	}
 }
 
-func (p *workerPanel) finishCheckoutBinding(operation uint64, workspaceID string, revision uint64, project string, identity projectidentity.Identity, origin *string, err error, action string) {
+func (p *workerPanel) finishCheckoutBinding(operation uint64, workspaceID string, revision uint64, project string, identity projectid.Identity, origin *string, err error, action string) {
 	if p.closed || p.attachGeneration != operation {
 		return
 	}
@@ -405,8 +404,8 @@ func (p *workerPanel) finishCheckoutBinding(operation uint64, workspaceID string
 	}
 }
 
-func validateWorkspaceCheckoutProject(item storage.ProjectOverview, identity projectidentity.Identity) error {
-	return projectidentity.ValidateBinding(item.Kind, item.CanonicalRemote, identity)
+func validateWorkspaceCheckoutProject(item storage.ProjectOverview, identity projectid.Identity) error {
+	return projectid.ValidateBinding(item.Kind, item.CanonicalRemote, identity)
 }
 
 func (p *workerPanel) discoverCheckouts(parent string) {
@@ -417,7 +416,7 @@ func (p *workerPanel) discoverCheckouts(parent string) {
 	p.checkouts.Disable()
 	p.discoveryStatus.SetText("Looking for immediate Git checkouts…")
 	if !p.browser.launch(func(ctx context.Context) {
-		found := projectidentity.DiscoverLocalCheckouts(ctx, parent)
+		found := projectid.DiscoverLocalCheckouts(ctx, parent)
 		paths := make([]string, 0, len(found))
 		for _, checkout := range found {
 			paths = append(paths, checkout.Directory)
@@ -534,7 +533,7 @@ func (p *workerPanel) startPool() {
 		p.status.SetText("Select a project before starting a worker pool.")
 		return
 	}
-	directory, err := providerprocess.ValidateDirectory(p.checkout.Text, p.provider.Selected)
+	directory, err := process.ValidateDirectory(p.checkout.Text, p.provider.Selected)
 	if err != nil {
 		p.status.SetText(err.Error())
 		return

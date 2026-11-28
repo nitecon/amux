@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/nitecon/amux/identity/agent"
 )
 
 type reviewPreference struct {
@@ -19,7 +21,7 @@ func (r reviewPreference) betterThan(other reviewPreference) bool {
 	return !r.ProviderMismatch && other.ProviderMismatch
 }
 
-func reviewRank(ctx context.Context, q queryer, task *Task, origin AgentOrigin) (reviewPreference, error) {
+func reviewRank(ctx context.Context, q queryer, task *Task, origin agent.Origin) (reviewPreference, error) {
 	var preference reviewPreference
 	if !hasLabel(task.Labels, "task-review") {
 		return preference, nil
@@ -71,7 +73,7 @@ func reviewRank(ctx context.Context, q queryer, task *Task, origin AgentOrigin) 
 	return preference, nil
 }
 
-func ensureReviewer(ctx context.Context, tx *sql.Tx, task *Task, origin *AgentOrigin) error {
+func ensureReviewer(ctx context.Context, tx *sql.Tx, task *Task, origin *agent.Origin) error {
 	if task == nil || origin == nil || !hasLabel(task.Labels, "task-review") {
 		return nil
 	}

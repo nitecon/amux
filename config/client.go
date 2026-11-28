@@ -9,8 +9,7 @@ import (
 	"strings"
 
 	"github.com/nitecon/amux/gatewayorigin"
-	"github.com/nitecon/amux/projects"
-
+	projectid "github.com/nitecon/amux/identity/project"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,7 +33,7 @@ type Client struct {
 	Projects          map[string]string `yaml:"projects,omitempty"`
 	ExcludedProjects  map[string]bool   `yaml:"excluded_projects,omitempty"`
 	ProjectURLs       []string          `yaml:"project_urls"`
-	Providers         []string          `yaml:"providers"`
+	Providers         []string          `yaml:"providers,omitempty"`
 }
 
 func DefaultClientPath() (string, error) {
@@ -42,10 +41,13 @@ func DefaultClientPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".amux", "config.yml"), nil
+	return filepath.Join(home, ".amux", clientConfigName), nil
 }
 
 func ReadClient(path string) (Client, error) {
+	if filepath.Base(path) == clientConfigName {
+		return readClientFiles(path)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return Client{}, err
@@ -56,17 +58,8 @@ func ReadClient(path string) (Client, error) {
 
 func DecodeClient(reader io.Reader) (Client, error) {
 	var config Client
-	decoder := yaml.NewDecoder(reader)
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&config); err != nil {
+	if err := decodeClientFile(reader, &config); err != nil {
 		return Client{}, err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return Client{}, err
-		}
-		return Client{}, errors.New("expected a single YAML document")
 	}
 	if err := config.Validate(); err != nil {
 		return Client{}, err
@@ -120,7 +113,7 @@ func (config Client) Validate() error {
 	}
 	remotes := make(map[string]bool)
 	for _, url := range config.ProjectURLs {
-		remote, err := projects.CanonicalRemote(url)
+		remote, err := projectid.CanonicalRemote(url)
 		if err != nil {
 			return fmt.Errorf("invalid project URL %q: %w", url, err)
 		}
@@ -149,6 +142,9 @@ func SaveClient(path string, config Client) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
+	if filepath.Base(path) == clientConfigName {
+		return saveClientFiles(path, config)
+	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
@@ -167,6 +163,9 @@ func SameHostedGateway(a, b *HostedGateway) bool {
 func GenerateClient(path string, config Client) error {
 	if err := config.Validate(); err != nil {
 		return err
+	}
+	if filepath.Base(path) == clientConfigName {
+		return generateClientFiles(path, config)
 	}
 	const notes = `# Enrolled clients use the gateway recorded in their enrollment manifest.
 # Set enrolled_profile to the path printed by amux client enroll.

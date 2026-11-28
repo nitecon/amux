@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/identity/agent"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -23,8 +24,8 @@ func TestReviewTaskToolsPreferAvailablePeerAndPermitFallback(t *testing.T) {
 	if err := s.InsertProject(ctx, storage.Project{Ident: "reviews", ChannelName: "reviews", Kind: "adhoc"}); err != nil {
 		t.Fatal(err)
 	}
-	owner := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
-	peer := storage.AgentOrigin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	owner := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	peer := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	source, err := s.InsertTask(ctx, storage.TaskInsert{Project: "reviews", Title: "Source work", Reporter: "user", RootReason: stringValue("user-directed"), Details: stringValue("Review claim integration")}, &owner)
 	if err != nil {
 		t.Fatal(err)

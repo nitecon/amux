@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/nitecon/amux/gatewayclient"
-	"github.com/nitecon/amux/projectidentity"
+	projectid "github.com/nitecon/amux/identity/project"
 	"github.com/urfave/cli/v3"
 )
 
@@ -26,7 +26,7 @@ func runTaskAgents(ctx context.Context, client *gatewayclient.Client, project st
 	if err != nil {
 		return fmt.Errorf("resolve current checkout: %w", err)
 	}
-	identity, err := projectidentity.Resolve(ctx, directory)
+	identity, err := projectid.Resolve(ctx, directory)
 	if err != nil {
 		return fmt.Errorf("resolve current checkout identity: %w", err)
 	}

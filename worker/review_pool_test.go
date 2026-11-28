@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
+	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
 )
@@ -89,7 +90,7 @@ func TestRunPoolClaimsFallbackReviewWithFreshContext(t *testing.T) {
 
 	opened := make(chan reviewPoolOpenedRun, 3)
 	var openCount atomic.Int32
-	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (Session, error) {
+	open := func(openCtx context.Context, run storage.WorkerRun, sink conversation.Sink) (providers.Session, error) {
 		if run.NativeSessionID != "" {
 			return nil, fmt.Errorf("new task run reused native session %q", run.NativeSessionID)
 		}

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nitecon/amux/plugins"
-	"github.com/nitecon/amux/router"
+	"github.com/nitecon/amux/controllers"
+	"github.com/nitecon/amux/fism"
 )
 
 func completeSoftwareTask(t *testing.T, s *Store) *Task {
@@ -29,9 +29,9 @@ func completeSoftwareTask(t *testing.T, s *Store) *Task {
 	return completed.Task
 }
 
-func reviewCutoverRuntime(t *testing.T, s *Store) *router.Runtime {
+func reviewCutoverRuntime(t *testing.T, s *Store) *fism.Runtime {
 	t.Helper()
-	runtime, err := router.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []router.Plugin{plugins.ReviewPlugin(s)}, router.RunConfig{})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []fism.Controller{controllers.ReviewController(s)}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestRouterReviewCutoverDefersCompletionToReviewPlugin(t *testing.T) {
 	}
 }
 
-func TestDrainLegacyReviewOutboxReopensAndRollsBackBeforeRetry(t *testing.T) {
+func TestPublishLegacyReviewChangesReopensAndRollsBackBeforeRetry(t *testing.T) {
 	ctx := context.Background()
 	s := taskStore(t)
 	source := routerReviewSource(t, s)
@@ -95,29 +95,48 @@ func TestDrainLegacyReviewOutboxReopensAndRollsBackBeforeRetry(t *testing.T) {
 	}
 	defer reopened.Close()
 	runtime := reviewCutoverRuntime(t, reopened)
-	if _, err := reopened.db.ExecContext(ctx, `CREATE TRIGGER reject_review_delivery BEFORE INSERT ON router_deliveries
-		WHEN NEW.plugin='review' BEGIN SELECT RAISE(ABORT,'fixture delivery rejection'); END`); err != nil {
+	if _, err := reopened.db.ExecContext(ctx, `CREATE TRIGGER reject_review_publication BEFORE INSERT ON router_events
+		WHEN NEW.id='task.completed' BEGIN SELECT RAISE(ABORT,'fixture delivery rejection'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := reopened.DrainLegacyReviewOutbox(ctx, runtime.Registry(), 200); err == nil || count != 0 {
+	if _, count, err := reopened.PublishLegacyReviewChanges(ctx, runtime.Registry(), 200); err == nil || count != 0 {
 		t.Fatalf("failed bridge append count=%d err=%v", count, err)
 	}
 	assertReviewCutoverCount(t, reopened, "SELECT COUNT(*) FROM task_review_outbox WHERE source_task_id=?", 1, source.ID)
 	assertReviewCutoverCount(t, reopened, "SELECT COUNT(*) FROM router_events WHERE id='task.completed' AND source='tasks'", 0)
-	if _, err := reopened.db.ExecContext(ctx, "DROP TRIGGER reject_review_delivery"); err != nil {
+	if _, err := reopened.db.ExecContext(ctx, "DROP TRIGGER reject_review_publication"); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := reopened.DrainLegacyReviewOutbox(ctx, runtime.Registry(), 200); err != nil || count != 1 {
-		t.Fatalf("bridge retry count=%d err=%v", count, err)
+	changes, count, err := reopened.PublishLegacyReviewChanges(ctx, runtime.Registry(), 200)
+	if err != nil || count != 1 || len(changes) != 1 {
+		t.Fatalf("bridge retry count=%d changes=%d err=%v", count, len(changes), err)
 	}
-	var uid string
-	if err := reopened.db.QueryRowContext(ctx, "SELECT uid FROM router_events WHERE id='task.completed' AND source='tasks'").Scan(&uid); err != nil {
+	change := changes[0]
+	uid := change.Event.UID
+	assertReviewCutoverCount(t, reopened, "SELECT COUNT(*) FROM router_deliveries WHERE event_seq=?", 0, change.Event.Seq)
+	assertReviewCutoverCount(t, reopened, "SELECT COUNT(*) FROM task_review_outbox WHERE source_task_id=?", 1, source.ID)
+	// Changing task metadata keeps the same completion revision. A fresh
+	// observation uses the new values and preserves the broadcast sequence.
+	if _, err := reopened.db.ExecContext(ctx, "UPDATE tasks SET title='Revised' WHERE id=?", source.ID); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _, err := reopened.PublishLegacyReviewChanges(ctx, runtime.Registry(), 200)
+	if err != nil || len(restarted) != 1 || restarted[0].Event.Seq != change.Event.Seq ||
+		string(restarted[0].Event.Payload) == string(change.Event.Payload) {
+		t.Fatalf("fresh completion observation=%+v err=%v", restarted, err)
+	}
+	change = restarted[0]
+	outcomes, err := runtime.ReconcileEvent(ctx, change.Event)
+	if err != nil || len(outcomes) != 1 || outcomes[0].State != "completed" {
+		t.Fatalf("review pass outcomes=%+v err=%v", outcomes, err)
+	}
+	if err := reopened.SettleLegacyReviewChange(ctx, change, outcomes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reopened.db.ExecContext(ctx, "INSERT INTO task_review_outbox(source_task_id,source_done_at) VALUES(?,?)", source.ID, *source.DoneAt); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := reopened.DrainLegacyReviewOutbox(ctx, runtime.Registry(), 200); err != nil || count != 1 {
+	if changes, count, err := reopened.PublishLegacyReviewChanges(ctx, runtime.Registry(), 200); err != nil || count != 1 || len(changes) != 0 {
 		t.Fatalf("replayed bridge count=%d err=%v", count, err)
 	}
 	var replayUID string
@@ -157,7 +176,7 @@ func TestRouterReviewCutoverDisabledSettingDoesNotBypassPluginGate(t *testing.T)
 	assertReviewCutoverCount(t, s, "SELECT COUNT(*) FROM task_subtasks WHERE parent_id=?", 0, source.ID)
 }
 
-func TestDrainLegacyReviewOutboxDropsObsoleteObligations(t *testing.T) {
+func TestPublishLegacyReviewChangesDropsObsoleteObligations(t *testing.T) {
 	s := taskStore(t)
 	ctx := context.Background()
 	source := routerReviewSource(t, s)
@@ -167,27 +186,27 @@ func TestDrainLegacyReviewOutboxDropsObsoleteObligations(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, "UPDATE tasks SET status='todo',done_at=NULL WHERE id=?", source.ID); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := s.DrainLegacyReviewOutbox(ctx, nil, 200); err != nil || count != 1 {
+	if _, count, err := s.PublishLegacyReviewChanges(ctx, nil, 200); err != nil || count != 1 {
 		t.Fatalf("drop obsolete obligation count=%d err=%v", count, err)
 	}
 	assertReviewCutoverCount(t, s, "SELECT COUNT(*) FROM task_review_outbox WHERE source_task_id=?", 0, source.ID)
 	assertReviewCutoverCount(t, s, "SELECT COUNT(*) FROM router_events WHERE id='task.completed' AND source='tasks'", 0)
 }
 
-func TestDrainLegacyReviewOutboxRequiresReviewPluginSubscriber(t *testing.T) {
+func TestPublishLegacyReviewChangesRequiresReviewController(t *testing.T) {
 	s := taskStore(t)
 	ctx := context.Background()
 	source := routerReviewSource(t, s)
 	if _, err := s.db.ExecContext(ctx, "INSERT INTO task_review_outbox(source_task_id,source_done_at) VALUES(?,?)", source.ID, *source.DoneAt); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := router.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []router.Plugin{
-		plugins.RemotePlugin([]string{"task.completed"}),
-	}, router.RunConfig{})
+	runtime, err := fism.NewRuntime(s, s.EventBus(), RouterTaskEventDefinitions(), []fism.Controller{
+		controllers.RemoteController([]string{"task.completed"}),
+	}, fism.RunConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count, err := s.DrainLegacyReviewOutbox(ctx, runtime.Registry(), 200); err == nil || count != 0 {
+	if _, count, err := s.PublishLegacyReviewChanges(ctx, runtime.Registry(), 200); err == nil || count != 0 {
 		t.Fatalf("remote-only subscriber acknowledged review obligation: count=%d err=%v", count, err)
 	}
 	assertReviewCutoverCount(t, s, "SELECT COUNT(*) FROM task_review_outbox WHERE source_task_id=?", 1, source.ID)
