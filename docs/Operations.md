@@ -541,14 +541,17 @@ delay, and a conversation retired with `amux fleet close` stays closed.
 
 A missing provider rollout (`no rollout found for thread id ...`) cannot be
 recovered by resuming that thread, so the companion asks the gateway to fail the
-conversation over instead. The gateway moves it to another live native agent in
-the same project that has no fleet conversation of its own. It prefers a
+conversation over instead. The gateway moves it to another live worker pool
+slot in the same project that has no fleet conversation of its own; standalone
+`amux worker` runs are never chosen because no fleet runner starts them. It
+prefers a
 different provider, then the most recently seen agent. The conversation ID and
 transcript are kept. The transcript records an `owner_handoff` event with status
 `provider_failover`. The new agent starts a fresh provider thread without the
 previous thread's context. Queued prompts move to the new agent, and claimed
 commands are interrupted. Opening the original agent again creates a new
-conversation. If no other agent is available, or the gateway predates failover,
+conversation. The previous node discards its local binding to the dead thread,
+so if the conversation later returns to that agent it starts a fresh thread too. If no other agent is available, or the gateway predates failover,
 the companion keeps the capped retry and asks again on the next failure.
 Retrying never stops on its own.
 

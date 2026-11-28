@@ -61,6 +61,8 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 	exits := make(chan runExit)
 	active := make(map[string]context.CancelFunc)
 	retries := make(map[string]fleetRetry)
+	// Chats failed over away from a session, until the gateway's change arrives.
+	moved := make(map[string]string)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	var available []storage.FleetConversation
@@ -90,6 +92,13 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				continue
 			}
 			desired[chat.ID] = true
+			if from, ok := moved[chat.ID]; ok {
+				if from == chat.Owner.SessionID {
+					// Stale snapshot: do not restart the dead thread.
+					continue
+				}
+				delete(moved, chat.ID)
+			}
 			if active[chat.ID] != nil {
 				continue
 			}
@@ -102,8 +111,8 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			}
 			fresh := id == ""
 			if !fresh {
-				// After a failover to another slot on this node the saved run is
-				// bound to the previous agent's dead thread; start a new one.
+				// After a failover to another slot on this node the saved run
+				// belongs to the previous agent; start a new one.
 				run, err := store.WorkerRun(ctx, id)
 				if err != nil {
 					continue
@@ -147,6 +156,11 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				delete(retries, id)
 			}
 		}
+		for id := range moved {
+			if !desired[id] {
+				delete(moved, id)
+			}
+		}
 	}
 
 	for {
@@ -174,15 +188,21 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				retries[exit.id] = retry
 			}
 			if exit.err != nil && ctx.Err() == nil && missingRollout(exit.err) {
+				from := ""
+				if run, err := store.WorkerRun(ctx, exit.run); err == nil {
+					from = run.Owner.SessionID
+				}
 				// The thread cannot come back; hand the chat to another live agent.
 				// Without one, keep the capped retry so the chat is never abandoned.
 				failoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				moved, err := client.FailoverFleetConversation(failoverCtx, exit.project, exit.id)
+				next, err := client.FailoverFleetConversation(failoverCtx, exit.project, exit.id)
 				cancel()
 				if err == nil {
-					// Keep the retry gate: the local snapshot is stale until the
-					// gateway's change arrives and must not restart the dead thread.
-					fmt.Fprintf(stderr, "fleet conversation %s: provider thread missing; moved to %s agent on %s\n", exit.id, moved.Provider, moved.Hostname)
+					fmt.Fprintf(stderr, "fleet conversation %s: provider thread missing; moved to %s agent on %s\n", exit.id, next.Provider, next.Hostname)
+					retireFleetRun(ctx, store, exit.run, stderr)
+					moved[exit.id] = from
+					delete(retries, exit.id)
+					reconcile()
 					continue
 				}
 				fmt.Fprintf(stderr, "fleet conversation %s: failover: %v\n", exit.id, err)
@@ -205,6 +225,21 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			// it became desired again; failed conversations stay gated by retry.next.
 			reconcile()
 		}
+	}
+}
+
+// retireFleetRun saves a blank run for the chat so that, if the chat ever
+// returns to this session, it starts a fresh thread instead of the dead one.
+func retireFleetRun(ctx context.Context, store *storage.Store, id string, stderr io.Writer) {
+	run, err := store.WorkerRun(ctx, id)
+	if err == nil {
+		err = store.SaveWorkerRun(ctx, storage.WorkerRun{
+			ID: uuid.NewString(), ConversationID: run.ConversationID, Server: run.Server, Project: run.Project,
+			Directory: run.Directory, Command: run.Command, Owner: run.Owner, Goal: run.Goal,
+		})
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "retire fleet conversation run %s: %v\n", id, err)
 	}
 }
 

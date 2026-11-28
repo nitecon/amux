@@ -199,13 +199,15 @@ func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, prin
 	if err != nil {
 		return nil, err
 	}
+	// Only worker pool slots (source "<pool>/<slot>") are started by a fleet
+	// runner; standalone runs ("worker:<run>") would strand the chat.
 	next := agent.Origin{}
 	var nextPrincipal, hostname string
 	err = tx.QueryRowContext(ctx, `SELECT a.session_id,a.instance_id,a.provider,a.os,s.principal,COALESCE(a.hostname,s.hostname,'')
 		FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source
 		WHERE a.project_ident=? AND a.session_id!=? AND a.state!='gone' AND a.seen_at>=?
 		  AND a.report_kind='native' AND a.sequence=s.sequence AND a.sequence=s.principal_sequence
-		  AND s.principal IS NOT NULL AND s.principal!='api-key'
+		  AND s.principal IS NOT NULL AND s.principal!='api-key' AND instr(a.source,'/')>0
 		  AND NOT EXISTS(SELECT 1 FROM amux_fleet_conversations f WHERE f.project_ident=a.project_ident AND f.session_id=a.session_id)
 		ORDER BY a.provider=? ASC, a.seen_at DESC, a.session_id, a.instance_id LIMIT 1`,
 		project, info.Owner.SessionID, now.UnixMilli()-presenceGoneAfter, info.Owner.Provider).

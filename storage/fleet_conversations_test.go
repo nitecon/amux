@@ -91,6 +91,7 @@ func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
 	sameProvider := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
 	otherProvider := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	busy := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	standalone := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
 	report := func(source, principal string, seen time.Time, origins ...agent.Origin) {
 		host := source + "-host"
 		agents := make([]PresenceAgent, 0, len(origins))
@@ -109,10 +110,12 @@ func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
 	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, now); !errors.Is(err, ErrFleetAgentUnavailable) {
 		t.Fatalf("failover without candidates returned %v", err)
 	}
-	report("same", "same-node", now, sameProvider)
-	report("other", "other-node", now, otherProvider)
+	report("same/slot", "same-node", now, sameProvider)
+	report("other/slot", "other-node", now, otherProvider)
 	// The most recently seen agent already has its own chat and is skipped.
-	report("busy", "busy-node", now.Add(time.Second), busy)
+	report("busy/slot", "busy-node", now.Add(time.Second), busy)
+	// A standalone run is not started by a fleet runner and is skipped.
+	report("worker:"+uuid.NewString(), "standalone-node", now.Add(2*time.Second), standalone)
 	if _, err := s.OpenFleetConversation(ctx, "tasks", busy.SessionID, now); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +130,7 @@ func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
 		t.Fatalf("foreign node moved chat: %v", err)
 	}
 	moved, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, now)
-	if err != nil || moved.ID != chat.ID || moved.Owner != otherProvider || moved.Provider != "claude" || moved.NativeSessionID != "" || moved.Hostname != "other-host" {
+	if err != nil || moved.ID != chat.ID || moved.Owner != otherProvider || moved.Provider != "claude" || moved.NativeSessionID != "" || moved.Hostname != "other/slot-host" {
 		t.Fatalf("moved %+v, %v", moved, err)
 	}
 	if owned, err := s.FleetConversations(ctx, "broken-node"); err != nil || len(owned) != 0 {

@@ -97,7 +97,7 @@ func TestFailoverFleetConversationAuthorization(t *testing.T) {
 	spare := *actor
 	spare.SessionID, spare.InstanceID, spare.Provider = uuid.NewString(), uuid.NewString(), "claude"
 	if _, err := store.ReportPresenceWithPrincipal(ctx, storage.PresenceReport{
-		Source: "fleet-spare", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: spare}},
+		Source: "fleet-pool/spare", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: spare}},
 	}, now, "spare-node"); err != nil {
 		t.Fatal(err)
 	}
