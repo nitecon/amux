@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nitecon/amux/storage"
 )
 
@@ -55,5 +56,55 @@ func TestCloseFleetConversationAuthorization(t *testing.T) {
 				t.Fatalf("closed=%v after status %d", closed, w.Code)
 			}
 		})
+	}
+}
+
+func TestFailoverFleetConversationAuthorization(t *testing.T) {
+	store, _ := taskAPI(t)
+	ctx := context.Background()
+	actor := apiActor()
+	now := time.Now().UTC()
+	if _, err := store.ReportPresenceWithPrincipal(ctx, storage.PresenceReport{
+		Source: "fleet-test", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: *actor}},
+	}, now, "owner-node"); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.OpenFleetConversation(ctx, "tasks", actor.SessionID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAPI(store, "fixture")
+	mux := http.NewServeMux()
+	a.registerFleetConversationRoutes(mux)
+	send := func(principal string) int {
+		r := httptest.NewRequest(http.MethodPost, "/v1/projects/tasks/fleet-conversations/"+chat.ID+"/failover", nil)
+		if principal != "" {
+			r = r.WithContext(context.WithValue(r.Context(), securePrincipalContextKey{}, &securePrincipal{NodeID: principal, role: "client"}))
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := send(""); code != http.StatusForbidden {
+		t.Fatalf("bearer only status %d", code)
+	}
+	if code := send("other-node"); code != http.StatusForbidden {
+		t.Fatalf("foreign node status %d", code)
+	}
+	if code := send("owner-node"); code != http.StatusConflict {
+		t.Fatalf("no candidate status %d", code)
+	}
+	spare := *actor
+	spare.SessionID, spare.InstanceID, spare.Provider = uuid.NewString(), uuid.NewString(), "claude"
+	if _, err := store.ReportPresenceWithPrincipal(ctx, storage.PresenceReport{
+		Source: "fleet-spare", Sequence: 1, Agents: []storage.PresenceAgent{{ProjectIdent: "tasks", Origin: spare}},
+	}, now, "spare-node"); err != nil {
+		t.Fatal(err)
+	}
+	if code := send("owner-node"); code != http.StatusOK {
+		t.Fatalf("owner failover status %d", code)
+	}
+	if chats, err := store.FleetConversations(ctx, "spare-node"); err != nil || len(chats) != 1 || chats[0].ID != chat.ID {
+		t.Fatalf("spare node listed %+v, %v", chats, err)
 	}
 }

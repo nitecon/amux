@@ -17,6 +17,20 @@ func (c *Client) CloseFleetConversation(ctx context.Context, project, id string)
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
 }
 
+// FailoverFleetConversation asks the gateway to move a chat whose provider
+// thread is gone to another live agent.
+func (c *Client) FailoverFleetConversation(ctx context.Context, project, id string) (*storage.FleetConversation, error) {
+	var info storage.FleetConversation
+	path := "/v1/projects/" + url.PathEscape(project) + "/fleet-conversations/" + url.PathEscape(id) + "/failover"
+	if err := c.do(ctx, http.MethodPost, path, nil, nil, &info); err != nil {
+		return nil, err
+	}
+	if info.ID != id || info.ProjectIdent != project {
+		return nil, fmt.Errorf("gateway returned a different fleet conversation")
+	}
+	return &info, nil
+}
+
 func (c *Client) OpenFleetConversation(ctx context.Context, project, session string) (*storage.FleetConversation, error) {
 	var info storage.FleetConversation
 	path := "/v1/projects/" + url.PathEscape(project) + "/fleet-agents/" + url.PathEscape(session) + "/conversation"

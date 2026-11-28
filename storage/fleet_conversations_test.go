@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
+	"github.com/nitecon/amux/identity/agent"
 )
 
 func TestFleetConversationBindsDefaultChatToAuthenticatedAgent(t *testing.T) {
@@ -79,5 +80,77 @@ func TestFleetConversationBindsDefaultChatToAuthenticatedAgent(t *testing.T) {
 	}
 	if err := s.CloseFleetConversation(ctx, "tasks", fresh.ID, "admin-node", true); err != nil {
 		t.Fatalf("administrator close: %v", err)
+	}
+}
+
+func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
+	ctx := context.Background()
+	s := taskStore(t)
+	now := time.Now().UTC()
+	broken := *taskActor()
+	sameProvider := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "codex", OS: "linux"}
+	otherProvider := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	busy := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	report := func(source, principal string, seen time.Time, origins ...agent.Origin) {
+		host := source + "-host"
+		agents := make([]PresenceAgent, 0, len(origins))
+		for _, origin := range origins {
+			agents = append(agents, PresenceAgent{ProjectIdent: "tasks", Origin: origin})
+		}
+		if accepted, err := s.ReportPresenceWithPrincipal(ctx, PresenceReport{Source: source, Sequence: 1, Hostname: &host, Agents: agents}, seen, principal); err != nil || !accepted {
+			t.Fatalf("presence accepted %v, %v", accepted, err)
+		}
+	}
+	report("broken", "broken-node", now, broken)
+	chat, err := s.OpenFleetConversation(ctx, "tasks", broken.SessionID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, now); !errors.Is(err, ErrFleetAgentUnavailable) {
+		t.Fatalf("failover without candidates returned %v", err)
+	}
+	report("same", "same-node", now, sameProvider)
+	report("other", "other-node", now, otherProvider)
+	// The most recently seen agent already has its own chat and is skipped.
+	report("busy", "busy-node", now.Add(time.Second), busy)
+	if _, err := s.OpenFleetConversation(ctx, "tasks", busy.SessionID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BindConversationSession(ctx, "tasks", chat.ID, "missing-rollout", &broken); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := s.EnqueueConversationCommand(ctx, "tasks", chat.ID, uuid.NewString(), conversation.Command{Kind: "prompt", Text: "continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "other-node", false, now); !errors.Is(err, ErrTaskOwnership) {
+		t.Fatalf("foreign node moved chat: %v", err)
+	}
+	moved, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, now)
+	if err != nil || moved.ID != chat.ID || moved.Owner != otherProvider || moved.Provider != "claude" || moved.NativeSessionID != "" || moved.Hostname != "other-host" {
+		t.Fatalf("moved %+v, %v", moved, err)
+	}
+	if owned, err := s.FleetConversations(ctx, "broken-node"); err != nil || len(owned) != 0 {
+		t.Fatalf("previous node still runs chat: %+v, %v", owned, err)
+	}
+	if owned, err := s.FleetConversations(ctx, "other-node"); err != nil || len(owned) != 1 || owned[0].ID != chat.ID || owned[0].Owner != otherProvider {
+		t.Fatalf("new node listed %+v, %v", owned, err)
+	}
+	if reopened, err := s.OpenFleetConversation(ctx, "tasks", otherProvider.SessionID, now); err != nil || reopened.ID != chat.ID {
+		t.Fatalf("new agent default chat %+v, %v", reopened, err)
+	}
+	if fresh, err := s.OpenFleetConversation(ctx, "tasks", broken.SessionID, now); err != nil || fresh.ID == chat.ID {
+		t.Fatalf("previous agent kept moved chat %+v, %v", fresh, err)
+	}
+	commands, err := s.ConversationCommands(ctx, "tasks", chat.ID, 0, 10)
+	if err != nil || len(commands) != 1 || commands[0].ID != prompt.ID || commands[0].State != "queued" || commands[0].TargetInstanceID != otherProvider.InstanceID {
+		t.Fatalf("queued prompt did not follow chat: %+v, %v", commands, err)
+	}
+	events, err := s.ConversationEvents(ctx, "tasks", chat.ID, 0, 10)
+	if err != nil || len(events) != 1 || events[0].Event.Status != "provider_failover" {
+		t.Fatalf("missing failover event: %+v, %v", events, err)
+	}
+	if _, err := s.BindConversationSession(ctx, "tasks", chat.ID, "fresh-thread", &otherProvider); err != nil {
+		t.Fatalf("new agent cannot bind fresh thread: %v", err)
 	}
 }

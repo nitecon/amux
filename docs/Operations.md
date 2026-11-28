@@ -532,7 +532,20 @@ history. If a worker fails after running longer than the previous retry delay,
 the delay starts again at one minute. Reconnect snapshots and configuration
 changes do not bypass an active delay. Failures are written to the client log
 and, when a native session is already bound, to the conversation as an error with
-recovery instructions. A missing provider rollout cannot be recovered by retrying it.
+recovery instructions.
+
+A missing provider rollout (`no rollout found for thread id ...`) cannot be
+recovered by resuming that thread, so the companion asks the gateway to fail the
+conversation over instead. The gateway moves it to another live native agent in
+the same project that has no fleet conversation of its own. It prefers a
+different provider, then the most recently seen agent. The conversation ID and
+transcript are kept. The transcript records an `owner_handoff` event with status
+`provider_failover`. The new agent starts a fresh provider thread without the
+previous thread's context. Queued prompts move to the new agent, and claimed
+commands are interrupted. Opening the original agent again creates a new
+conversation. If no other agent is available, or the gateway predates failover,
+the companion keeps the capped retry and asks again on the next failure.
+Retrying never stops on its own.
 
 To retire a conversation, use the enrolled owning node or an administrator node:
 
@@ -562,6 +575,9 @@ API clients can send
 enrolled connection. Success returns `204`; a different non-administrator node
 receives `403`, and an unknown/already closed conversation or wrong project
 receives `404`. Bearer-only credentials cannot close fleet conversations.
+`POST /v1/projects/{ident}/fleet-conversations/{conversation}/failover` uses
+the same authorization. It returns the moved conversation, or `409` when no
+other agent is available.
 
 ## Desktop startup
 

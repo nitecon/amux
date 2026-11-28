@@ -71,6 +71,7 @@ type fleetFixture struct {
 	remote, local *storage.Store
 	client        *gatewayclient.Client
 	snapshots     chan []storage.FleetConversation
+	failovers     chan string
 	directory     string
 	chat          *storage.Conversation
 }
@@ -94,7 +95,11 @@ func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
 		t.Fatal(err)
 	}
 	snapshots := make(chan []storage.FleetConversation)
+	failovers := make(chan string, 10)
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/failover") {
+			failovers <- r.URL.Path
+		}
 		if r.URL.Path != "/v1/fleet/conversations/stream" {
 			handler.ServeHTTP(w, r)
 			return
@@ -139,7 +144,7 @@ func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fleetFixture{remote, local, client, snapshots, directory, chat}
+	return fleetFixture{remote, local, client, snapshots, failovers, directory, chat}
 }
 
 func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
@@ -197,6 +202,16 @@ func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 			t.Fatal("missing user-visible failure")
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+	// The unrecoverable thread asks for failover first; the gateway refuses this
+	// bearer-only client, so the capped retry remains in force.
+	select {
+	case path := <-fixture.failovers:
+		if !strings.Contains(path, chat.ID) {
+			t.Fatalf("failover requested for %s", path)
+		}
+	default:
+		t.Fatal("missing rollout did not request failover")
 	}
 	for range 20 {
 		select {

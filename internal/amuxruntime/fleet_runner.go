@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/storage"
@@ -97,8 +99,22 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			if err != nil {
 				continue
 			}
-			if id == "" {
-				id = chat.ID
+			fresh := id == ""
+			if !fresh {
+				// After a failover to another slot on this node the saved run is
+				// bound to the previous agent's dead thread; start a new one.
+				run, err := store.WorkerRun(ctx, id)
+				if err != nil {
+					continue
+				}
+				fresh = run.Owner.SessionID != chat.Owner.SessionID
+			}
+			if fresh {
+				if id == "" {
+					id = chat.ID
+				} else {
+					id = uuid.NewString()
+				}
 				if err := store.SaveWorkerRun(ctx, storage.WorkerRun{
 					ID: id, ConversationID: chat.ID, Server: client.Endpoint(), Project: pool.Project,
 					Directory: pool.Directory, Command: pool.Command, Owner: chat.Owner,
@@ -152,6 +168,20 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			} else {
 				retries[exit.id] = retry
 			}
+			if exit.err != nil && ctx.Err() == nil && missingRollout(exit.err) {
+				// The thread cannot come back; hand the chat to another live agent.
+				// Without one, keep the capped retry so the chat is never abandoned.
+				failoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				moved, err := client.FailoverFleetConversation(failoverCtx, exit.project, exit.id)
+				cancel()
+				if err == nil {
+					// Keep the retry gate: the local snapshot is stale until the
+					// gateway's change arrives and must not restart the dead thread.
+					fmt.Fprintf(stderr, "fleet conversation %s: provider thread missing; moved to %s agent on %s\n", exit.id, moved.Provider, moved.Hostname)
+					continue
+				}
+				fmt.Fprintf(stderr, "fleet conversation %s: failover: %v\n", exit.id, err)
+			}
 			if exit.err != nil && ctx.Err() == nil {
 				text := fmt.Sprintf("Fleet conversation stopped: %v. Retry in %s. Use amux fleet close --project %s --conversation %s to retire this chat; opening the agent again starts a fresh thread.", exit.err, retry.delay, exit.project, exit.id)
 				fmt.Fprintf(stderr, "fleet conversation %s: %s\n", exit.id, text)
@@ -171,6 +201,10 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			reconcile()
 		}
 	}
+}
+
+func missingRollout(err error) bool {
+	return strings.Contains(err.Error(), "no rollout found")
 }
 
 // Keep reconnect snapshots and configuration changes from restarting a failed

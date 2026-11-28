@@ -15,6 +15,29 @@ func (a *api) registerFleetConversationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{ident}/fleet-agents/{session}/conversation", a.openFleetConversation)
 	mux.HandleFunc("GET /v1/fleet/conversations/stream", a.fleetConversationStream)
 	mux.HandleFunc("DELETE /v1/projects/{ident}/fleet-conversations/{conversation}", a.closeFleetConversation)
+	mux.HandleFunc("POST /v1/projects/{ident}/fleet-conversations/{conversation}/failover", a.failoverFleetConversation)
+}
+
+func (a *api) failoverFleetConversation(w http.ResponseWriter, r *http.Request) {
+	peer := authenticatedSecurePrincipal(r.Context())
+	if peer == nil {
+		writeError(w, http.StatusForbidden, "fleet chat requires an enrolled client")
+		return
+	}
+	info, err := a.store.FailoverFleetConversation(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), peer.NodeID, peer.role == "administrator", time.Now().UTC())
+	if errors.Is(err, storage.ErrTaskOwnership) {
+		writeError(w, http.StatusForbidden, "conversation belongs to a different enrolled client")
+		return
+	}
+	if errors.Is(err, storage.ErrFleetAgentUnavailable) {
+		writeError(w, http.StatusConflict, "no other agent is available for this conversation")
+		return
+	}
+	if err != nil {
+		conversationError(w, err)
+		return
+	}
+	writeJSON(w, info)
 }
 
 func (a *api) closeFleetConversation(w http.ResponseWriter, r *http.Request) {

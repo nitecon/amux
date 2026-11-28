@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/eventbus"
 	"github.com/nitecon/amux/identity/agent"
 	projectid "github.com/nitecon/amux/identity/project"
@@ -172,4 +173,96 @@ func (s *Store) CloseFleetConversation(ctx context.Context, project, id, princip
 	s.wakeConversations()
 	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.FleetConversationChanged})
 	return nil
+}
+
+// FailoverFleetConversation moves a chat whose provider thread cannot be resumed
+// to another live agent, preferring a different provider. The transcript stays;
+// the new agent starts a fresh native thread.
+func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, principal string, administrator bool, now time.Time) (*FleetConversation, error) {
+	project = projectid.NormalizeIdent(project)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var owner string
+	err = tx.QueryRowContext(ctx, `SELECT principal FROM amux_fleet_conversations WHERE project_ident=? AND conversation_id=?`, project, id).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if principal == "" || (!administrator && owner != principal) {
+		return nil, ErrTaskOwnership
+	}
+	info, err := readConversation(ctx, tx, project, id)
+	if err != nil {
+		return nil, err
+	}
+	next := agent.Origin{}
+	var nextPrincipal, hostname string
+	err = tx.QueryRowContext(ctx, `SELECT a.session_id,a.instance_id,a.provider,a.os,s.principal,COALESCE(a.hostname,s.hostname,'')
+		FROM amux_presence_agents a JOIN amux_presence_sources s ON s.source=a.source
+		WHERE a.project_ident=? AND a.session_id!=? AND a.state!='gone' AND a.seen_at>=?
+		  AND a.report_kind='native' AND a.sequence=s.sequence AND a.sequence=s.principal_sequence
+		  AND s.principal IS NOT NULL AND s.principal!='api-key'
+		  AND NOT EXISTS(SELECT 1 FROM amux_fleet_conversations f WHERE f.project_ident=a.project_ident AND f.session_id=a.session_id)
+		ORDER BY a.provider=? ASC, a.seen_at DESC, a.session_id, a.instance_id LIMIT 1`,
+		project, info.Owner.SessionID, now.UnixMilli()-presenceGoneAfter, info.Owner.Provider).
+		Scan(&next.SessionID, &next.InstanceID, &next.Provider, &next.OS, &nextPrincipal, &hostname)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrFleetAgentUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE amux_conversations SET provider=?,owner_json=?,native_session_id='' WHERE id=?`, next.Provider, string(encoded), id); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE amux_fleet_conversations SET session_id=?,principal=?,hostname=? WHERE conversation_id=?`, next.SessionID, nextPrincipal, hostname, id); err != nil {
+		return nil, err
+	}
+	// Match ResumeConversation: claimed work has an uncertain execution
+	// boundary, while unclaimed prompts follow the chat to its new agent.
+	if _, err = tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET state='interrupted',updated_at=? WHERE conversation_id=? AND (state='claimed' OR (state='queued' AND kind!='prompt'))`, now.UnixMilli(), id); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET target_instance_id=?,updated_at=? WHERE conversation_id=? AND state='queued' AND kind='prompt'`, next.InstanceID, now.UnixMilli(), id); err != nil {
+		return nil, err
+	}
+	if info.NativeSessionID != "" {
+		data, err := json.Marshal(struct {
+			NativeSessionID string       `json:"native_session_id"`
+			InstanceID      string       `json:"instance_id"`
+			PreviousOrigin  agent.Origin `json:"previous_origin"`
+			CurrentOrigin   agent.Origin `json:"current_origin"`
+		}{info.NativeSessionID, next.InstanceID, info.Owner, next})
+		if err != nil {
+			return nil, err
+		}
+		text := fmt.Sprintf("Provider thread could not be resumed; this conversation moved to a %s agent on %s with a fresh thread.", next.Provider, hostname)
+		raw, err := encodeConversationEvent(conversation.Event{Kind: "owner_handoff", SessionID: info.NativeSessionID, Status: "provider_failover", Text: text, Data: data})
+		if err != nil {
+			return nil, err
+		}
+		var sequence int64
+		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence),0)+1 FROM amux_conversation_events WHERE conversation_id=?", id).Scan(&sequence); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO amux_conversation_events(conversation_id,sequence,event_id,event_json,created_at,instance_id) VALUES(?,?,?,?,?,?)`, id, sequence, uuid.NewString(), string(raw), now.UnixMilli(), next.InstanceID); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.wakeConversations()
+	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.FleetConversationChanged})
+	info.Provider, info.Owner, info.NativeSessionID, info.FleetHostname = next.Provider, next, "", &hostname
+	return &FleetConversation{Conversation: *info, Hostname: hostname}, nil
 }
