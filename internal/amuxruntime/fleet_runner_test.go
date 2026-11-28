@@ -34,6 +34,39 @@ func TestFleetRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestFleetRetryFinished(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name     string
+		delay    time.Duration
+		duration time.Duration
+		err      error
+		want     time.Duration
+	}{
+		{"clean first run", 0, time.Second, nil, 0},
+		{"clean stop clears failures", 8 * time.Minute, time.Second, nil, 0},
+		{"short failure escalates", 2 * time.Minute, time.Second, errors.New("crash"), 4 * time.Minute},
+		{"delay boundary escalates", 2 * time.Minute, 2 * time.Minute, errors.New("crash"), 4 * time.Minute},
+		{"healthy run resets", 2 * time.Minute, 2*time.Minute + time.Second, errors.New("crash"), time.Minute},
+		{"healthy run resets cap", 15 * time.Minute, 24 * time.Hour, errors.New("crash"), time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			retry := fleetRetry{delay: test.delay, next: now.Add(test.delay)}
+			retry.finished(now.Add(-test.duration), now, test.err)
+			if retry.delay != test.want {
+				t.Fatalf("delay = %s, want %s", retry.delay, test.want)
+			}
+			if test.err == nil {
+				if !retry.next.IsZero() {
+					t.Fatalf("clean exit left retry deadline %s", retry.next)
+				}
+			} else if !retry.next.Equal(now.Add(test.want)) {
+				t.Fatalf("retry deadline = %s, want %s", retry.next, now.Add(test.want))
+			}
+		})
+	}
+}
+
 func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

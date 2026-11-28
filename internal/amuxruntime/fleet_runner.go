@@ -52,6 +52,7 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 		id      string
 		run     string
 		project string
+		started time.Time
 		err     error
 	}
 	exits := make(chan runExit)
@@ -107,13 +108,14 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				}
 			}
 			runCtx, stop := context.WithCancel(ctx)
+			started := time.Now()
 			active[chat.ID] = stop
 			jobs.Add(1)
 			go func() {
 				defer jobs.Done()
 				err := worker.Run(runCtx, worker.Config{Store: store, Client: client, RunID: id, Open: open, Archive: archive, Observe: observe})
 				select {
-				case exits <- runExit{chat.ID, id, chat.ProjectIdent, err}:
+				case exits <- runExit{chat.ID, id, chat.ProjectIdent, started, err}:
 				case <-ctx.Done():
 				}
 			}()
@@ -144,8 +146,12 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			active[exit.id]()
 			delete(active, exit.id)
 			retry := retries[exit.id]
-			retry.failed(time.Now())
-			retries[exit.id] = retry
+			retry.finished(exit.started, time.Now(), exit.err)
+			if exit.err == nil {
+				delete(retries, exit.id)
+			} else {
+				retries[exit.id] = retry
+			}
 			if exit.err != nil && ctx.Err() == nil {
 				text := fmt.Sprintf("Fleet conversation stopped: %v. Retry in %s. Use amux fleet close --project %s --conversation %s to retire this chat; opening the agent again starts a fresh thread.", exit.err, retry.delay, exit.project, exit.id)
 				fmt.Fprintf(stderr, "fleet conversation %s: %s\n", exit.id, text)
@@ -169,6 +175,15 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 type fleetRetry struct {
 	delay time.Duration
 	next  time.Time
+}
+
+func (r *fleetRetry) finished(started, now time.Time, err error) {
+	if err == nil || now.Sub(started) > r.delay {
+		*r = fleetRetry{}
+	}
+	if err != nil {
+		r.failed(now)
+	}
 }
 
 func (r *fleetRetry) failed(now time.Time) {
