@@ -178,7 +178,7 @@ func TestFleetConversationFailoverRejectsStaleExpectation(t *testing.T) {
 	if _, err := s.BindConversationSession(ctx, "tasks", chat.ID, "missing-rollout", &failed); err != nil {
 		t.Fatal(err)
 	}
-	stale := FleetFailoverExpectation{SessionID: failed.SessionID, NativeSessionID: "missing-rollout"}
+	stale := FleetFailoverExpectation{SessionID: failed.SessionID, InstanceID: failed.InstanceID, NativeSessionID: "missing-rollout"}
 	// An administrator moves the chat first and the new agent binds a thread.
 	moved, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "admin-node", true, FleetFailoverExpectation{}, now)
 	if err != nil {
@@ -204,8 +204,27 @@ func TestFleetConversationFailoverRejectsStaleExpectation(t *testing.T) {
 	if err != nil || len(commands) != 1 || commands[0].ID != prompt.ID || commands[0].State != "queued" {
 		t.Fatalf("stale failover changed commands %+v, %v", commands, err)
 	}
+	// A resumed successor keeps the session and thread but not the instance;
+	// the old execution's delayed request must not displace it.
+	successor := target
+	successor.InstanceID = uuid.NewString()
+	if _, err := s.ResumeConversation(ctx, "tasks", chat.ID, target.InstanceID, &successor); err != nil {
+		t.Fatal(err)
+	}
+	old := FleetFailoverExpectation{SessionID: target.SessionID, InstanceID: target.InstanceID, NativeSessionID: "healthy-thread"}
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "node", false, old, now); !errors.Is(err, ErrConversationConflict) {
+		t.Fatalf("stale execution failover returned %v", err)
+	}
+	current, err = s.Conversation(ctx, "tasks", chat.ID)
+	if err != nil || current.Owner != successor || current.NativeSessionID != "healthy-thread" {
+		t.Fatalf("stale execution failover changed chat %+v, %v", current, err)
+	}
+	commands, err = s.ConversationCommands(ctx, "tasks", chat.ID, 0, 10)
+	if err != nil || len(commands) != 1 || commands[0].ID != prompt.ID || commands[0].State != "queued" {
+		t.Fatalf("stale execution failover changed commands %+v, %v", commands, err)
+	}
 	// The expectation matching the current thread still fails over.
-	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "node", false, FleetFailoverExpectation{SessionID: target.SessionID, NativeSessionID: "healthy-thread"}, now); err != nil {
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "node", false, FleetFailoverExpectation{SessionID: successor.SessionID, InstanceID: successor.InstanceID, NativeSessionID: "healthy-thread"}, now); err != nil {
 		t.Fatalf("current failover returned %v", err)
 	}
 }

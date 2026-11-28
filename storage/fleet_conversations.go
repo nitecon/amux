@@ -21,11 +21,13 @@ type FleetConversation struct {
 	Hostname string `json:"hostname"`
 }
 
-// FleetFailoverExpectation names the owner session and native thread that
-// failed. A failover carrying one only moves the chat while both still match,
-// so a delayed request cannot undo a later move. Empty skips the check.
+// FleetFailoverExpectation names the owner execution and native thread that
+// failed. A failover carrying one only moves the chat while all still match,
+// so a delayed request cannot undo a later move or displace a resumed
+// successor execution. Empty skips the check.
 type FleetFailoverExpectation struct {
 	SessionID       string `json:"session_id"`
+	InstanceID      string `json:"instance_id"`
 	NativeSessionID string `json:"native_session_id"`
 }
 
@@ -207,7 +209,7 @@ func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, prin
 	if err != nil {
 		return nil, err
 	}
-	if expect.SessionID != "" && (info.Owner.SessionID != expect.SessionID || info.NativeSessionID != expect.NativeSessionID) {
+	if expect.SessionID != "" && (info.Owner.SessionID != expect.SessionID || info.Owner.InstanceID != expect.InstanceID || info.NativeSessionID != expect.NativeSessionID) {
 		return nil, ErrConversationConflict
 	}
 	// Only worker pool slots (source "<pool>/<slot>") are started by a fleet

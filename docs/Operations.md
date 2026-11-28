@@ -590,8 +590,9 @@ receives `403`, and an unknown/already closed conversation or wrong project
 receives `404`. Bearer-only credentials cannot close fleet conversations.
 `POST /v1/projects/{ident}/fleet-conversations/{conversation}/failover` uses
 the same authorization. An optional JSON body
-`{"session_id": "...", "native_session_id": "..."}` moves the conversation only
-while its owner session and provider thread still match those values. It returns
+`{"session_id": "...", "instance_id": "...", "native_session_id": "..."}` moves
+the conversation only while its owner session, owner execution instance and
+provider thread still match those values. It returns
 the moved conversation, or `409` when no other agent is available or the body no
 longer matches.
 

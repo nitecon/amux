@@ -130,7 +130,7 @@ func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
 			// The fixture client is bearer-only; fail over as the owning node.
 			failovers <- r.URL.Path
 			var expect storage.FleetFailoverExpectation
-			if err := json.NewDecoder(r.Body).Decode(&expect); err != nil || expect.SessionID == "" || expect.NativeSessionID == "" {
+			if err := json.NewDecoder(r.Body).Decode(&expect); err != nil || expect.SessionID == "" || expect.InstanceID == "" || expect.NativeSessionID == "" {
 				http.Error(w, "failover without expectation", http.StatusBadRequest)
 				return
 			}

@@ -196,7 +196,7 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				run, err := store.WorkerRun(failoverCtx, exit.run)
 				var next *storage.FleetConversation
 				if err == nil {
-					next, err = client.FailoverFleetConversation(failoverCtx, exit.project, exit.id, storage.FleetFailoverExpectation{SessionID: run.Owner.SessionID, NativeSessionID: run.NativeSessionID})
+					next, err = client.FailoverFleetConversation(failoverCtx, exit.project, exit.id, storage.FleetFailoverExpectation{SessionID: run.Owner.SessionID, InstanceID: run.Owner.InstanceID, NativeSessionID: run.NativeSessionID})
 				}
 				cancel()
 				if err == nil {
