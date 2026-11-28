@@ -525,12 +525,14 @@ when workers need a specific task-tools executable.
 ## Fleet conversation recovery
 
 Fleet conversations run on the enrolled node that owns the agent's worker pool.
-When a provider exits, the companion delays retries by 1, 2, 4, 8, then 15 minutes
-(capped at 15 minutes). Reconnect snapshots and configuration changes do not
-bypass that delay. Retry timing lasts for the companion process; restarting it
-starts a new retry sequence. Failures are written to the client log and, when a
-native session is already bound, to the conversation as an error with recovery
-instructions. A missing provider rollout cannot be recovered by retrying it.
+The companion applies backoff after failed worker runs. For successive failures
+where each run lasts no longer than the previous retry delay, the delay is
+1, 2, 4, 8, then 15 minutes, capped at 15 minutes. A clean exit clears retry
+history. If a worker fails after running longer than the previous retry delay,
+the delay starts again at one minute. Reconnect snapshots and configuration
+changes do not bypass an active delay. Failures are written to the client log
+and, when a native session is already bound, to the conversation as an error with
+recovery instructions. A missing provider rollout cannot be recovered by retrying it.
 
 To retire a conversation, use the enrolled owning node or an administrator node:
 
