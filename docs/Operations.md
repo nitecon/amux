@@ -534,6 +534,11 @@ changes do not bypass an active delay. Failures are written to the client log
 and, when a native session is already bound, to the conversation as an error with
 recovery instructions.
 
+If a fleet conversation becomes desired again while its worker is stopping
+cleanly, the companion restarts it as soon as the old worker finishes, without
+waiting for the periodic reconcile tick. A failed run still waits out its retry
+delay, and a conversation retired with `amux fleet close` stays closed.
+
 A missing provider rollout (`no rollout found for thread id ...`) cannot be
 recovered by resuming that thread, so the companion asks the gateway to fail the
 conversation over instead. The gateway moves it to another live native agent in
