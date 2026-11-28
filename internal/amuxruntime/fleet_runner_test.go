@@ -67,9 +67,16 @@ func TestFleetRetryFinished(t *testing.T) {
 	}
 }
 
-func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+type fleetFixture struct {
+	remote, local *storage.Store
+	client        *gatewayclient.Client
+	snapshots     chan []storage.FleetConversation
+	directory     string
+	chat          *storage.Conversation
+}
+
+func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
+	t.Helper()
 	openStore := func() *storage.Store {
 		s, err := storage.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
 		if err != nil {
@@ -109,7 +116,7 @@ func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 			}
 		}
 	}))
-	defer host.Close()
+	t.Cleanup(host.Close)
 	client, err := gatewayclient.New(host.URL, "fixture", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +139,15 @@ func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return fleetFixture{remote, local, client, snapshots, directory, chat}
+}
+
+func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	fixture := newFleetFixture(t, ctx)
+	remote, local, client, snapshots, directory, chat := fixture.remote, fixture.local, fixture.client, fixture.snapshots, fixture.directory, fixture.chat
+	owner := chat.Owner
 	if err := local.SaveWorkerRun(ctx, storage.WorkerRun{ID: chat.ID, ConversationID: chat.ID, Project: "demo", Server: client.Endpoint(), Directory: directory, Owner: owner}); err != nil {
 		t.Fatal(err)
 	}
@@ -200,4 +216,72 @@ func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 		t.Fatalf("failed rollout restarted during backoff: %q", native)
 	case <-time.After(100 * time.Millisecond):
 	}
+}
+
+type blockingCloseSession struct {
+	done    chan struct{}
+	release <-chan struct{}
+}
+
+func (s *blockingCloseSession) Done() <-chan struct{}                          { return s.done }
+func (s *blockingCloseSession) Err() error                                     { return nil }
+func (s *blockingCloseSession) Prompt(context.Context, string) (string, error) { return "", nil }
+func (s *blockingCloseSession) ResolvePermission(context.Context, string, string) error {
+	return nil
+}
+func (s *blockingCloseSession) Close() error { <-s.release; return nil }
+
+func TestFleetRestartsConversationDesiredAgainDuringStop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	fixture := newFleetFixture(t, ctx)
+	starts := make(chan struct{}, 10)
+	release := make(chan struct{})
+	open := func(context.Context, storage.WorkerRun, conversation.Sink) (providers.Session, error) {
+		starts <- struct{}{}
+		return &blockingCloseSession{done: make(chan struct{}), release: release}, nil
+	}
+	// Every reconcile resolves the pool checkout once.
+	reconciled := make(chan struct{}, 100)
+	checkout := func(string, string) string {
+		reconciled <- struct{}{}
+		return fixture.directory
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runFleetConversations(ctx, fixture.local, fixture.client, open, nil, nil, checkout, nil, io.Discard)
+	}()
+	defer func() { cancel(); <-done }()
+	defer close(release)
+	desired := []storage.FleetConversation{{Conversation: *fixture.chat}}
+	send := func(chats []storage.FleetConversation) {
+		t.Helper()
+		select {
+		case fixture.snapshots <- chats:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		select {
+		case <-reconciled:
+		case <-ctx.Done():
+			t.Fatal("snapshot was not reconciled")
+		}
+	}
+	waitStart := func() {
+		t.Helper()
+		select {
+		case <-starts:
+		case <-time.After(5 * time.Second):
+			t.Fatal("conversation did not start")
+		}
+	}
+	send(desired)
+	waitStart()
+	// The stop cannot finish until release, so the conversation is still
+	// active when it becomes desired again.
+	send(nil)
+	send(desired)
+	release <- struct{}{}
+	waitStart()
 }

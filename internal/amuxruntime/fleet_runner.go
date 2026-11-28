@@ -166,6 +166,9 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				}
 				cancel()
 			}
+			// A stop requested while the conversation was undesired may finish after
+			// it became desired again; failed conversations stay gated by retry.next.
+			reconcile()
 		}
 	}
 }
