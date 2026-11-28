@@ -51,7 +51,6 @@ async fn main() -> Result<()> {
     let desktop = PathBuf::from(args.next().context("desktop path")?);
     let origin = args.next().context("fixture origin")?;
     let tag = args.next().context("release tag")?;
-    let project = args.next().context("project directory")?;
     let source = ReleaseSource {
         api_url: format!("{origin}/releases.json"),
         download_prefix: format!("{origin}/download/"),
@@ -65,7 +64,7 @@ async fn main() -> Result<()> {
     ensure!(restart.required && restart.path.as_ref() == Some(&desktop),
         "shipped updater did not identify the replacement desktop");
     let status = Command::new(desktop)
-        .args(["--project-dir", &project, "--help"])
+        .arg("--help")
         .status()?;
     ensure!(status.success(), "replacement desktop rejected the restart arguments");
     Ok(())
@@ -242,14 +241,12 @@ def verify_handoff(archive, directory, source_bin=None):
         }]), encoding="utf-8")
         runner = directory / "harness"
         build_harness(runner)
-        project = directory / "project with spaces"
-        project.mkdir()
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             subprocess.run([
                 runner / "target" / "debug" / f"amux-handoff{suffix}",
-                installed / desktop, origin, tag, project,
+                installed / desktop, origin, tag,
             ], check=True, timeout=180)
         finally:
             server.shutdown()
