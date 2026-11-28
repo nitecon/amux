@@ -530,9 +530,9 @@ where each run lasts no longer than the previous retry delay, the delay is
 1, 2, 4, 8, then 15 minutes, capped at 15 minutes. A clean exit clears retry
 history. If a worker fails after running longer than the previous retry delay,
 the delay starts again at one minute. Reconnect snapshots and configuration
-changes do not bypass an active delay. Failures are written to the client log
-and, when a native session is already bound, to the conversation as an error with
-recovery instructions.
+changes do not bypass an active delay. When a failed run stays on the retry
+path, the companion logs the failure and retry delay. If a native session is
+already bound, it also queues a `local_error` event with recovery instructions.
 
 If a fleet conversation becomes desired again while its worker is stopping
 cleanly, the companion restarts it as soon as the old worker finishes, without
@@ -546,19 +546,22 @@ slot in the same project that has no fleet conversation of its own; standalone
 `amux worker` runs are never chosen because no fleet runner starts them. It
 prefers a
 different provider, then the most recently seen agent. The conversation ID and
-transcript are kept. The transcript records an `owner_handoff` event with status
-`provider_failover`. The new agent starts a fresh provider thread without the
-previous thread's context. Queued prompts move to the new agent, and claimed
-commands are interrupted. Opening the original agent again creates a new
-conversation. Before starting a conversation, the companion reads its current
+transcript are kept. On success, the companion logs the move and skips the
+retry path. The gateway records an `owner_handoff` event with status
+`provider_failover` in the transcript. The new agent starts a fresh provider
+thread without the previous thread's context. Queued prompts move to the new
+agent, and claimed commands are interrupted. Opening the original agent again
+creates a new conversation. Before starting a conversation, the companion reads its current
 owner from the gateway. If that owner differs from the companion's saved run, as
 after any failover, the companion starts a new run instead of resuming the old
 thread. This covers a conversation that later returns to a previous agent and a
-move made by an administrator. The companion's request names the owner session
-and the provider thread that failed. If the conversation has moved, or bound a
-new thread, before the request arrives, the gateway leaves it alone. If no other agent is available, or the gateway predates failover,
-the companion keeps the capped retry and asks again on the next failure.
-Retrying never stops on its own.
+move made by an administrator. The companion's request names the owner session,
+owner execution instance, and provider thread of the failed run. The gateway
+rejects the request if any of those values has changed. A successor execution
+with the same owner session and provider thread also prevents the stale request
+from moving the conversation. If no other agent is available, or the gateway
+predates failover, the companion keeps the capped retry and asks again on the
+next failure. Retrying never stops on its own.
 
 To retire a conversation, use the enrolled owning node or an administrator node:
 
