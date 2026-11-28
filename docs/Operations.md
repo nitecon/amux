@@ -550,8 +550,11 @@ transcript are kept. The transcript records an `owner_handoff` event with status
 `provider_failover`. The new agent starts a fresh provider thread without the
 previous thread's context. Queued prompts move to the new agent, and claimed
 commands are interrupted. Opening the original agent again creates a new
-conversation. The previous node discards its local binding to the dead thread,
-so if the conversation later returns to that agent it starts a fresh thread too. If no other agent is available, or the gateway predates failover,
+conversation. Before starting a conversation, the companion reads its current
+owner from the gateway. If that owner differs from the companion's saved run, as
+after any failover, the companion starts a new run instead of resuming the old
+thread. This covers a conversation that later returns to a previous agent and a
+move made by an administrator. If no other agent is available, or the gateway predates failover,
 the companion keeps the capped retry and asks again on the next failure.
 Retrying never stops on its own.
 

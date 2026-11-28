@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +19,11 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
+	"github.com/nitecon/amux/auth/authn"
 	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/identity/agent"
+	"github.com/nitecon/amux/identity/user"
 	"github.com/nitecon/amux/providers"
 	"github.com/nitecon/amux/server"
 	"github.com/nitecon/amux/storage"
@@ -75,10 +79,22 @@ type fleetFixture struct {
 	client        *gatewayclient.Client
 	snapshots     chan []storage.FleetConversation
 	failovers     chan string
-	moved         chan storage.FleetConversation
 	directory     string
 	chat          *storage.Conversation
+	pool          string
+	principal     string
 	spare         agent.Origin
+}
+
+// report publishes live native presence for an agent, as a worker pool slot
+// ("<pool>/<slot>") does.
+func (f fleetFixture) report(t *testing.T, ctx context.Context, source, principal string, origin agent.Origin) {
+	t.Helper()
+	host := source + "-host"
+	report := storage.PresenceReport{Source: source, Sequence: 1, Hostname: &host, Agents: []storage.PresenceAgent{{ProjectIdent: "demo", Origin: origin}}}
+	if accepted, err := f.remote.ReportPresenceWithPrincipal(ctx, report, time.Now(), principal); err != nil || !accepted {
+		t.Fatalf("presence accepted %v, %v", accepted, err)
+	}
 }
 
 func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
@@ -99,21 +115,33 @@ func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Fleet conversations only accept writes from the enrolled node that owns
+	// them; a signed member session gives the fixture client such a principal.
+	member, err := remote.CreateUser(ctx, "node", "", user.RoleMember, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := "ui-user:" + strconv.FormatInt(member.ID, 10)
+	session := authn.MintBrowserSession("fixture", *member, time.Now().Add(time.Hour).UnixMilli())
 	snapshots := make(chan []storage.FleetConversation)
 	failovers := make(chan string, 10)
-	moved := make(chan storage.FleetConversation, 1)
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/failover") {
+			// The fixture client is bearer-only; fail over as the owning node.
 			failovers <- r.URL.Path
-			select {
-			case next := <-moved:
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(next)
+			next, err := remote.FailoverFleetConversation(r.Context(), "demo", path.Base(path.Dir(r.URL.Path)), principal, false, time.Now())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
 				return
-			default:
 			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(next)
+			return
 		}
 		if r.URL.Path != "/v1/fleet/conversations/stream" {
+			r.Header.Del("Authorization")
+			r.Header.Set("X-Gateway-UI", "1")
+			r.Header.Set("Cookie", "gw_session="+session)
 			handler.ServeHTTP(w, r)
 			return
 		}
@@ -152,12 +180,14 @@ func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := slots[0].Owner
-	chat, err := remote.CreateConversation(ctx, "demo", "", &owner)
+	f := fleetFixture{principal: principal, remote: remote, local: local, client: client, snapshots: snapshots, failovers: failovers, directory: directory, pool: pool.ID, spare: slots[1].Owner}
+	f.report(t, ctx, pool.ID+"/0", principal, slots[0].Owner)
+	chat, err := remote.OpenFleetConversation(ctx, "demo", slots[0].Owner.SessionID, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fleetFixture{remote, local, client, snapshots, failovers, moved, directory, chat, slots[1].Owner}
+	f.chat = &chat.Conversation
+	return f
 }
 
 func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
@@ -216,8 +246,8 @@ func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	// The unrecoverable thread asks for failover first; the gateway refuses this
-	// bearer-only client, so the capped retry remains in force.
+	// The unrecoverable thread asks for failover first; no other agent is live,
+	// so the capped retry remains in force.
 	select {
 	case path := <-fixture.failovers:
 		if !strings.Contains(path, chat.ID) {
@@ -247,7 +277,7 @@ func TestFleetMissingRolloutDoesNotRestartOnReconcile(t *testing.T) {
 }
 
 func TestFleetMissingRolloutFailoverStartsFreshThread(t *testing.T) {
-	t.Run("returned to previous session", func(t *testing.T) { testFleetFailover(t, false) })
+	t.Run("moved away and back", func(t *testing.T) { testFleetFailover(t, false) })
 	t.Run("moved to slot on this node", func(t *testing.T) { testFleetFailover(t, true) })
 }
 
@@ -256,15 +286,19 @@ func testFleetFailover(t *testing.T, sameNode bool) {
 	defer cancel()
 	fixture := newFleetFixture(t, ctx)
 	chat := *fixture.chat
+	other := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: chat.Owner.OS}
+	if sameNode {
+		fixture.report(t, ctx, fixture.pool+"/1", fixture.principal, fixture.spare)
+	} else {
+		fixture.report(t, ctx, "other/slot", "other-node", other)
+	}
+	// The old journal stays as it was; nothing retires it locally.
 	if err := fixture.local.SaveWorkerRun(ctx, storage.WorkerRun{ID: chat.ID, ConversationID: chat.ID, Project: "demo", Server: fixture.client.Endpoint(), Directory: fixture.directory, Owner: chat.Owner}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.local.QueueWorkerEvent(ctx, chat.ID, conversation.Event{Kind: "session_ready", SessionID: "missing-rollout"}); err != nil {
 		t.Fatal(err)
 	}
-	moved := chat
-	moved.Owner = fixture.spare
-	fixture.moved <- storage.FleetConversation{Conversation: moved, Hostname: "local"}
 	starts := make(chan storage.WorkerRun, 10)
 	released := make(chan struct{})
 	close(released)
@@ -300,7 +334,7 @@ func testFleetFailover(t *testing.T, sameNode bool) {
 		case run := <-starts:
 			return run
 		case <-ctx.Done():
-			t.Fatal("conversation did not start")
+			t.Fatal("conversation did not reach provider open")
 		}
 		return storage.WorkerRun{}
 	}
@@ -311,6 +345,14 @@ func testFleetFailover(t *testing.T, sameNode bool) {
 			t.Fatalf("unexpected start %+v", run)
 		case <-time.After(100 * time.Millisecond):
 		}
+	}
+	current := func() storage.Conversation {
+		t.Helper()
+		c, err := fixture.remote.Conversation(ctx, "demo", chat.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *c
 	}
 	send(chat)
 	if run := waitStart(); run.NativeSessionID != "missing-rollout" {
@@ -323,7 +365,9 @@ func testFleetFailover(t *testing.T, sameNode bool) {
 	}
 	// Until the gateway's change arrives the snapshot is stale and must not
 	// restart the dead thread.
-	send(chat)
+	stale := chat
+	stale.NativeSessionID = "missing-rollout"
+	send(stale)
 	for range 5 {
 		select {
 		case changed <- struct{}{}:
@@ -341,40 +385,30 @@ func testFleetFailover(t *testing.T, sameNode bool) {
 			t.Fatalf("successful failover published an error: %+v", event.Event)
 		}
 	}
-	if !sameNode {
-		// The chat moved to another node, then came back to this session: it
-		// starts a fresh thread instead of the dead one.
-		send()
-		chat.NativeSessionID = ""
-		send(chat)
-		if run := waitStart(); run.NativeSessionID != "" || run.Owner.SessionID != chat.Owner.SessionID {
-			t.Fatalf("returned chat resumed %+v", run)
+	moved := current()
+	if sameNode {
+		// A failover target on this node starts at once with a fresh thread.
+		if moved.Owner != fixture.spare {
+			t.Fatalf("failover moved chat to %+v", moved.Owner)
+		}
+		send(moved)
+		if run := waitStart(); run.NativeSessionID != "" || run.Owner.SessionID != fixture.spare.SessionID || run.ID == chat.ID {
+			t.Fatalf("same-node target started %+v", run)
 		}
 		return
 	}
-	// A failover target on this node starts at once with its own run. The
-	// fixture gateway still lists the old owner, so check the saved run.
-	send(moved)
-	for {
-		id, err := fixture.local.ConversationWorkerRunID(ctx, fixture.client.Endpoint(), "demo", chat.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		run, err := fixture.local.WorkerRun(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if run.Owner.SessionID == fixture.spare.SessionID {
-			if run.NativeSessionID != "" || run.ID == chat.ID {
-				t.Fatalf("same-node target reused dead run %+v", run)
-			}
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("same-node target did not start")
-		case <-time.After(5 * time.Millisecond):
-		}
+	if moved.Owner != other {
+		t.Fatalf("failover moved chat to %+v", moved.Owner)
+	}
+	send()
+	// The other agent loses its thread too and the gateway hands the chat back.
+	back, err := fixture.remote.FailoverFleetConversation(ctx, "demo", chat.ID, "other-node", false, time.Now())
+	if err != nil || back.Owner != chat.Owner || back.NativeSessionID != "" {
+		t.Fatalf("returned %+v, %v", back, err)
+	}
+	send(back.Conversation)
+	if run := waitStart(); run.NativeSessionID != "" || run.Owner.SessionID != chat.Owner.SessionID {
+		t.Fatalf("returned chat started %+v", run)
 	}
 }
 
