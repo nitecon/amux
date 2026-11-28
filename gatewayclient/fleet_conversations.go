@@ -18,11 +18,11 @@ func (c *Client) CloseFleetConversation(ctx context.Context, project, id string)
 }
 
 // FailoverFleetConversation asks the gateway to move a chat whose provider
-// thread is gone to another live agent.
-func (c *Client) FailoverFleetConversation(ctx context.Context, project, id string) (*storage.FleetConversation, error) {
+// thread is gone to another live agent, provided expect still describes it.
+func (c *Client) FailoverFleetConversation(ctx context.Context, project, id string, expect storage.FleetFailoverExpectation) (*storage.FleetConversation, error) {
 	var info storage.FleetConversation
 	path := "/v1/projects/" + url.PathEscape(project) + "/fleet-conversations/" + url.PathEscape(id) + "/failover"
-	if err := c.do(ctx, http.MethodPost, path, nil, nil, &info); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, expect, nil, &info); err != nil {
 		return nil, err
 	}
 	if info.ID != id || info.ProjectIdent != project {

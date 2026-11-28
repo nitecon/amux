@@ -129,7 +129,12 @@ func newFleetFixture(t *testing.T, ctx context.Context) fleetFixture {
 		if strings.HasSuffix(r.URL.Path, "/failover") {
 			// The fixture client is bearer-only; fail over as the owning node.
 			failovers <- r.URL.Path
-			next, err := remote.FailoverFleetConversation(r.Context(), "demo", path.Base(path.Dir(r.URL.Path)), principal, false, time.Now())
+			var expect storage.FleetFailoverExpectation
+			if err := json.NewDecoder(r.Body).Decode(&expect); err != nil || expect.SessionID == "" || expect.NativeSessionID == "" {
+				http.Error(w, "failover without expectation", http.StatusBadRequest)
+				return
+			}
+			next, err := remote.FailoverFleetConversation(r.Context(), "demo", path.Base(path.Dir(r.URL.Path)), principal, false, expect, time.Now())
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -402,7 +407,7 @@ func testFleetFailover(t *testing.T, sameNode bool) {
 	}
 	send()
 	// The other agent loses its thread too and the gateway hands the chat back.
-	back, err := fixture.remote.FailoverFleetConversation(ctx, "demo", chat.ID, "other-node", false, time.Now())
+	back, err := fixture.remote.FailoverFleetConversation(ctx, "demo", chat.ID, "other-node", false, storage.FleetFailoverExpectation{}, time.Now())
 	if err != nil || back.Owner != chat.Owner || back.NativeSessionID != "" {
 		t.Fatalf("returned %+v, %v", back, err)
 	}

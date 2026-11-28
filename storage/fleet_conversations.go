@@ -21,6 +21,14 @@ type FleetConversation struct {
 	Hostname string `json:"hostname"`
 }
 
+// FleetFailoverExpectation names the owner session and native thread that
+// failed. A failover carrying one only moves the chat while both still match,
+// so a delayed request cannot undo a later move. Empty skips the check.
+type FleetFailoverExpectation struct {
+	SessionID       string `json:"session_id"`
+	NativeSessionID string `json:"native_session_id"`
+}
+
 func migrateFleetConversations(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS amux_fleet_conversations(
 		conversation_id TEXT PRIMARY KEY REFERENCES amux_conversations(id) ON DELETE CASCADE,
@@ -177,7 +185,7 @@ func (s *Store) CloseFleetConversation(ctx context.Context, project, id, princip
 // FailoverFleetConversation moves a chat whose provider thread cannot be resumed
 // to another live agent, preferring a different provider. The transcript stays;
 // the new agent starts a fresh native thread.
-func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, principal string, administrator bool, now time.Time) (*FleetConversation, error) {
+func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, principal string, administrator bool, expect FleetFailoverExpectation, now time.Time) (*FleetConversation, error) {
 	project = projectid.NormalizeIdent(project)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -198,6 +206,9 @@ func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, prin
 	info, err := readConversation(ctx, tx, project, id)
 	if err != nil {
 		return nil, err
+	}
+	if expect.SessionID != "" && (info.Owner.SessionID != expect.SessionID || info.NativeSessionID != expect.NativeSessionID) {
+		return nil, ErrConversationConflict
 	}
 	// Only worker pool slots (source "<pool>/<slot>") are started by a fleet
 	// runner; standalone runs ("worker:<run>") would strand the chat.

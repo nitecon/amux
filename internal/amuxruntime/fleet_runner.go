@@ -191,8 +191,13 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			if exit.err != nil && ctx.Err() == nil && missingRollout(exit.err) {
 				// The thread cannot come back; hand the chat to another live agent.
 				// Without one, keep the capped retry so the chat is never abandoned.
+				// The expectation keeps a delayed request from undoing a later move.
 				failoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				next, err := client.FailoverFleetConversation(failoverCtx, exit.project, exit.id)
+				run, err := store.WorkerRun(failoverCtx, exit.run)
+				var next *storage.FleetConversation
+				if err == nil {
+					next, err = client.FailoverFleetConversation(failoverCtx, exit.project, exit.id, storage.FleetFailoverExpectation{SessionID: run.Owner.SessionID, NativeSessionID: run.NativeSessionID})
+				}
 				cancel()
 				if err == nil {
 					fmt.Fprintf(stderr, "fleet conversation %s: provider thread missing; moved to %s agent on %s\n", exit.id, next.Provider, next.Hostname)

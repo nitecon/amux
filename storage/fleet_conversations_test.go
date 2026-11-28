@@ -107,7 +107,7 @@ func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, now); !errors.Is(err, ErrFleetAgentUnavailable) {
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, FleetFailoverExpectation{}, now); !errors.Is(err, ErrFleetAgentUnavailable) {
 		t.Fatalf("failover without candidates returned %v", err)
 	}
 	report("same/slot", "same-node", now, sameProvider)
@@ -126,10 +126,10 @@ func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "other-node", false, now); !errors.Is(err, ErrTaskOwnership) {
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "other-node", false, FleetFailoverExpectation{}, now); !errors.Is(err, ErrTaskOwnership) {
 		t.Fatalf("foreign node moved chat: %v", err)
 	}
-	moved, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, now)
+	moved, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "broken-node", false, FleetFailoverExpectation{}, now)
 	if err != nil || moved.ID != chat.ID || moved.Owner != otherProvider || moved.Provider != "claude" || moved.NativeSessionID != "" || moved.Hostname != "other/slot-host" {
 		t.Fatalf("moved %+v, %v", moved, err)
 	}
@@ -155,5 +155,57 @@ func TestFleetConversationFailoverPrefersOtherProvider(t *testing.T) {
 	}
 	if _, err := s.BindConversationSession(ctx, "tasks", chat.ID, "fresh-thread", &otherProvider); err != nil {
 		t.Fatalf("new agent cannot bind fresh thread: %v", err)
+	}
+}
+
+func TestFleetConversationFailoverRejectsStaleExpectation(t *testing.T) {
+	ctx := context.Background()
+	s := taskStore(t)
+	now := time.Now().UTC()
+	failed := *taskActor()
+	healthy := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	spare := agent.Origin{SessionID: uuid.NewString(), InstanceID: uuid.NewString(), Provider: "claude", OS: "linux"}
+	host := "node-host"
+	// Both agents share one enrolled node, so ownership alone cannot fence.
+	if accepted, err := s.ReportPresenceWithPrincipal(ctx, PresenceReport{Source: "pool/a", Sequence: 1, Hostname: &host,
+		Agents: []PresenceAgent{{ProjectIdent: "tasks", Origin: failed}, {ProjectIdent: "tasks", Origin: healthy}, {ProjectIdent: "tasks", Origin: spare}}}, now, "node"); err != nil || !accepted {
+		t.Fatalf("presence accepted %v, %v", accepted, err)
+	}
+	chat, err := s.OpenFleetConversation(ctx, "tasks", failed.SessionID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BindConversationSession(ctx, "tasks", chat.ID, "missing-rollout", &failed); err != nil {
+		t.Fatal(err)
+	}
+	stale := FleetFailoverExpectation{SessionID: failed.SessionID, NativeSessionID: "missing-rollout"}
+	// An administrator moves the chat first and the new agent binds a thread.
+	moved, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "admin-node", true, FleetFailoverExpectation{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := moved.Owner
+	if _, err := s.BindConversationSession(ctx, "tasks", chat.ID, "healthy-thread", &target); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := s.EnqueueConversationCommand(ctx, "tasks", chat.ID, uuid.NewString(), conversation.Command{Kind: "prompt", Text: "continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The failed agent's delayed automatic request must not move it back.
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "node", false, stale, now); !errors.Is(err, ErrConversationConflict) {
+		t.Fatalf("stale failover returned %v", err)
+	}
+	current, err := s.Conversation(ctx, "tasks", chat.ID)
+	if err != nil || current.Owner != target || current.NativeSessionID != "healthy-thread" {
+		t.Fatalf("stale failover changed chat %+v, %v", current, err)
+	}
+	commands, err := s.ConversationCommands(ctx, "tasks", chat.ID, 0, 10)
+	if err != nil || len(commands) != 1 || commands[0].ID != prompt.ID || commands[0].State != "queued" {
+		t.Fatalf("stale failover changed commands %+v, %v", commands, err)
+	}
+	// The expectation matching the current thread still fails over.
+	if _, err := s.FailoverFleetConversation(ctx, "tasks", chat.ID, "node", false, FleetFailoverExpectation{SessionID: target.SessionID, NativeSessionID: "healthy-thread"}, now); err != nil {
+		t.Fatalf("current failover returned %v", err)
 	}
 }

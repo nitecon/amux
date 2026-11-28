@@ -554,7 +554,9 @@ conversation. Before starting a conversation, the companion reads its current
 owner from the gateway. If that owner differs from the companion's saved run, as
 after any failover, the companion starts a new run instead of resuming the old
 thread. This covers a conversation that later returns to a previous agent and a
-move made by an administrator. If no other agent is available, or the gateway predates failover,
+move made by an administrator. The companion's request names the owner session
+and the provider thread that failed. If the conversation has moved, or bound a
+new thread, before the request arrives, the gateway leaves it alone. If no other agent is available, or the gateway predates failover,
 the companion keeps the capped retry and asks again on the next failure.
 Retrying never stops on its own.
 
@@ -587,8 +589,11 @@ enrolled connection. Success returns `204`; a different non-administrator node
 receives `403`, and an unknown/already closed conversation or wrong project
 receives `404`. Bearer-only credentials cannot close fleet conversations.
 `POST /v1/projects/{ident}/fleet-conversations/{conversation}/failover` uses
-the same authorization. It returns the moved conversation, or `409` when no
-other agent is available.
+the same authorization. An optional JSON body
+`{"session_id": "...", "native_session_id": "..."}` moves the conversation only
+while its owner session and provider thread still match those values. It returns
+the moved conversation, or `409` when no other agent is available or the body no
+longer matches.
 
 ## Desktop startup
 

@@ -24,7 +24,11 @@ func (a *api) failoverFleetConversation(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusForbidden, "fleet chat requires an enrolled client")
 		return
 	}
-	info, err := a.store.FailoverFleetConversation(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), peer.NodeID, peer.role == "administrator", time.Now().UTC())
+	var expect storage.FleetFailoverExpectation
+	if r.ContentLength != 0 && !readJSONRequest(w, r, &expect, 4<<10) {
+		return
+	}
+	info, err := a.store.FailoverFleetConversation(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), peer.NodeID, peer.role == "administrator", expect, time.Now().UTC())
 	if errors.Is(err, storage.ErrTaskOwnership) {
 		writeError(w, http.StatusForbidden, "conversation belongs to a different enrolled client")
 		return
