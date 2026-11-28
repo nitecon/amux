@@ -288,6 +288,45 @@ func (s *Store) BindConversationSessionWithPrincipal(ctx context.Context, projec
 	})
 }
 
+// handoffConversationCommands settles queued work when a conversation moves to
+// a new owner instance. Unclaimed prompts retain durable user intent and follow
+// the conversation. Claimed work has an uncertain execution boundary; never
+// repeat it on the new instance.
+func handoffConversationCommands(ctx context.Context, tx *sql.Tx, id, instance string, now int64) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET state='interrupted',updated_at=? WHERE conversation_id=? AND (state='claimed' OR (state='queued' AND kind!='prompt'))`, now, id); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET target_instance_id=?,updated_at=? WHERE conversation_id=? AND state='queued' AND kind='prompt'`, instance, now, id)
+	return err
+}
+
+// appendOwnerHandoff records an owner change in the transcript of a
+// conversation that already has a provider thread.
+func appendOwnerHandoff(ctx context.Context, tx *sql.Tx, id, nativeSessionID string, previous, current agent.Origin, status, text string, now int64) error {
+	if nativeSessionID == "" {
+		return nil
+	}
+	data, err := json.Marshal(struct {
+		NativeSessionID string       `json:"native_session_id"`
+		InstanceID      string       `json:"instance_id"`
+		PreviousOrigin  agent.Origin `json:"previous_origin"`
+		CurrentOrigin   agent.Origin `json:"current_origin"`
+	}{nativeSessionID, current.InstanceID, previous, current})
+	if err != nil {
+		return err
+	}
+	raw, err := encodeConversationEvent(conversation.Event{Kind: "owner_handoff", SessionID: nativeSessionID, Status: status, Text: text, Data: data})
+	if err != nil {
+		return err
+	}
+	var sequence int64
+	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence),0)+1 FROM amux_conversation_events WHERE conversation_id=?", id).Scan(&sequence); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO amux_conversation_events(conversation_id,sequence,event_id,event_json,created_at,instance_id) VALUES(?,?,?,?,?,?)`, id, sequence, uuid.NewString(), string(raw), now, current.InstanceID)
+	return err
+}
+
 // ResumeConversation is an explicit compare-and-swap transfer to a new process
 // instance of the same stable agent. A retry by the winning instance is harmless.
 func (s *Store) ResumeConversation(ctx context.Context, project, id, previousInstance string, origin *agent.Origin) (*Conversation, error) {
@@ -347,12 +386,8 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 			}
 			taskOwnerChanged = true
 		}
-		// Unclaimed prompts retain durable user intent. Claimed work has an
-		// uncertain execution boundary; never repeat it on the new instance.
-		if _, err := tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET state='interrupted',updated_at=? WHERE conversation_id=? AND (state='claimed' OR (state='queued' AND kind!='prompt'))`, time.Now().UnixMilli(), id); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET target_instance_id=?,updated_at=? WHERE conversation_id=? AND state='queued' AND kind='prompt'`, actor.InstanceID, time.Now().UnixMilli(), id); err != nil {
+		now := time.Now().UnixMilli()
+		if err := handoffConversationCommands(ctx, tx, id, actor.InstanceID, now); err != nil {
 			return err
 		}
 		previous := c.Owner
@@ -360,29 +395,8 @@ func (s *Store) ResumeConversation(ctx context.Context, project, id, previousIns
 		if _, err := tx.ExecContext(ctx, "UPDATE amux_conversations SET owner_json=? WHERE id=?", string(owner), id); err != nil {
 			return err
 		}
-		if c.NativeSessionID != "" {
-			data, err := json.Marshal(struct {
-				NativeSessionID string       `json:"native_session_id"`
-				InstanceID      string       `json:"instance_id"`
-				PreviousOrigin  agent.Origin `json:"previous_origin"`
-				CurrentOrigin   agent.Origin `json:"current_origin"`
-			}{c.NativeSessionID, actor.InstanceID, previous, actor})
-			if err != nil {
-				return err
-			}
-			event := conversation.Event{Kind: "owner_handoff", SessionID: c.NativeSessionID, Status: "owner_changed", Data: data}
-			raw, err := encodeConversationEvent(event)
-			if err != nil {
-				return err
-			}
-			var sequence int64
-			if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence),0)+1 FROM amux_conversation_events WHERE conversation_id=?", id).Scan(&sequence); err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO amux_conversation_events(conversation_id,sequence,event_id,event_json,created_at,instance_id) VALUES(?,?,?,?,?,?)`, id, sequence, uuid.NewString(), string(raw), time.Now().UnixMilli(), actor.InstanceID)
-			if err != nil {
-				return err
-			}
+		if err := appendOwnerHandoff(ctx, tx, id, c.NativeSessionID, previous, actor, "owner_changed", "", now); err != nil {
+			return err
 		}
 		c.Owner = actor
 		return nil

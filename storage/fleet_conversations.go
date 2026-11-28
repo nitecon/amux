@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/eventbus"
 	"github.com/nitecon/amux/identity/agent"
 	projectid "github.com/nitecon/amux/identity/project"
@@ -227,36 +226,12 @@ func (s *Store) FailoverFleetConversation(ctx context.Context, project, id, prin
 	if _, err = tx.ExecContext(ctx, `UPDATE amux_fleet_conversations SET session_id=?,principal=?,hostname=? WHERE conversation_id=?`, next.SessionID, nextPrincipal, hostname, id); err != nil {
 		return nil, err
 	}
-	// Match ResumeConversation: claimed work has an uncertain execution
-	// boundary, while unclaimed prompts follow the chat to its new agent.
-	if _, err = tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET state='interrupted',updated_at=? WHERE conversation_id=? AND (state='claimed' OR (state='queued' AND kind!='prompt'))`, now.UnixMilli(), id); err != nil {
+	if err = handoffConversationCommands(ctx, tx, id, next.InstanceID, now.UnixMilli()); err != nil {
 		return nil, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE amux_conversation_commands SET target_instance_id=?,updated_at=? WHERE conversation_id=? AND state='queued' AND kind='prompt'`, next.InstanceID, now.UnixMilli(), id); err != nil {
+	text := fmt.Sprintf("Provider thread could not be resumed; this conversation moved to a %s agent on %s with a fresh thread.", next.Provider, hostname)
+	if err = appendOwnerHandoff(ctx, tx, id, info.NativeSessionID, info.Owner, next, "provider_failover", text, now.UnixMilli()); err != nil {
 		return nil, err
-	}
-	if info.NativeSessionID != "" {
-		data, err := json.Marshal(struct {
-			NativeSessionID string       `json:"native_session_id"`
-			InstanceID      string       `json:"instance_id"`
-			PreviousOrigin  agent.Origin `json:"previous_origin"`
-			CurrentOrigin   agent.Origin `json:"current_origin"`
-		}{info.NativeSessionID, next.InstanceID, info.Owner, next})
-		if err != nil {
-			return nil, err
-		}
-		text := fmt.Sprintf("Provider thread could not be resumed; this conversation moved to a %s agent on %s with a fresh thread.", next.Provider, hostname)
-		raw, err := encodeConversationEvent(conversation.Event{Kind: "owner_handoff", SessionID: info.NativeSessionID, Status: "provider_failover", Text: text, Data: data})
-		if err != nil {
-			return nil, err
-		}
-		var sequence int64
-		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence),0)+1 FROM amux_conversation_events WHERE conversation_id=?", id).Scan(&sequence); err != nil {
-			return nil, err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO amux_conversation_events(conversation_id,sequence,event_id,event_json,created_at,instance_id) VALUES(?,?,?,?,?,?)`, id, sequence, uuid.NewString(), string(raw), now.UnixMilli(), next.InstanceID); err != nil {
-			return nil, err
-		}
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
