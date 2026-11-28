@@ -594,7 +594,8 @@ the same authorization. An optional JSON body
 the conversation only while its owner session, owner execution instance and
 provider thread still match those values. It returns
 the moved conversation, or `409` when no other agent is available or the body no
-longer matches.
+longer matches. A body that is malformed or omits any of the three
+values receives `400` and moves nothing; send no body for an unconditional move.
 
 ## Desktop startup
 

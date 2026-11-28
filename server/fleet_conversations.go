@@ -25,8 +25,16 @@ func (a *api) failoverFleetConversation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var expect storage.FleetFailoverExpectation
-	if r.ContentLength != 0 && !readJSONRequest(w, r, &expect, 4<<10) {
-		return
+	// A supplied body is a fence and must be complete; only a bodyless request
+	// is an unconditional handoff.
+	if r.ContentLength != 0 {
+		if !readJSONRequest(w, r, &expect, 4<<10) {
+			return
+		}
+		if expect.SessionID == "" || expect.InstanceID == "" || expect.NativeSessionID == "" {
+			writeError(w, http.StatusBadRequest, "session_id, instance_id and native_session_id are required when a body is sent")
+			return
+		}
 	}
 	info, err := a.store.FailoverFleetConversation(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), peer.NodeID, peer.role == "administrator", expect, time.Now().UTC())
 	if errors.Is(err, storage.ErrTaskOwnership) {
