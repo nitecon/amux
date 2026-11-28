@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nitecon/amux/conversation"
 	"github.com/nitecon/amux/gatewayclient"
 	"github.com/nitecon/amux/storage"
 	"github.com/nitecon/amux/worker"
@@ -48,11 +49,16 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 	}()
 
 	type runExit struct {
-		id  string
-		err error
+		id      string
+		run     string
+		project string
+		err     error
 	}
 	exits := make(chan runExit)
 	active := make(map[string]context.CancelFunc)
+	retries := make(map[string]fleetRetry)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 	var available []storage.FleetConversation
 	reconcile := func() {
 		pools, err := store.WorkerPools(ctx, client.Endpoint())
@@ -83,6 +89,9 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			if active[chat.ID] != nil {
 				continue
 			}
+			if time.Now().Before(retries[chat.ID].next) {
+				continue
+			}
 			id, err := store.ConversationWorkerRunID(ctx, client.Endpoint(), chat.ProjectIdent, chat.ID)
 			if err != nil {
 				continue
@@ -104,7 +113,7 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 				defer jobs.Done()
 				err := worker.Run(runCtx, worker.Config{Store: store, Client: client, RunID: id, Open: open, Archive: archive, Observe: observe})
 				select {
-				case exits <- runExit{chat.ID, err}:
+				case exits <- runExit{chat.ID, id, chat.ProjectIdent, err}:
 				case <-ctx.Done():
 				}
 			}()
@@ -112,6 +121,11 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 		for id, stop := range active {
 			if !desired[id] {
 				stop()
+			}
+		}
+		for id := range retries {
+			if !desired[id] {
+				delete(retries, id)
 			}
 		}
 	}
@@ -124,12 +138,44 @@ func runFleetConversations(ctx context.Context, store *storage.Store, client *ga
 			reconcile()
 		case <-changed:
 			reconcile()
+		case <-ticker.C:
+			reconcile()
 		case exit := <-exits:
 			active[exit.id]()
 			delete(active, exit.id)
+			retry := retries[exit.id]
+			retry.failed(time.Now())
+			retries[exit.id] = retry
 			if exit.err != nil && ctx.Err() == nil {
-				fmt.Fprintf(stderr, "fleet conversation %s stopped: %v\n", exit.id, exit.err)
+				text := fmt.Sprintf("Fleet conversation stopped: %v. Retry in %s. Use amux fleet close --project %s --conversation %s to retire this chat; opening the agent again starts a fresh thread.", exit.err, retry.delay, exit.project, exit.id)
+				fmt.Fprintf(stderr, "fleet conversation %s: %s\n", exit.id, text)
+				publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				run, err := store.WorkerRun(publishCtx, exit.run)
+				if err == nil && run.NativeSessionID != "" {
+					if _, err = store.QueueWorkerEvent(publishCtx, run.ID, conversation.Event{Kind: "local_error", SessionID: run.NativeSessionID, Text: text}); err == nil {
+						if err = worker.Flush(publishCtx, store, client, run.ID); err != nil {
+							fmt.Fprintf(stderr, "publish fleet conversation failure %s: %v\n", exit.id, err)
+						}
+					}
+				}
+				cancel()
 			}
 		}
 	}
+}
+
+// Keep reconnect snapshots and configuration changes from restarting a failed
+// provider every reconciliation. Retry timing belongs to the running client.
+type fleetRetry struct {
+	delay time.Duration
+	next  time.Time
+}
+
+func (r *fleetRetry) failed(now time.Time) {
+	if r.delay == 0 {
+		r.delay = time.Minute
+	} else {
+		r.delay = min(2*r.delay, 15*time.Minute)
+	}
+	r.next = now.Add(r.delay)
 }

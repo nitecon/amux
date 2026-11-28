@@ -64,7 +64,7 @@ func newCommand() *cli.Command {
 			return ctx, nil
 		},
 		Action: startDesktop,
-		Commands: []*cli.Command{updateCommand(),
+		Commands: []*cli.Command{updateCommand(), fleetCommand(),
 			{
 				Name:    "server",
 				Aliases: []string{"s"},

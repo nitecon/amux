@@ -12,6 +12,11 @@ import (
 	"github.com/nitecon/amux/storage"
 )
 
+func (c *Client) CloseFleetConversation(ctx context.Context, project, id string) error {
+	path := "/v1/projects/" + url.PathEscape(project) + "/fleet-conversations/" + url.PathEscape(id)
+	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
 func (c *Client) OpenFleetConversation(ctx context.Context, project, session string) (*storage.FleetConversation, error) {
 	var info storage.FleetConversation
 	path := "/v1/projects/" + url.PathEscape(project) + "/fleet-agents/" + url.PathEscape(session) + "/conversation"

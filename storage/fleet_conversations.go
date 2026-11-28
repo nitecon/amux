@@ -140,3 +140,36 @@ func (s *Store) FleetConversationWriteAllowed(ctx context.Context, id, principal
 	}
 	return err == nil && principal != "" && owner == principal, err
 }
+
+// CloseFleetConversation retires the runner binding and fences future resumes.
+// The conversation and its transcript remain available for inspection.
+func (s *Store) CloseFleetConversation(ctx context.Context, project, id, principal string, administrator bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owner string
+	err = tx.QueryRowContext(ctx, `SELECT principal FROM amux_fleet_conversations WHERE project_ident=? AND conversation_id=?`, projectid.NormalizeIdent(project), id).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConversationNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if principal == "" || (!administrator && owner != principal) {
+		return ErrTaskOwnership
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_revoked_conversations(conversation_id,revoked_at) VALUES(?,?)`, id, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM amux_fleet_conversations WHERE conversation_id=?`, id); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.wakeConversations()
+	_ = s.bus.Publish(eventbus.Event{Topic: eventbus.FleetConversationChanged})
+	return nil
+}

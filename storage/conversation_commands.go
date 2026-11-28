@@ -158,6 +158,11 @@ func enqueueConversationCommandIn(ctx context.Context, tx *sql.Tx, project, id, 
 	if err != nil {
 		return nil, err
 	}
+	if revoked, err := conversationRevoked(ctx, tx, id); err != nil {
+		return nil, err
+	} else if revoked {
+		return nil, ErrConversationConflict
+	}
 	previous, err := readConversationCommand(ctx, tx, id, commandID)
 	if err == nil {
 		if previous.Command != input {

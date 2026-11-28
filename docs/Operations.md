@@ -522,6 +522,42 @@ journal. The default is `~/.amux/workers.db`. Navigation preferences remember
 the selected pool ID per gateway. Set `task_tools_command` in `device.yaml`
 when workers need a specific task-tools executable.
 
+## Fleet conversation recovery
+
+Fleet conversations run on the enrolled node that owns the agent's worker pool.
+When a provider exits, the companion delays retries by 1, 2, 4, 8, then 15 minutes
+(capped at 15 minutes). Reconnect snapshots and configuration changes do not
+bypass that delay. Retry timing lasts for the companion process; restarting it
+starts a new retry sequence. Failures are written to the client log and, when a
+native session is already bound, to the conversation as an error with recovery
+instructions. A missing provider rollout cannot be recovered by retrying it.
+
+To retire a conversation, use the enrolled owning node or an administrator node:
+
+```sh
+amux fleet close --project PROJECT --conversation CONVERSATION_UUID
+```
+
+The command reads gateway connectivity from `~/.amux/config.yaml` and the
+enrolled profile from `~/.amux/device.yaml`. Both the command and gateway must
+include the fleet-close implementation. It does not start a companion or hosted
+gateway. Closing removes the fleet runner binding, notifies the companion to
+stop, and rejects future prompts and resumes. The transcript is retained.
+Opening the same agent again creates a new conversation with a fresh provider
+thread, provided that the agent still has live native presence.
+
+For the missing-rollout conversation reported on Defcon2:
+
+```sh
+amux fleet close --project sre --conversation fce07a6d-47eb-4963-bf85-90651710612a
+```
+
+API clients can send
+`DELETE /v1/projects/{ident}/fleet-conversations/{conversation}` over the normal
+enrolled connection. Success returns `204`; a different non-administrator node
+receives `403`, and an unknown/already closed conversation or wrong project
+receives `404`. Bearer-only credentials cannot close fleet conversations.
+
 ## Desktop startup
 
 Launch `amux-desktop` to open the project browser. Gateway connectivity comes

@@ -14,6 +14,25 @@ import (
 func (a *api) registerFleetConversationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/projects/{ident}/fleet-agents/{session}/conversation", a.openFleetConversation)
 	mux.HandleFunc("GET /v1/fleet/conversations/stream", a.fleetConversationStream)
+	mux.HandleFunc("DELETE /v1/projects/{ident}/fleet-conversations/{conversation}", a.closeFleetConversation)
+}
+
+func (a *api) closeFleetConversation(w http.ResponseWriter, r *http.Request) {
+	peer := authenticatedSecurePrincipal(r.Context())
+	if peer == nil {
+		writeError(w, http.StatusForbidden, "fleet chat requires an enrolled client")
+		return
+	}
+	err := a.store.CloseFleetConversation(r.Context(), r.PathValue("ident"), r.PathValue("conversation"), peer.NodeID, peer.role == "administrator")
+	if errors.Is(err, storage.ErrTaskOwnership) {
+		writeError(w, http.StatusForbidden, "conversation belongs to a different enrolled client")
+		return
+	}
+	if err != nil {
+		conversationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *api) openFleetConversation(w http.ResponseWriter, r *http.Request) {
