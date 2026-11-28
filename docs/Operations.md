@@ -538,8 +538,11 @@ To retire a conversation, use the enrolled owning node or an administrator node:
 amux fleet close --project PROJECT --conversation CONVERSATION_UUID
 ```
 
-The command reads gateway connectivity from `~/.amux/config.yaml` and the
-enrolled profile from `~/.amux/device.yaml`. Both the command and gateway must
+The command reads `~/.amux/config.yaml` from the home directory of the account
+running it. For an enrolled connection, `enrolled_profile` in that file gives
+the absolute path to the enrollment manifest (`client-profile.json` or
+`local-client.json`). The optional `~/.amux/device.yaml` supplies device settings
+only. Both the command and gateway must
 include the fleet-close implementation. It does not start a companion or hosted
 gateway. Closing removes the fleet runner binding, notifies the companion to
 stop, and rejects future prompts and resumes. The transcript is retained.
